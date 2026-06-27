@@ -1,0 +1,66 @@
+AWARENESS_SQL = """
+-- 群聊观察与裁定
+CREATE TABLE IF NOT EXISTS group_environments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL DEFAULT '',
+            group_id TEXT NOT NULL DEFAULT '',
+            group_name TEXT NOT NULL DEFAULT '',
+            date TEXT NOT NULL DEFAULT '',
+            atmosphere TEXT NOT NULL DEFAULT '',
+            topic TEXT NOT NULL DEFAULT '',
+            topic_owner TEXT NOT NULL DEFAULT '',
+            active_users INTEGER NOT NULL DEFAULT 0,
+            is_multithread INTEGER NOT NULL DEFAULT 0,
+            is_spam INTEGER NOT NULL DEFAULT 0,
+            is_repetition INTEGER NOT NULL DEFAULT 0,
+            is_discussing_bot INTEGER NOT NULL DEFAULT 0,
+            suitable_to_join TEXT NOT NULL DEFAULT '',
+            bot_watch_state TEXT NOT NULL DEFAULT '',
+            participation_desire INTEGER NOT NULL DEFAULT 0,
+            complexity_score INTEGER NOT NULL DEFAULT 0,
+            understanding_confidence INTEGER NOT NULL DEFAULT 0,
+            deep_analysis_needed INTEGER NOT NULL DEFAULT 0,
+            summary TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+CREATE TABLE IF NOT EXISTS message_visibility (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL DEFAULT '',
+            message_id TEXT NOT NULL DEFAULT '',
+            sender_profile_id TEXT NOT NULL DEFAULT '',
+            sender_name TEXT NOT NULL DEFAULT '',
+            group_id TEXT NOT NULL DEFAULT '',
+            group_name TEXT NOT NULL DEFAULT '',
+            date TEXT NOT NULL DEFAULT '',
+            visibility TEXT NOT NULL DEFAULT 'seen',
+            attention_level INTEGER NOT NULL DEFAULT 0,
+            priority TEXT NOT NULL DEFAULT 'normal',
+            is_directed_at_bot INTEGER NOT NULL DEFAULT 0,
+            freshness TEXT NOT NULL DEFAULT '',
+            psychological_freshness INTEGER NOT NULL DEFAULT 0,
+            reactivated_from_id INTEGER NOT NULL DEFAULT 0,
+            reactivation_hint TEXT NOT NULL DEFAULT '',
+            reason TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+CREATE TABLE IF NOT EXISTS action_decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL DEFAULT '',
+            message_id TEXT NOT NULL DEFAULT '',
+            sender_profile_id TEXT NOT NULL DEFAULT '',
+            sender_name TEXT NOT NULL DEFAULT '',
+            group_id TEXT NOT NULL DEFAULT '',
+            group_name TEXT NOT NULL DEFAULT '',
+            date TEXT NOT NULL DEFAULT '',
+            action TEXT NOT NULL DEFAULT '',
+            reason TEXT NOT NULL DEFAULT '',
+            confidence REAL NOT NULL DEFAULT 0,
+            scene_type TEXT NOT NULL DEFAULT '',
+            topic_owner TEXT NOT NULL DEFAULT '',
+            understanding TEXT NOT NULL DEFAULT '',
+            deep_analysis INTEGER NOT NULL DEFAULT 0,
+            inner_monologue TEXT NOT NULL DEFAULT '',
+            reply_strategy TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+"""

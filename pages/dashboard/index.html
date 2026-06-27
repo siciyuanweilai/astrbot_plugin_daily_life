@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>日常生活面板</title>
+    <link rel="stylesheet" href="./style.css?v=20260621-reference-preview-cache2" />
+  </head>
+  <body>
+    <div class="page-stickers" aria-hidden="true">
+      <span></span>
+      <span></span>
+      <span></span>
+    </div>
+    <main class="studio">
+      <header class="ribbonbar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">♡</span>
+          <div>
+            <p class="eyebrow">生活日记</p>
+            <h1>日常生活面板</h1>
+          </div>
+        </div>
+
+        <nav class="view-switch" aria-label="面板视图">
+          <button class="view-button active" type="button" data-view="dashboard">面板</button>
+          <button class="view-button" type="button" data-view="settings">设置</button>
+        </nav>
+
+        <div class="toolbar" data-action-view="dashboard">
+          <button id="resetDayButton" type="button"><span aria-hidden="true">✦</span>重生成今日</button>
+        </div>
+        <div class="toolbar settings-toolbar" data-action-view="settings" hidden>
+          <span id="configDirtyBadge" class="toolbar-pill saved" hidden>已自动保存</span>
+        </div>
+      </header>
+
+      <section id="notice" class="notice" hidden></section>
+
+      <section id="dashboardView" class="screen dashboard-screen">
+        <section class="life-layout">
+          <aside class="life-column">
+            <article class="panel today-panel">
+              <div class="panel-head">
+                <h2>今日</h2>
+                <div class="today-head-actions">
+                  <button
+                    id="refreshStateButton"
+                    class="icon-button refresh-state-button"
+                    type="button"
+                    aria-label="刷新实时状态"
+                  >
+                    <span aria-hidden="true">↻</span>
+                  </button>
+                  <span id="targetDate" class="pill">--</span>
+                </div>
+              </div>
+              <dl class="facts">
+                <div>
+                  <dt>🌦️ 天气</dt>
+                  <dd id="weatherText">--</dd>
+                </div>
+                <div>
+                  <dt>🌷 主题</dt>
+                  <dd id="themeText">--</dd>
+                </div>
+                <div>
+                  <dt>🎀 周计划</dt>
+                  <dd id="todayWeekPlan">--</dd>
+                </div>
+                <div>
+                  <dt>🎨 心情色彩</dt>
+                  <dd id="moodColorText">--</dd>
+                </div>
+                <div>
+                  <dt>🧭 日程类型</dt>
+                  <dd id="scheduleTypeText">--</dd>
+                </div>
+                <div>
+                  <dt>🌿 日程基调</dt>
+                  <dd id="scheduleToneText">--</dd>
+                </div>
+                <div>
+                  <dt>🚪 活动倾向</dt>
+                  <dd id="scheduleIntentText">--</dd>
+                </div>
+                <div>
+                  <dt>👗 当前穿搭</dt>
+                  <dd id="currentOutfitText">--</dd>
+                </div>
+                <div>
+                  <dt>🪞 穿搭判断</dt>
+                  <dd id="outfitDecisionText">--</dd>
+                </div>
+                <div>
+                  <dt>📝 备忘</dt>
+                  <dd id="memoText">--</dd>
+                </div>
+              </dl>
+            </article>
+
+            <article class="panel current-panel">
+              <div class="panel-head">
+                <h2>当前</h2>
+                <span id="nowText" class="muted" hidden></span>
+              </div>
+              <div class="activity-strip">
+                <p id="currentActivity" class="activity-title">暂无日常生活数据</p>
+              </div>
+              <div id="stateMeters" class="meters"></div>
+            </article>
+
+          </aside>
+
+          <section class="diary-column">
+            <article class="panel timeline-panel">
+              <div class="panel-head">
+                <h2>时间轴</h2>
+                <div class="timeline-tools">
+                  <button id="timelineAddButton" type="button" hidden>新增</button>
+                  <button id="timelineEditButton" type="button">编辑</button>
+                  <button id="timelineCancelButton" type="button" hidden>取消</button>
+                  <button id="timelineSaveButton" type="button" class="primary-button" hidden>保存</button>
+                </div>
+              </div>
+              <ol id="timelineList" class="timeline"></ol>
+            </article>
+
+            <article class="panel state-log-panel">
+              <div class="panel-head">
+                <h2>状态变化</h2>
+              </div>
+              <div id="stateLogList" class="record-list compact-records"></div>
+            </article>
+          </section>
+
+          <aside class="side-column">
+            <article class="panel world-panel">
+              <div class="panel-head">
+                <h2>世界记忆</h2>
+                <div class="tabs" role="tablist" aria-label="世界记忆">
+                  <button class="tab active" type="button" data-world-tab="relationships">关系</button>
+                  <button class="tab" type="button" data-world-tab="summaries">会话</button>
+                  <button class="tab" type="button" data-world-tab="group_environments">群聊</button>
+                  <button class="tab" type="button" data-world-tab="message_visibility">留意</button>
+                  <button class="tab" type="button" data-world-tab="action_decisions">裁定</button>
+                  <button class="tab" type="button" data-world-tab="places">地点</button>
+                  <button class="tab" type="button" data-world-tab="events">事件</button>
+                </div>
+              </div>
+              <div id="worldList" class="record-list"></div>
+            </article>
+
+            <article class="panel lifecycle-panel">
+              <div class="panel-head">
+                <h2>生活演化</h2>
+              </div>
+              <div id="lifecycleList" class="record-list"></div>
+            </article>
+
+            <article class="panel experience-panel">
+              <div class="panel-head">
+                <h2>体验层</h2>
+              </div>
+              <div id="experienceList" class="record-list"></div>
+            </article>
+          </aside>
+        </section>
+
+      </section>
+
+      <section id="settingsView" class="screen settings-screen" hidden>
+        <section class="settings-layout">
+          <aside class="settings-rail">
+            <div class="rail-title">
+              <p class="eyebrow">面板设置</p>
+              <h2>设置</h2>
+            </div>
+            <nav id="configNav" class="config-rail" aria-label="设置分类"></nav>
+          </aside>
+
+          <section class="config-desk">
+            <header class="config-cover">
+              <div>
+                <p class="eyebrow">设置分组</p>
+                <h2 id="configSectionTitle">设置</h2>
+                <p id="configSectionHint" class="section-hint"></p>
+              </div>
+            </header>
+            <section id="configFieldList" class="config-grid"></section>
+          </section>
+        </section>
+
+        <section class="settings-workshops">
+          <section class="template-deck">
+            <article class="panel template-panel">
+              <div class="panel-head">
+                <h2>周模板工坊</h2>
+              </div>
+
+              <form id="weekForm" class="action-form week-quickbar">
+                <select id="weekTemplateSelect" aria-label="周计划模板"></select>
+                <input id="weekGoalsInput" type="text" placeholder="本周目标，可留空" />
+                <div class="form-buttons">
+                  <button type="submit">生成</button>
+                  <button id="weekWebButton" type="button">联网填充</button>
+                </div>
+              </form>
+
+              <div class="template-workspace">
+                <section class="template-editor" aria-label="周模板编辑器">
+                  <div class="template-picker">
+                    <select id="templateEditorSelect" aria-label="选择周模板"></select>
+                    <button id="templateNewButton" type="button">新建</button>
+                    <button id="templateCopyButton" type="button">复制</button>
+                    <button id="templateSaveButton" type="button" class="primary-button">保存</button>
+                  </div>
+                  <p id="templateEditorHint" class="editor-hint" aria-live="polite" hidden></p>
+
+                  <div class="template-grid">
+                    <label class="template-field">
+                      <span>模板标识</span>
+                      <input id="templateIdInput" type="text" placeholder="只能使用小写字母、数字和下划线" />
+                    </label>
+                    <label class="template-field">
+                      <span>名称</span>
+                      <input id="templateNameInput" type="text" placeholder="轻恢复周" />
+                    </label>
+                    <label class="template-field">
+                      <span>符号</span>
+                      <input id="templateEmojiInput" type="text" placeholder="♡" />
+                    </label>
+                    <label class="template-field">
+                      <span>自定义模板权重</span>
+                      <input id="templateWeightInput" type="number" min="0" step="0.01" />
+                    </label>
+                    <label class="template-field">
+                      <span>冷却周数</span>
+                      <input id="templateCooldownInput" type="number" min="0" step="1" />
+                    </label>
+                    <label class="template-field template-switch">
+                      <span>启用</span>
+                      <input id="templateEnabledInput" type="checkbox" />
+                    </label>
+                    <label class="template-field template-wide">
+                      <span>描述</span>
+                      <textarea id="templateDescriptionInput" rows="3" placeholder="这周偏累，减少外出，早睡和轻社交"></textarea>
+                    </label>
+                    <label class="template-field">
+                      <span>目标</span>
+                      <textarea id="templateGoalsInput" rows="6" placeholder="早睡&#10;低强度运动&#10;减少外出"></textarea>
+                    </label>
+                    <label class="template-field">
+                      <span>每日提示</span>
+                      <textarea id="templateHintsInput" rows="6" placeholder="周一: 慢慢进入节奏&#10;周二: 留一点独处时间"></textarea>
+                    </label>
+                    <label class="template-field">
+                      <span>工作日活动</span>
+                      <textarea id="templateWeekdayInput" rows="6" placeholder="整理书桌&#10;散步&#10;轻量学习"></textarea>
+                    </label>
+                    <label class="template-field">
+                      <span>周末活动</span>
+                      <textarea id="templateWeekendInput" rows="6" placeholder="公园野餐&#10;看电影&#10;大扫除"></textarea>
+                    </label>
+                    <label class="template-field">
+                      <span>标签</span>
+                      <textarea id="templateTagsInput" rows="6" placeholder="恢复&#10;低社交"></textarea>
+                    </label>
+                  </div>
+                </section>
+
+                <section class="template-library" aria-label="周模板列表">
+                  <form id="templateForm" class="template-form">
+                    <textarea id="templateText" rows="3" placeholder="输入想要的日程基调"></textarea>
+                    <div class="form-buttons">
+                      <button type="submit">智能新建</button>
+                      <button id="templateWebButton" type="button">联网新建</button>
+                    </div>
+                  </form>
+                  <div id="templateList" class="template-list"></div>
+                </section>
+              </div>
+            </article>
+          </section>
+
+          <section class="catalog-deck">
+            <article class="panel catalog-panel">
+              <div class="panel-head">
+                <h2>素材工坊</h2>
+              </div>
+
+              <div class="catalog-workspace">
+                <section class="catalog-editor" aria-label="创意素材编辑器">
+                  <div class="template-picker">
+                    <select id="catalogCategorySelect" aria-label="选择素材分类"></select>
+                    <button id="catalogNewButton" type="button">新建</button>
+                    <button id="catalogCopyButton" type="button">复制</button>
+                    <button id="catalogSaveButton" type="button" class="primary-button">保存</button>
+                  </div>
+                  <p id="catalogEditorHint" class="editor-hint" aria-live="polite" hidden></p>
+                  <label class="template-field template-wide">
+                    <span>素材内容</span>
+                    <textarea id="catalogTextInput" rows="7" placeholder="给今天一点新的灵感"></textarea>
+                  </label>
+                  <label class="template-field template-switch">
+                    <span>启用</span>
+                    <input id="catalogEnabledInput" type="checkbox" />
+                  </label>
+                </section>
+
+                <section class="catalog-library" aria-label="创意素材列表">
+                  <form id="catalogForm" class="template-form">
+                    <textarea id="catalogText" rows="3" placeholder="输入想添入的灵感"></textarea>
+                    <div class="form-buttons">
+                      <button type="submit">智能新建</button>
+                      <button id="catalogWebButton" type="button">联网新建</button>
+                    </div>
+                  </form>
+                  <div id="catalogList" class="catalog-list"></div>
+                </section>
+              </div>
+
+              <div class="hair-workspace">
+                <section class="catalog-editor" aria-label="发型组编辑器">
+                  <div class="template-picker hair-picker">
+                    <select id="hairStyleSelect" aria-label="选择发型组"></select>
+                    <button id="hairNewButton" type="button">新建</button>
+                    <button id="hairCopyButton" type="button">复制</button>
+                    <button id="hairSaveButton" type="button" class="primary-button">保存</button>
+                  </div>
+                  <p id="hairEditorHint" class="editor-hint" aria-live="polite" hidden></p>
+                  <div class="template-grid">
+                    <label class="template-field">
+                      <span>风格名称</span>
+                      <input id="hairNameInput" type="text" placeholder="雨天温柔风" />
+                    </label>
+                    <label class="template-field template-switch">
+                      <span>启用</span>
+                      <input id="hairEnabledInput" type="checkbox" />
+                    </label>
+                    <label class="template-field template-wide">
+                      <span>发型列表</span>
+                      <textarea id="hairOptionsInput" rows="6" placeholder="低低挽起的长发&#10;带珍珠发夹的半扎长发"></textarea>
+                    </label>
+                  </div>
+                </section>
+
+                <section class="catalog-library" aria-label="发型组列表">
+                  <form id="hairForm" class="template-form">
+                    <textarea id="hairText" rows="3" placeholder="输入想要的发型氛围"></textarea>
+                    <div class="form-buttons">
+                      <button type="submit">智能新建</button>
+                      <button id="hairWebButton" type="button">联网新建</button>
+                    </div>
+                  </form>
+                  <div id="hairList" class="catalog-list"></div>
+                </section>
+              </div>
+            </article>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <script type="module" src="./app.js?v=20260621-reference-preview-cache2"></script>
+  </body>
+</html>

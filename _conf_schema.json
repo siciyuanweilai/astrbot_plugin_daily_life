@@ -1,0 +1,1424 @@
+{
+    "relationship_aliases": {
+        "title": "用户称呼映射",
+        "description": "本地用户称呼映射",
+        "type": "list",
+        "items": {
+            "type": "string"
+        },
+        "default": [],
+        "hint": "可选配置，用于补充平台无法稳定获取的用户称呼，会影响聊天记忆、邀约、备忘录、参考私聊、MemOS 和面板展示。格式：用户标识/会话标识:称呼，例如 123456:用户称呼 或 o2xxxx@im.wechat:用户称呼。QQ 未配置时会尝试获取备注、昵称；个人微信无法稳定获取真实昵称，建议在这里配置称呼。"
+    },
+    "rhythm_config": {
+        "description": "生活背景基础",
+        "type": "object",
+        "hint": "设置每日生活背景生成时间、历史参考和基础生成模型。",
+        "items": {
+            "schedule_time": {
+                "description": "生成时间",
+                "type": "string",
+                "default": "07:00",
+                "hint": "每日生活背景生成时间，使用 24 小时制，例如 07:00。"
+            },
+            "history_days": {
+                "description": "参考天数",
+                "type": "int",
+                "default": 3,
+                "hint": "生成日程时参考的历史天数"
+            },
+            "reference_groups": {
+                "title": "参考群聊",
+                "description": "生成日程时参考的群聊",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "default": [],
+                "hint": "填入群号；个人微信 weixin_oc 仅支持私聊，不支持群聊。"
+            },
+            "reference_users": {
+                "title": "参考私聊",
+                "description": "生成日程时参考的私聊",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "default": [],
+                "hint": "填入 QQ 号、个人微信 openid/会话标识，或完整 UMO，例如 123456、o2xxxx@im.wechat、weixin_oc:FriendMessage:o2xxxx@im.wechat。个人微信历史来自已保存的消息/会话历史。"
+            },
+            "history_hours": {
+                "description": "历史回溯时间(小时)",
+                "type": "int",
+                "default": 24,
+                "slider": {
+                    "min": 0,
+                    "max": 168,
+                    "step": 1
+                },
+                "hint": "回溯过去N小时的聊天记录"
+            },
+            "history_max_count": {
+                "description": "最大参考条数",
+                "type": "int",
+                "default": 50,
+                "slider": {
+                    "min": 0,
+                    "max": 200,
+                    "step": 1
+                },
+                "hint": "每个会话最多参考的消息条数"
+            },
+            "llm_provider": {
+                "description": "日常生活",
+                "type": "string",
+                "_special": "select_provider",
+                "default": "",
+                "hint": "指定日程生成、周计划生成和周模板生成使用的模型；留空则使用当前默认模型"
+            }
+        }
+    },
+    "weather_awareness": {
+        "description": "天气",
+        "type": "object",
+        "hint": "配置天气接口，让日程与天气挂钩。",
+        "items": {
+            "api_key": {
+                "description": "柠柚接口密钥",
+                "type": "string",
+                "default": "",
+                "hint": "从 https://api.nycnm.cn 获取接口密钥。"
+            },
+            "default_city": {
+                "description": "默认城市",
+                "type": "string",
+                "default": "",
+                "hint": "如果无法从人设提取城市，则使用此城市"
+            },
+            "aware_outfit": {
+                "description": "影响穿搭",
+                "type": "bool",
+                "default": true,
+                "hint": "根据天气指数（生活指数）调整穿搭建议"
+            },
+            "aware_activity": {
+                "description": "影响活动",
+                "type": "bool",
+                "default": true,
+                "hint": "根据天气（如下雨、生活指数）调整活动安排"
+            }
+        }
+    },
+    "outfit_config": {
+        "description": "服装",
+        "type": "object",
+        "hint": "单独配置实时穿搭判断使用的模型。完整日程生成中的穿搭仍跟随生成模型。",
+        "items": {
+            "provider": {
+                "description": "百变穿搭",
+                "type": "string",
+                "_special": "select_provider",
+                "default": "",
+                "hint": "指定自动穿搭判断和手动穿搭更新使用的模型；留空则使用当前默认模型"
+            }
+        }
+    },
+    "state_config": {
+        "description": "实时状态",
+        "type": "object",
+        "hint": "配置体力、心情、忙碌度、社交意愿、睡眠质量、静默时段，以及后台状态与穿搭巡检。",
+        "items": {
+            "enabled": {
+                "description": "启用实时状态",
+                "type": "bool",
+                "default": true,
+                "hint": "开启后每日生成状态，并按刷新间隔在后台巡检当前状态；聊天和邀约也会按同一间隔触发状态更新。"
+            },
+            "provider": {
+                "description": "状态更新",
+                "type": "string",
+                "_special": "select_provider",
+                "default": "",
+                "hint": "单独指定实时状态更新使用的模型；留空则使用当前默认模型"
+            },
+            "refresh_minutes": {
+                "description": "刷新间隔(分钟)",
+                "type": "int",
+                "default": 30,
+                "slider": {
+                    "min": 5,
+                    "max": 240,
+                    "step": 5
+                },
+                "hint": "聊天触发状态刷新和后台巡检共用该间隔；到达间隔后会刷新实时状态，聊天与邀约也会触发状态更新。"
+            },
+            "quiet_hours": {
+                "description": "静默时段",
+                "type": "string",
+                "default": "00:00-06:30",
+                "hint": "可填写 00:00-06:30 这类时间段；静默时段内只会跳过后台状态巡检，聊天与邀约仍会按刷新间隔触发状态更新。留空表示不排除任何时段。"
+            }
+        }
+    },
+    "invite_config": {
+        "description": "邀约",
+        "type": "object",
+        "hint": "单独配置邀约接受、拒绝和改约判断使用的模型。",
+        "items": {
+            "provider": {
+                "description": "盛情邀约",
+                "type": "string",
+                "_special": "select_provider",
+                "default": "",
+                "hint": "指定邀约处理使用的模型；留空则使用当前默认模型"
+            }
+        }
+    },
+    "commitment_config": {
+        "description": "约定追踪",
+        "type": "object",
+        "hint": "从聊天中沉淀未来承诺、提醒和下次续聊事项，到期后影响生活背景生成。",
+        "items": {
+            "provider": {
+                "description": "约定识别",
+                "type": "string",
+                "_special": "select_provider",
+                "default": "",
+                "hint": "单独指定承诺抽取使用的模型；留空则使用当前默认模型"
+            },
+            "min_confidence": {
+                "description": "自动保存阈值",
+                "type": "float",
+                "default": 0.7,
+                "slider": {
+                    "min": 0,
+                    "max": 1,
+                    "step": 0.05
+                },
+                "hint": "模型判断置信度低于该值时不自动保存"
+            }
+        }
+    },
+    "memory_config": {
+        "description": "记忆",
+        "type": "object",
+        "hint": "把普通聊天提炼成关系记忆、聊天摘要，并在生成/注入时只挑相关内容。",
+        "items": {
+            "provider": {
+                "description": "记忆提炼",
+                "type": "string",
+                "_special": "select_provider",
+                "default": "",
+                "hint": "单独指定聊天记忆提炼使用的模型；留空则使用当前默认模型"
+            },
+            "min_message_length": {
+                "description": "最短消息长度",
+                "type": "int",
+                "default": 8,
+                "slider": {
+                    "min": 1,
+                    "max": 200,
+                    "step": 1
+                },
+                "hint": "低于该长度的消息不会自动提炼，避免保存寒暄和短表情"
+            },
+            "max_generation_items": {
+                "description": "生成参考条数",
+                "type": "int",
+                "default": 8,
+                "slider": {
+                    "min": 0,
+                    "max": 30,
+                    "step": 1
+                },
+                "hint": "生成日程时最多注入多少条聊天记忆摘要"
+            },
+            "max_injection_items": {
+                "description": "聊天注入条数",
+                "type": "int",
+                "default": 5,
+                "slider": {
+                    "min": 0,
+                    "max": 20,
+                    "step": 1
+                },
+                "hint": "普通聊天隐藏上下文中最多注入多少条相关聊天记忆摘要"
+            }
+        }
+    },
+    "memos_config": {
+        "description": "MemOS 记忆",
+        "type": "object",
+        "hint": "连接 MemOS 托管服务，把外部长期事实和偏好作为隐藏参考。默认只检索不写入；精选同步开启后，仅同步本插件判断值得长期复用的摘要、偏好和纠错。",
+        "items": {
+            "enabled": {
+                "description": "启用 MemOS",
+                "type": "bool",
+                "default": false,
+                "hint": "开启后聊天前会短超时检索 MemOS 外部长期记忆，失败不会影响正常回复。"
+            },
+            "base_url": {
+                "description": "服务地址",
+                "type": "string",
+                "default": "https://memos.memtensor.cn/api/openmem/v1",
+                "hint": "MemOS 托管服务 API 地址，末尾不需要斜杠。"
+            },
+            "api_key": {
+                "description": "接口密钥",
+                "type": "string",
+                "default": "",
+                "hint": "MemOS 托管服务 Token。留空时不会请求外部记忆。"
+            },
+            "timeout_seconds": {
+                "description": "请求超时(秒)",
+                "type": "float",
+                "default": 15,
+                "slider": {
+                    "min": 0.5,
+                    "max": 30,
+                    "step": 0.5
+                },
+                "hint": "MemOS 后台同步和普通请求的单次超时；聊天回复前的注入等待由下方单独控制，不会跟着变慢。"
+            },
+            "injection_timeout_seconds": {
+                "description": "注入等待(秒)",
+                "type": "float",
+                "default": 0.8,
+                "slider": {
+                    "min": 0.2,
+                    "max": 5,
+                    "step": 0.1
+                },
+                "hint": "聊天回复前最多等待 MemOS 检索多久；超时会跳过本轮外部记忆，不影响正常回复。"
+            },
+            "memory_limit_number": {
+                "description": "事实记忆条数",
+                "type": "int",
+                "default": 5,
+                "slider": {
+                    "min": 1,
+                    "max": 20,
+                    "step": 1
+                },
+                "hint": "每次最多检索多少条事实记忆。"
+            },
+            "preference_limit_number": {
+                "description": "偏好记忆条数",
+                "type": "int",
+                "default": 4,
+                "slider": {
+                    "min": 0,
+                    "max": 20,
+                    "step": 1
+                },
+                "hint": "每次最多检索多少条偏好记忆。"
+            },
+            "max_context_items": {
+                "description": "注入条数",
+                "type": "int",
+                "default": 6,
+                "slider": {
+                    "min": 1,
+                    "max": 20,
+                    "step": 1
+                },
+                "hint": "外部记忆参考最多写入隐藏上下文多少条。"
+            },
+            "max_context_chars": {
+                "description": "注入字数",
+                "type": "int",
+                "default": 700,
+                "slider": {
+                    "min": 120,
+                    "max": 3000,
+                    "step": 20
+                },
+                "hint": "限制外部记忆参考总长度，避免提示词变胖。"
+            },
+            "include_preference": {
+                "description": "检索偏好",
+                "type": "bool",
+                "default": true,
+                "hint": "开启后同时检索 MemOS 的偏好记忆。"
+            },
+            "sync_selected_memory": {
+                "description": "同步精选记忆",
+                "type": "bool",
+                "default": false,
+                "hint": "开启后，本插件判断值得长期复用的聊天摘要、关系点和偏好会异步同步到 MemOS。不会同步每轮聊天。"
+            },
+            "sync_corrections": {
+                "description": "同步记忆纠错",
+                "type": "bool",
+                "default": true,
+                "hint": "开启后，用户明确纠正并被本插件采纳的记忆纠错会同步给 MemOS。"
+            }
+        }
+    },
+    "response_gate_config": {
+        "description": "随心回复",
+        "type": "object",
+        "hint": "普通聊天到来时先判断当前适不适合回复：结合群聊/私聊、@/引用、消息结构、实时状态和近期节奏决定是否交给默认 LLM；不回复时仍会记录上下文、图片识别和记忆沉淀。",
+        "items": {
+            "enabled": {
+                "description": "启用随心回复",
+                "type": "bool",
+                "default": true,
+                "hint": "开启后普通聊天不再每条都硬回；@、唤醒、引用和命令仍会直接处理。"
+            },
+            "group_talk_frequency": {
+                "description": "群聊回复意愿",
+                "type": "float",
+                "default": 0.45,
+                "slider": {
+                    "min": 0,
+                    "max": 1,
+                    "step": 0.05
+                },
+                "hint": "群聊普通消息进入默认回复的基础意愿。数值越低越安静，仍会结合实时状态、消息结构和近期节奏动态调整。"
+            },
+            "private_talk_frequency": {
+                "description": "私聊回复意愿",
+                "type": "float",
+                "default": 0.65,
+                "slider": {
+                    "min": 0,
+                    "max": 1,
+                    "step": 0.05
+                },
+                "hint": "私聊普通消息进入默认回复的基础意愿。私聊不再因为 AstrBot 自动唤醒就必回，会结合困倦、忙碌、刚回复过或对方可能连发等状态观察。"
+            },
+            "min_interval_seconds": {
+                "description": "最短回复间隔(秒)",
+                "type": "int",
+                "default": 12,
+                "slider": {
+                    "min": 0,
+                    "max": 300,
+                    "step": 1
+                },
+                "hint": "同一会话刚回复过时，短时间内降低再次进入默认回复的倾向，避免连续抢话。"
+            },
+            "no_reply_backoff_seconds": {
+                "description": "安静观察基准(秒)",
+                "type": "int",
+                "default": 25,
+                "slider": {
+                    "min": 0,
+                    "max": 600,
+                    "step": 5
+                },
+                "hint": "连续几次判断不回复后，下次普通消息先短暂安静观察的基准时间。0 表示不使用安静观察。"
+            },
+            "no_reply_backoff_cap_seconds": {
+                "description": "安静观察上限(秒)",
+                "type": "int",
+                "default": 180,
+                "slider": {
+                    "min": 0,
+                    "max": 1800,
+                    "step": 10
+                },
+                "hint": "连续观察时保持安静的最长时间。"
+            },
+            "no_reply_backoff_start_count": {
+                "description": "安静观察起点",
+                "type": "int",
+                "default": 2,
+                "slider": {
+                    "min": 1,
+                    "max": 20,
+                    "step": 1
+                },
+                "hint": "连续多少次不回复后开始进入安静观察。"
+            },
+            "bypass_pending_count": {
+                "description": "绕过消息数",
+                "type": "int",
+                "default": 5,
+                "slider": {
+                    "min": 0,
+                    "max": 50,
+                    "step": 1
+                },
+                "hint": "同一会话短时间积累到多少条待看消息时，绕过安静观察并提高回复意愿。0 表示不按消息数绕过。"
+            },
+            "media_only_group_frequency": {
+                "description": "群聊纯媒体回复意愿",
+                "type": "float",
+                "default": 0.2,
+                "slider": {
+                    "min": 0,
+                    "max": 1,
+                    "step": 0.05
+                },
+                "hint": "群聊只有图片、语音、视频或文件而没有文字时，进入默认回复的基础意愿。后台视觉识别仍会正常进行。"
+            }
+        }
+    },
+    "proactive_config": {
+        "description": "闲时回复",
+        "type": "object",
+        "hint": "让角色在会话沉默一段时间后，根据生活状态、注意力开放度、会话氛围、关系印象和近期记忆自主判断是否自然续一句。默认关闭，开启后会增加额外模型调用。",
+        "items": {
+            "enabled": {
+                "description": "启用闲时回复",
+                "type": "bool",
+                "default": false,
+                "hint": "开启后只记录普通会话的活跃度，不拦截命令和正常聊天；后台等会话安静后再由语言模型裁定是否自然续一句。"
+            },
+            "group_enabled": {
+                "description": "群聊闲时",
+                "type": "bool",
+                "default": true,
+                "hint": "允许群聊在沉默一段时间后，由语言模型判断是否自然补一句。"
+            },
+            "private_enabled": {
+                "description": "私聊闲时",
+                "type": "bool",
+                "default": true,
+                "hint": "允许私聊在沉默一段时间后，由语言模型判断是否自然续一句；不会拦截正常聊天回复。"
+            },
+            "provider": {
+                "description": "闲时回复",
+                "type": "string",
+                "_special": "select_provider",
+                "default": "",
+                "hint": "单独指定闲时回复裁定和短回复生成使用的模型；留空则使用当前默认模型"
+            },
+            "talk_frequency": {
+                "description": "闲时频率",
+                "type": "float",
+                "default": 0.35,
+                "slider": {
+                    "min": 0,
+                    "max": 1,
+                    "step": 0.05
+                },
+                "hint": "群聊沉默后的闲时发言倾向。数值越高越愿意自然参与，仍由语言模型结合状态和群聊氛围裁定，不是概率硬触发。"
+            },
+            "private_talk_frequency": {
+                "description": "私聊频率",
+                "type": "float",
+                "default": 0.55,
+                "slider": {
+                    "min": 0,
+                    "max": 1,
+                    "step": 0.05
+                },
+                "hint": "私聊沉默后的闲时回应倾向。数值越高越愿意自然回应，仍由语言模型结合关系、状态和消息内容裁定。"
+            },
+            "idle_minutes": {
+                "description": "群聊沉默(分钟)",
+                "type": "int",
+                "default": 30,
+                "slider": {
+                    "min": 1,
+                    "max": 240,
+                    "step": 1
+                },
+                "hint": "同一个群聊最后一条可参考消息后，至少安静多久才允许进入闲时回复裁定。"
+            },
+            "private_idle_minutes": {
+                "description": "私聊沉默(分钟)",
+                "type": "int",
+                "default": 60,
+                "slider": {
+                    "min": 5,
+                    "max": 1440,
+                    "step": 5
+                },
+                "hint": "同一个私聊最后一条可参考消息后，至少安静多久才允许进入闲时回复裁定。"
+            },
+            "cooldown_minutes": {
+                "description": "群聊冷却(分钟)",
+                "type": "int",
+                "default": 20,
+                "slider": {
+                    "min": 1,
+                    "max": 240,
+                    "step": 1
+                },
+                "hint": "同一个群聊闲时回复后的最短间隔，避免连续抢话。"
+            },
+            "private_cooldown_minutes": {
+                "description": "私聊冷却(分钟)",
+                "type": "int",
+                "default": 8,
+                "slider": {
+                    "min": 1,
+                    "max": 240,
+                    "step": 1
+                },
+                "hint": "同一个私聊会话闲时回应后的最短间隔，避免连续打扰。"
+            },
+            "min_message_length": {
+                "description": "最短消息长度",
+                "type": "int",
+                "default": 4,
+                "slider": {
+                    "min": 1,
+                    "max": 200,
+                    "step": 1
+                },
+                "hint": "低于该长度的普通群聊/私聊消息不会进入闲时回复候选。"
+            },
+            "min_confidence": {
+                "description": "回复置信度",
+                "type": "float",
+                "default": 0.72,
+                "slider": {
+                    "min": 0,
+                    "max": 1,
+                    "step": 0.05
+                },
+                "hint": "模型裁定置信度低于该值时不发送闲时回复。"
+            },
+            "max_reply_length": {
+                "description": "回复长度上限",
+                "type": "int",
+                "default": 80,
+                "slider": {
+                    "min": 10,
+                    "max": 300,
+                    "step": 10
+                },
+                "hint": "闲时回复应保持短句，避免像正式长回复。"
+            },
+            "private_revisit_enabled": {
+                "description": "私聊回访",
+                "type": "bool",
+                "default": false,
+                "hint": "允许后台根据关系档案和生活状态判断是否进行私聊回访。默认关闭，避免未经确认地发起私聊。"
+            },
+            "revisit_interval_minutes": {
+                "description": "回访检查间隔(分钟)",
+                "type": "int",
+                "default": 30,
+                "slider": {
+                    "min": 5,
+                    "max": 1440,
+                    "step": 5
+                },
+                "hint": "开启私聊回访后，后台多久检查一次是否有自然回访对象。"
+            },
+            "revisit_cooldown_minutes": {
+                "description": "回访冷却(分钟)",
+                "type": "int",
+                "default": 180,
+                "slider": {
+                    "min": 10,
+                    "max": 10080,
+                    "step": 10
+                },
+                "hint": "同一个私聊对象两次私聊回访之间的最短间隔。"
+            },
+            "revisit_min_confidence": {
+                "description": "回访置信度",
+                "type": "float",
+                "default": 0.82,
+                "slider": {
+                    "min": 0,
+                    "max": 1,
+                    "step": 0.05
+                },
+                "hint": "模型裁定私聊回访置信度低于该值时不发起私聊。"
+            }
+        }
+    },
+    "lifecycle_config": {
+        "description": "生活演化",
+        "type": "object",
+        "hint": "配置夜间复盘模型、复盘时间和偏好参考上限；复盘、偏好、生活事件和睡眠债会自然参与虚拟生活演化。",
+        "items": {
+            "provider": {
+                "description": "夜间复盘",
+                "type": "string",
+                "_special": "select_provider",
+                "default": "",
+                "hint": "指定夜间复盘和偏好沉淀使用的模型；留空则使用当前默认模型"
+            },
+            "review_time": {
+                "description": "复盘时间",
+                "type": "string",
+                "default": "23:45",
+                "hint": "每日夜间复盘任务时间，使用 24 小时制，例如 23:45。"
+            },
+            "max_preferences": {
+                "description": "偏好参考上限",
+                "type": "int",
+                "default": 16,
+                "slider": {
+                    "min": 0,
+                    "max": 50,
+                    "step": 1
+                },
+                "hint": "生成日程时最多参考多少条已学习偏好。"
+            }
+        }
+    },
+    "material_config": {
+        "description": "素材",
+        "type": "object",
+        "hint": "单独配置素材工坊整理、扩写和发型组生成使用的模型。",
+        "items": {
+            "provider": {
+                "description": "素材工坊",
+                "type": "string",
+                "_special": "select_provider",
+                "default": "",
+                "hint": "指定素材工坊生成使用的模型；留空则使用当前默认模型"
+            }
+        }
+    },
+    "vision_config": {
+        "description": "视觉",
+        "type": "object",
+        "hint": "单独配置图片和表情素材识别使用的模型。",
+        "items": {
+            "provider": {
+                "description": "视觉信息",
+                "type": "string",
+                "_special": "select_provider",
+                "default": "",
+                "hint": "指定图片上下文和表情素材识别使用的视觉模型；留空则使用当前默认模型"
+            }
+        }
+    },
+    "image_generation_config": {
+        "description": "图片",
+        "type": "object",
+        "hint": "使用图片生成接口，让角色在需要时生成并发送生活场景图片。默认关闭，填写接口地址和密钥并开启后生效。",
+        "items": {
+            "enabled": {
+                "description": "启用图片生成",
+                "type": "bool",
+                "default": false,
+                "hint": "开启后，模型可以调用工具生成并发送图片。"
+            },
+            "character_reference_policy": {
+                "description": "角色形象参考",
+                "type": "string",
+                "default": "off",
+                "options": [
+                    "off",
+                    "auto",
+                    "always"
+                ],
+                "option_labels": {
+                    "off": "不使用",
+                    "auto": "智能判断",
+                    "always": "始终参考"
+                },
+                "hint": "图片生成会把下方角色形象参考图提供给模型，用于保持角色外貌一致。不使用表示不传入形象参考图；智能判断表示只在画面包含角色本人时参考；始终参考表示每次图片生成都优先保持角色形象。"
+            },
+            "character_reference_images": {
+                "description": "角色形象参考图组",
+                "type": "list",
+                "_special": "character_reference_gallery",
+                "items": {
+                    "type": "object"
+                },
+                "default": [],
+                "hint": "点击选择图片上传到插件数据目录，可管理多张角色形象参考图，用于保持角色生活照、自拍、穿搭图等画面的外貌一致。"
+            },
+            "reference_max_count": {
+                "description": "最多参考图数量",
+                "type": "int",
+                "default": 6,
+                "slider": {
+                    "min": 1,
+                    "max": 12,
+                    "step": 1
+                },
+                "hint": "角色形象参考图组最多保留多少张图片。生成时会把图组按顺序提供给模型参考。"
+            },
+            "channels": {
+                "description": "接口通道",
+                "type": "template_list",
+                "default": [],
+                "hint": "按顺序轮询图片接口；第一条就是优先使用的主通道。每条通道都单独填写接口地址、接口密钥和模型名。",
+                "templates": {
+                    "gemini": {
+                        "name": "Gemini",
+                        "items": {
+                            "api_url": {
+                                "description": "接口地址",
+                                "type": "string",
+                                "default": "",
+                                "hint": "这条 Gemini 通道使用的接口地址。"
+                            },
+                            "api_key": {
+                                "description": "接口密钥",
+                                "type": "string",
+                                "default": "",
+                                "hint": "这条接口通道单独使用的密钥。"
+                            },
+                            "model": {
+                                "description": "模型名称",
+                                "type": "string",
+                                "default": "gemini-3-pro-image-preview",
+                                "hint": "这条 Gemini 通道使用的生图模型。"
+                            },
+                            "resolution": {
+                                "description": "图片尺寸",
+                                "type": "string",
+                                "default": "4K",
+                                "options": [
+                                    "1K",
+                                    "2K",
+                                    "4K"
+                                ],
+                                "hint": "这条 Gemini 通道的图片尺寸档位。"
+                            },
+                            "aspect_ratio": {
+                                "description": "图片比例",
+                                "type": "string",
+                                "default": "1:1",
+                                "options": [
+                                    "1:1",
+                                    "1:4",
+                                    "1:8",
+                                    "2:3",
+                                    "3:2",
+                                    "3:4",
+                                    "4:1",
+                                    "4:3",
+                                    "4:5",
+                                    "5:4",
+                                    "8:1",
+                                    "9:16",
+                                    "16:9",
+                                    "21:9"
+                                ],
+                                "hint": "这条 Gemini 通道的图片比例。"
+                            },
+                            "timeout_seconds": {
+                                "description": "超时（秒）",
+                                "type": "int",
+                                "default": 120,
+                                "slider": {
+                                    "min": 10,
+                                    "max": 600,
+                                    "step": 10
+                                },
+                                "hint": "这条 Gemini 通道单次请求的最长等待时间。"
+                            }
+                        }
+                    },
+                    "openai": {
+                        "name": "GPT Image",
+                        "items": {
+                            "api_url": {
+                                "description": "接口地址",
+                                "type": "string",
+                                "default": "",
+                                "hint": "GPT Image 地址。"
+                            },
+                            "api_key": {
+                                "description": "接口密钥",
+                                "type": "string",
+                                "default": "",
+                                "hint": "这条接口通道单独使用的密钥。"
+                            },
+                            "model": {
+                                "description": "模型名称",
+                                "type": "string",
+                                "default": "gpt-image-2",
+                                "hint": "这条 GPT Image 通道使用的生图模型。"
+                            },
+                            "resolution": {
+                                "description": "图片尺寸",
+                                "type": "string",
+                                "default": "4K",
+                                "options": [
+                                    "1K",
+                                    "2K",
+                                    "4K"
+                                ],
+                                "hint": "这条 GPT Image 通道会结合图片比例换算成对应 size。"
+                            },
+                            "aspect_ratio": {
+                                "description": "图片比例",
+                                "type": "string",
+                                "default": "1:1",
+                                "options": [
+                                    "1:1",
+                                    "1:4",
+                                    "1:8",
+                                    "2:3",
+                                    "3:2",
+                                    "3:4",
+                                    "4:1",
+                                    "4:3",
+                                    "4:5",
+                                    "5:4",
+                                    "8:1",
+                                    "9:16",
+                                    "16:9",
+                                    "21:9"
+                                ],
+                                "hint": "这条 GPT Image 通道会结合图片尺寸换算成对应 size。"
+                            },
+                            "timeout_seconds": {
+                                "description": "超时（秒）",
+                                "type": "int",
+                                "default": 120,
+                                "slider": {
+                                    "min": 10,
+                                    "max": 600,
+                                    "step": 10
+                                },
+                                "hint": "这条 GPT Image 通道单次请求的最长等待时间。"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "video_generation_config": {
+        "description": "视频",
+        "type": "object",
+        "hint": "使用 Grok 1.5 视频中转接口生成短视频。视频生成较慢，会在后台完成后发送，默认关闭。",
+        "items": {
+            "enabled": {
+                "description": "启用视频生成",
+                "type": "bool",
+                "default": false,
+                "hint": "开启后，模型可以调用工具生成并发送视频。"
+            },
+            "base_url": {
+                "description": "接口地址",
+                "type": "string",
+                "default": "",
+                "hint": "填写视频中转站根地址即可，插件会自动补全 /v1/videos。"
+            },
+            "api_keys": {
+                "description": "接口密钥",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "default": [],
+                "hint": "可填写多个密钥，调用时会轮换使用。"
+            },
+            "model": {
+                "description": "模型名称",
+                "type": "string",
+                "default": "grok-imagine-video-1.5-preview",
+                "hint": "Grok Imagine Video 1.5 模型名称。"
+            },
+            "duration": {
+                "description": "时长（秒）",
+                "type": "int",
+                "default": 8,
+                "slider": {
+                    "min": 1,
+                    "max": 15,
+                    "step": 1
+                },
+                "hint": "生成视频的目标时长。"
+            },
+            "aspect_ratio": {
+                "description": "画面比例",
+                "type": "string",
+                "default": "16:9",
+                "options": [
+                    "16:9",
+                    "9:16",
+                    "1:1",
+                    "4:3",
+                    "3:4"
+                ],
+                "hint": "生成视频的画面比例。"
+            },
+            "resolution": {
+                "description": "视频清晰度",
+                "type": "string",
+                "default": "720p",
+                "options": [
+                    "720p",
+                    "1080p"
+                ],
+                "hint": "生成视频的目标清晰度。"
+            },
+            "timeout_seconds": {
+                "description": "任务超时（秒）",
+                "type": "int",
+                "default": 300,
+                "slider": {
+                    "min": 30,
+                    "max": 3600,
+                    "step": 30
+                },
+                "hint": "后台等待视频生成完成的最长时间。"
+            },
+            "request_timeout_seconds": {
+                "description": "请求超时（秒）",
+                "type": "int",
+                "default": 60,
+                "slider": {
+                    "min": 10,
+                    "max": 600,
+                    "step": 10
+                },
+                "hint": "创建任务和查询任务时的单次请求超时。"
+            },
+            "poll_interval_seconds": {
+                "description": "查询间隔（秒）",
+                "type": "float",
+                "default": 5.0,
+                "slider": {
+                    "min": 1,
+                    "max": 120,
+                    "step": 1
+                },
+                "hint": "后台轮询视频任务状态的间隔。"
+            }
+        }
+    },
+    "voice_generation_config": {
+        "description": "语音",
+        "type": "object",
+        "hint": "使用 SiliconFlow 语音合成，让角色可以按需发送语音。闲时回复可优先发送语音，语音失败时再改用文字。",
+        "items": {
+            "enabled": {
+                "description": "启用语音生成",
+                "type": "bool",
+                "default": false,
+                "hint": "开启后，模型可以调用工具合成并发送语音。"
+            },
+            "smart_switch_enabled": {
+                "description": "智能切换语音/文字",
+                "type": "bool",
+                "default": true,
+                "hint": "开启后，普通聊天由模型判断用文字还是语音；关闭后停止自动语音，只有用户明确要求语音时才发送。"
+            },
+            "smart_switch_probability": {
+                "description": "普通语音概率（%）",
+                "type": "float",
+                "default": 35,
+                "slider": {
+                    "min": 0,
+                    "max": 100,
+                    "step": 5
+                },
+                "hint": "普通聊天中，模型判断适合语音后还会经过节奏判断；数值越高越容易说出来。同一段短促口语可以自然连续两三条，过长或连发到上限会回到文字。"
+            },
+            "proactive_enabled": {
+                "description": "闲时消息优先语音",
+                "type": "bool",
+                "default": false,
+                "hint": "开启后，闲时回复和私聊回访会优先尝试发送语音；语音生成或发送失败时，再改用文字回复。"
+            },
+            "proactive_probability": {
+                "description": "闲时语音概率（%）",
+                "type": "float",
+                "default": 100,
+                "slider": {
+                    "min": 0,
+                    "max": 100,
+                    "step": 5
+                },
+                "hint": "开启闲时消息优先语音后，每次闲时回复或私聊回访尝试发送语音的概率。未命中时直接发送文字。"
+            },
+            "group_whitelist": {
+                "description": "群聊白名单",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "default": [],
+                "hint": "允许发送语音的群聊。留空表示不限制；可填群号或完整会话标识。"
+            },
+            "group_blacklist": {
+                "description": "群聊黑名单",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "default": [],
+                "hint": "禁止发送语音的群聊，优先级高于白名单；可填群号或完整会话标识。"
+            },
+            "private_whitelist": {
+                "description": "私聊白名单",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "default": [],
+                "hint": "允许发送语音的私聊。留空表示不限制；可填用户标识或完整会话标识。"
+            },
+            "private_blacklist": {
+                "description": "私聊黑名单",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "default": [],
+                "hint": "禁止发送语音的私聊，优先级高于白名单；可填用户标识或完整会话标识。"
+            },
+            "api_url": {
+                "description": "接口地址",
+                "type": "string",
+                "default": "https://api.siliconflow.cn/v1",
+                "hint": "SiliconFlow API 地址。"
+            },
+            "api_key": {
+                "description": "接口密钥",
+                "type": "string",
+                "default": "",
+                "hint": "SiliconFlow 密钥。"
+            },
+            "model": {
+                "description": "模型名称",
+                "type": "string",
+                "default": "FunAudioLLM/CosyVoice2-0.5B",
+                "hint": "SiliconFlow 语音模型。"
+            },
+            "voice": {
+                "description": "音色",
+                "type": "string",
+                "default": "",
+                "hint": "SiliconFlow 音色标识。"
+            },
+            "emotion_voice_map": {
+                "description": "情绪到音色映射",
+                "type": "text",
+                "default": "neutral:\nhappy:\nsad:\nangry:",
+                "hint": "每行一个情绪，格式：情绪: 音色ID。自然情绪短句优先精确匹配；neutral、happy、sad、angry 只在模型明确给出情绪分类时生效；都未命中则使用上方默认音色。"
+            },
+            "emotion_speed_map": {
+                "description": "情绪到语速映射",
+                "type": "text",
+                "default": "neutral: 1.0\nhappy: 1.15\nsad: 0.9\nangry: 1.1",
+                "hint": "每行一个情绪，格式：情绪: 语速。自然情绪短句优先精确匹配；neutral、happy、sad、angry 只在模型明确给出情绪分类时生效；都未命中则使用默认语速。取值范围 0.25 到 4。"
+            },
+            "timeout_seconds": {
+                "description": "超时（秒）",
+                "type": "int",
+                "default": 30,
+                "slider": {
+                    "min": 5,
+                    "max": 300,
+                    "step": 5
+                },
+                "hint": "语音合成单次请求的最长等待时间。"
+            },
+            "max_retries": {
+                "description": "重试次数",
+                "type": "int",
+                "default": 2,
+                "slider": {
+                    "min": 0,
+                    "max": 5,
+                    "step": 1
+                },
+                "hint": "遇到限流或服务临时错误时的重试次数。"
+            }
+        }
+    },
+    "web_inspiration_config": {
+        "description": "联网灵感",
+        "type": "object",
+        "hint": "复用普通配置-AI配置-网页搜索配置里的 Tavily 或 Brave。开启后，周计划、周模板工坊、素材工坊和发型组可以选择联网搜索补充灵感；搜索结果只作参考，不是硬性规则。",
+        "items": {
+            "enabled": {
+                "description": "启用联网灵感",
+                "type": "bool",
+                "default": false,
+                "hint": "开启后才允许面板里的联网生成按钮调用网页搜索。"
+            },
+            "max_results": {
+                "description": "搜索结果数",
+                "type": "int",
+                "default": 3,
+                "slider": {
+                    "min": 1,
+                    "max": 8,
+                    "step": 1
+                },
+                "hint": "每次搜索最多读取多少条结果。"
+            },
+            "timeout_seconds": {
+                "description": "搜索超时(秒)",
+                "type": "int",
+                "default": 10,
+                "slider": {
+                    "min": 3,
+                    "max": 30,
+                    "step": 1
+                },
+                "hint": "单次联网搜索最长等待时间。"
+            },
+            "material_prompt": {
+                "description": "素材搜索提示词",
+                "type": "text",
+                "default": "{keyword} {category} 日常生活灵感；结合角色人设、季节天气、当前状态、日程节奏和生活场景，搜索可融入今日主题、心情色彩、活动安排、居家或外出细节的自然素材。",
+                "hint": "用于素材工坊搜索。可用变量：{keyword}、{category}、{date}、{persona}、{today}。"
+            },
+            "outfit_prompt": {
+                "description": "穿搭搜索提示词",
+                "type": "text",
+                "default": "{keyword} {category} 穿搭与长发造型灵感；结合角色人设、季节天气、活动场景、出行或居家状态，搜索配色、材质、单品、鞋包配饰、发饰和日常行动细节。",
+                "hint": "用于发型组和穿搭相关灵感搜索。可用变量：{keyword}、{category}、{date}、{persona}、{today}。"
+            },
+            "week_template_prompt": {
+                "description": "周模板搜索提示词",
+                "type": "text",
+                "default": "{keyword} {today} 一周生活计划与日程节奏灵感；结合角色人设、季节天气、当前目标、工作日与周末节奏，搜索本周主题、目标、每日进度提示和活动安排。",
+                "hint": "用于周计划和周模板工坊搜索。可用变量：{keyword}、{category}、{date}、{persona}、{today}。"
+            },
+            "today_prompt": {
+                "description": "今日填充搜索提示词",
+                "type": "text",
+                "default": "{keyword} {today} 今日生活背景灵感；结合角色人设、季节天气、周计划、出行或居家状态，搜索可用于日程、穿搭、休息、饮食、氛围和细节描写的自然灵感。",
+                "hint": "用于联网重生成今日生活背景。可用变量：{keyword}、{category}、{date}、{persona}、{today}。"
+            }
+        }
+    },
+    "storage_config": {
+        "description": "数据存储",
+        "type": "object",
+        "hint": "按数据生命周期分类保留。天数设为 0 表示长期保留，手动清空不受此限制。",
+        "items": {
+            "daily_keep_days": {
+                "description": "每日记录保留天数",
+                "type": "int",
+                "default": 30,
+                "slider": {
+                    "min": 0,
+                    "max": 365,
+                    "step": 1
+                },
+                "hint": "清理超过该天数的日程、时间轴、穿搭、状态和当日事件。0 表示长期保留。"
+            },
+            "review_keep_days": {
+                "description": "生活复盘保留天数",
+                "type": "int",
+                "default": 120,
+                "slider": {
+                    "min": 0,
+                    "max": 365,
+                    "step": 1
+                },
+                "hint": "清理超过该天数的每日复盘和复盘要点。0 表示长期保留。"
+            },
+            "memory_keep_days": {
+                "description": "世界记忆清理天数",
+                "type": "int",
+                "default": 0,
+                "slider": {
+                    "min": 0,
+                    "max": 3650,
+                    "step": 1
+                },
+                "hint": "默认不自动清理长期记忆。设置大于 0 时，只清理旧聊天摘要、世界事件和已关闭生活事件，不清理关系、地点和偏好档案。"
+            },
+            "planning_keep_days": {
+                "description": "计划约定保留天数",
+                "type": "int",
+                "default": 180,
+                "slider": {
+                    "min": 0,
+                    "max": 3650,
+                    "step": 1
+                },
+                "hint": "清理过旧周计划、过旧每日约定引用，以及已完成/取消/过期的旧承诺。0 表示长期保留。"
+            },
+            "workshop_keep_days": {
+                "description": "素材工坊清理天数",
+                "type": "int",
+                "default": 0,
+                "slider": {
+                    "min": 0,
+                    "max": 3650,
+                    "step": 1
+                },
+                "hint": "素材默认长期保留。当前不会按天数自动删除素材，如需删除请在素材工坊中处理。"
+            }
+        }
+    },
+    "weekly_theme_config": {
+        "description": "周计划",
+        "type": "object",
+        "hint": "配置每周计划的生成策略。内置模板权重只影响内置周模板，自定义模板权重请在周计划工坊中调整。",
+        "items": {
+            "generation_day": {
+                "description": "生成日",
+                "type": "string",
+                "default": "monday",
+                "options": [
+                    "monday",
+                    "tuesday",
+                    "wednesday",
+                    "thursday",
+                    "friday",
+                    "saturday",
+                    "sunday"
+                ],
+                "hint": "选择每周自动生成周计划的日期。"
+            },
+            "generation_time": {
+                "description": "生成时间",
+                "type": "string",
+                "default": "06:00",
+                "hint": "生成时间，使用 24 小时制，例如 06:00。"
+            },
+            "default_template": {
+                "description": "默认周模板",
+                "type": "string",
+                "default": "random",
+                "options": [
+                    "random",
+                    "regular",
+                    "sprint",
+                    "relax",
+                    "social",
+                    "recovery",
+                    "holiday",
+                    "study",
+                    "gaming"
+                ],
+                "hint": "选择“随机”时会按内置模板权重和自定义模板自身权重随机生成；选择具体模板则固定使用该模板，权重不生效。"
+            },
+            "weight_regular": {
+                "description": "内置权重：闪光日常周",
+                "type": "float",
+                "default": 0.3,
+                "slider": {
+                    "min": 0,
+                    "max": 1,
+                    "step": 0.01
+                },
+                "hint": "随机选择周模板时，内置模板“闪光日常周”的权重"
+            },
+            "weight_sprint": {
+                "description": "内置权重：变身女战士周",
+                "type": "float",
+                "default": 0.15,
+                "slider": {
+                    "min": 0,
+                    "max": 1,
+                    "step": 0.01
+                },
+                "hint": "随机选择周模板时，内置模板“变身女战士周”的权重"
+            },
+            "weight_relax": {
+                "description": "内置权重：软绵绵治愈周",
+                "type": "float",
+                "default": 0.2,
+                "slider": {
+                    "min": 0,
+                    "max": 1,
+                    "step": 0.01
+                },
+                "hint": "随机选择周模板时，内置模板“软绵绵治愈周”的权重"
+            },
+            "weight_social": {
+                "description": "内置权重：甜度满分周",
+                "type": "float",
+                "default": 0.15,
+                "slider": {
+                    "min": 0,
+                    "max": 1,
+                    "step": 0.01
+                },
+                "hint": "随机选择周模板时，内置模板“甜度满分周”的权重"
+            },
+            "weight_recovery": {
+                "description": "内置权重：抱抱自己周",
+                "type": "float",
+                "default": 0.1,
+                "slider": {
+                    "min": 0,
+                    "max": 1,
+                    "step": 0.01
+                },
+                "hint": "随机选择周模板时，内置模板“抱抱自己周”的权重"
+            },
+            "weight_holiday": {
+                "description": "内置权重：逃离地球周",
+                "type": "float",
+                "default": 0.1,
+                "slider": {
+                    "min": 0,
+                    "max": 1,
+                    "step": 0.01
+                },
+                "hint": "随机选择周模板时，内置模板“逃离地球周”的权重"
+            },
+            "weight_study": {
+                "description": "内置权重：闭关修炼周",
+                "type": "float",
+                "default": 0.05,
+                "slider": {
+                    "min": 0,
+                    "max": 1,
+                    "step": 0.01
+                },
+                "hint": "随机选择周模板时，内置模板“闭关修炼周”的权重"
+            },
+            "weight_gaming": {
+                "description": "内置权重：异世界冒险周",
+                "type": "float",
+                "default": 0.1,
+                "slider": {
+                    "min": 0,
+                    "max": 1,
+                    "step": 0.01
+                },
+                "hint": "随机选择周模板时，内置模板“异世界冒险周”的权重"
+            }
+        }
+    },
+    "story_engine_config": {
+        "description": "提示词",
+        "type": "object",
+        "hint": "调整日程生成提示词片段。结构化输出格式由插件保留，避免误删字段导致生成数据无法保存。",
+        "items": {
+            "outfit_morning": {
+                "description": "穿搭-早晨参考",
+                "type": "string",
+                "default": "自主穿搭描述：根据 life_decision 判断保持、半换或换装；若日程有外出，先判断当前穿搭是否适合出门，不适合就至少局部调整；写清发型、衣物、材质、颜色和配饰，不要解释原因。(50-100字)",
+                "hint": "早晨穿搭表达参考，不会强制起床或换装"
+            },
+            "outfit_daytime": {
+                "description": "穿搭-白天参考",
+                "type": "string",
+                "default": "自主穿搭描述：根据天气、活动、睡眠状态和出门意愿决定居家/外出/混合穿搭；若要外出，必须评估当前穿搭是否适合外出，keep 只表示当前穿搭本身可出门；写最终视觉状态，不要写日程流水账。(50-100字)",
+                "hint": "白天穿搭表达参考，不会强制外出"
+            },
+            "outfit_night": {
+                "description": "穿搭-夜晚参考",
+                "type": "string",
+                "default": "自主穿搭描述：根据角色是否清醒、熬夜、早睡或睡前状态决定是否换睡衣；若夜间仍要外出，先判断当前穿搭是否适合出门，不适合就换外出层或局部调整；写最终视觉状态，不要强制入睡。(50-100字)",
+                "hint": "夜晚穿搭表达参考，不会强制睡觉"
+            },
+            "state_rules": {
+                "description": "状态生成规则",
+                "type": "text",
+                "default": "- energy 表示体力，busyness 表示忙碌度，social 表示社交意愿，sleep.quality 表示睡眠质量，均为 0-100。\n- mood 和 summary 要写成自然生活状态，例如“有点累，不太想出门，更适合低强度安排”。\n- state 必须影响 timeline：体力低就少安排高强度外出；社交意愿低就多安排独处或低负担互动；忙碌度高就减少漫无目的闲逛。",
+                "hint": "控制 state 字段如何生成，以及状态如何影响日程。"
+            },
+            "timeline_rules": {
+                "description": "时间轴生成规则",
+                "type": "text",
+                "default": "- 时间轴节点数量由 life_decision 和当天复杂度自主决定：休息、睡眠或低活动日可以很少；外出、社交、工作切换多的日子可以更密。\n- 每个节点都必须承担真实生活变化，不要为了凑数量拆分无意义片段。\n- 必须先遵守 generation_contract；timeline_audit.coverage_mode 必须与 generation_contract.timeline_audit_coverage_mode 一致。\n- 时间轴必须先确定覆盖范围：完整全天、目标时段、从当前时刻开始，或局部记录；不要把某个局部片段伪装成完整全天。\n- 普通整日生成默认是完整全天：通常要覆盖早晨、日间、傍晚、晚上、睡前或熬夜结尾；若 life_decision 让时间轴较早收束，必须在 timeline_audit.end_reason/summary 说明早睡、休息、低活动、局部指令或生活决策原因。\n- 必须填写 timeline_audit：first_timeline_time、last_timeline_time 要分别与 timeline 第一条和最后一条时间一致，coverage_mode/start_reason/end_reason/closed_loop 要说明时间轴起点、终点和 life_decision 的关系。\n- 时间点必须具体且不规则，例如 08:17, 10:42, 15:21；如果熬夜、赖床或补觉，要让时间自然反映出来。\n- activity 拒绝流水账，专注于沉浸式的动作、环境描写（气味、光影、触感）。\n- 可以写起床、赖床、补觉、换装、出门、回家、睡前等生活动作。\n- 穿搭细节主要放在 outfit 字段；timeline 只在动作需要时简短提到，不要重复服装清单。",
+                "hint": "控制 timeline 的数量、时间风格、活动描写和生活动作边界。"
+            },
+            "world_rules": {
+                "description": "地点事件规则",
+                "type": "text",
+                "default": "- 优先使用“今日地点候选”里的生活锚点和随机探索地点，也可以少量自创合理地点。\n- places 只记录今天真实出现过的地点，不要把未去的候选地点全部塞进去。\n- new_events 只记录以后值得引用的事件、约定、物品或关系变化。如果没有，可以返回空数组 []。",
+                "hint": "控制 places 和 new_events 如何沉淀到生活背景。"
+            },
+            "chat_rules": {
+                "description": "聊天人物规则",
+                "type": "text",
+                "default": "若包含【参考对象人设线索】，人物称呼、性别和关系必须以人设线索为准。\n- 人物称呼、性别、亲疏和关系只能来自明确人设线索、用户自述、已保存人设线索或稳定关系记忆。\n- 不要根据昵称、头像、平台标识、语气、表情、刻板印象或上下文习惯猜测性别。\n- 没有明确性别依据时，关系叙事、摘要、理由和回复都用昵称、对方、这个人、这位群友等中性称呼，不要写他/她、男生/女生、兄弟/姐妹。",
+                "hint": "控制最近聊天历史与人设人物关系的使用方式。"
+            }
+        }
+    }
+}

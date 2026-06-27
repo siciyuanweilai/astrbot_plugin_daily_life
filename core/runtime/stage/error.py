@@ -1,0 +1,2 @@
+class MediaPromptExtractionError(RuntimeError):
+    pass
