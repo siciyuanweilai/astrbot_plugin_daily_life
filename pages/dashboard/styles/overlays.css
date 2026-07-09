@@ -1,0 +1,125 @@
+.emoji-detail-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(67, 45, 60, 0.22);
+}
+
+.emoji-detail-dialog[hidden] {
+  display: none;
+}
+
+.emoji-detail-card {
+  width: min(430px, calc(100vw - 28px));
+  max-height: min(680px, calc(100vh - 36px));
+  overflow: auto;
+  border: 1px solid rgba(239, 200, 218, 0.92);
+  border-radius: 8px;
+  padding: 14px;
+  background: var(--paper);
+  box-shadow: 0 22px 60px rgba(67, 45, 60, 0.22);
+}
+
+.emoji-detail-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.emoji-detail-head h2 {
+  margin: 2px 0 0;
+  font-size: 18px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.emoji-detail-body {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.emoji-detail-preview {
+  position: sticky;
+  top: 0;
+  display: grid;
+  place-items: center;
+  width: 112px;
+  aspect-ratio: 1;
+  overflow: hidden;
+  border: 1px solid rgba(223, 95, 149, 0.22);
+  border-radius: 8px;
+  background: rgba(255, 240, 246, 0.68);
+}
+
+.emoji-detail-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.emoji-detail-preview.is-loading::after,
+.emoji-detail-preview.is-error::after {
+  position: absolute;
+  inset: auto 8px 8px;
+  border-radius: 999px;
+  background: rgba(67, 45, 60, 0.72);
+  content: "";
+}
+
+.emoji-detail-preview.is-loading::after {
+  width: 30px;
+  height: 4px;
+  background: linear-gradient(90deg, var(--rose), var(--lemon), var(--mint));
+}
+
+.emoji-detail-preview.is-error::after {
+  width: 18px;
+  height: 18px;
+  background: rgba(200, 70, 102, 0.14);
+}
+
+.emoji-detail-content {
+  min-width: 0;
+}
+
+.emoji-detail-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.emoji-import-card {
+  width: min(360px, calc(100vw - 28px));
+}
+
+.emoji-import-body {
+  display: grid;
+  gap: 10px;
+}
+
+@keyframes notice-toast {
+  0% {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+
+  10%,
+  78% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  100% {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+

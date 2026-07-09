@@ -1,0 +1,237 @@
+@media (max-width: 1260px) {
+  .life-layout {
+    grid-template-columns: minmax(280px, 0.92fr) minmax(0, 1.08fr);
+  }
+
+  .life-column-side {
+    grid-column: 1 / -1;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-layout {
+    grid-template-columns: minmax(210px, 250px) minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 980px) {
+  .ribbonbar,
+  .life-layout,
+  .life-column-side,
+  .settings-layout,
+  .emoji-head {
+    grid-template-columns: 1fr;
+  }
+
+  .ribbonbar {
+    min-height: auto;
+    padding-inline-end: clamp(24px, 4vw, 46px);
+  }
+
+  .ribbonbar h1 {
+    font-size: 52px;
+  }
+
+  .ribbonbar::after {
+    inline-size: min(52%, 360px);
+    block-size: 116px;
+    inset-inline-end: 24px;
+  }
+
+  .view-switch.bento-ribbon {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    align-items: stretch;
+    padding-block: 0;
+  }
+
+  .bento-ribbon .view-button {
+    --ribbon-x: 0px;
+    --ribbon-y: 0px;
+    --ribbon-tilt: 0deg;
+    --ribbon-width: 100%;
+    justify-self: stretch;
+    min-height: 50px;
+  }
+
+  .settings-rail {
+    position: static;
+  }
+
+  .config-rail {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .emoji-list {
+    grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  }
+}
+
+@media (max-width: 680px) {
+  .studio {
+    padding: 14px;
+  }
+
+  .ribbonbar {
+    position: relative;
+    border-radius: 22px;
+    padding: 18px;
+  }
+
+  .ribbonbar::before {
+    inset: 10px;
+    border-radius: 16px;
+  }
+
+  .ribbonbar::after {
+    inline-size: 58%;
+    block-size: 82px;
+    inset-block-end: -28px;
+    inset-inline-end: 10px;
+  }
+
+  .brand {
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 12px;
+  }
+
+  .brand-mark {
+    width: 48px;
+    height: 48px;
+    border-radius: 18px;
+  }
+
+  .ribbonbar h1 {
+    font-size: 38px;
+    line-height: 1;
+  }
+
+  .bento-subtitle {
+    font-size: 14px;
+    line-height: 1.58;
+  }
+
+  .view-switch,
+  .emoji-tools {
+    width: 100%;
+  }
+
+  .emoji-panel,
+  .emoji-head,
+  .emoji-tools,
+  .emoji-action-tools,
+  .emoji-filter-tools,
+  .emoji-stats,
+  .emoji-list {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .emoji-tools {
+    grid-template-columns: minmax(0, 1fr);
+    justify-content: stretch;
+  }
+
+  .emoji-action-tools {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    justify-content: stretch;
+    width: 100%;
+  }
+
+  .emoji-action-tools button,
+  .emoji-selected-summary {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .emoji-action-tools button {
+    padding-inline: 8px;
+  }
+
+  .emoji-filter-tools {
+    display: grid;
+    grid-template-columns: minmax(118px, 0.82fr) minmax(0, 1.18fr);
+    width: 100%;
+    min-width: 0;
+    justify-content: stretch;
+  }
+
+  .emoji-filter-tools .life-select-filter {
+    min-width: 0;
+    width: 100%;
+    flex-basis: auto;
+  }
+
+  .emoji-pager {
+    width: 100%;
+    min-width: 0;
+    justify-content: space-between;
+    gap: 4px;
+  }
+
+  .emoji-pager button {
+    min-width: 0;
+    padding-inline: 8px;
+  }
+
+  .emoji-page-info {
+    min-width: 62px;
+  }
+
+  .view-switch {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .view-button {
+    min-width: 0;
+    padding-inline: 10px;
+  }
+
+  .bento-ribbon .view-button {
+    min-height: 44px;
+    padding: 10px 12px;
+  }
+
+  .meters,
+  .config-rail,
+  .config-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .facts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .facts-column-fill {
+    align-self: stretch;
+    block-size: 100%;
+    grid-auto-rows: auto;
+    grid-template-rows: max-content max-content repeat(3, minmax(max-content, 1fr));
+    align-content: stretch;
+  }
+
+  .facts-column > div {
+    padding: 8px;
+  }
+
+  .emoji-list {
+    grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+    width: 100%;
+    justify-items: stretch;
+  }
+}
+
+@media (max-width: 420px) {
+  .emoji-action-tools {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .emoji-filter-tools {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .emoji-pager button {
+    flex: 1 1 0;
+  }
+}

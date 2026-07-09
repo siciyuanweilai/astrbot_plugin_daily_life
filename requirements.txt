@@ -1,0 +1,6 @@
+chinese-calendar
+APScheduler
+aiohttp
+yt-dlp
+imageio-ffmpeg
+segno

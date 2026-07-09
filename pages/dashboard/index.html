@@ -1,0 +1,295 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>日常生活工作台</title>
+    <link rel="stylesheet" href="./style.css?v=20260709-life-sensing" />
+  </head>
+  <body>
+    <div id="lifeDriftLayer" class="life-drift-layer" aria-hidden="true"></div>
+    <div id="cursorTrailLayer" class="cursor-trail-layer" aria-hidden="true"></div>
+    <div class="page-stickers" aria-hidden="true">
+      <span></span>
+      <span></span>
+      <span></span>
+    </div>
+    <main class="studio">
+      <header class="ribbonbar topbar dashboard-hero bento-hero">
+        <div class="brand topbar-title hero-copy bento-hero-copy">
+          <span class="brand-mark" aria-hidden="true">♡</span>
+          <div class="brand-copy">
+            <p id="heroEyebrow" class="eyebrow">Daily Life · 把今天装进生活手帐</p>
+            <h1 id="heroTitle">日常生活工作台</h1>
+            <p id="heroSubtitle" class="bento-subtitle">今日、时间轴、状态和记忆分格摆好，像一张柔软又清楚的少女生活桌面。</p>
+          </div>
+        </div>
+
+        <nav class="view-switch hero-badges bento-ribbon" aria-label="前台视图">
+          <button class="view-button bento-ribbon-button bento-ribbon-toggle dashboard-toggle active" type="button" data-view="dashboard">
+            <span class="bento-ribbon-label">前台</span>
+            <span class="ribbon-status-dot" aria-hidden="true"></span>
+          </button>
+          <button class="view-button bento-ribbon-button bento-ribbon-toggle emoji-toggle" type="button" data-view="emoji">
+            <span class="bento-ribbon-label">表情</span>
+            <span class="ribbon-status-dot" aria-hidden="true"></span>
+          </button>
+          <button class="view-button bento-ribbon-button bento-ribbon-toggle settings-toggle" type="button" data-view="settings">
+            <span class="bento-ribbon-label">设置</span>
+            <span class="ribbon-status-dot" aria-hidden="true"></span>
+          </button>
+        </nav>
+
+      </header>
+
+      <section id="notice" class="notice" hidden></section>
+
+      <section id="dashboardView" class="screen dashboard-screen">
+        <section class="life-layout">
+          <aside class="life-column life-column-left">
+            <article class="panel today-panel">
+              <div class="panel-head">
+                <h2>今日</h2>
+                <div class="today-head-actions">
+                  <button
+                    id="refreshStateButton"
+                    class="icon-button refresh-state-button"
+                    type="button"
+                    aria-label="刷新实时状态"
+                  >
+                    <span aria-hidden="true">↻</span>
+                  </button>
+                  <span id="targetDate" class="pill">加载中</span>
+                </div>
+              </div>
+              <dl id="todayFacts" class="facts">
+                <div class="facts-column">
+                <div data-fact-card="weather">
+                  <dt>🌦️ 天气</dt>
+                  <dd id="weatherText">暂无天气</dd>
+                </div>
+                <div data-fact-card="theme">
+                  <dt>🌷 主题</dt>
+                  <dd id="themeText">暂无主题</dd>
+                </div>
+                <div data-fact-card="week">
+                  <dt>🎀 周计划</dt>
+                  <dd id="todayWeekPlan">暂无周计划</dd>
+                </div>
+                <div data-fact-card="mood">
+                  <dt>🎨 心情色彩</dt>
+                  <dd id="moodColorText">暂无心情色彩</dd>
+                </div>
+                <div data-fact-card="schedule-type">
+                  <dt>🧭 日程类型</dt>
+                  <dd id="scheduleTypeText">暂无日程类型</dd>
+                </div>
+                </div>
+                <div class="facts-column facts-column-fill">
+                <div data-fact-card="schedule-tone">
+                  <dt>🌿 日程基调</dt>
+                  <dd id="scheduleToneText">暂无日程基调</dd>
+                </div>
+                <div data-fact-card="schedule-intent">
+                  <dt>🚪 活动倾向</dt>
+                  <dd id="scheduleIntentText">暂无活动倾向</dd>
+                </div>
+                <div data-fact-card="outfit">
+                  <dt>👗 当前穿搭</dt>
+                  <dd id="currentOutfitText">暂无穿搭</dd>
+                </div>
+                <div data-fact-card="outfit-decision">
+                  <dt>🪞 穿搭判断</dt>
+                  <dd id="outfitDecisionText">暂无判断</dd>
+                </div>
+                <div data-fact-card="memo">
+                  <dt>📝 备忘录</dt>
+                  <dd id="memoText">暂无备忘录</dd>
+                </div>
+                </div>
+              </dl>
+            </article>
+
+            <article class="panel current-panel">
+              <div class="panel-head">
+                <h2>当前</h2>
+                <span id="nowText" class="muted" hidden></span>
+              </div>
+              <div class="activity-strip">
+                <p id="currentActivity" class="activity-title">暂无日常生活数据</p>
+              </div>
+              <div id="stateMeters" class="meters"></div>
+            </article>
+
+          </aside>
+
+          <section class="life-column life-column-main">
+            <article class="panel timeline-panel">
+              <div class="panel-head">
+                <h2>时间轴</h2>
+                <div class="timeline-tools">
+                  <button id="resetDayButton" type="button"><span aria-hidden="true">✦</span>重生</button>
+                  <button id="timelineAddButton" type="button" hidden>新增</button>
+                  <button id="timelineEditButton" type="button">编辑</button>
+                  <button id="timelineSaveButton" type="button" class="primary-button" hidden>保存</button>
+                  <button id="timelineCancelButton" type="button" hidden>取消</button>
+                </div>
+              </div>
+              <ol id="timelineList" class="timeline"></ol>
+            </article>
+
+            <article class="panel state-log-panel">
+              <div class="panel-head">
+                <h2>状态变化</h2>
+              </div>
+              <div id="stateLogList" class="record-list compact-records"></div>
+            </article>
+          </section>
+
+          <aside class="life-column life-column-side">
+            <article class="panel memory-panel">
+              <div class="panel-head memory-head">
+                <h2>记忆抽屉</h2>
+                <div class="tabs memory-tabs" role="tablist" aria-label="记忆抽屉">
+                  <button class="tab active" type="button" data-memory-tab="world">世界</button>
+                  <button class="tab" type="button" data-memory-tab="experience">体验</button>
+                  <button class="tab" type="button" data-memory-tab="lifecycle">演化</button>
+                </div>
+              </div>
+
+              <section class="memory-page world-panel" data-memory-panel="world">
+                <div class="tabs memory-subtabs" role="tablist" aria-label="世界记忆">
+                  <button class="tab active" type="button" data-world-tab="life_decisions">生活</button>
+                  <button class="tab" type="button" data-world-tab="action_decisions">裁定</button>
+                  <button class="tab" type="button" data-world-tab="message_visibility">留意</button>
+                  <button class="tab" type="button" data-world-tab="group_environments">群聊</button>
+                  <button class="tab" type="button" data-world-tab="summaries">会话</button>
+                  <button class="tab" type="button" data-world-tab="relationships">关系</button>
+                  <button class="tab" type="button" data-world-tab="places">地点</button>
+                  <button class="tab" type="button" data-world-tab="events">事件</button>
+                </div>
+                <div id="worldList" class="record-list"></div>
+              </section>
+
+              <section class="memory-page experience-panel" data-memory-panel="experience" hidden>
+                <div class="tabs memory-subtabs" role="tablist" aria-label="体验层">
+                  <button class="tab active" type="button" data-experience-tab="relationships">关系</button>
+                  <button class="tab" type="button" data-experience-tab="behavior">行为</button>
+                  <button class="tab" type="button" data-experience-tab="language">语言</button>
+                  <button class="tab" type="button" data-experience-tab="evidence">证据</button>
+                  <button class="tab" type="button" data-experience-tab="feedback">反馈</button>
+                </div>
+                <div id="experienceList" class="record-list"></div>
+              </section>
+
+              <section class="memory-page lifecycle-panel" data-memory-panel="lifecycle" hidden>
+                <div id="lifecycleList" class="record-list"></div>
+              </section>
+            </article>
+          </aside>
+        </section>
+
+      </section>
+
+      <section id="emojiView" class="screen emoji-screen" hidden>
+        <section class="emoji-layout">
+          <article class="panel emoji-panel">
+            <div class="panel-head emoji-head">
+              <div>
+                <h2>表情管理</h2>
+                <p id="emojiSummary" class="section-hint">正在读取表情素材</p>
+              </div>
+              <div class="emoji-tools">
+                <div class="emoji-action-tools">
+                  <button id="emojiImportButton" type="button">导入</button>
+                  <button id="emojiBackupButton" type="button">备份</button>
+                  <button id="emojiRestoreButton" type="button">还原</button>
+                  <input id="emojiRestoreFile" type="file" accept=".zip,application/zip,application/x-zip-compressed" hidden>
+                  <button id="emojiManageButton" class="emoji-manage-button" type="button">管理</button>
+                  <span id="emojiSelectedSummary" class="emoji-selected-summary" hidden>已选 0 条</span>
+                  <button id="emojiBulkEnableButton" type="button" hidden>启用选中</button>
+                  <button id="emojiBulkDisableButton" type="button" hidden>停用选中</button>
+                  <button id="emojiBulkDeleteButton" class="danger" type="button" hidden>删除选中</button>
+                  <button id="emojiCancelManageButton" type="button" hidden>取消</button>
+                </div>
+                <div class="emoji-filter-tools">
+                  <select id="emojiFilter" aria-label="表情筛选">
+                    <option value="all">全部</option>
+                    <option value="ready">可用</option>
+                    <option value="sendable">可发送</option>
+                    <option value="manual">手动导入</option>
+                    <option value="review">识图收集</option>
+                    <option value="trusted">平台表情</option>
+                    <option value="missing">缺失</option>
+                  </select>
+                  <div id="emojiPager" class="emoji-pager" hidden>
+                    <button id="emojiPrevPage" type="button">上一页</button>
+                    <span id="emojiPageInfo" class="emoji-page-info">第 1 / 1 页</span>
+                    <button id="emojiNextPage" type="button">下一页</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div id="emojiStats" class="emoji-stats"></div>
+            <div id="emojiList" class="emoji-list"></div>
+          </article>
+        </section>
+      </section>
+
+      <section id="emojiDetailDialog" class="emoji-detail-dialog" hidden aria-hidden="true">
+        <article class="emoji-detail-card" role="dialog" aria-modal="true" aria-labelledby="emojiDetailTitle">
+          <header class="emoji-detail-head">
+            <div>
+              <p class="eyebrow">表情详情</p>
+              <h2 id="emojiDetailTitle">表情详情</h2>
+            </div>
+            <button id="emojiDetailClose" class="icon-button" type="button" aria-label="关闭表情详情">×</button>
+          </header>
+          <div id="emojiDetailBody" class="emoji-detail-body"></div>
+        </article>
+      </section>
+
+      <section id="emojiImportDialog" class="emoji-detail-dialog emoji-import-dialog" hidden aria-hidden="true">
+        <article class="emoji-detail-card emoji-import-card" role="dialog" aria-modal="true" aria-labelledby="emojiImportTitle">
+          <header class="emoji-detail-head">
+            <div>
+              <p class="eyebrow">表情素材</p>
+              <h2 id="emojiImportTitle">导入表情</h2>
+            </div>
+            <button id="emojiImportClose" class="icon-button" type="button" aria-label="关闭表情导入">×</button>
+          </header>
+          <div class="emoji-import-body">
+            <input id="emojiImportFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp" multiple hidden>
+            <button id="emojiImportFileButton" class="primary-button" type="button">选择图片</button>
+          </div>
+        </article>
+      </section>
+
+      <section id="settingsView" class="screen settings-screen" hidden>
+        <section class="settings-layout">
+          <aside class="settings-rail">
+            <div class="rail-title">
+              <p class="eyebrow">配置导航</p>
+              <h2>设置</h2>
+            </div>
+            <nav id="configNav" class="config-rail" aria-label="设置分类"></nav>
+          </aside>
+
+          <section class="config-desk">
+            <header class="config-cover">
+              <div>
+                <p class="eyebrow">设置分组</p>
+                <h2 id="configSectionTitle">设置</h2>
+                <p id="configSectionHint" class="section-hint"></p>
+              </div>
+            </header>
+            <section id="configFieldList" class="config-grid"></section>
+          </section>
+        </section>
+
+      </section>
+    </main>
+
+    <script type="module" src="./app.js?v=20260709-life-generation"></script>
+  </body>
+</html>
