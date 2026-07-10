@@ -13,6 +13,8 @@ DEFAULT_CHAT_STYLE_PROMPT = (
     "认真问题、事实解释和情绪支持按内容自然展开，先给判断，再补必要原因。"
 )
 
+DEFAULT_OUTFIT_PREFERENCE_WEIGHT = 0.0
+
 @dataclass(slots=True)
 class WeatherSettings:
     api_key: str = ""
@@ -162,6 +164,36 @@ class TaskModelSettings:
 
 
 @dataclass(slots=True)
+class OutfitSettings:
+    provider: str = ""
+    default_style_preference: str = ""
+    default_hair_preference: str = ""
+    default_preference_weight: float = DEFAULT_OUTFIT_PREFERENCE_WEIGHT
+
+    @staticmethod
+    def from_dict(data: Any) -> "OutfitSettings":
+        if not isinstance(data, dict):
+            return OutfitSettings()
+        return OutfitSettings(
+            provider=as_str(data.get("provider", "")).strip(),
+            default_style_preference=as_str(
+                data.get("default_style_preference", ""),
+                "",
+            ).strip(),
+            default_hair_preference=as_str(
+                data.get("default_hair_preference", ""),
+                "",
+            ).strip(),
+            default_preference_weight=as_float(
+                data.get("default_preference_weight", DEFAULT_OUTFIT_PREFERENCE_WEIGHT),
+                DEFAULT_OUTFIT_PREFERENCE_WEIGHT,
+                0.0,
+                2.0,
+            ),
+        )
+
+
+@dataclass(slots=True)
 class EmojiSettings:
     collect_chat_emojis: bool = True
     max_ready: int = 128
@@ -275,8 +307,14 @@ class LifecycleSettings:
 @dataclass(slots=True)
 class StorageSettings:
     daily_keep_days: int = 30
+    relationships_keep_days: int = 0
+    world_keep_days: int = 0
+    conversation_keep_days: int = 180
+    experience_keep_days: int = 0
+    expression_keep_days: int = 0
+    media_keep_days: int = 30
+    longterm_keep_days: int = 0
     review_keep_days: int = 120
-    memory_keep_days: int = 0
     planning_keep_days: int = 180
     generated_media_keep_days: int = 30
     reverse_cache_keep_days: int = 7
@@ -287,8 +325,14 @@ class StorageSettings:
             return StorageSettings()
         return StorageSettings(
             daily_keep_days=as_int(data.get("daily_keep_days", 30), 30, 0, 3650),
+            relationships_keep_days=as_int(data.get("relationships_keep_days", 0), 0, 0, 3650),
+            world_keep_days=as_int(data.get("world_keep_days", 0), 0, 0, 3650),
+            conversation_keep_days=as_int(data.get("conversation_keep_days", 180), 180, 0, 3650),
+            experience_keep_days=as_int(data.get("experience_keep_days", 0), 0, 0, 3650),
+            expression_keep_days=as_int(data.get("expression_keep_days", 0), 0, 0, 3650),
+            media_keep_days=as_int(data.get("media_keep_days", 30), 30, 0, 3650),
+            longterm_keep_days=as_int(data.get("longterm_keep_days", 0), 0, 0, 3650),
             review_keep_days=as_int(data.get("review_keep_days", 120), 120, 0, 3650),
-            memory_keep_days=as_int(data.get("memory_keep_days", 0), 0, 0, 3650),
             planning_keep_days=as_int(data.get("planning_keep_days", 180), 180, 0, 3650),
             generated_media_keep_days=as_int(data.get("generated_media_keep_days", 30), 30, 0, 3650),
             reverse_cache_keep_days=as_int(data.get("reverse_cache_keep_days", 7), 7, 0, 3650),

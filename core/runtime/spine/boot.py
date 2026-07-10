@@ -32,6 +32,8 @@ class SpineBootMixin:
         self.archive = LifeArchive(self.data_path)
         self._init_sight()
         self._bind_runtime(LifeSettings.from_dict(raw_config))
+        self._init_chat_memory_batcher()
+        self._start_chat_memory_batcher()
         self.failed_dates: dict[str, datetime.datetime] = {}
         self._proactive_last_reply_at: dict[str, datetime.datetime] = {}
         self._proactive_idle_candidates: dict[str, dict[str, Any]] = {}
@@ -79,6 +81,7 @@ class SpineBootMixin:
 
     async def terminate(self) -> None:
         self.rhythm.stop()
+        await self._shutdown_chat_memory_batcher()
         await self._cancel_background_tasks()
         weather_client = getattr(self, "weather_client", None)
         if weather_client:

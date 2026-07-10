@@ -13,6 +13,7 @@ from .basis import (
     ChatStyleSettings,
     EmojiSettings,
     LifecycleSettings,
+    OutfitSettings,
     ProactiveReplySettings,
     ResponseGateSettings,
     SightSettings,
@@ -46,7 +47,7 @@ class LifeSettings:
     response_gate: ResponseGateSettings = field(default_factory=ResponseGateSettings)
     chat_style: ChatStyleSettings = field(default_factory=ChatStyleSettings)
     lifecycle: LifecycleSettings = field(default_factory=LifecycleSettings)
-    outfit: TaskModelSettings = field(default_factory=TaskModelSettings)
+    outfit: OutfitSettings = field(default_factory=OutfitSettings)
     invite: TaskModelSettings = field(default_factory=TaskModelSettings)
     vision: TaskModelSettings = field(default_factory=TaskModelSettings)
     emoji: EmojiSettings = field(default_factory=EmojiSettings)
@@ -107,7 +108,7 @@ class LifeSettings:
         config.response_gate = ResponseGateSettings.from_dict(response_gate_conf)
         config.chat_style = ChatStyleSettings.from_dict(chat_style_conf)
         config.lifecycle = LifecycleSettings.from_dict(lifecycle_conf)
-        config.outfit = TaskModelSettings.from_dict(outfit_conf)
+        config.outfit = OutfitSettings.from_dict(outfit_conf)
         config.invite = TaskModelSettings.from_dict(invite_conf)
         config.vision = TaskModelSettings.from_dict(vision_conf)
         config.emoji = EmojiSettings.from_dict(emoji_conf)

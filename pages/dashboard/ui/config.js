@@ -39,6 +39,9 @@ const IMAGE_CHANNEL_LIST_PATHS = new Set([
 ]);
 const CONFIG_FIELD_DISPLAY_SECTIONS = new Map([
   ["chat_style_config.casual_short_prompt", "story_engine_config"],
+  ["outfit_config.default_style_preference", "story_engine_config"],
+  ["outfit_config.default_hair_preference", "story_engine_config"],
+  ["outfit_config.default_preference_weight", "rhythm_config"],
   ["sight_config.video_cache_ttl_hours", "storage_config"],
   ["sight_config.video_cache_max_items", "storage_config"],
   ["sight_config.sight_cache_keep_days", "storage_config"],
@@ -82,6 +85,10 @@ const CONFIG_GROUP_LABELS = new Map([
     description: "生活演化",
     hint: "配置夜间复盘模型、复盘时间和偏好参考上限。",
   }],
+  ["outfit_config", {
+    description: "穿搭状态",
+    hint: "控制配置审美对穿搭和发型判断的影响强度；具体审美文本仍在提示词里编辑。",
+  }],
   ["identity_aliases", {
     description: "称呼与身份",
     hint: "集中管理对方的本地称呼，以及群聊文本里用于唤醒当前角色的名称、昵称或短称。",
@@ -91,8 +98,8 @@ const CONFIG_GROUP_LABELS = new Map([
     hint: "从聊天中沉淀未来承诺、提醒和下次续聊事项。",
   }],
   ["memory_config", {
-    description: "聊天记忆",
-    hint: "配置聊天记忆提炼模型、最短消息长度和注入参考数量。",
+    description: "批量聊天记忆",
+    hint: "按会话持久化消息快照，达到消息阈值或静默条件后再进行非重叠批量提炼。",
   }],
   ["memos_config", {
     description: "MemOS 外部记忆",

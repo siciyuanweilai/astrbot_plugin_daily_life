@@ -33,7 +33,14 @@ class LifeSettingsTest(unittest.TestCase):
                 "invite_config": {"provider": "invite-model"},
                 "memory_config": {
                     "provider": "memory-model",
-                    "min_message_length": "0",
+                    "enabled": "yes",
+                    "private_message_threshold": "0",
+                    "group_message_threshold": "999",
+                    "idle_flush_seconds": "0",
+                    "idle_flush_min_messages": "0",
+                    "max_batch_messages": "999",
+                    "max_batch_chars": "1",
+                    "worker_poll_seconds": "0",
                     "max_generation_items": "999",
                     "max_injection_items": "-1",
                 },
@@ -184,7 +191,14 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertEqual(config.outfit.provider, "outfit-model")
         self.assertEqual(config.invite.provider, "invite-model")
         self.assertEqual(config.memory.provider, "memory-model")
-        self.assertEqual(config.memory.min_message_length, 1)
+        self.assertTrue(config.memory.enabled)
+        self.assertEqual(config.memory.private_message_threshold, 2)
+        self.assertEqual(config.memory.group_message_threshold, 200)
+        self.assertEqual(config.memory.idle_flush_seconds, 15)
+        self.assertEqual(config.memory.idle_flush_min_messages, 1)
+        self.assertEqual(config.memory.max_batch_messages, 200)
+        self.assertEqual(config.memory.max_batch_chars, 1000)
+        self.assertEqual(config.memory.worker_poll_seconds, 2)
         self.assertEqual(config.memory.max_generation_items, 30)
         self.assertEqual(config.memory.max_injection_items, 0)
         self.assertTrue(config.memos.enabled)
@@ -428,7 +442,7 @@ class LifeSettingsTest(unittest.TestCase):
             "抽帧、下载视频、音频、转写音频和转写结果的保留天数。",
         )
         self.assertEqual(sight_items["audio_transcript_mode"]["default"], "local")
-        self.assertEqual(sight_items["audio_transcript_mode"]["options"], ["bcut", "local"])
+        self.assertEqual(sight_items["audio_transcript_mode"]["options"], ["local", "bcut"])
         self.assertEqual(
             sight_items["audio_transcript_mode"]["option_labels"],
             {"bcut": "必剪", "local": "本地ASR"},
@@ -492,7 +506,6 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertEqual(chat_style_items["private_casual_max_chars"]["slider"]["max"], 30)
         self.assertEqual(chat_style_items["proactive_max_chars"]["slider"]["max"], 30)
         self.assertIn("全局和场景两项里较小的数值", chat_style_items["casual_max_chars"]["hint"])
-        self.assertIn("不硬截断", chat_style_items["casual_max_chars"]["hint"])
         self.assertNotIn("LLM", chat_style_items["casual_max_chars"]["hint"])
         self.assertNotIn("后处理", chat_style_items["group_casual_max_chars"]["hint"])
         self.assertNotIn("硬上限", chat_style_items["group_casual_max_chars"]["hint"])
@@ -507,7 +520,8 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertNotIn("include_tool_memory", schema["memos_config"]["items"])
         self.assertNotIn("allow_public", schema["memos_config"]["items"])
         memory_items = schema["memory_config"]["items"]
-        self.assertNotIn("enabled", memory_items)
+        self.assertTrue(memory_items["enabled"]["default"])
+        self.assertNotIn("min_message_length", memory_items)
         self.assertNotIn("auto_summarize", memory_items)
         self.assertNotIn("weekly_theme_config", schema)
         story_items = schema["story_engine_config"]["items"]
@@ -517,7 +531,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertFalse(schema["memos_config"]["items"]["sync_selected_memory"]["default"])
         self.assertTrue(schema["memos_config"]["items"]["sync_corrections"]["default"])
         self.assertEqual(schema["memos_config"]["items"]["timeout_seconds"]["default"], 15)
-        self.assertEqual(schema["memos_config"]["items"]["timeout_seconds"]["slider"]["max"], 30)
+        self.assertEqual(schema["memos_config"]["items"]["timeout_seconds"]["slider"]["max"], 60)
         self.assertEqual(schema["memos_config"]["items"]["injection_timeout_seconds"]["default"], 0.8)
         self.assertIn("聊天回复前的注入等待由下方单独控制", schema["memos_config"]["items"]["timeout_seconds"]["hint"])
         self.assertIn("MemOS 托管服务", schema["memos_config"]["hint"])
@@ -741,7 +755,6 @@ class LifeSettingsTest(unittest.TestCase):
                 "storage_config": {
                     "daily_keep_days": "45",
                     "review_keep_days": "bad",
-                    "memory_keep_days": "365",
                     "planning_keep_days": "-1",
                     "generated_media_keep_days": "99999",
                     "reverse_cache_keep_days": "bad",
@@ -751,9 +764,37 @@ class LifeSettingsTest(unittest.TestCase):
 
         self.assertEqual(config.storage.daily_keep_days, 45)
         self.assertEqual(config.storage.review_keep_days, 120)
-        self.assertEqual(config.storage.memory_keep_days, 365)
         self.assertEqual(config.storage.planning_keep_days, 0)
         self.assertEqual(config.storage.generated_media_keep_days, 3650)
         self.assertEqual(config.storage.reverse_cache_keep_days, 7)
 
+    def test_new_memory_ui_text_has_no_encoding_corruption(self):
+        schema = json.loads((PLUGIN_ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+        memory = schema["memory_config"]
+        texts = [memory["description"], memory["hint"]]
+        texts.extend(
+            value.get("hint", "")
+            for value in memory["items"].values()
+            if isinstance(value, dict)
+        )
+        dashboard_config = (PLUGIN_ROOT / "pages" / "dashboard" / "ui" / "config.js").read_text(
+            encoding="utf-8"
+        )
+        runtime_chain = (PLUGIN_ROOT / "core" / "runtime" / "layer" / "chain.py").read_text(
+            encoding="utf-8"
+        )
 
+        self.assertTrue(all("?" * 3 not in value and chr(0xFFFD) not in value for value in texts))
+        self.assertIn("批量聊天记忆", dashboard_config)
+        self.assertIn('label="表情素材采集"', runtime_chain)
+
+    def test_release_starts_at_version_1_0_0(self):
+        metadata = (PLUGIN_ROOT / "metadata.yaml").read_text(encoding="utf-8")
+        readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
+        changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+
+        self.assertIn("version: 1.0.0", metadata)
+        self.assertNotIn("version: 2.0.0", metadata)
+        self.assertNotIn("## v2 ", readme)
+        self.assertIn("### v1.0.0", changelog)
+        self.assertNotIn("### v2.0.0", changelog)

@@ -61,7 +61,7 @@ class SightPipelineTest(unittest.TestCase):
                 },
                 {
                     "title": "随意标题",
-                    "role": "evidence",
+                    "role": "fact",
                     "paragraphs": [],
                     "bullets": ["这段有 role，按结构字段归类。"],
                     "quotes": [],
@@ -72,7 +72,7 @@ class SightPipelineTest(unittest.TestCase):
         markdown = _payload_markdown(insight, payload, style="professional")
 
         self.assertIn("## 背景概述\n\n这段没有 role，不能按标题归类。", markdown)
-        self.assertIn("## 关键事实/数据支撑\n\n- 这段有 role，按结构字段归类。", markdown)
+        self.assertIn("## 关键事实\n\n- 这段有 role，按结构字段归类。", markdown)
 
     def test_professional_note_renders_report_roles_in_order(self):
         insight = SightInsight(
@@ -84,10 +84,11 @@ class SightPipelineTest(unittest.TestCase):
             "sections": [
                 {"role": "overview", "paragraphs": ["背景信息。"]},
                 {"role": "core", "bullets": ["核心论点。"]},
-                {"role": "evidence", "bullets": ["事实依据。"]},
+                {"role": "fact", "bullets": ["关键事实。"]},
+                {"role": "data", "bullets": ["数据支撑。"]},
                 {"role": "analysis", "bullets": ["影响分析。"]},
                 {"role": "risk", "bullets": ["争议风险。"]},
-                {"role": "suggestion", "bullets": ["行动建议。"]},
+                {"role": "suggestion", "bullets": ["参考建议。"]},
             ]
         }
 
@@ -96,10 +97,11 @@ class SightPipelineTest(unittest.TestCase):
         headings = [
             "## 背景概述",
             "## 核心论点",
-            "## 关键事实/数据支撑",
+            "## 关键事实",
+            "## 数据支撑",
             "## 分析与影响",
             "## 争议与风险",
-            "## 结论与行动建议",
+            "## 结论与参考建议",
         ]
         for heading in headings:
             self.assertIn(heading, markdown)
@@ -1130,7 +1132,58 @@ class SightFrameCompatibilityTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(summary_provider.prompts), 1)
         self.assertIn("输出 JSON 对象", summary_provider.prompts[0])
         self.assertIn('"sections"', summary_provider.prompts[0])
+        self.assertIn("overview: 背景概述；背景、主题、对象与上下文", summary_provider.prompts[0])
+        self.assertIn("fact: 关键事实；事件、观点、例子与可确认结论", summary_provider.prompts[0])
+        self.assertIn("data: 数据支撑；数字、统计、比例、金额、实验结果等量化依据", summary_provider.prompts[0])
+        self.assertIn("suggestion: 结论与参考建议；结论、启发与参考建议", summary_provider.prompts[0])
         self.assertEqual(default_provider.prompts, [])
+
+    async def test_professional_note_requires_audio_transcript_before_model(self):
+        from support import Context, DailyLifeRuntime, Provider
+
+        provider = Provider(
+            [
+                json.dumps(
+                    {
+                        "sections": [
+                            {
+                                "title": "画面概述",
+                                "paragraphs": ["画面里有窗边咖啡杯。"],
+                                "bullets": [],
+                                "quotes": [],
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                )
+            ],
+            provider_id="summary",
+        )
+
+        class Composer:
+            async def _get_provider(self, provider_id=""):
+                return provider
+
+            async def _call_llm_text(self, provider_arg, prompt, session_id, empty_retries=0, primary_provider_id=""):
+                return (await provider_arg.text_chat(prompt, session_id)).completion_text
+
+            async def _cleanup_conversation(self, session_id):
+                return None
+
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.context = Context(provider)
+        runtime.composer = Composer()
+        insight = SightInsight(
+            clip=SightClip(source="D:/tmp/silent.mp4", name="无声画面"),
+            summary="画面里有窗边咖啡杯。",
+            frame_notes=["00:12 画面里有窗边咖啡杯。"],
+            metadata={"title": "无声画面"},
+        )
+
+        with self.assertRaisesRegex(SightNoteError, "没有可用音频转写"):
+            await SightNote(runtime).compose(insight)
+
+        self.assertEqual(provider.prompts, [])
 
     async def test_sight_note_fails_without_summary_model(self):
         from support import DailyLifeRuntime
@@ -1139,6 +1192,7 @@ class SightFrameCompatibilityTest(unittest.IsolatedAsyncioTestCase):
         insight = SightInsight(
             clip=SightClip(source="D:/tmp/cafe.mp4", name="雨夜咖啡店"),
             summary="视频讲了雨夜咖啡店。",
+            transcript="视频讲了雨夜咖啡店。",
             metadata={"title": "雨夜咖啡店"},
         )
 
@@ -1166,6 +1220,7 @@ class SightFrameCompatibilityTest(unittest.IsolatedAsyncioTestCase):
         insight = SightInsight(
             clip=SightClip(source="D:/tmp/cafe.mp4", name="雨夜咖啡店"),
             summary="视频讲了雨夜咖啡店。",
+            transcript="视频讲了雨夜咖啡店。",
             metadata={"title": "雨夜咖啡店"},
         )
 
@@ -1193,6 +1248,7 @@ class SightFrameCompatibilityTest(unittest.IsolatedAsyncioTestCase):
         insight = SightInsight(
             clip=SightClip(source="D:/tmp/cafe.mp4", name="雨夜咖啡店"),
             summary="视频讲了雨夜咖啡店。",
+            transcript="视频讲了雨夜咖啡店。",
             metadata={"title": "雨夜咖啡店"},
         )
 

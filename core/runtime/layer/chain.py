@@ -59,23 +59,18 @@ class LayerChainMixin:
     def _event_message_text(self, event: Any) -> str:
         return str(getattr(event, "message_str", "") or "") if event is not None else ""
 
-    def _schedule_chat_capture_context(self, event: Any, now: Any) -> bool:
-        if event is None:
-            return False
-        session_id = self._event_session_id(event)
-        message_id = self._event_message_id(event)
-        task_key = f"chat_capture:{session_id}:{message_id or hash(self._event_message_text(event))}"
-        return self._schedule_background_task(
-            self._capture_chat_context_background(event, now),
-            label="聊天记忆提炼",
-            key=task_key,
-        )
-
-    def schedule_chat_context_capture_from_event(self, event: Any, now: Any = None) -> bool:
+    def schedule_emoji_capture_from_event(self, event: Any, now: Any = None) -> bool:
         if event is None:
             return False
         now = now or self._life_injection_now()
-        return self._schedule_chat_capture_context(event, now)
+        session_id = self._event_session_id(event)
+        message_id = self._event_message_id(event)
+        task_key = f"emoji_capture:{session_id}:{message_id or hash(self._event_message_text(event))}"
+        return self._schedule_background_task(
+            self._collect_emoji_context_background(event, now),
+            label="表情素材采集",
+            key=task_key,
+        )
 
     def _schedule_chat_state_refresh(self, target_date_str: str, now: Any, event: Any = None) -> None:
         if not self.config.state.enabled:
@@ -195,7 +190,6 @@ class LayerChainMixin:
         data = await self.ensure_injection_day_data(target_date_str, now)
         data = await self.maybe_update_injection_outfit(today_str, data, using_extended_night)
 
-        self.schedule_chat_context_capture_from_event(event, now)
         if not data:
             memos_context = await self._build_injection_memos_context(event, self._event_message_text(event))
             recent_video = await self.format_recent_sight_context(event, limit=2) if event is not None else ""

@@ -46,7 +46,7 @@ from core.models import (
     TimelineItem,
     WeekPlanRecord,
 )
-from core.archive.categories import STORAGE_CATEGORIES
+from core.archive.categories import STORAGE_CATEGORIES, validate_storage_categories
 from core.archive.ddl import iter_schema_sql
 from core.sight import SightClip, SightInsight, SightVault
 
@@ -1395,17 +1395,17 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             categories = {item["key"]: item for item in overview["categories"]}
             memory_groups = {
                 item["key"]: item
-                for item in categories["memory"]["groups"]
+                for item in categories["world"]["groups"]
             }
 
             self.assertGreater(categories["daily"]["total_rows"], 0)
-            self.assertGreater(categories["memory"]["total_rows"], 0)
+            self.assertGreater(categories["relationships"]["total_rows"], 0)
+            self.assertGreater(categories["world"]["total_rows"], 0)
+            self.assertGreater(categories["conversation"]["total_rows"], 0)
+            self.assertGreater(categories["experience"]["total_rows"], 0)
             self.assertGreater(categories["review"]["total_rows"], 0)
             self.assertEqual(categories["daily"]["retention_days"], 30)
-            self.assertGreater(memory_groups["relationships"]["total_rows"], 0)
-            self.assertGreater(memory_groups["world"]["total_rows"], 0)
-            self.assertGreater(memory_groups["awareness"]["total_rows"], 0)
-            self.assertGreater(memory_groups["experience"]["total_rows"], 0)
+            self.assertGreater(memory_groups["places"]["total_rows"], 0)
 
             result = await archive.clear_storage_category("日常记录")
 
@@ -1421,13 +1421,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             match.group(1)
             for match in re.finditer(r"CREATE TABLE IF NOT EXISTS\s+([a-zA-Z_][a-zA-Z0-9_]*)", schema_source)
         }
-        categorized = {
-            table
-            for category in STORAGE_CATEGORIES.values()
-            for table in category.tables
-        }
-
-        self.assertEqual(schema_tables - categorized, {"meta"})
+        validate_storage_categories(schema_tables, ignored_tables={"meta"})
 
     def test_storage_category_groups_stay_inside_category_tables(self):
         for category in STORAGE_CATEGORIES.values():
@@ -1451,7 +1445,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             table_set = set(category.tables)
             clear_set = set(category.clear_order)
             self.assertEqual(table_set - clear_set, set(), category.key)
-            self.assertEqual(clear_set - table_set, set(), category.key)
+            self.assertEqual(clear_set - schema_tables, set(), category.key)
             for table in category.tables:
                 self.assertIn(table, schema_tables, table)
                 self.assertNotIn(table, table_owners, table)
@@ -1525,7 +1519,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                     "storage_config": {
                         "daily_keep_days": 30,
                         "review_keep_days": 30,
-                        "memory_keep_days": 30,
+                        "conversation_keep_days": 30,
                         "planning_keep_days": 0,
                     }
                 }

@@ -31,7 +31,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
     )
     _INCOMING_NOTE_HOOKS = (
         "note_structured_incoming_message",
-        "schedule_chat_context_capture_from_event",
+        "schedule_emoji_capture_from_event",
         "schedule_visual_context_from_event",
         "schedule_video_context_from_event",
     )
@@ -491,6 +491,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             return
         for name in self._INCOMING_NOTE_HOOKS:
             self._runtime_hook_call(name, event)
+        await self._runtime_hook_apply("capture_chat_memory_message", event, is_async=True)
         if self._runtime_hook_call("schedule_bili_summary_from_event", event):
             return
         self._runtime_hook_call("mark_alias_directed_event_as_wake", event)

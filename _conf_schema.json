@@ -129,6 +129,29 @@
                 "_special": "select_provider",
                 "default": "",
                 "hint": "指定自动穿搭判断和手动穿搭更新使用的模型；留空则使用当前默认模型"
+            },
+            "default_style_preference": {
+                "description": "穿搭审美",
+                "type": "text",
+                "default": "穿搭审美偏甜美、清爽、柔和，有自然少女感；整体保持真实日常、舒服耐看，衣着、妆发和配饰细节会随当天状态自然变化。",
+                "hint": "是否注入由审美影响程度控制。当前用户要求、短期纠偏和已学习偏好优先。"
+            },
+            "default_hair_preference": {
+                "description": "发型审美",
+                "type": "text",
+                "default": "发型审美偏甜妹少女风，自然清爽、柔和轻盈；整体舒服耐看，细节会随当天状态自然变化。",
+                "hint": "是否注入由审美影响程度控制。当前用户要求、短期纠偏和已学习偏好优先。"
+            },
+            "default_preference_weight": {
+                "description": "审美影响程度",
+                "type": "float",
+                "default": 0,
+                "slider": {
+                    "min": 0,
+                    "max": 2,
+                    "step": 0.1
+                },
+                "hint": "填 0 不启用审美注入；数值越高越容易影响穿搭，但不会覆盖当前指令和纠偏。"
             }
         }
     },
@@ -209,10 +232,16 @@
         }
     },
     "memory_config": {
-        "description": "记忆与关系",
+        "description": "批量聊天记忆",
         "type": "object",
-        "hint": "集中管理用户称呼、角色身份别名、约定追踪、聊天记忆提炼和 MemOS 外部记忆参考；只合并前台展示，不改变底层配置结构。",
+        "hint": "按会话持久化消息快照，达到消息阈值或静默条件后再进行一次非重叠批量提炼。",
         "items": {
+            "enabled": {
+                "description": "启用批量聊天记忆",
+                "type": "bool",
+                "default": true,
+                "hint": "关闭后停止采集新消息和执行批量提炼，已持久化队列会保留。"
+            },
             "provider": {
                 "description": "记忆提炼",
                 "type": "string",
@@ -220,16 +249,82 @@
                 "default": "",
                 "hint": "指定聊天记忆提炼使用的模型；留空则使用当前默认模型"
             },
-            "min_message_length": {
-                "description": "最短消息长度",
+            "private_message_threshold": {
+                "description": "私聊批次消息数",
                 "type": "int",
                 "default": 8,
                 "slider": {
-                    "min": 1,
+                    "min": 2,
+                    "max": 100,
+                    "step": 1
+                },
+                "hint": "同一私聊会话累计到该消息数后触发批量提炼。"
+            },
+            "group_message_threshold": {
+                "description": "群聊批次消息数",
+                "type": "int",
+                "default": 20,
+                "slider": {
+                    "min": 2,
                     "max": 200,
                     "step": 1
                 },
-                "hint": "低于该长度的消息不会自动提炼，避免保存寒暄和短表情"
+                "hint": "同一群聊会话累计到该消息数后触发批量提炼。"
+            },
+            "idle_flush_seconds": {
+                "description": "静默提炼等待",
+                "type": "int",
+                "default": 90,
+                "slider": {
+                    "min": 15,
+                    "max": 3600,
+                    "step": 15
+                },
+                "hint": "未达到消息阈值时，会话静默达到该秒数后允许批量提炼。"
+            },
+            "idle_flush_min_messages": {
+                "description": "静默提炼最少消息",
+                "type": "int",
+                "default": 3,
+                "slider": {
+                    "min": 1,
+                    "max": 100,
+                    "step": 1
+                },
+                "hint": "静默触发前至少需要积累的待处理消息数。"
+            },
+            "max_batch_messages": {
+                "description": "单批最大消息数",
+                "type": "int",
+                "default": 40,
+                "slider": {
+                    "min": 2,
+                    "max": 200,
+                    "step": 1
+                },
+                "hint": "限制一次模型调用包含的最大消息数，超出部分进入后续批次。"
+            },
+            "max_batch_chars": {
+                "description": "单批最大字符数",
+                "type": "int",
+                "default": 12000,
+                "slider": {
+                    "min": 1000,
+                    "max": 100000,
+                    "step": 1000
+                },
+                "hint": "限制一次批次包含的消息总字符数。"
+            },
+            "worker_poll_seconds": {
+                "description": "后台巡检间隔",
+                "type": "int",
+                "default": 15,
+                "slider": {
+                    "min": 2,
+                    "max": 300,
+                    "step": 1
+                },
+                "hint": "后台 worker 检查静默会话和待处理队列的间隔。"
             },
             "max_generation_items": {
                 "description": "生成参考条数",
@@ -284,7 +379,7 @@
                 "default": 15,
                 "slider": {
                     "min": 0.5,
-                    "max": 30,
+                    "max": 60,
                     "step": 0.5
                 },
                 "hint": "MemOS 后台同步和普通请求的单次超时；聊天回复前的注入等待由下方单独控制，不会跟着变慢。"
@@ -384,7 +479,7 @@
                     "max": 50,
                     "step": 5
                 },
-                "hint": "普通闲聊生成时参考全局和场景两项里较小的数值；发送前只按完整句自然分段，不硬截断。"
+                "hint": "普通闲聊生成时参考全局和场景两项里较小的数值；发送前只按完整句自然分段。"
             },
             "group_casual_max_chars": {
                 "description": "群聊闲聊参考长度",
@@ -395,7 +490,7 @@
                     "max": 30,
                     "step": 5
                 },
-                "hint": "群聊轻闲聊的参考长度；认真问题按内容自然展开，不压短。"
+                "hint": "群聊轻闲聊的参考长度；认真问题按内容自然展开。"
             },
             "private_casual_max_chars": {
                 "description": "私聊闲聊参考长度",
@@ -406,7 +501,7 @@
                     "max": 30,
                     "step": 5
                 },
-                "hint": "私聊轻闲聊的参考长度；更偏短句和停顿感，不硬截断。"
+                "hint": "私聊轻闲聊的参考长度；更偏短句和停顿感。"
             },
             "proactive_max_chars": {
                 "description": "闲时回复参考长度",
@@ -417,7 +512,7 @@
                     "max": 30,
                     "step": 5
                 },
-                "hint": "插件主动生成闲时回复时参考该长度；发送前按完整句自然分段，不硬截断。"
+                "hint": "插件主动生成闲时回复时参考该长度；发送前按完整句自然分段。"
             }
         }
     },
@@ -1468,12 +1563,12 @@
                 "type": "string",
                 "default": "local",
                 "options": [
-                    "bcut",
-                    "local"
+                    "local",
+                    "bcut"
                 ],
                 "option_labels": {
-                    "bcut": "必剪",
-                    "local": "本地ASR"
+                    "local": "本地ASR",
+                    "bcut": "必剪"
                 },
                 "hint": "默认优先使用本地ASR，会自动安装依赖并准备 FunASR 模型；本地ASR失败时自动切换到必剪。"
             },
@@ -1564,6 +1659,83 @@
                 },
                 "hint": "清理超过该天数的日程、时间轴、穿搭、状态和当日事件。0 表示长期保留。"
             },
+            "relationships_keep_days": {
+                "description": "关系档案保留天数",
+                "type": "int",
+                "default": 0,
+                "slider": {
+                    "min": 0,
+                    "max": 3650,
+                    "step": 1
+                },
+                "hint": "联系人、群友关系、备注和关系要点默认长期保留。0 表示长期保留。"
+            },
+            "world_keep_days": {
+                "description": "世界线索保留天数",
+                "type": "int",
+                "default": 0,
+                "slider": {
+                    "min": 0,
+                    "max": 3650,
+                    "step": 1
+                },
+                "hint": "清理过旧世界事件和已关闭生活事件；地点和长期偏好默认保留。0 表示长期保留。"
+            },
+            "conversation_keep_days": {
+                "description": "聊天留意保留天数",
+                "type": "int",
+                "default": 180,
+                "slider": {
+                    "min": 0,
+                    "max": 3650,
+                    "step": 1
+                },
+                "hint": "清理过旧聊天摘要、群聊氛围、可见性判断、行动裁定和会话中段摘要。0 表示长期保留。"
+            },
+            "experience_keep_days": {
+                "description": "体验沉淀保留天数",
+                "type": "int",
+                "default": 0,
+                "slider": {
+                    "min": 0,
+                    "max": 3650,
+                    "step": 1
+                },
+                "hint": "清理过旧生活片段、证据链、行为反馈、情绪节律、决策、关注目标和记忆边界。0 表示长期保留。"
+            },
+            "expression_keep_days": {
+                "description": "表达素材保留天数",
+                "type": "int",
+                "default": 0,
+                "slider": {
+                    "min": 0,
+                    "max": 3650,
+                    "step": 1
+                },
+                "hint": "清理过旧表达复核、临时表达状态、发表情意图、停用表情记录和反推提示。0 表示长期保留。"
+            },
+            "media_keep_days": {
+                "description": "媒体理解保留天数",
+                "type": "int",
+                "default": 30,
+                "slider": {
+                    "min": 0,
+                    "max": 3650,
+                    "step": 1
+                },
+                "hint": "清理过旧视频理解缓存、精简摘要、分段细节和关键帧记录。0 表示长期保留。"
+            },
+            "longterm_keep_days": {
+                "description": "长期记忆保留天数",
+                "type": "int",
+                "default": 0,
+                "slider": {
+                    "min": 0,
+                    "max": 3650,
+                    "step": 1
+                },
+                "hint": "默认长期保留，仅清理失效、过期或低权重旧长期记忆及其索引关联。0 表示长期保留。"
+            },
             "review_keep_days": {
                 "description": "生活复盘保留天数",
                 "type": "int",
@@ -1574,17 +1746,6 @@
                     "step": 1
                 },
                 "hint": "清理超过该天数的每日复盘和复盘要点。0 表示长期保留。"
-            },
-            "memory_keep_days": {
-                "description": "世界记忆清理天数",
-                "type": "int",
-                "default": 0,
-                "slider": {
-                    "min": 0,
-                    "max": 3650,
-                    "step": 1
-                },
-                "hint": "默认不自动清理长期记忆。设置大于 0 时，只清理旧聊天摘要、世界事件和已关闭生活事件，不清理关系、地点和偏好档案。"
             },
             "planning_keep_days": {
                 "description": "计划约定保留天数",
@@ -1624,7 +1785,7 @@
     "story_engine_config": {
         "description": "提示词",
         "type": "object",
-        "hint": "调整日程生成提示词片段。结构化输出格式由插件保留，避免误删字段导致生成数据无法保存。",
+        "hint": "调整日程生成、穿搭审美和发型审美相关提示词片段。结构化输出格式由插件保留，避免误删字段导致生成数据无法保存。",
         "items": {
             "state_rules": {
                 "description": "状态生成规则",

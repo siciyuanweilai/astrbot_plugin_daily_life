@@ -14,19 +14,29 @@ from .model import get_sight_provider, sight_provider_id
 NOTE_TRANSCRIPT_CHARS = 20000
 NOTE_FRAME_LIMIT = 24
 NOTE_SEGMENT_LIMIT = 120
+PROFESSIONAL_NOTE_NEEDS_TRANSCRIPT = "没有可用音频转写，已跳过专业总结（画面理解仍会保留）"
 
 CONTENT_MARKER_RE = re.compile(r"\*?Content-(?:\[(\d{1,2}):(\d{2})\]|(\d{1,2}):(\d{2}))\*?")
 SCREENSHOT_MARKER_RE = re.compile(r"\*?Screenshot-(?:\[(\d{1,2}):(\d{2})\]|(\d{1,2}):(\d{2}))\*?")
 HEADING_LINE_RE = re.compile(r"^(\s{0,3}#{1,6}\s*)(.*)$")
-PROFESSIONAL_ROLES: tuple[tuple[str, str], ...] = (
-    ("overview", "背景概述"),
-    ("core", "核心论点"),
-    ("evidence", "关键事实/数据支撑"),
-    ("analysis", "分析与影响"),
-    ("risk", "争议与风险"),
-    ("suggestion", "结论与行动建议"),
+PROFESSIONAL_ROLE_SCHEMA: tuple[tuple[str, str, str], ...] = (
+    ("overview", "背景概述", "背景、主题、对象与上下文"),
+    ("core", "核心论点", "核心主张、主要判断与论证方向"),
+    ("fact", "关键事实", "事件、观点、例子与可确认结论"),
+    ("data", "数据支撑", "数字、统计、比例、金额、实验结果等量化依据"),
+    ("analysis", "分析与影响", "原因、影响、逻辑关系与延伸分析"),
+    ("risk", "争议与风险", "争议、不确定性、限制与潜在风险"),
+    ("suggestion", "结论与参考建议", "结论、启发与参考建议"),
+    ("other", "其他", "无法归入上述结构但有保留价值的内容"),
+)
+PROFESSIONAL_ROLES: tuple[tuple[str, str], ...] = tuple(
+    (role, title) for role, title, _ in PROFESSIONAL_ROLE_SCHEMA if role != "other"
 )
 PROFESSIONAL_ROLE_TITLES = dict(PROFESSIONAL_ROLES)
+PROFESSIONAL_ROLE_ENUM = "/".join(role for role, _, _ in PROFESSIONAL_ROLE_SCHEMA)
+PROFESSIONAL_ROLE_SCHEMA_TEXT = "\n".join(
+    f"  - {role}: {title}；{description}" for role, title, description in PROFESSIONAL_ROLE_SCHEMA
+)
 
 
 BASE_NOTE_PROMPT = """\
@@ -40,7 +50,7 @@ BASE_NOTE_PROMPT = """\
   "sections": [
     {
       "title": "板块标题",
-      "role": "overview/core/evidence/analysis/risk/suggestion/other，可空",
+      "role": "{PROFESSIONAL_ROLE_ENUM}，可空",
       "time": "mm:ss 或 hh:mm:ss，可空",
       "paragraphs": ["段落文本"],
       "bullets": ["要点文本"],
@@ -51,13 +61,17 @@ BASE_NOTE_PROMPT = """\
 
 字段说明：
 - sections 按视频内容顺序排列。
-- role 用于专业模式的章节归类；非专业模式可留空。
+- role 用于专业模式的章节归类；非专业模式可留空。专业 role 语义：
+{PROFESSIONAL_ROLE_SCHEMA_TEXT}
 - time 填该板块对应的视频起点；没有明确时间可留空。
 - paragraphs、bullets、quotes 只写可确认内容。
+- 素材不足时省略没有依据的 role，不要为了凑齐板块编造内容。
 - 渲染时 title 会成为 `##` 章节标题，bullets 会成为列表，quotes 会成为引用块。
 - 字段文本可以使用 `**加粗**` 突出关键词，但不要输出整篇 Markdown。
 - 视频中提及的数学公式保留为 LaTeX 字符串。
-"""
+""".replace("{PROFESSIONAL_ROLE_ENUM}", PROFESSIONAL_ROLE_ENUM).replace(
+    "{PROFESSIONAL_ROLE_SCHEMA_TEXT}", PROFESSIONAL_ROLE_SCHEMA_TEXT
+)
 
 
 NOTE_STYLES: dict[str, str] = {
@@ -70,9 +84,8 @@ NOTE_STYLES: dict[str, str] = {
         "每个 section 可同时包含段落、要点和引用。"
     ),
     "professional": (
-        "**专业模式**：提供深度结构化分析，按 role 组织 overview、core、evidence、analysis、risk、suggestion。"
-        "分别对应“背景概述、核心论点、关键事实/数据支撑、分析与影响、争议与风险、结论与行动建议”；"
-        "素材不足时可以省略没有依据的板块。每个 section 内优先使用 bullets 拆分事实、示例、判断、影响和建议；"
+        f"**专业模式**：提供深度结构化分析，按 role 组织 {PROFESSIONAL_ROLE_ENUM}。"
+        "每个 section 内优先使用 bullets 拆分事实、示例、判断、影响和参考建议；"
         "有原话、名言或关键表述时放入 quotes；可用 **加粗** 突出核心概念、数据和判断。"
         "画面线索只作为证据来源，语言正式、逻辑清晰，保留可复核的事实、证据和推理链。"
     ),
@@ -84,6 +97,11 @@ class SightNote:
         self.runtime = runtime
 
     async def compose(self, insight: SightInsight, *, style: str = "professional") -> str:
+        style_key = _note_style_key(style)
+        unavailable = professional_note_unavailable_reason(insight, style=style_key)
+        if unavailable:
+            raise SightNoteError(unavailable)
+
         composer = getattr(self.runtime, "composer", None)
         if composer is None:
             raise SightNoteError("总结模型不可用：缺少文本生成组件")
@@ -117,7 +135,6 @@ class SightNote:
         raw = str(text or "").strip()
         if not raw:
             raise SightNoteError("总结模型返回空内容")
-        style_key = _note_style_key(style)
         payload = extract_json_from_text(raw)
         if not isinstance(payload, dict):
             raise SightNoteError("总结模型返回的 JSON 无法解析")
@@ -160,6 +177,30 @@ class SightNote:
 
 class SightNoteError(RuntimeError):
     pass
+
+
+def professional_note_unavailable_reason(insight: SightInsight | None, *, style: str = "professional") -> str:
+    if _note_style_key(style) != "professional":
+        return ""
+    if _has_transcript_content(insight):
+        return ""
+    return PROFESSIONAL_NOTE_NEEDS_TRANSCRIPT
+
+
+def _has_transcript_content(insight: SightInsight | None) -> bool:
+    if insight is None:
+        return False
+    transcript = " ".join(str(getattr(insight, "transcript", "") or "").split())
+    if transcript:
+        return True
+    metadata = dict(getattr(insight, "metadata", None) or {})
+    segments = metadata.get("transcript_segments")
+    if not isinstance(segments, list):
+        return False
+    for segment in segments:
+        if isinstance(segment, dict) and str(segment.get("text") or "").strip():
+            return True
+    return False
 
 
 def _compact(value: Any, limit: int) -> str:
@@ -352,12 +393,24 @@ def _professional_payload_sections(
             thesis_bullets = _unique_texts(details[:3] or ([summary] if summary else []), limit=4)
         if thesis_bullets:
             buckets["core"].append(_section("core", bullets=thesis_bullets))
-    if not buckets["evidence"]:
-        evidence_bullets = _unique_texts(details, limit=10)
-        if not evidence_bullets:
-            evidence_bullets = _unique_texts(frame_notes, limit=6)
-        if evidence_bullets:
-            buckets["evidence"].append(_section("evidence", bullets=evidence_bullets))
+    if not buckets["fact"]:
+        fact_bullets = _unique_texts(details, limit=10)
+        if not fact_bullets:
+            fact_bullets = _unique_texts(frame_notes, limit=6)
+        if fact_bullets:
+            buckets["fact"].append(_section("fact", bullets=fact_bullets))
+    if not buckets["data"]:
+        data_bullets = _text_values(
+            payload.get("data")
+            or payload.get("data_points")
+            or payload.get("statistics")
+            or payload.get("metrics")
+            or payload.get("numbers"),
+            limit=8,
+            char_limit=280,
+        )
+        if data_bullets:
+            buckets["data"].append(_section("data", bullets=data_bullets))
     if not buckets["analysis"]:
         analysis_bullets = _text_values(
             payload.get("analysis") or payload.get("impacts") or payload.get("impact"),
@@ -372,13 +425,13 @@ def _professional_payload_sections(
             buckets["risk"].append(_section("risk", bullets=risk_bullets))
     if not buckets["suggestion"]:
         suggestion = _field_text(
-            payload.get("conclusion") or payload.get("recommendation") or payload.get("action_suggestion"),
+            payload.get("conclusion") or payload.get("reference_suggestion") or payload.get("recommendation"),
             500,
         )
         suggestion_bullets = _text_values(
             payload.get("conclusions")
+            or payload.get("reference_suggestions")
             or payload.get("recommendations")
-            or payload.get("action_suggestions")
             or payload.get("suggestions"),
             limit=5,
             char_limit=280,
@@ -406,15 +459,15 @@ def _infer_professional_role(
         return "overview"
     if section.get("bullets") and not buckets["core"]:
         return "core"
-    if (section.get("quotes") or section.get("time")) and not buckets["evidence"]:
-        return "evidence"
+    if (section.get("quotes") or section.get("time")) and not buckets["fact"]:
+        return "fact"
     if not buckets["overview"]:
         return "overview"
     if not buckets["core"]:
         return "core"
     if not buckets["analysis"]:
         return "analysis"
-    return "evidence"
+    return "fact"
 
 
 def _merge_professional_bucket(role: str, title: str, sections: list[dict[str, Any]]) -> dict[str, Any]:

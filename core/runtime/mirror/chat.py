@@ -24,7 +24,7 @@ class SnapshotChatMixin:
             source_event=source_event,
         )
 
-    async def _capture_chat_context_background(
+    async def _collect_emoji_context_background(
         self,
         event: Any,
         now: datetime.datetime,
@@ -35,14 +35,4 @@ class SnapshotChatMixin:
         if self.event_was_recalled(event, log_skip=True):
             return
         await self.maybe_collect_emoji_assets_from_event(event, now, sender_name=sender_name)
-        if self.event_was_recalled(event, log_skip=True):
-            return
-        await self.maybe_capture_commitment_from_event(event, now, sender_name=sender_name)
-        if self.event_was_recalled(event, log_skip=True):
-            return
-        await self.maybe_capture_chat_memory_from_event(event, now, sender_name=sender_name)
-        if self.event_was_recalled(event, log_skip=True):
-            return
-        cache = getattr(self, "_injection_snapshot_cache", None)
-        if isinstance(cache, dict):
-            cache.clear()
+

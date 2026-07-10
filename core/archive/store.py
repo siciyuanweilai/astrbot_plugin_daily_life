@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Callable, TypeVar
 
 from .categories import STORAGE_CATEGORIES
+from .chat_memory_queue import ChatMemoryQueueArchiveMixin
 from .promises import CommitmentArchiveMixin
 from .common import CommonArchiveMixin
 from .journal import DayArchiveMixin
@@ -20,6 +21,7 @@ T = TypeVar("T")
 
 
 class LifeArchive(
+    ChatMemoryQueueArchiveMixin,
     DayArchiveMixin,
     WeekArchiveMixin,
     CommitmentArchiveMixin,
@@ -38,6 +40,7 @@ class LifeArchive(
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self._path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA foreign_keys = ON")
         init_schema(self._conn)
 
     def close(self) -> None:

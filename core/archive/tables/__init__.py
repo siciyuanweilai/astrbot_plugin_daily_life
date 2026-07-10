@@ -1,4 +1,5 @@
 from .chronicle import EXPERIENCE_SQL
+from .conversation import CONVERSATION_SQL
 from .cycle import WEEKLY_SQL
 from .indexes import INDEX_SQL
 from .kernel import ARCHIVE_VERSION, CORE_SQL
@@ -19,6 +20,7 @@ SCHEMA_GROUPS = (
     AWARENESS_SQL,
     REVIEW_SQL,
     EXPERIENCE_SQL,
+    CONVERSATION_SQL,
     INDEX_SQL,
 )
 
@@ -33,6 +35,7 @@ __all__ = [
     "AWARENESS_SQL",
     "REVIEW_SQL",
     "EXPERIENCE_SQL",
+    "CONVERSATION_SQL",
     "INDEX_SQL",
     "DROP_SCHEMA_SQL",
     "SCHEMA_GROUPS",

@@ -1,4 +1,4 @@
-ARCHIVE_VERSION = 1
+ARCHIVE_VERSION = 2
 
 CORE_SQL = """
 -- 核心元数据

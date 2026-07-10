@@ -61,9 +61,19 @@ class MaintenanceArchiveMixin:
         rhythm_logs = await self.get_physiological_rhythm_logs(limit=5)
         terms = await self.get_life_terms(limit=5)
         boundaries = await self.get_memory_boundaries(limit=5)
-        memory_rows = next(
-            (item["total_rows"] for item in storage.get("categories", []) if item.get("key") == "memory"),
-            0,
+        memory_category_keys = {
+            "relationships",
+            "world",
+            "conversation",
+            "experience",
+            "expression",
+            "media",
+            "longterm",
+        }
+        memory_rows = sum(
+            int(item.get("total_rows") or 0)
+            for item in storage.get("categories", [])
+            if item.get("key") in memory_category_keys
         )
         checks = [
             {"key": "episodes", "label": "生活片段", "ok": bool(episodes), "count": len(episodes)},

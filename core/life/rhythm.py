@@ -6,6 +6,7 @@ from typing import Any
 from ..models import DailyReviewRecord, EventRecord, LifeEventRecord, PreferenceRecord
 from ..prompts import CORE_MEMORY_RULES, LIFE_PREFERENCE_CATEGORY_ENUM, cache_friendly_prompt, json_output_section
 from ..clock import now as life_now
+from .appearance import format_life_preference_context
 from .tools import extract_json_from_text, format_timeline_to_text
 
 
@@ -93,13 +94,15 @@ class LifecycleMixin:
             if rhythm_lines:
                 sections.append("## 🫧 近期生理节律\n" + rhythm_lines)
 
-        preferences = await self.archive.get_preferences(self.config.lifecycle.max_preferences)
-        if preferences:
-            lines = [
-                f"- [{item.category}] {item.content} (权重 {item.weight:.1f}，证据：{item.evidence or item.source})"
-                for item in preferences[: self.config.lifecycle.max_preferences]
-            ]
-            sections.append("## 🧭 已学习偏好\n" + "\n".join(lines))
+        preference_limit = max(0, self.config.lifecycle.max_preferences)
+        preferences = await self.archive.get_preferences(preference_limit) if preference_limit else []
+        preference_context = format_life_preference_context(
+            preferences,
+            self.config,
+            limit=preference_limit,
+        )
+        if preference_context:
+            sections.append("## 🧭 长期审美与生活偏好\n" + preference_context)
 
         reviews = await self.archive.get_recent_daily_reviews(3)
         if reviews:

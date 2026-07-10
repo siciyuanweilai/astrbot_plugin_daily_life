@@ -1985,14 +1985,12 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
 
         self.assertEqual(schema["rhythm_config"]["description"], "生活背景")
         self.assertEqual(schema["state_config"]["description"], "生活感知")
-        self.assertEqual(schema["memory_config"]["description"], "记忆与关系")
+        self.assertEqual(schema["memory_config"]["description"], "\u6279\u91cf\u804a\u5929\u8bb0\u5fc6")
         self.assertEqual(schema["chat_style_config"]["description"], "聊天表达")
         self.assertEqual(schema["video_generation_config"]["description"], "视频")
         self.assertIn("天气环境", schema["rhythm_config"]["hint"])
         self.assertIn("实时状态", schema["rhythm_config"]["hint"])
         self.assertIn("天气环境", schema["state_config"]["hint"])
-        self.assertIn("用户称呼", schema["memory_config"]["hint"])
-        self.assertIn("MemOS 外部记忆", schema["memory_config"]["hint"])
         self.assertIn("随心回复", schema["chat_style_config"]["hint"])
         self.assertIn("闲时回复", schema["chat_style_config"]["hint"])
         self.assertIn("视频理解", schema["video_generation_config"]["hint"])
@@ -2059,6 +2057,27 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertNotIn("fact_check_query_prompt", schema["story_engine_config"]["items"])
         self.assertIn('["chat_style_config.casual_short_prompt", "story_engine_config"]', config)
         self.assertNotIn('["chat_style_config.fact_check_query_prompt", "story_engine_config"]', config)
+
+    def test_dashboard_moves_outfit_prompt_settings_to_prompt_settings(self):
+        import json
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        schema = json.loads((root / "_conf_schema.json").read_text(encoding="utf-8-sig"))
+        config = (root / "pages" / "dashboard" / "ui" / "config.js").read_text(encoding="utf-8")
+
+        self.assertEqual(schema["outfit_config"]["description"], "服装")
+        self.assertEqual(schema["story_engine_config"]["description"], "提示词")
+        self.assertIn("穿搭审美", schema["story_engine_config"]["hint"])
+        self.assertIn("发型审美", schema["story_engine_config"]["hint"])
+        self.assertIn("default_style_preference", schema["outfit_config"]["items"])
+        self.assertIn("default_hair_preference", schema["outfit_config"]["items"])
+        self.assertNotIn("default_style_preference", schema["story_engine_config"]["items"])
+        self.assertNotIn("default_hair_preference", schema["story_engine_config"]["items"])
+        self.assertIn('["outfit_config.default_style_preference", "story_engine_config"]', config)
+        self.assertIn('["outfit_config.default_hair_preference", "story_engine_config"]', config)
+        self.assertIn('["outfit_config.default_preference_weight", "rhythm_config"]', config)
+        self.assertNotIn('["outfit_config", "story_engine_config"]', config)
 
     def test_dashboard_no_longer_exposes_segment_pattern_setting(self):
         import json
@@ -2612,9 +2631,9 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertIn(".facts-column {\n  display: grid;", style)
         self.assertIn("grid-auto-rows: max-content;", style)
         self.assertIn("align-content: start;", style)
-        self.assertIn(".facts-column-fill {\n  align-self: stretch;", style)
-        self.assertIn("block-size: 100%;", style)
-        self.assertIn("grid-template-rows: max-content max-content repeat(3, minmax(max-content, 1fr));", style)
+        self.assertIn(".facts-column-fill {\n  align-self: start;", style)
+        self.assertIn("block-size: auto;", style)
+        self.assertIn("grid-template-rows: none;", style)
         self.assertIn('.facts-column-fill > [data-fact-card="memo"]', style)
         self.assertIn(".facts-column > div {\n  min-width: 0;", style)
         self.assertIn('.facts-column > [data-fact-card="schedule-tone"]', style)
@@ -2628,9 +2647,8 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertNotIn("compact ? FACT_CARD_ORDER.length", app)
         self.assertNotIn("window.innerWidth || 0) <= 680", app)
         self.assertIn(".facts {\n    grid-template-columns: repeat(2, minmax(0, 1fr));", style)
-        self.assertIn(".facts-column-fill {\n    align-self: stretch;", style)
-        self.assertIn("grid-template-rows: max-content max-content repeat(3, minmax(max-content, 1fr));", style)
-        self.assertNotIn("grid-template-rows: none;", style)
+        self.assertIn(".facts-column-fill {\n    align-self: start;", style)
+        self.assertNotIn("grid-template-rows: max-content max-content repeat(3, minmax(max-content, 1fr));", style)
         self.assertIn("function renderTodayWeekPlan", app)
         self.assertIn("function stripLeadingEmoji", app)
         self.assertIn("function todayWeekRow", app)

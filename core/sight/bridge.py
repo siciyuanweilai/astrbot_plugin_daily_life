@@ -29,7 +29,7 @@ from .embed import embed_local_markdown_images
 from .flight import SightFlight, sight_flight_key
 from .login import BiliLoginService, BiliLoginStatus
 from .model import get_sight_provider
-from .note import SightNote, SightNoteError
+from .note import SightNote, SightNoteError, professional_note_unavailable_reason
 from .probe import (
     clips_from_items,
     clips_from_text_links,
@@ -484,6 +484,11 @@ class SightMixin(SightCleanupMixin):
             await self._send_bili_summary_failure(event, detail, scope=scope, message_id=message_id)
             return
         insight = self._sight_insight_for_clip(insight, clip)
+        note_unavailable = professional_note_unavailable_reason(insight, style="professional")
+        if note_unavailable:
+            logger.warning(f"{LOG_PREFIX} B站视频自动总结失败：{note_unavailable}")
+            await self._send_bili_summary_failure(event, note_unavailable, scope=scope, message_id=message_id)
+            return
         markdown = self._cached_sight_note_markdown(insight, style="professional")
         try:
             if not markdown:
@@ -640,6 +645,9 @@ class SightMixin(SightCleanupMixin):
         if insight.status == "failed":
             detail = insight.error or insight.summary or "没有拿到可确认的视频内容"
             return self._sight_plain_result(event, f"视频总结失败：{detail}")
+        note_unavailable = professional_note_unavailable_reason(insight, style=style)
+        if note_unavailable:
+            return self._sight_plain_result(event, f"视频总结失败：{note_unavailable}")
         try:
             markdown = await self._sight_note_for_runtime().compose(insight, style=style)
         except SightNoteError as exc:
@@ -669,7 +677,7 @@ class SightMixin(SightCleanupMixin):
         try:
             return await self._understand_sight_clip_once(event, clip)
         except asyncio.TimeoutError:
-            timeout = self._sight_total_timeout_seconds()
+            timeout = self._sight_finalize_timeout_seconds()
             logger.warning(f"{LOG_PREFIX} 视频理解超时：{timeout} 秒，尝试基于已准备内容继续总结。")
             resumed = await self._resume_sight_summary_after_timeout(event, clip)
             if resumed is not None:
@@ -681,10 +689,13 @@ class SightMixin(SightCleanupMixin):
                 error="视频理解超时",
             )
 
-    def _sight_total_timeout_seconds(self) -> int:
+    def _sight_total_timeout_seconds(self) -> float:
         settings = getattr(getattr(self, "config", None), "sight", None)
         value = getattr(settings, "total_timeout_seconds", DEFAULT_SIGHT_TOTAL_TIMEOUT_SECONDS)
         return max(60, min(int(value or DEFAULT_SIGHT_TOTAL_TIMEOUT_SECONDS), 1800))
+
+    def _sight_finalize_timeout_seconds(self) -> float:
+        return max(float(self._sight_total_timeout_seconds()), 0.05)
 
     async def _cached_sight_insight_for_clip(self, clip: SightClip) -> SightInsight | None:
         cached = await self._sight_vault_for_runtime().get(clip.key)
@@ -732,7 +743,7 @@ class SightMixin(SightCleanupMixin):
 
     async def _understand_sight_clip_once(self, event: Any, clip: SightClip) -> SightInsight:
         prepared = await self._prepare_sight_clip_material(event, clip)
-        timeout = self._sight_total_timeout_seconds()
+        timeout = self._sight_finalize_timeout_seconds()
         return await asyncio.wait_for(
             self._finalize_prepared_sight_clip(event, clip, **prepared),
             timeout=timeout,

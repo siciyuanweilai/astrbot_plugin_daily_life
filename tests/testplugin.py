@@ -7,6 +7,10 @@ from pathlib import Path
 from support import Event  # noqa: F401
 
 
+async def record_async(calls, name, event):
+    calls.append((name, event))
+
+
 PLUGIN_PARENT = Path(__file__).resolve().parents[2]
 if str(PLUGIN_PARENT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_PARENT))
@@ -371,7 +375,8 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
             note_recalled_message=lambda event: False,
             note_structured_incoming_message=lambda event: calls.append(("structured", event)),
             mark_alias_directed_event_as_wake=lambda event: calls.append(("alias_wake", event)),
-            schedule_chat_context_capture_from_event=lambda event: calls.append(("capture", event)),
+            schedule_emoji_capture_from_event=lambda event: calls.append(("emoji", event)),
+            capture_chat_memory_message=lambda event: record_async(calls, "memory", event),
             schedule_visual_context_from_event=lambda event: calls.append(("visual", event)),
             schedule_video_context_from_event=lambda event: calls.append(("video", event)),
             schedule_bili_summary_from_event=lambda event: calls.append(("bili", event)) or True,
@@ -384,10 +389,10 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             [name for name, _ in calls],
-            ["structured", "capture", "visual", "video", "bili"],
+            ["structured", "emoji", "visual", "video", "memory", "bili"],
         )
 
-    async def test_message_hook_schedules_chat_context_capture_for_incoming_message(self):
+    async def test_message_hook_persists_memory_and_schedules_emoji_capture(self):
         calls = []
 
         async def apply_response_gate_for_event(event):
@@ -398,7 +403,8 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
             note_recalled_message=lambda event: False,
             note_structured_incoming_message=lambda event: calls.append(("structured", event)),
             mark_alias_directed_event_as_wake=lambda event: calls.append(("alias_wake", event)),
-            schedule_chat_context_capture_from_event=lambda event: calls.append(("capture", event)),
+            schedule_emoji_capture_from_event=lambda event: calls.append(("emoji", event)),
+            capture_chat_memory_message=lambda event: record_async(calls, "memory", event),
             schedule_visual_context_from_event=lambda event: calls.append(("visual", event)),
             schedule_video_context_from_event=lambda event: calls.append(("video", event)),
             schedule_bili_summary_from_event=lambda event: calls.append(("bili", event)) or False,
@@ -411,7 +417,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             [name for name, _ in calls],
-            ["structured", "capture", "visual", "video", "bili", "alias_wake", "proactive", "gate"],
+            ["structured", "emoji", "visual", "video", "memory", "bili", "alias_wake", "proactive", "gate"],
         )
 
     async def test_invite_tool_uses_invite_details(self):

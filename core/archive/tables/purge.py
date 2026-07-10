@@ -1,5 +1,8 @@
 DROP_SCHEMA_SQL = """
 PRAGMA foreign_keys = OFF;
+        DROP TABLE IF EXISTS chat_memory_batches;
+        DROP TABLE IF EXISTS chat_memory_sessions;
+        DROP TABLE IF EXISTS chat_memory_messages;
         DROP TABLE IF EXISTS day_event_people;
         DROP TABLE IF EXISTS day_events;
         DROP TABLE IF EXISTS day_places;

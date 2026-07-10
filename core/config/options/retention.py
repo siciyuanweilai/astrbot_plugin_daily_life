@@ -23,8 +23,15 @@ class CommitmentSettings:
 
 @dataclass(slots=True)
 class MemorySettings:
+    enabled: bool = True
     provider: str = ""
-    min_message_length: int = 8
+    private_message_threshold: int = 8
+    group_message_threshold: int = 20
+    idle_flush_seconds: int = 90
+    idle_flush_min_messages: int = 3
+    max_batch_messages: int = 40
+    max_batch_chars: int = 12000
+    worker_poll_seconds: int = 15
     max_generation_items: int = 8
     max_injection_items: int = 5
 
@@ -33,8 +40,15 @@ class MemorySettings:
         if not isinstance(data, dict):
             return MemorySettings()
         return MemorySettings(
+            enabled=as_bool(data.get("enabled", True), True),
             provider=as_str(data.get("provider", "")).strip(),
-            min_message_length=as_int(data.get("min_message_length", 8), 8, 1, 200),
+            private_message_threshold=as_int(data.get("private_message_threshold", 8), 8, 2, 100),
+            group_message_threshold=as_int(data.get("group_message_threshold", 20), 20, 2, 200),
+            idle_flush_seconds=as_int(data.get("idle_flush_seconds", 90), 90, 15, 3600),
+            idle_flush_min_messages=as_int(data.get("idle_flush_min_messages", 3), 3, 1, 100),
+            max_batch_messages=as_int(data.get("max_batch_messages", 40), 40, 2, 200),
+            max_batch_chars=as_int(data.get("max_batch_chars", 12000), 12000, 1000, 100000),
+            worker_poll_seconds=as_int(data.get("worker_poll_seconds", 15), 15, 2, 300),
             max_generation_items=as_int(data.get("max_generation_items", 8), 8, 0, 30),
             max_injection_items=as_int(data.get("max_injection_items", 5), 5, 0, 20),
         )

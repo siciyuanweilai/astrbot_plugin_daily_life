@@ -13,6 +13,7 @@ from ..labels import (
 )
 from ..prompts import cache_friendly_prompt
 from ..clock import now as life_now
+from .appearance import APPEARANCE_PREFERENCE_CATEGORIES, format_life_preference_context
 from .condition import format_physiological_rhythm_prompt
 from .tools import extract_json_from_text, get_current_timeline_status, get_time_period_cn, parse_time_minutes, timeline_item_datetime
 from .future import future_outfit_timing_issue
@@ -243,9 +244,23 @@ class OutfitMixin:
             "old_meta": old_meta,
             "daily_theme": old_meta.get("theme", "未设定"),
             "mood_color": old_meta.get("mood", "未设定"),
+            "appearance_context": await self._outfit_appearance_context(),
             "inertia": await self._build_life_inertia_context(current_time),
             "autonomy_context": await self._build_autonomous_life_context(current_time),
         }
+
+    async def _outfit_appearance_context(self) -> str:
+        preference_limit = max(0, self.config.lifecycle.max_preferences)
+        preferences = []
+        if preference_limit:
+            for category in APPEARANCE_PREFERENCE_CATEGORIES:
+                preferences.extend(await self.archive.get_preferences(preference_limit, category))
+        return format_life_preference_context(
+            preferences,
+            self.config,
+            limit=preference_limit,
+            appearance_only=True,
+        )
 
     def _build_outfit_update_prompt(
         self,
@@ -291,6 +306,8 @@ class OutfitMixin:
 )}
 实时生活状态：
 {context["state_context"]}
+长期审美偏好：
+{context["appearance_context"] or "无"}
 {context["inertia"]}
 {context["autonomy_context"]}
 当前实际时间：{current_time.strftime("%Y-%m-%d %H:%M")}

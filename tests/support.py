@@ -2291,6 +2291,7 @@ class DataManager:
             "focus_slots": len(self.focus_slots),
             "expression_intents": len(self.expression_intents),
             "emoji_assets": len(self.emoji_assets),
+            "reverse_prompts": 0,
             "video_insights": len(self.video_insights),
             "video_insight_details": sum(len(item.get("details") or []) for item in self.video_insights.values()),
             "video_insight_frames": sum(len(item.get("frame_notes") or []) for item in self.video_insights.values()),
@@ -2361,15 +2362,21 @@ class DataManager:
         before_rows = next((item["total_rows"] for item in before if item["key"] == key), 0)
         if key == "daily":
             self.days.clear()
-        elif key == "memory":
+        elif key == "relationships":
             self.relationships.clear()
             self.relationship_contacts.clear()
+        elif key == "world":
             self.places.clear()
             self.events.clear()
+            self.preferences.clear()
+            self.life_events.clear()
+        elif key == "conversation":
             self.chat_summaries.clear()
             self.group_environments.clear()
             self.message_visibility.clear()
             self.action_decisions.clear()
+            self.session_mid_summaries.clear()
+        elif key == "experience":
             self.life_episodes.clear()
             self.memory_evidence.clear()
             self.behavior_feedback.clear()
@@ -2380,27 +2387,27 @@ class DataManager:
             self.reply_effects.clear()
             self.life_decisions.clear()
             self.memory_corrections.clear()
-            self.expression_profiles.clear()
-            self.expression_reviews.clear()
             self.behavior_patterns.clear()
             self.behavior_scenes.clear()
-            self.session_mid_summaries.clear()
-            self.temporary_expression_states.clear()
             self.focus_slots.clear()
-            self.expression_intents.clear()
-            self.emoji_assets.clear()
-            self.video_insights.clear()
             self.focus_targets.clear()
             self.life_terms.clear()
             self.memory_boundaries.clear()
             self.memory_maintenance.clear()
+        elif key == "expression":
+            self.expression_profiles.clear()
+            self.expression_reviews.clear()
+            self.temporary_expression_states.clear()
+            self.expression_intents.clear()
+            self.emoji_assets.clear()
+        elif key == "media":
+            self.video_insights.clear()
+        elif key == "longterm":
             self.memory_episode_clusters.clear()
             self.memory_entities.clear()
             self.memory_conflicts.clear()
             self.memory_decision_links.clear()
             self.long_term_memories.clear()
-            self.preferences.clear()
-            self.life_events.clear()
         elif key == "planning":
             self.week_plans.clear()
             self.commitments.clear()
@@ -2430,12 +2437,30 @@ class DataManager:
             deleted = len(stale)
             for date in stale:
                 self.daily_reviews.pop(date, None)
-        elif retention > 0 and key == "memory":
+        elif retention > 0 and key == "world":
             old_events = [item for item in self.events if self._older_than(item.date, cutoff)]
             self.events = [item for item in self.events if not self._older_than(item.date, cutoff)]
+            stale_life_events = [
+                event_id
+                for event_id, item in self.life_events.items()
+                if self._older_than(item.date, cutoff)
+                and item.status in {"done", "closed", "cancelled", "expired", "resolved"}
+            ]
+            for event_id in stale_life_events:
+                self.life_events.pop(event_id, None)
+            deleted = len(old_events) + len(stale_life_events)
+        elif retention > 0 and key == "conversation":
             stale_summaries = [key for key, item in self.chat_summaries.items() if self._older_than(item.date, cutoff)]
             for summary_id in stale_summaries:
                 self.chat_summaries.pop(summary_id, None)
+            stale_sessions = [
+                key for key, item in self.session_mid_summaries.items()
+                if self._older_than(item.updated_at, cutoff)
+            ]
+            for session_id in stale_sessions:
+                self.session_mid_summaries.pop(session_id, None)
+            deleted = len(stale_summaries) + len(stale_sessions)
+        elif retention > 0 and key == "experience":
             stale_episodes = [
                 key
                 for key, item in self.life_episodes.items()
@@ -2484,22 +2509,12 @@ class DataManager:
             ]
             for correction_id in stale_corrections:
                 self.memory_corrections.pop(correction_id, None)
-            stale_reviews = [key for key, item in self.expression_reviews.items() if self._older_than(item.created_at, cutoff)]
-            for review_id in stale_reviews:
-                self.expression_reviews.pop(review_id, None)
             stale_patterns = [key for key, item in self.behavior_patterns.items() if self._older_than(item.last_seen, cutoff)]
             for pattern_id in stale_patterns:
                 self.behavior_patterns.pop(pattern_id, None)
             stale_scenes = [key for key, item in self.behavior_scenes.items() if self._older_than(item.last_seen, cutoff)]
             for scene_id in stale_scenes:
                 self.behavior_scenes.pop(scene_id, None)
-            stale_temp_states = [
-                key
-                for key, item in self.temporary_expression_states.items()
-                if item.expires_at and self._older_than(item.expires_at, cutoff)
-            ]
-            for state_id in stale_temp_states:
-                self.temporary_expression_states.pop(state_id, None)
             stale_slots = [
                 key
                 for key, item in self.focus_slots.items()
@@ -2513,6 +2528,62 @@ class DataManager:
             stale_maintenance = [key for key, item in self.memory_maintenance.items() if self._older_than(item.date, cutoff)]
             for maintenance_id in stale_maintenance:
                 self.memory_maintenance.pop(maintenance_id, None)
+            stale_decision_links = [
+                key for key, item in self.memory_decision_links.items()
+                if item.decision_id in stale_decisions
+            ]
+            for link_id in stale_decision_links:
+                self.memory_decision_links.pop(link_id, None)
+            deleted = (
+                len(stale_episodes)
+                + len(stale_evidence)
+                + len(stale_feedback)
+                + len(stale_emotions)
+                + len(stale_rhythm_logs)
+                + len(stale_reply_effects)
+                + len(stale_decisions)
+                + len(stale_corrections)
+                + len(stale_patterns)
+                + len(stale_scenes)
+                + len(stale_slots)
+                + len(stale_maintenance)
+                + len(stale_decision_links)
+            )
+        elif retention > 0 and key == "expression":
+            stale_reviews = [key for key, item in self.expression_reviews.items() if self._older_than(item.created_at, cutoff)]
+            for review_id in stale_reviews:
+                self.expression_reviews.pop(review_id, None)
+            stale_temp_states = [
+                key
+                for key, item in self.temporary_expression_states.items()
+                if item.expires_at and self._older_than(item.expires_at, cutoff)
+            ]
+            for state_id in stale_temp_states:
+                self.temporary_expression_states.pop(state_id, None)
+            stale_intents = [key for key, item in self.expression_intents.items() if self._older_than(item.created_at, cutoff)]
+            for intent_id in stale_intents:
+                self.expression_intents.pop(intent_id, None)
+            stale_emoji = [
+                key for key, item in self.emoji_assets.items()
+                if item.status == "disabled" and self._older_than(item.updated_at, cutoff)
+            ]
+            for emoji_id in stale_emoji:
+                self.emoji_assets.pop(emoji_id, None)
+            deleted = len(stale_reviews) + len(stale_temp_states) + len(stale_intents) + len(stale_emoji)
+        elif retention > 0 and key == "media":
+            cutoff_time = datetime.datetime.combine(
+                datetime.datetime.now().date() - datetime.timedelta(days=retention),
+                datetime.time.min,
+            ).timestamp()
+            stale_video = [
+                key
+                for key, item in self.video_insights.items()
+                if float(item.get("updated_at") or 0) < cutoff_time
+            ]
+            for video_key in stale_video:
+                self.video_insights.pop(video_key, None)
+            deleted = len(stale_video)
+        elif retention > 0 and key == "longterm":
             stale_long_term = [
                 key
                 for key, item in self.long_term_memories.items()
@@ -2539,40 +2610,11 @@ class DataManager:
             ]
             for link_id in stale_links:
                 self.memory_decision_links.pop(link_id, None)
-            cutoff_time = datetime.datetime.combine(
-                datetime.datetime.now().date() - datetime.timedelta(days=retention),
-                datetime.time.min,
-            ).timestamp()
-            stale_video = [
-                key
-                for key, item in self.video_insights.items()
-                if float(item.get("updated_at") or 0) < cutoff_time
-            ]
-            for video_key in stale_video:
-                self.video_insights.pop(video_key, None)
             deleted = (
-                len(old_events)
-                + len(stale_summaries)
-                + len(stale_episodes)
-                + len(stale_evidence)
-                + len(stale_feedback)
-                + len(stale_emotions)
-                + len(stale_rhythm_logs)
-                + len(stale_reply_effects)
-                + len(stale_decisions)
-                + len(stale_corrections)
-                + len(stale_reviews)
-                + len(stale_patterns)
-                + len(stale_scenes)
-                + len(stale_temp_states)
-                + len(stale_slots)
-                + len(stale_intents)
-                + len(stale_maintenance)
-                + len(stale_long_term)
+                len(stale_long_term)
                 + len(stale_clusters)
                 + len(stale_conflicts)
                 + len(stale_links)
-                + len(stale_video)
             )
         elif retention > 0 and key == "planning":
             stale_links = [date for date in self.day_commitments if self._older_than(date, cutoff)]

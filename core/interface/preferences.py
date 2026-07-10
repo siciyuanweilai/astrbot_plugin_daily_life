@@ -39,6 +39,10 @@ class SettingsCommandMixin:
         invite_provider = config.invite.provider or default_provider
         vision_provider = config.vision.provider or default_provider
         daily_keep = f"{config.storage.daily_keep_days} 天" if config.storage.daily_keep_days else "长期"
+        conversation_keep = (
+            f"{config.storage.conversation_keep_days} 天" if config.storage.conversation_keep_days else "长期"
+        )
+        media_keep = f"{config.storage.media_keep_days} 天" if config.storage.media_keep_days else "长期"
         review_keep = f"{config.storage.review_keep_days} 天" if config.storage.review_keep_days else "长期"
         quiet_hours = f"；静默 {config.state.quiet_hours}" if config.state.quiet_hours else ""
         yield event.plain_result(
@@ -50,5 +54,5 @@ class SettingsCommandMixin:
 🫧 实时状态: {state_status}（{config.state.refresh_minutes} 分钟巡检状态与穿搭{quiet_hours}）
 🧠 模型: 生成 {generation_provider} · 状态 {state_provider} · 穿搭 {outfit_provider} · 复盘 {review_provider} · 邀约 {invite_provider} · 视觉 {vision_provider}
 ⏰ 生活背景生成时间: {config.schedule_time}
-🗃️ 数据保留: 每日 {daily_keep} · 复盘 {review_keep}"""
+🗃️ 数据保留: 每日 {daily_keep} · 聊天留意 {conversation_keep} · 媒体理解 {media_keep} · 复盘 {review_keep}"""
         )

@@ -1191,37 +1191,6 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
 
         self.assertTrue(event.is_stopped())
         self.assertIsNone(event.get_result())
-    async def test_recalled_event_skips_chat_context_capture_background(self):
-        runtime, _ = self._make_proactive_runtime([])
-        calls = []
-        logs = []
-        import core.runtime.recall as recall_module
-        original_logger = recall_module.logger
-        recall_module.logger = types.SimpleNamespace(debug=lambda message: logs.append(str(message)))
-        runtime.contact_resolver = types.SimpleNamespace(resolve_event_sender=lambda event: async_return("阿林"))
-        runtime.maybe_collect_emoji_assets_from_event = lambda *args, **kwargs: calls.append("emoji") or async_return(None)
-        runtime.maybe_capture_commitment_from_event = lambda *args, **kwargs: calls.append("commitment") or async_return(None)
-        runtime.maybe_capture_chat_memory_from_event = lambda *args, **kwargs: calls.append("memory") or async_return(None)
-        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001", message_id="m-local")
-        event.message_str = "这种天，好热"
-        recall_event = Event(unified_msg_origin=event.unified_msg_origin)
-        recall_event.message_obj.raw_message = {
-            "post_type": "notice",
-            "notice_type": "friend_recall",
-            "message_id": "m-local",
-            "user_id": "10001",
-        }
-
-        try:
-            runtime.note_recalled_message(recall_event)
-            await runtime._capture_chat_context_background(event, datetime.datetime(2026, 6, 27, 13, 54))
-            runtime.stop_recalled_event_before_history(event)
-        finally:
-            recall_module.logger = original_logger
-
-        self.assertEqual(calls, [])
-        skip_logs = [item for item in logs if "已跳过本轮回复与历史沉淀" in item]
-        self.assertEqual(len(skip_logs), 1)
     async def test_life_image_generate_resolves_agent_context_event(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.context = Context(Provider([]))
@@ -5502,115 +5471,6 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertIn("视频理解完成：视频里是咖啡店窗边的暖光场景", result)
         self.assertIn("不要因为字幕、水印、标题或画面线索再调用联网搜索", result)
         self.assertIn("出处、原视频、作者、链接", result)
-    async def test_life_video_note_uses_professional_prompt_and_sends_t2i_image(self):
-        provider = Provider(
-            [
-                json.dumps(
-                    {
-                        "sections": [
-                            {
-                                "title": "概述",
-                                "paragraphs": ["窗边暖光里有人端起咖啡。"],
-                                "bullets": [],
-                                "quotes": [],
-                            }
-                        ]
-                    },
-                    ensure_ascii=False,
-                )
-            ]
-        )
-        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
-        runtime.context = Context(provider, config={"t2i_strategy": "remote", "t2i_active_template": "base"})
-        runtime.config = LifeSettings.from_dict({"sight_config": {"note_max_transcript_chars": 12000}})
-        runtime.archive = DataManager()
-        runtime._sight_vault = SightVault(runtime.archive)
-
-        class Composer:
-            async def _get_provider(self, provider_id=""):
-                return provider
-
-            async def _call_llm_text(self, provider_arg, prompt, session_id, empty_retries=0, primary_provider_id=""):
-                return (await provider_arg.text_chat(prompt, session_id)).completion_text
-
-            async def _cleanup_conversation(self, session_id):
-                return None
-
-        runtime.composer = Composer()
-        video_event = Event(
-            sender_name="阿林",
-            sender_id="10001",
-            unified_msg_origin="aiocqhttp:FriendMessage:10001",
-            message_id="m-video-note-source",
-        )
-        video_event.message_items = [{"type": "video", "file": "D:/tmp/note.mp4"}]
-        video_event.message_obj.message = video_event.message_items
-        await runtime._sight_vault_for_runtime().upsert(
-            SightInsight(
-                clip=runtime._sight_clips_from_event(video_event)[0],
-                summary="视频里是雨夜咖啡店窗边的暖光场景",
-                details=[
-                    "音频主线：有人介绍晚间咖啡店的布置",
-                    "完整文字来源：必剪转写，共 428 字，已参与音频主线提炼",
-                ],
-                frame_notes=["00:01：窗边有暖色灯光和咖啡杯"],
-                transcript="有人介绍晚间咖啡店的布置，镜头最后停在窗边。",
-                metadata={
-                    "title": "雨夜咖啡店",
-                    "uploader": "测试作者",
-                    "duration": 18,
-                    "transcript_segments": [
-                        {"start": 0, "end": 6, "text": "有人介绍晚间咖啡店的布置"},
-                        {"start": 8, "end": 14, "text": "镜头最后停在窗边"},
-                    ],
-                },
-            )
-        )
-        event = Event(
-            sender_name="阿林",
-            sender_id="10001",
-            unified_msg_origin=video_event.unified_msg_origin,
-            message_id="m-video-note-question",
-        )
-        html_renderer.calls.clear()
-        html_renderer.result = "https://example.com/video-note.png"
-
-        result = await runtime.life_video_note(event, style="professional")
-
-        self.assertEqual(result, "视频专业总结已发送，无需复述正文。")
-        self.assertEqual(len(runtime.context.sent_messages), 1)
-        _, chain = runtime.context.sent_messages[0]
-        self.assertEqual(chain.items, [{"type": "image", "url": "https://example.com/video-note.png"}])
-        self.assertEqual(len(html_renderer.calls), 1)
-        note_markdown = html_renderer.calls[0]["text"]
-        self.assertIn("# 雨夜咖啡店 - 测试作者", note_markdown)
-        self.assertIn("## 背景概述", note_markdown)
-        self.assertIn("## 核心论点", note_markdown)
-        self.assertIn("## 关键事实/数据支撑", note_markdown)
-        self.assertNotIn("## AI 总结", note_markdown)
-        self.assertIn("## 时间线", note_markdown)
-        self.assertIn("`00:00` 有人介绍晚间咖啡店的布置", note_markdown)
-        self.assertIn("**专业模式**", provider.prompts[0])
-        self.assertIn("背景概述", provider.prompts[0])
-        self.assertIn("核心论点", provider.prompts[0])
-        self.assertIn("关键事实/数据支撑", provider.prompts[0])
-        self.assertIn("分析与影响", provider.prompts[0])
-        self.assertIn("争议与风险", provider.prompts[0])
-        self.assertIn("结论与行动建议", provider.prompts[0])
-        self.assertNotIn("AI 总结", provider.prompts[0])
-        recent = await runtime._sight_vault_for_runtime().recent(video_event.unified_msg_origin, limit=1)
-        self.assertIn("professional_digest", recent[0].metadata)
-        context = await runtime.format_recent_sight_context(event)
-        self.assertIn("专业总结：背景概述", context)
-        self.assertIn("窗边暖光里有人端起咖啡", context)
-        self.assertIn("bullets", provider.prompts[0])
-        self.assertIn("quotes", provider.prompts[0])
-        self.assertIn("**加粗**", provider.prompts[0])
-        self.assertIn("视频分段", provider.prompts[0])
-        self.assertIn("输出 JSON 对象", provider.prompts[0])
-        self.assertIn('"sections"', provider.prompts[0])
-        self.assertIn("窗边有暖色灯光", provider.prompts[0])
-        self.assertNotIn("完整文字来源", provider.prompts[0])
     async def test_sight_note_sent_suppresses_duplicate_followup_text(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         event = Event(message_id="m-video-note-followup")
@@ -7456,7 +7316,8 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         )
         assets = await runtime.archive.get_emoji_assets(10, status="ready")
         self.assertEqual(assets[0].used_count, 1)
-        self.assertEqual(provider.prompts, [])
+        self.assertEqual(len(provider.prompts), 1)
+        self.assertIn("候选表情", provider.prompts[0])
     async def test_proactive_send_uses_cached_local_emoji_asset(self):
         runtime, provider = self._make_proactive_runtime(
             ['{"emoji_id": 1, "reason": "这个表情适合轻轻围观"}'],
@@ -7498,7 +7359,8 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
                 runtime.context.sent_messages[1][1].items,
                 [{"type": "image", "file": str(cached_path)}],
             )
-            self.assertEqual(provider.prompts, [])
+            self.assertEqual(len(provider.prompts), 1)
+            self.assertIn("候选表情", provider.prompts[0])
     async def test_injection_media_expression_does_not_create_voice_round(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.context = Context(Provider([]))
