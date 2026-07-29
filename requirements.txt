@@ -1,0 +1,6 @@
+chinese-calendar>=1.10
+APScheduler>=3.10
+aiohttp>=3.9
+yt-dlp>=2024.1
+imageio-ffmpeg>=0.5
+segno>=1.6

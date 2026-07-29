@@ -1,0 +1,388 @@
+from __future__ import annotations
+
+from typing import Any
+
+from astrbot.api import logger
+from astrbot.api.event import MessageChain
+from astrbot.api.message_components import Plain
+
+from ..delivery import BackgroundTextMode
+
+try:
+    from astrbot.core.pipeline.process_stage import follow_up as _astrbot_follow_up
+except Exception:
+    _astrbot_follow_up = None
+
+from ..markers import LOG_PREFIX
+
+VOICE_TOOL_NAME = "life_voice_generate"
+EMOJI_TOOL_NAME = "life_emoji_send"
+SILENT_TOOL_PREFACE_NAMES = frozenset({VOICE_TOOL_NAME, EMOJI_TOOL_NAME})
+
+
+class SilentToolPrefaceMixin:
+    """屏蔽指定媒体工具调用前的模型旁白。
+
+    只覆盖会由插件自己完成表达的工具，避免模型先把
+    "我要发语音/表情" 这类说明当成普通消息发出去。
+    """
+
+    def _tool_preface_scope_key(self, event: Any) -> str:
+        getter = getattr(self, "_event_session_id", None)
+        if callable(getter):
+            try:
+                scope = str(getter(event) or "").strip()
+                if scope:
+                    return scope
+            except Exception:
+                pass
+        return str(getattr(event, "unified_msg_origin", "") or "").strip()
+
+    def _tool_reply_round_store(self) -> dict[str, dict[str, Any]]:
+        store = getattr(self, "_tool_reply_rounds", None)
+        if not isinstance(store, dict):
+            store = {}
+            self._tool_reply_rounds = store
+        return store
+
+    @classmethod
+    def _tool_name(cls, tool: Any) -> str:
+        names = cls._coerce_tool_names(tool)
+        return next(iter(names), "")
+
+    @staticmethod
+    def _copy_result_chain(result: Any) -> Any:
+        raw_chain = list(getattr(result, "chain", None) or [])
+        derive = getattr(result, "derive", None)
+        if callable(derive):
+            try:
+                return derive(raw_chain)
+            except Exception:
+                pass
+        chain = MessageChain()
+        target = getattr(chain, "chain", None)
+        if isinstance(target, list):
+            target.extend(raw_chain)
+        return chain
+
+    def _remember_tool_preface(self, event: Any, result: Any) -> bool:
+        scope = self._tool_preface_scope_key(event)
+        chain = getattr(result, "chain", None)
+        if not scope or not isinstance(chain, list) or not chain:
+            return False
+        self._tool_reply_round_store()[scope] = {
+            "preface": self._copy_result_chain(result),
+            "tool_name": "",
+            "outcome": "",
+            "preface_sent": False,
+            "preface_suppressed": False,
+            "tool_completed": False,
+            "final_response_pending": False,
+        }
+        return True
+
+    @staticmethod
+    def _plain_tool_preface_text(chain: Any) -> str:
+        parts = getattr(chain, "chain", None)
+        if not isinstance(parts, list) or not parts:
+            return ""
+        texts: list[str] = []
+        for part in parts:
+            if isinstance(part, str):
+                text = str(part)
+            elif isinstance(part, Plain):
+                text = str(getattr(part, "text", "") or "")
+            elif isinstance(part, dict):
+                part_type = str(part.get("type") or "").strip().lower()
+                if part_type not in {"", "text", "plain"}:
+                    return ""
+                data = part.get("data")
+                if isinstance(data, dict):
+                    text = str(data.get("text") or data.get("content") or "")
+                else:
+                    text = str(part.get("text") or part.get("content") or "")
+            else:
+                return ""
+            text = text.strip()
+            if text:
+                texts.append(text)
+        return " ".join(texts).strip()
+
+    async def _send_visible_tool_preface(
+        self, scope: str, chain: Any, event: Any
+    ) -> tuple[bool, str]:
+        text = self._plain_tool_preface_text(chain)
+        expressed_sender = getattr(self, "send_background_text", None)
+        if text and callable(expressed_sender):
+            try:
+                sent = await expressed_sender(
+                    scope,
+                    text,
+                    mode=BackgroundTextMode.EXPRESSIVE,
+                    source_event=event,
+                    source="tool_preface",
+                )
+            except Exception as exc:
+                logger.warning(f"{LOG_PREFIX} 工具调用前回复聊天表达发送失败：{exc}")
+                return False, "聊天表达"
+            return bool(sent), "聊天表达"
+
+        sender = getattr(self, "send_message_if_not_recalled", None)
+        if callable(sender):
+            sent = await sender(scope, chain, source_event=event)
+            return bool(sent), "原始消息链"
+        event_sender = getattr(event, "send", None)
+        if callable(event_sender):
+            await event_sender(chain)
+            return True, "原始消息链"
+        return False, "原始消息链"
+
+    async def handle_llm_tool_start(
+        self, event: Any, tool: Any, tool_args: dict[str, Any] | None = None
+    ) -> None:
+        """在 AstrBot 确认工具后释放或丢弃已经暂存的中间回复。"""
+
+        del tool_args
+        scope = self._tool_preface_scope_key(event)
+        if not scope:
+            return
+        state = self._tool_reply_round_store().get(scope)
+        if not isinstance(state, dict):
+            return
+        name = self._tool_name(tool)
+        state["tool_name"] = name
+        state["tool_completed"] = False
+        chain = state.pop("preface", None)
+        if name in SILENT_TOOL_PREFACE_NAMES:
+            state["preface_suppressed"] = True
+            logger.debug(f"{LOG_PREFIX} 工具调用前回复已静默：{name}")
+            return
+        if chain is None:
+            return
+        sent, channel = await self._send_visible_tool_preface(scope, chain, event)
+        state["preface_sent"] = bool(sent)
+        state["preface_channel"] = channel
+        if sent:
+            if channel == "原始消息链":
+                noter = getattr(self, "note_structured_bot_message", None)
+                if callable(noter):
+                    noter(
+                        scope,
+                        getattr(chain, "get_plain_text", lambda: "")(),
+                        source_event=event,
+                    )
+            logger.debug(
+                f"{LOG_PREFIX} 工具调用前回复已发送：{name or '未知工具'}；通道={channel}"
+            )
+
+    async def handle_llm_tool_respond(
+        self,
+        event: Any,
+        tool: Any,
+        tool_args: dict[str, Any] | None = None,
+        tool_result: Any = None,
+    ) -> None:
+        """结束工具阶段，保留结果状态供最终文字回复判断。"""
+
+        del tool_args, tool_result
+        scope = self._tool_preface_scope_key(event)
+        state = self._tool_reply_round_store().get(scope)
+        if isinstance(state, dict):
+            state["tool_name"] = state.get("tool_name") or self._tool_name(tool)
+            state["tool_completed"] = True
+            state["final_response_pending"] = True
+
+    def mark_tool_outcome(self, event: Any, tool_name: str, outcome: str) -> None:
+        scope = self._tool_preface_scope_key(event)
+        if not scope:
+            return
+        state = self._tool_reply_round_store().setdefault(scope, {})
+        state["tool_name"] = str(tool_name or "").strip()
+        state["outcome"] = str(outcome or "").strip().lower()
+        state["final_response_pending"] = True
+
+    def note_tool_final_response(self, event: Any, llm_response: Any) -> None:
+        scope = self._tool_preface_scope_key(event)
+        state = self._tool_reply_round_store().get(scope)
+        if not isinstance(state, dict):
+            return
+        completion = str(getattr(llm_response, "completion_text", "") or "").strip()
+        result_chain = getattr(llm_response, "result_chain", None)
+        chain_items = getattr(result_chain, "chain", result_chain)
+        if not completion and not chain_items:
+            self._tool_reply_round_store().pop(scope, None)
+            return
+        state["final_response_pending"] = True
+
+    def suppress_final_silent_tool_result(self, event: Any) -> bool:
+        """语音成功后清除重复文字，表情成功后保留自然补话。"""
+
+        scope = self._tool_preface_scope_key(event)
+        state = self._tool_reply_round_store().get(scope)
+        if not isinstance(state, dict):
+            return False
+        name = str(state.get("tool_name") or "").strip()
+        outcome = str(state.get("outcome") or "").strip().lower()
+        if name not in SILENT_TOOL_PREFACE_NAMES or outcome != "sent":
+            if state.get("final_response_pending"):
+                state["final_response_pending"] = False
+                self._tool_reply_round_store().pop(scope, None)
+            return False
+        if name == EMOJI_TOOL_NAME:
+            self._tool_reply_round_store().pop(scope, None)
+            logger.debug(f"{LOG_PREFIX} 表情已发送，保留后续文字回复")
+            return False
+        clearer = getattr(event, "clear_result", None)
+        if callable(clearer):
+            clearer()
+        else:
+            result = getattr(event, "get_result", lambda: None)()
+            chain = getattr(result, "chain", None)
+            if isinstance(chain, list):
+                chain.clear()
+        self._tool_reply_round_store().pop(scope, None)
+        logger.debug(f"{LOG_PREFIX} 语音已发送，已隐藏重复文字回复")
+        return True
+
+    @staticmethod
+    def _follow_up_module() -> Any:
+        return _astrbot_follow_up
+
+    @staticmethod
+    def _voice_switch_reply_text_from_event(event: Any) -> str:
+        result = getattr(event, "get_result", lambda: None)()
+        chain = getattr(result, "chain", None)
+        if not isinstance(chain, list):
+            return ""
+        texts: list[str] = []
+        for comp in chain:
+            if isinstance(comp, str):
+                text = comp
+            elif isinstance(comp, dict):
+                if comp.get("type") not in {None, "text", "plain"}:
+                    continue
+                text = str(comp.get("text") or comp.get("content") or "")
+            else:
+                text = str(
+                    getattr(comp, "text", "") or getattr(comp, "content", "") or ""
+                )
+            text = text.strip()
+            if text:
+                texts.append(text)
+        return "\n".join(texts).strip()
+
+    def suppress_intermediate_tool_result(self, event: Any) -> bool:
+        result = getattr(event, "get_result", lambda: None)()
+        chain = getattr(result, "chain", None)
+        if not isinstance(chain, list) or not chain:
+            return False
+        if not self._is_llm_result_object(result):
+            return False
+        if not self._is_active_agent_intermediate_result(event):
+            return False
+        self._remember_tool_preface(event, result)
+        clearer = getattr(event, "clear_result", None)
+        if callable(clearer):
+            clearer()
+        else:
+            chain.clear()
+        logger.debug(f"{LOG_PREFIX} 工具调用前回复已暂存，等待工具类型确认。")
+        return True
+
+    def _is_active_agent_intermediate_result(self, event: Any) -> bool:
+        result = getattr(event, "get_result", lambda: None)()
+        chain = getattr(result, "chain", None)
+        if not isinstance(chain, list) or not chain:
+            return False
+        if not self._is_llm_result_object(result):
+            return False
+        runner = self._active_agent_runner(event)
+        return runner is not None and not self._runner_is_done(runner)
+
+    @classmethod
+    def _coerce_tool_names(cls, value: Any) -> set[str]:
+        if value is None:
+            return set()
+        if isinstance(value, str):
+            text = value.strip()
+            return {text} if text else set()
+        if isinstance(value, dict):
+            names: set[str] = set()
+            for key in (
+                "name",
+                "tool_name",
+                "function_name",
+                "function",
+                "tool_calls",
+                "tools_call_name",
+                "message",
+                "choices",
+                "completion",
+                "raw_response",
+                "response",
+            ):
+                names.update(cls._coerce_tool_names(value.get(key)))
+            return names
+        function = getattr(value, "function", None)
+        if function is not None:
+            names = cls._coerce_tool_names(getattr(function, "name", None))
+            if names:
+                return names
+        names: set[str] = set()
+        for attr in (
+            "name",
+            "tool_name",
+            "function_name",
+            "tools_call_name",
+            "tool_calls",
+            "message",
+            "choices",
+            "completion",
+            "raw_response",
+            "response",
+        ):
+            direct = getattr(value, attr, None)
+            if direct is not None and direct is not value:
+                names.update(cls._coerce_tool_names(direct))
+        if names:
+            return names
+        try:
+            iterator = iter(value)
+        except TypeError:
+            return set()
+        names = set()
+        for item in iterator:
+            names.update(cls._coerce_tool_names(item))
+        return names
+
+    @staticmethod
+    def _is_llm_result_object(result: Any) -> bool:
+        checker = getattr(result, "is_llm_result", None)
+        if callable(checker):
+            try:
+                return bool(checker())
+            except Exception:
+                pass
+        return str(getattr(result, "result_content_type", "")).endswith("LLM_RESULT")
+
+    @staticmethod
+    def _runner_is_done(runner: Any) -> bool:
+        checker = getattr(runner, "done", None)
+        if callable(checker):
+            try:
+                return bool(checker())
+            except Exception:
+                return False
+        return False
+
+    @staticmethod
+    def _active_agent_runner(event: Any) -> Any | None:
+        umo = str(getattr(event, "unified_msg_origin", "") or "").strip()
+        if not umo:
+            return None
+        runners = getattr(
+            SilentToolPrefaceMixin._follow_up_module(), "_ACTIVE_AGENT_RUNNERS", None
+        )
+        if not isinstance(runners, dict):
+            return None
+        return runners.get(umo)

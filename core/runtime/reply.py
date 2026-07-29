@@ -1,0 +1,974 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import time
+from dataclasses import dataclass
+from typing import Any
+
+from astrbot.api import logger
+from astrbot.api.event import MessageChain
+
+from .delivery import (
+    BackgroundTextMode,
+    EventDeliveryRequest,
+    ReplyDeliveryService,
+    ScopeDeliveryRequest,
+)
+from .markers import LOG_PREFIX
+
+
+@dataclass(frozen=True, slots=True)
+class SegmentPart:
+    text: str
+    relation: str = "standalone"
+    pause: str = "none"
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticSegmentPlan:
+    segments: tuple[SegmentPart, ...]
+    source: str = "semantic"
+    valid: bool = True
+    channel: str = "text"
+    emotion: str = ""
+    emotion_category: str = "neutral"
+    emoji_intent: str = ""
+    send_emoji: bool = False
+    stance: str = "respond"
+    confidence: float = 0.0
+    reason: str = ""
+
+    @property
+    def text(self) -> str:
+        return "".join(segment.text for segment in self.segments)
+
+
+class SemanticSegmentRuntimeMixin:
+    """模型语义分段与可中断发送。
+
+    该层不对正文做标点或关键词切分。语义分段器只能返回原文的完整分段，
+    校验失败时保持单段发送。
+    """
+
+    _SEMANTIC_SEGMENT_PENDING_ATTR = "_daily_life_semantic_segment_pending"
+    _SEMANTIC_SEGMENT_PLAN_ATTR = "_daily_life_semantic_segment_plan"
+    _SEMANTIC_SEGMENT_SCOPE_ATTR = "_daily_life_semantic_segment_scope"
+    _SEMANTIC_SEGMENT_ATTEMPTED_ATTR = "_daily_life_semantic_segment_attempted"
+
+    def _semantic_segment_init_state(self) -> None:
+        self._semantic_segment_revisions: dict[str, int] = {}
+        self._semantic_segment_epochs: dict[str, int] = {}
+        self._semantic_segment_metrics: dict[str, int] = {
+            "segmented": 0,
+            "fallback_single": 0,
+            "sent": 0,
+            "cancelled": 0,
+            "failed": 0,
+        }
+        self._chat_pacing_state: dict[str, dict[str, Any]] = {}
+
+    def _semantic_segment_enabled(self) -> bool:
+        if not isinstance(getattr(self, "_semantic_segment_metrics", None), dict):
+            return False
+        checker = getattr(self, "_chat_style_enabled", None)
+        if callable(checker):
+            return bool(checker())
+        settings = getattr(getattr(self, "config", None), "chat_style", None)
+        return bool(settings and getattr(settings, "enabled", False))
+
+    @staticmethod
+    def _semantic_segment_scope_from_event(event: Any) -> str:
+        value = getattr(event, "unified_msg_origin", "") if event is not None else ""
+        return str(value or "").strip()
+
+    def _semantic_segment_revision(self, scope: str) -> int:
+        return int(getattr(self, "_semantic_segment_revisions", {}).get(scope, 0))
+
+    def _semantic_segment_epoch(self, scope: str) -> int:
+        return int(getattr(self, "_semantic_segment_epochs", {}).get(scope, 0))
+
+    def note_semantic_segment_incoming_message(self, event: Any) -> None:
+        if not self._semantic_segment_enabled():
+            return
+        scope = self._semantic_segment_scope_from_event(event)
+        if not scope:
+            return
+        revisions = getattr(self, "_semantic_segment_revisions", None)
+        if not isinstance(revisions, dict):
+            self._semantic_segment_init_state()
+            revisions = self._semantic_segment_revisions
+        revisions[scope] = int(revisions.get(scope, 0)) + 1
+        now_value = time.monotonic()
+        pacing = self._chat_pacing_state.setdefault(scope, {})
+        previous = pacing.get("incoming_at")
+        pacing["incoming_at"] = now_value
+        if isinstance(previous, (int, float)) and now_value > previous:
+            interval = min(max(now_value - previous, 0.2), 120.0)
+            old = float(pacing.get("interval_ema") or interval)
+            pacing["interval_ema"] = old * 0.7 + interval * 0.3
+
+    def _note_chat_pacing_effect(self, scope: str, outcome: str) -> None:
+        if not scope:
+            return
+        state = getattr(self, "_chat_pacing_state", None)
+        if not isinstance(state, dict):
+            state = {}
+            self._chat_pacing_state = state
+        pacing = state.setdefault(scope, {})
+        current = float(pacing.get("effect") or 0.0)
+        target = 1.0 if outcome == "positive" else (-1.0 if outcome == "negative" else 0.0)
+        pacing["effect"] = max(-1.0, min(current * 0.65 + target * 0.35, 1.0))
+
+    def _semantic_expression_plan_from_event(
+        self, event: Any
+    ) -> SemanticSegmentPlan | None:
+        plan = getattr(event, self._SEMANTIC_SEGMENT_PLAN_ATTR, None)
+        return plan if isinstance(plan, SemanticSegmentPlan) and plan.valid else None
+
+    @staticmethod
+    def _semantic_segment_text(item: Any) -> str:
+        if isinstance(item, str):
+            return item
+        if isinstance(item, dict):
+            kind = str(item.get("type") or item.get("kind") or "text").strip().lower()
+            return (
+                str(item.get("text") or item.get("content") or "")
+                if kind in {"", "text", "plain"}
+                else ""
+            )
+        return str(getattr(item, "text", "") or getattr(item, "content", "") or "")
+
+    @staticmethod
+    def _semantic_segment_copy(item: Any, text: str) -> Any:
+        if isinstance(item, str):
+            return text
+        if isinstance(item, dict):
+            copied = dict(item)
+            if "content" in copied and "text" not in copied:
+                copied["content"] = text
+            else:
+                copied["text"] = text
+            return copied
+        try:
+            import copy
+
+            copied = copy.deepcopy(item)
+            if hasattr(copied, "text"):
+                copied.text = text
+            elif hasattr(copied, "content"):
+                copied.content = text
+            return copied
+        except Exception as exc:
+            logger.debug(
+                f"{LOG_PREFIX} 分段消息组件复制失败：{type(exc).__name__}",
+                exc_info=True,
+            )
+            return text
+
+    @staticmethod
+    def _semantic_segment_parse_payload(raw: str) -> dict[str, Any] | None:
+        text = str(raw or "").strip()
+        if text.startswith("```") and text.endswith("```"):
+            lines = text.splitlines()
+            text = "\n".join(lines[1:-1]).strip()
+        try:
+            payload = json.loads(text)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    @staticmethod
+    def _semantic_segment_normalize_source_text(text: str) -> str:
+        raw = str(text or "").strip()
+        lines = raw.splitlines()
+        if len(lines) <= 1:
+            return raw
+        return "".join(line.strip() for line in lines if line.strip())
+
+    @staticmethod
+    def _semantic_segment_clean_punctuation(text: str, cleanup_chars: str = "") -> str:
+        source = str(text or "")
+        cleanup_set = set(str(cleanup_chars or ""))
+        if not cleanup_set:
+            return source.strip()
+        cleaned: list[str] = []
+        pending_space = False
+        for index, char in enumerate(source):
+            if char in cleanup_set:
+                previous = source[index - 1] if index > 0 else ""
+                following = source[index + 1] if index + 1 < len(source) else ""
+                if (
+                    char.isascii()
+                    and previous.isascii()
+                    and bool(previous.strip())
+                    and following.isascii()
+                    and bool(following.strip())
+                ):
+                    if pending_space and cleaned and not cleaned[-1].isspace():
+                        cleaned.append(" ")
+                    cleaned.append(char)
+                    pending_space = False
+                    continue
+                pending_space = bool(
+                    cleaned and not cleaned[-1].isspace() and following.strip()
+                )
+                continue
+            if char.isspace():
+                pending_space = bool(cleaned)
+                continue
+            if pending_space and cleaned and not cleaned[-1].isspace():
+                cleaned.append(" ")
+            cleaned.append(char)
+            pending_space = False
+        return "".join(cleaned).strip()
+
+    def _semantic_segment_clean_plan_punctuation(
+        self,
+        event: Any,
+        plan: SemanticSegmentPlan,
+        source_text: str,
+    ) -> SemanticSegmentPlan:
+        config = self._chat_style_astrbot_send_config(event)
+        if not isinstance(config, dict) or "t2i_word_threshold" not in config:
+            return plan
+        threshold = self._chat_style_int_config(
+            config.get("t2i_word_threshold"), 150, minimum=50
+        )
+        if len(str(source_text or "")) > threshold:
+            return plan
+        style = getattr(getattr(self, "config", None), "chat_style", None)
+        if style is None or not bool(
+            getattr(style, "punctuation_cleanup_enabled", True)
+        ):
+            return plan
+        cleanup_chars = str(getattr(style, "punctuation_cleanup_chars", "") or "")
+        if not cleanup_chars:
+            return plan
+        if self._chat_style_text_is_structural(source_text):
+            return plan
+        segments = tuple(
+            SegmentPart(
+                text=self._semantic_segment_clean_punctuation(
+                    segment.text, cleanup_chars
+                )
+                or segment.text.strip(),
+                relation=segment.relation,
+                pause=segment.pause,
+            )
+            for segment in plan.segments
+        )
+        return SemanticSegmentPlan(
+            segments,
+            source=plan.source,
+            valid=plan.valid,
+            channel=plan.channel,
+            emotion=plan.emotion,
+            emotion_category=plan.emotion_category,
+            emoji_intent=plan.emoji_intent,
+            send_emoji=plan.send_emoji,
+            stance=plan.stance,
+            confidence=plan.confidence,
+            reason=plan.reason,
+        )
+
+    def _semantic_segment_validate_payload(
+        self, payload: dict[str, Any], source_text: str
+    ) -> SemanticSegmentPlan | None:
+        raw_segments = payload.get("segments")
+        if not isinstance(raw_segments, list):
+            return None
+        settings = getattr(self.config, "chat_style", None)
+        max_segments = max(1, int(getattr(settings, "semantic_max_segments", 10) or 10))
+        if not raw_segments or len(raw_segments) > max_segments:
+            return None
+        segments: list[SegmentPart] = []
+        for raw in raw_segments:
+            if not isinstance(raw, dict):
+                return None
+            text = raw.get("text")
+            if not isinstance(text, str) or not text.strip():
+                return None
+            relation = str(raw.get("relation") or "standalone").strip()
+            pause = str(raw.get("pause") or "none").strip()
+            if relation not in {
+                "standalone",
+                "lead",
+                "continue",
+                "add",
+                "turn",
+                "question",
+                "correction",
+                "closing",
+            }:
+                return None
+            if pause not in {"none", "short", "normal", "long"}:
+                return None
+            segments.append(SegmentPart(text=text, relation=relation, pause=pause))
+        segmented_text = "".join(segment.text for segment in segments)
+        if segmented_text != source_text:
+            return None
+        channel = str(payload.get("channel") or "text").strip().lower()
+        emotion_category = str(
+            payload.get("emotion_category") or "neutral"
+        ).strip().lower()
+        stance = str(payload.get("stance") or "respond").strip().lower()
+        if channel not in {"text", "voice"}:
+            channel = "text"
+        if emotion_category not in {"neutral", "happy", "sad", "angry"}:
+            emotion_category = "neutral"
+        if stance not in {"respond", "comfort", "play", "reflect", "close"}:
+            stance = "respond"
+        try:
+            confidence = max(0.0, min(float(payload.get("confidence") or 0.0), 1.0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        return SemanticSegmentPlan(
+            tuple(segments),
+            source="semantic",
+            valid=True,
+            channel=channel,
+            emotion=str(payload.get("emotion") or "").strip(),
+            emotion_category=emotion_category,
+            emoji_intent=str(payload.get("emoji_intent") or "").strip(),
+            send_emoji=payload.get("send_emoji") is True,
+            stance=stance,
+            confidence=confidence,
+            reason=str(payload.get("reason") or "").strip(),
+        )
+
+    async def _semantic_segment_plan_text(
+        self,
+        text: str,
+        *,
+        scope: str,
+        user_message: str = "",
+        source: str = "chat",
+        length_hint: int = 0,
+    ) -> SemanticSegmentPlan:
+        raw_text = str(text or "").strip()
+        source_text = (
+            self._semantic_segment_normalize_source_text(raw_text)
+            if self._semantic_segment_enabled()
+            else raw_text
+        )
+        fallback = (
+            SemanticSegmentPlan(
+                (SegmentPart(source_text),), source="fallback", valid=False
+            )
+            if source_text
+            else SemanticSegmentPlan(())
+        )
+        if not source_text or not self._semantic_segment_enabled():
+            return fallback
+        settings = getattr(self.config, "chat_style", None)
+        provider_id = str(getattr(settings, "semantic_provider", "") or "").strip()
+        max_segments = max(1, int(getattr(settings, "semantic_max_segments", 10) or 10))
+        try:
+            provider = await self.get_text_provider(provider_id)
+            if not provider:
+                return fallback
+            prompt = (
+                "你负责按语义划分回复分段。只把给定的最终回复原文划分为可直接发送的完整分段，不能改写、增删、纠正或调换任何字符。\n"
+                "这是通用模型语义分段协议，不要根据关键词套模板，也不要解释理由。\n"
+                '返回 JSON：{"segments":[{"text":"原文连续片段","relation":"standalone|lead|continue|add|turn|question|correction|closing","pause":"none|short|normal|long"}],"channel":"text|voice","emotion":"自然情绪或空","emotion_category":"neutral|happy|sad|angry","emoji_intent":"可选表情语义或空","send_emoji":false,"stance":"respond|comfort|play|reflect|close","confidence":0.0,"reason":"简短表达依据"}。\n'
+                "按自然聊天中的独立表达动作划分：每个分段短而完整，只承载一个主要意思。"
+                "如果一个分段连续堆叠了多个可以分别发送的意思，应在不破坏语义的位置继续拆开；"
+                "不要因为前后相关就合并成长段，也不要把一个不可分的意思拆碎。\n"
+                f"最多返回 {max_segments} 个分段；每个 text 必须按原文顺序拼接后完全等于原文。\n"
+                + (
+                    f"当前场景单个分段参考长度约为 {int(length_hint)} 字；这是自然表达倾向，不是硬性截断，"
+                    "超过时优先寻找独立表达动作再拆分。\n"
+                    if int(length_hint or 0) > 0
+                    else "当前没有额外长度倾向，按自然表达决定分段边界。\n"
+                )
+                + "channel、情绪、表情和姿态必须根据整轮语义判断；列表、代码、链接、参数和需要回看的信息应选择文字。没有明显必要时不选择语音或表情。\n"
+                + f"当前对方消息：{user_message}\n"
+                + f"回复原文：{source_text}"
+            )
+            timeout = max(
+                1.0,
+                min(
+                    float(getattr(settings, "semantic_timeout_seconds", 8.0) or 8.0),
+                    20.0,
+                ),
+            )
+            started_at = time.monotonic()
+            logger.debug(
+                f"{LOG_PREFIX} 模型语义分段开始：超时={timeout:g}秒；长度={len(source_text)}"
+            )
+            raw = await asyncio.wait_for(
+                self.call_text_model(
+                    provider,
+                    prompt,
+                    scope,
+                    empty_retries=0,
+                    primary_provider_id=provider_id,
+                ),
+                timeout=timeout,
+            )
+            logger.debug(
+                f"{LOG_PREFIX} 模型语义分段完成：耗时={time.monotonic() - started_at:.2f} 秒"
+            )
+            payload = self._semantic_segment_parse_payload(raw)
+            plan = (
+                self._semantic_segment_validate_payload(payload, source_text)
+                if payload
+                else None
+            )
+            if plan:
+                self._semantic_segment_metrics["segmented"] = (
+                    self._semantic_segment_metrics.get("segmented", 0) + 1
+                )
+                return plan
+            logger.debug(f"{LOG_PREFIX} 模型语义分段返回无效，已改用自然分段")
+        except asyncio.TimeoutError:
+            logger.debug(f"{LOG_PREFIX} 模型语义分段超时，已改用自然分段")
+        except Exception as exc:
+            logger.debug(
+                f"{LOG_PREFIX} 模型语义分段调用异常详情：{type(exc).__name__}: {exc}"
+            )
+            logger.debug(f"{LOG_PREFIX} 模型语义分段调用异常，已改用自然分段")
+        self._semantic_segment_metrics["fallback_single"] = (
+            self._semantic_segment_metrics.get("fallback_single", 0) + 1
+        )
+        return fallback
+
+    def _semantic_segment_mark_pending(
+        self, event: Any, plan: SemanticSegmentPlan, scope: str
+    ) -> None:
+        setattr(event, self._SEMANTIC_SEGMENT_PLAN_ATTR, plan)
+        setattr(event, self._SEMANTIC_SEGMENT_SCOPE_ATTR, scope)
+        setattr(
+            event,
+            self._SEMANTIC_SEGMENT_PENDING_ATTR,
+            list(plan.segments) if len(plan.segments) > 1 else [],
+        )
+
+    def _semantic_segment_log_expression_trace(
+        self,
+        plan: SemanticSegmentPlan,
+        *,
+        event: Any = None,
+        scope: str = "",
+    ) -> None:
+        if event is not None and getattr(
+            event, "_daily_life_reply_trace_logged", False
+        ):
+            return
+        scope_value = str(scope or "").strip()
+        if not scope_value and event is not None:
+            scope_value = self._semantic_segment_scope_from_event(event)
+        is_group = ":GroupMessage:" in scope_value
+        compact_lengths = [
+            len("".join(str(segment.text or "").split())) for segment in plan.segments
+        ]
+        semantic = plan.valid and len(plan.segments) > 1
+        logger.debug(
+            f"{LOG_PREFIX} 表达节奏：场景={'群聊' if is_group else '私聊'}；"
+            f"模型语义分段={'是' if semantic else '否'}；"
+            f"长度={sum(compact_lengths)}"
+        )
+        if event is not None:
+            setattr(event, "_daily_life_reply_trace_logged", True)
+
+    @staticmethod
+    def _semantic_segment_trace(segments: list[SegmentPart]) -> str:
+        return "；".join(
+            f"{index}={len(''.join(str(segment.text or '').split()))}字"
+            for index, segment in enumerate(segments, start=1)
+        )
+
+    def _semantic_segment_try_natural_fallback(
+        self, event: Any, source_text: str
+    ) -> bool:
+        if not self._semantic_segment_enabled():
+            return False
+        limit = int(self._chat_style_limit_for_event(event) or 0)
+        settings = getattr(self.config, "chat_style", None)
+        max_segments = max(1, int(getattr(settings, "semantic_max_segments", 10) or 10))
+        segments = self._plan_chat_style_natural_segments(
+            source_text, limit, max_segments_cap=max_segments
+        )
+        if len(segments) < 2:
+            return False
+        try:
+            from .style import _ChatStyleSegmentPlan
+
+            raw_plan = SemanticSegmentPlan(
+                tuple(SegmentPart(segment.text, pause="short") for segment in segments),
+                source="natural_fallback",
+                valid=True,
+            )
+            clean_plan = self._semantic_segment_clean_plan_punctuation(
+                event, raw_plan, source_text
+            )
+            natural_segments = [
+                _ChatStyleSegmentPlan(
+                    raw_text=source_segment.text,
+                    text=planned_segment.text,
+                    separator=source_segment.separator,
+                    break_kind=source_segment.break_kind,
+                )
+                for source_segment, planned_segment in zip(
+                    segments, clean_plan.segments
+                )
+            ]
+        except Exception as exc:
+            logger.debug(
+                f"{LOG_PREFIX} 自然分段降级失败：{type(exc).__name__}",
+                exc_info=True,
+            )
+            return False
+        if not self._replace_text_result_with_segments(event, natural_segments):
+            return False
+        setattr(event, "_daily_life_natural_fallback_active", True)
+        context = self._chat_style_context(event)
+        self.log_chat_style_trace(
+            event,
+            "\n".join(segment.text for segment in natural_segments),
+            context,
+            changed=True,
+        )
+        return True
+
+    async def apply_semantic_segment_before_send(self, event: Any) -> bool:
+        if event is None or not self._semantic_segment_enabled():
+            return False
+        if self._is_active_agent_intermediate_result(event):
+            return False
+        if getattr(event, self._SEMANTIC_SEGMENT_ATTEMPTED_ATTR, False):
+            return False
+        result = getattr(event, "get_result", lambda: None)()
+        chain = getattr(result, "chain", None)
+        if not isinstance(chain, list) or not chain:
+            return False
+        texts = [self._semantic_segment_text(item).strip() for item in chain]
+        if not texts or not all(texts):
+            return False
+        source_text = "".join(texts)
+        if self._chat_style_text_is_structural(source_text):
+            logger.debug(
+                f"{LOG_PREFIX} 模型语义分段跳过：保留列表、代码块或其他结构化排版。"
+            )
+            return False
+        if self._chat_style_should_keep_default_send(event, source_text):
+            return False
+        setattr(event, self._SEMANTIC_SEGMENT_ATTEMPTED_ATTR, True)
+        scope = self._semantic_segment_scope_from_event(event)
+        epochs = getattr(self, "_semantic_segment_epochs", None)
+        if not isinstance(epochs, dict):
+            self._semantic_segment_init_state()
+            epochs = self._semantic_segment_epochs
+        epochs[scope] = int(epochs.get(scope, 0)) + 1
+        plan = await self._semantic_segment_plan_text(
+            source_text,
+            scope=scope,
+            user_message=str(getattr(event, "message_str", "") or "").strip(),
+            length_hint=self._chat_style_limit_for_event(event),
+        )
+        if not plan.valid:
+            if self._semantic_segment_try_natural_fallback(event, source_text):
+                return True
+            return False
+        plan = self._semantic_segment_clean_plan_punctuation(event, plan, source_text)
+        self._semantic_segment_log_expression_trace(plan, event=event, scope=scope)
+        self._semantic_segment_mark_pending(event, plan, scope)
+        if len(plan.segments) <= 1:
+            if plan.segments and plan.segments[0].text != source_text:
+                chain[:] = [
+                    self._semantic_segment_copy(chain[0], plan.segments[0].text)
+                ]
+                return True
+            return False
+        template = chain[0]
+        chain[:] = [
+            self._semantic_segment_copy(template, segment.text)
+            for segment in plan.segments
+        ]
+        return True
+
+    def _semantic_segment_delay_seconds(
+        self, segment: SegmentPart, *, scope: str = ""
+    ) -> float:
+        delay = self._chat_style_segment_delay_seconds(
+            "", segment.text, pause=segment.pause
+        )
+        state = getattr(self, "_chat_pacing_state", None)
+        if not isinstance(state, dict):
+            state = {}
+            self._chat_pacing_state = state
+        pacing = state.get(scope, {})
+        interval = float(pacing.get("interval_ema") or 0.0)
+        effect = float(pacing.get("effect") or 0.0)
+        if interval and interval <= 4.0:
+            delay *= 0.88
+        elif interval >= 30.0:
+            delay *= 1.08
+        delay *= 1.0 - max(-0.12, min(effect * 0.12, 0.12))
+        return round(max(0.0, delay), 2)
+
+    async def send_semantic_segments_if_needed(self, event: Any) -> bool:
+        if not self._semantic_segment_enabled():
+            if event is not None:
+                setattr(event, self._SEMANTIC_SEGMENT_PENDING_ATTR, [])
+            return False
+        pending = list(getattr(event, self._SEMANTIC_SEGMENT_PENDING_ATTR, []) or [])
+        if len(pending) < 2:
+            return False
+        setattr(event, self._SEMANTIC_SEGMENT_PENDING_ATTR, [])
+        scope = str(getattr(event, self._SEMANTIC_SEGMENT_SCOPE_ATTR, "") or "").strip()
+        revision = self._semantic_segment_revision(scope)
+        epoch = self._semantic_segment_epoch(scope)
+        service = getattr(self, "reply_delivery", None) or ReplyDeliveryService(self)
+        outcome = await service.send_event(
+            EventDeliveryRequest(
+                event=event,
+                texts=tuple(segment.text for segment in pending),
+                scope=scope,
+                match="joined",
+                text_from_item=self._semantic_segment_text,
+                build_message=lambda index, chain: MessageChain().message(
+                    pending[index].text
+                ),
+                delay_seconds=lambda index: self._semantic_segment_delay_seconds(
+                    pending[index], scope=scope
+                ),
+                sleep=asyncio.sleep,
+                is_current=lambda: (
+                    self._semantic_segment_revision(scope) == revision
+                    and self._semantic_segment_epoch(scope) == epoch
+                ),
+            )
+        )
+        if outcome.status == "skipped":
+            logger.debug(
+                f"{LOG_PREFIX} 模型语义分段发送跳过：当前结果已被其他发送通道接管或改写。"
+            )
+            return False
+        if outcome.status == "cancelled":
+            self._semantic_segment_metrics["cancelled"] += 1
+            logger.debug(
+                f"{LOG_PREFIX} 模型语义分段后续分段已取消：已发送 "
+                f"{outcome.sent_count}/{len(pending)} 条。"
+            )
+            return True
+        if outcome.status == "failed":
+            self._semantic_segment_metrics["failed"] += 1
+            logger.debug(f"{LOG_PREFIX} 模型语义分段发送失败，保留默认发送：{outcome.error}")
+            return False
+        try:
+            reaction = getattr(self, "note_tool_reaction_message_sent", None)
+            if callable(reaction):
+                await reaction(event)
+            scheduler = getattr(self, "schedule_pending_chat_state_refresh", None)
+            if callable(scheduler):
+                scheduler(event)
+            self._semantic_segment_metrics["sent"] += 1
+            logger.debug(
+                f"{LOG_PREFIX} 语义分段发送：{outcome.sent_count} 段；"
+                f"{self._semantic_segment_trace(pending)}"
+            )
+            return True
+        except Exception as exc:
+            self._semantic_segment_metrics["failed"] += 1
+            logger.warning(f"{LOG_PREFIX} 模型语义分段发送后处理失败：{exc}")
+            return False
+
+    async def plan_semantic_segments_for_text(
+        self,
+        text: str,
+        *,
+        target_scope: str,
+        user_message: str = "",
+        source: str = "proactive",
+        length_hint: int = 0,
+        source_event: Any = None,
+    ) -> SemanticSegmentPlan:
+        plan = await self._semantic_segment_plan_text(
+            text,
+            scope=target_scope,
+            user_message=user_message,
+            source=source,
+            length_hint=length_hint,
+        )
+        if not self._semantic_segment_enabled():
+            return plan
+        source_text = self._semantic_segment_normalize_source_text(text)
+        plan = self._semantic_segment_clean_plan_punctuation(
+            source_event, plan, source_text
+        )
+        self._semantic_segment_log_expression_trace(
+            plan, event=source_event, scope=target_scope
+        )
+        return plan
+
+    async def send_semantic_segments(
+        self,
+        target_scope: str,
+        plan: SemanticSegmentPlan,
+        *,
+        source_event: Any = None,
+        source_message_id: str = "",
+        source: str = "semantic_segment",
+    ) -> bool:
+        if not self._semantic_segment_enabled():
+            return False
+        return await self._send_background_plan(
+            str(target_scope or "").strip(),
+            plan,
+            mode=BackgroundTextMode.EXPRESSIVE,
+            source_event=source_event,
+            source_message_id=source_message_id,
+            source=source,
+        )
+
+    async def send_background_text(
+        self,
+        target_scope: str,
+        text: str,
+        *,
+        mode: BackgroundTextMode,
+        source_event: Any = None,
+        source_message_id: str = "",
+        source: str = "background",
+        user_message: str = "",
+        length_hint: int | None = None,
+    ) -> bool:
+        """通过统一发送管线投递后台可见文字。"""
+        if not isinstance(mode, BackgroundTextMode):
+            raise TypeError("后台文字发送模式无效")
+        raw_text = str(text or "").strip()
+        scope = str(target_scope or "").strip()
+        if not scope or not raw_text:
+            return False
+        if not source_message_id and source_event is not None:
+            try:
+                source_message_id = str(self._event_message_id(source_event) or "")
+            except Exception:
+                source_message_id = ""
+
+        if mode is BackgroundTextMode.DIRECT:
+            return await self._send_background_plan(
+                scope,
+                SemanticSegmentPlan(
+                    (SegmentPart(raw_text),), source="direct", valid=True
+                ),
+                mode=mode,
+                source_event=source_event,
+                source_message_id=source_message_id,
+                source=source,
+            )
+
+        source_text = (
+            self._semantic_segment_normalize_source_text(raw_text)
+            if self._semantic_segment_enabled()
+            else raw_text
+        )
+        if not self._semantic_segment_enabled():
+            return await self._send_background_plan(
+                scope,
+                SemanticSegmentPlan(
+                    (SegmentPart(source_text),), source="direct", valid=True
+                ),
+                mode=mode,
+                source_event=source_event,
+                source_message_id=source_message_id,
+                source=source,
+            )
+
+        if length_hint is None:
+            limit_getter = getattr(self, "_chat_style_limit_for_event", None)
+            if callable(limit_getter) and source_event is not None:
+                length_hint = int(limit_getter(source_event) or 0)
+            else:
+                limit_getter = getattr(self, "_chat_style_limit_for_scope", None)
+                length_hint = (
+                    int(limit_getter(scope) or 0) if callable(limit_getter) else 0
+                )
+        plan = await self._semantic_segment_plan_text(
+            source_text,
+            scope=scope,
+            user_message=str(user_message or "").strip(),
+            source=source,
+            length_hint=int(length_hint or 0),
+        )
+        if plan.valid:
+            plan = self._semantic_segment_clean_plan_punctuation(
+                source_event, plan, source_text
+            )
+            self._semantic_segment_log_expression_trace(
+                plan, event=source_event, scope=scope
+            )
+            return await self._send_background_plan(
+                scope,
+                plan,
+                mode=mode,
+                source_event=source_event,
+                source_message_id=source_message_id,
+                source=source,
+            )
+
+        splitter = getattr(self, "_plan_chat_style_natural_segments", None)
+        settings = getattr(self.config, "chat_style", None)
+        max_segments = max(1, int(getattr(settings, "semantic_max_segments", 10) or 10))
+        natural_segments = (
+            splitter(source_text, int(length_hint or 0), max_segments_cap=max_segments)
+            if callable(splitter)
+            else []
+        )
+        if len(natural_segments) > 1:
+            natural_plan = SemanticSegmentPlan(
+                tuple(
+                    SegmentPart(
+                        segment.text,
+                        pause="short" if segment.break_kind == "soft" else "normal",
+                    )
+                    for segment in natural_segments
+                ),
+                source="natural",
+                valid=True,
+            )
+            natural_plan = self._semantic_segment_clean_plan_punctuation(
+                source_event, natural_plan, source_text
+            )
+            self.log_chat_style_trace(
+                source_event,
+                "\n".join(segment.text for segment in natural_plan.segments),
+                self._chat_style_context(source_event)
+                if source_event is not None
+                else {},
+                changed=True,
+            )
+            return await self._send_background_plan(
+                scope,
+                natural_plan,
+                mode=mode,
+                source_event=source_event,
+                source_message_id=source_message_id,
+                source=source,
+            )
+
+        fallback_plan = self._semantic_segment_clean_plan_punctuation(
+            source_event,
+            SemanticSegmentPlan(
+                (SegmentPart(source_text),), source="natural", valid=True
+            ),
+            source_text,
+        )
+        self.log_chat_style_trace(
+            source_event,
+            fallback_plan.text,
+            self._chat_style_context(source_event) if source_event is not None else {},
+            changed=False,
+        )
+        return await self._send_background_plan(
+            scope,
+            fallback_plan,
+            mode=mode,
+            source_event=source_event,
+            source_message_id=source_message_id,
+            source=source,
+        )
+
+    async def _send_background_plan(
+        self,
+        scope: str,
+        plan: SemanticSegmentPlan,
+        *,
+        mode: BackgroundTextMode,
+        source_event: Any = None,
+        source_message_id: str = "",
+        source: str = "background",
+    ) -> bool:
+        segments = list(plan.segments)
+        if not segments:
+            return False
+        expressive = mode is BackgroundTextMode.EXPRESSIVE
+        enabled = expressive and self._semantic_segment_enabled()
+        if enabled:
+            revisions = getattr(self, "_semantic_segment_revisions", None)
+            epochs = getattr(self, "_semantic_segment_epochs", None)
+            if not isinstance(revisions, dict) or not isinstance(epochs, dict):
+                self._semantic_segment_init_state()
+                revisions = self._semantic_segment_revisions
+                epochs = self._semantic_segment_epochs
+            revision = int(revisions.get(scope, 0))
+            epoch = int(epochs.get(scope, 0)) + 1
+            epochs[scope] = epoch
+        else:
+            revisions = {}
+            epochs = {}
+            revision = 0
+            epoch = 0
+        sender = getattr(self, "send_message_if_not_recalled", None)
+        if not callable(sender):
+            return False
+        reply_to_id = str(source_message_id or "").strip()
+        service = getattr(self, "reply_delivery", None) or ReplyDeliveryService(self)
+        outcome = await service.send_scope(
+            ScopeDeliveryRequest(
+                scope=scope,
+                texts=tuple(segment.text for segment in segments),
+                build_message=lambda index: MessageChain().message(
+                    segments[index].text
+                ),
+                delay_seconds=lambda index: (
+                    self._semantic_segment_delay_seconds(segments[index], scope=scope)
+                    if enabled
+                    else 0.0
+                ),
+                sleep=asyncio.sleep,
+                is_current=lambda: (
+                    not enabled
+                    or (
+                        int(revisions.get(scope, 0)) == revision
+                        and int(epochs.get(scope, 0)) == epoch
+                    )
+                ),
+                send=lambda chain: sender(
+                    scope,
+                    chain,
+                    source_event=source_event,
+                    source_message_id=source_message_id,
+                ),
+                on_sent=lambda index, text: self.note_structured_bot_message(
+                    scope,
+                    text,
+                    source_event=source_event if index == 0 else None,
+                    reply_to_id=reply_to_id if index == 0 else "",
+                ),
+                source_event=source_event,
+                source_message_id=source_message_id,
+                source=source,
+                decorate_addressing=expressive,
+            )
+        )
+        if outcome.status == "cancelled":
+            self._semantic_segment_metrics["cancelled"] += 1
+            logger.info(
+                f"{LOG_PREFIX} 后台文字后续分段已取消：已发送 "
+                f"{outcome.sent_count}/{len(segments)} 条。"
+            )
+            return True
+        if outcome.status != "sent":
+            logger.warning(f"{LOG_PREFIX} 后台文字发送失败：{outcome.error}")
+            if source == "proactive" and outcome.error is not None:
+                raise outcome.error
+            return False
+        if plan.source == "semantic":
+            self._semantic_segment_metrics["sent"] += 1
+        if len(segments) > 1:
+            label = "语义分段" if plan.source == "semantic" else "自然分段"
+            logger.debug(
+                f"{LOG_PREFIX} {label}发送：{len(segments)} 段；"
+                f"{self._semantic_segment_trace(segments)}"
+            )
+        return True
+
+    def semantic_segment_status(self) -> dict[str, Any]:
+        return {
+            "enabled": self._semantic_segment_enabled(),
+            "metrics": dict(getattr(self, "_semantic_segment_metrics", {})),
+            "active_scopes": len(getattr(self, "_semantic_segment_revisions", {})),
+        }
