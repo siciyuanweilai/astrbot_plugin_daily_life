@@ -28,7 +28,7 @@
 [![Yousa Ling](https://count.getloli.com/get/@DailyLife?theme=yousa-ling)](https://github.com/siciyuanweilai/astrbot_plugin_daily_life)
 
 > [!TIP]
-> 💖 **v1.0.0 正式发布**：自主生活、关系记忆、闲时回复、多模态生成、专业视频笔记、Tavily/Grok 搜索和可视化仪表盘已经形成完整闭环。完整发布内容见 [CHANGELOG.md](./CHANGELOG.md)。
+> **v1.0.0 正式发布**：自主生活、关系记忆、闲时回复、多模态生成、专业视频笔记、Tavily/Grok 搜索和可视化仪表盘已经形成完整闭环。完整发布内容见 [CHANGELOG.md](./CHANGELOG.md)。
 
 ---
 
