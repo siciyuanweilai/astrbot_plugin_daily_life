@@ -4,7 +4,7 @@ desc: "在流动的朝夕里，伴着一日光影、生活节律、心绪起落�
 version: 1.0.0
 author: 四次元未来
 repo: https://github.com/siciyuanweilai/astrbot_plugin_daily_life
-astrbot_version: ">=4.26"
+astrbot_version: ">=4.26.0"
 support_platforms:
     - aiocqhttp
     - weixin_oc
