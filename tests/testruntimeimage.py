@@ -62,7 +62,9 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         await asyncio.gather(*runtime._character_appearance_tasks().values())
         await asyncio.sleep(0)
         cached = await runtime._character_appearance_profile(event)
-        personas[0] = "成年女性，  整体纤细匀称，\n上半身曲线自然丰满，与肩腰胯比例协调。"
+        personas[0] = (
+            "成年女性，  整体纤细匀称，\n上半身曲线自然丰满，与肩腰胯比例协调。"
+        )
         equivalent = await runtime._character_appearance_profile(event)
         personas[0] = "成年女性，身形高挑，体态自然舒展。"
         third = await runtime._character_appearance_profile(event)
@@ -266,6 +268,112 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         cadence = runtime._media_cadence_store()[event.unified_msg_origin]
         self.assertEqual(cadence["last_media"], "图片")
         self.assertEqual(cadence["consecutive"], 1)
+
+    async def test_life_image_generate_persists_explicit_outfit_before_rendering(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.context = Context(Provider([]))
+        self._stub_media_director(runtime)
+        now = datetime.datetime(2026, 7, 30, 16, 44)
+        updated_day = DayRecord(
+            date="2026-07-30",
+            outfit="浅粉色泡泡袖针织短袖上衣，搭配米白色A字百褶短裙",
+            meta={
+                "style": "清爽甜妹风",
+                "hair_style": "锁骨发半扎",
+                "hair": "自然黑色微卷锁骨发，半扎并留有空气感碎刘海",
+            },
+        )
+        calls = []
+
+        class Composer:
+            async def update_outfit(
+                self, date, period, *, current_time=None, instruction=""
+            ):
+                calls.append(("update", date, period, current_time, instruction))
+                return updated_day
+
+        async def generate_image(prompt, **kwargs):
+            calls.append(("generate", prompt, kwargs))
+            return types.SimpleNamespace(path=Path("life.png"))
+
+        runtime.composer = Composer()
+
+        class Archive:
+            async def get_day(self, date):
+                return DayRecord(
+                    date=date,
+                    outfit="米白色居家短袖和淡青色居家短裤",
+                    meta={"style": "清爽居家风", "hair": "抓夹半扎发"},
+                )
+
+        runtime.archive = Archive()
+        runtime._runtime_now = lambda: now
+        runtime.resolve_injection_target = lambda current: async_return(
+            ("2026-07-30", False)
+        )
+        runtime._get_curr_period = lambda current: "evening"
+        status_changes = []
+        runtime.mark_page_status_changed = lambda reason: (
+            status_changes.append(reason) or async_return(1)
+        )
+        runtime.media = types.SimpleNamespace(
+            image=types.SimpleNamespace(generate_image=generate_image)
+        )
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
+        event.message_str = "换甜妹穿搭"
+
+        result = await runtime.life_image_generate(
+            event,
+            "站在门口准备出门",
+            subject_route="current_character",
+            current_outfit_change=True,
+            current_outfit_instruction="换甜妹穿搭",
+        )
+
+        self.assertEqual(json.loads(result)["status"], "sent")
+        self.assertEqual(
+            calls[0],
+            ("update", "2026-07-30", "evening", now, "换甜妹穿搭"),
+        )
+        self.assertEqual(calls[1][0], "generate")
+        rendered_prompt = calls[1][1]
+        self.assertIn(updated_day.outfit, rendered_prompt)
+        self.assertIn("当前穿搭风格：清爽甜妹风", rendered_prompt)
+        self.assertIn("当前角色造型（来自当前生活状态）", rendered_prompt)
+        self.assertEqual(status_changes, ["outfit_update"])
+
+    async def test_life_image_generate_cancels_when_outfit_persistence_fails(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.context = Context(Provider([]))
+        runtime._runtime_now = lambda: datetime.datetime(2026, 7, 30, 16, 44)
+        runtime.resolve_injection_target = lambda current: async_return(
+            ("2026-07-30", False)
+        )
+        runtime._get_curr_period = lambda current: "evening"
+
+        class Composer:
+            async def update_outfit(self, *args, **kwargs):
+                return None
+
+        runtime.composer = Composer()
+        runtime.media = types.SimpleNamespace(
+            image=types.SimpleNamespace(
+                generate_image=lambda *args, **kwargs: self.fail(
+                    "image generation must not run"
+                )
+            )
+        )
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
+
+        result = await runtime.life_image_generate(
+            event,
+            "站在门口准备出门",
+            subject_route="current_character",
+            current_outfit_change=True,
+            current_outfit_instruction="换甜妹穿搭",
+        )
+
+        self.assertEqual(result, "这次换装状态没有更新成功，已取消图片生成。")
 
     async def test_life_image_generate_uses_full_message_prompt(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
@@ -1256,8 +1364,8 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             )
 
         runtime._media_director_current_day = current_day
-        runtime._character_appearance_context = (
-            lambda event, schedule_extract=False: async_return(
+        runtime._character_appearance_context = lambda event, schedule_extract=False: (
+            async_return(
                 (
                     "成年女性，整体纤细匀称，上半身曲线自然丰满，与肩腰胯比例协调。",
                     "整体纤细匀称，上半身曲线自然丰满，与肩腰胯比例协调",
@@ -1318,9 +1426,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertIn('"identity_route"', provider.prompts[0])
         self.assertIn("图片导演裁定", provider.prompts[0])
         self.assertIn("subject_kind", provider.prompts[0])
-        self.assertIn(
-            "subject_kind 必须与 identity_route 一致", provider.prompts[0]
-        )
+        self.assertIn("subject_kind 必须与 identity_route 一致", provider.prompts[0])
         self.assertIn("scene_type", provider.prompts[0])
         self.assertIn("temperature_feel", provider.prompts[0])
         self.assertIn("visible_scope", provider.prompts[0])

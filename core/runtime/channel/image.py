@@ -9,6 +9,7 @@ from typing import Any, Awaitable, Callable
 
 from astrbot.api import logger
 from ...config.options import IMAGE_ASPECT_RATIOS
+from ...life.appearance import format_current_appearance_context
 from ...life.wardrobe import (
     normalize_outfit_decision,
     normalize_outfit_scene_category,
@@ -23,6 +24,7 @@ from ...media.picture.routes import (
 )
 from ...media.base import GROUP_IDENTITY_CONTINUITY_RULE
 from ...paths import runtime_data_root
+from ..locks import operation_lock
 from ..markers import LOG_PREFIX
 
 
@@ -52,9 +54,9 @@ class RuntimeImageMediaMixin:
     def _current_character_identity_profiles(value: Any) -> dict[str, str]:
         if not isinstance(value, dict):
             return {}
-        profile = " ".join(
-            str(value.get("current_character") or "").strip().split()
-        )[:600]
+        profile = " ".join(str(value.get("current_character") or "").strip().split())[
+            :600
+        ]
         return {"current_character": profile} if profile else {}
 
     async def _resolve_life_identity_profiles(
@@ -980,6 +982,7 @@ class RuntimeImageMediaMixin:
         participants: list[str] | None,
         resolution: str,
         provider: str,
+        current_appearance: str = "",
     ) -> ImageGenerationPlan:
         provider = requested_image_provider(provider)
         if provider:
@@ -1013,6 +1016,13 @@ class RuntimeImageMediaMixin:
 
         route = self._normalize_image_subject_route(subject_route)
         tool_prompt = str(prompt or "").strip()
+        appearance = str(current_appearance or "").strip()
+        if appearance and route in {"current_character", "group"}:
+            appearance_subject = "人物 A" if route == "group" else "当前角色"
+            tool_prompt = (
+                f"{tool_prompt}\n\n{appearance_subject}造型（来自当前生活状态）：\n"
+                f"{appearance}"
+            ).strip()
         if not resolution:
             resolution = self._image_prompt_resolution(tool_prompt)
         current_character = route == "current_character"
@@ -1144,17 +1154,77 @@ class RuntimeImageMediaMixin:
         friend_scene_category: str = "",
         friend_style_pool: str = "",
         friend_outfit_decision: str = "",
+        current_outfit_change: bool = False,
+        current_outfit_instruction: str = "",
         resolution: str = "",
         provider: str = "",
     ) -> str | None:
+        route = self._normalize_image_subject_route(subject_route)
+        current_appearance = ""
+        if current_outfit_change:
+            if use_last_reverse_prompt:
+                return "真实换装不能与上一条反推提示词同时使用。"
+            if route not in {"current_character", "group"}:
+                return (
+                    "真实换装生图请将 subject_route 设为 current_character 或 group。"
+                )
+            instruction = str(current_outfit_instruction or "").strip()
+            if not instruction:
+                instruction = self._event_current_image_request_text(event)
+            if not instruction:
+                return "没有收到当前角色的换装要求。"
+
+            current_time = self._runtime_now()
+            target_date, _ = await self.resolve_injection_target(current_time)
+            target_period = self._get_curr_period(current_time)
+            previous_appearance = ""
+            archive = getattr(self, "archive", None)
+            get_day = getattr(archive, "get_day", None)
+            if callable(get_day):
+                previous_day = await get_day(target_date)
+                previous_appearance = format_current_appearance_context(previous_day)
+            async with operation_lock(self, f"outfit:{target_date}"):
+                updated_day = await self.composer.update_outfit(
+                    target_date,
+                    target_period,
+                    current_time=current_time,
+                    instruction=instruction,
+                )
+            if updated_day is None:
+                logger.warning(
+                    f"{LOG_PREFIX} Current-character outfit update failed; "
+                    "image generation canceled"
+                )
+                return "这次换装状态没有更新成功，已取消图片生成。"
+
+            current_appearance = format_current_appearance_context(updated_day)
+            if not current_appearance:
+                logger.warning(
+                    f"{LOG_PREFIX} Updated current-character outfit has no usable "
+                    "appearance; image generation canceled"
+                )
+                return "这次换装没有生成可用造型，已取消图片生成。"
+            if previous_appearance and current_appearance == previous_appearance:
+                logger.warning(
+                    f"{LOG_PREFIX} Explicit outfit request produced no state change; "
+                    "image generation canceled"
+                )
+                return "这次没有产生新的穿搭变化，已取消图片生成。"
+            visual_prompt = str(prompt or "").strip()
+            if not visual_prompt:
+                visual_prompt = "当前角色完成换装后的自然生活照。"
+            prompt = visual_prompt
+            await self.mark_page_status_changed("outfit_update")
+
         plan = await self._prepare_image_generation_plan(
             event,
             prompt,
             use_last_reverse_prompt=use_last_reverse_prompt,
-            subject_route=subject_route,
+            subject_route=route,
             participants=participants,
             resolution=resolution,
             provider=provider,
+            current_appearance=current_appearance,
         )
         if not plan.prompt:
             return "没有收到图片提示词。"
@@ -1241,9 +1311,7 @@ class RuntimeImageMediaMixin:
                 None,
             )
             if not callable(generator):
-                return ImageGenerationExecution(
-                    error="当前图片接口不支持好友合影。"
-                )
+                return ImageGenerationExecution(error="当前图片接口不支持好友合影。")
             group_options = {}
             if resolution:
                 group_options["resolution"] = resolution

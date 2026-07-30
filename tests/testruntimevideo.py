@@ -1,10 +1,10 @@
 import unittest
 
 from runtimehelpers import (
+    CORE_INTERNAL_SYSTEM_PROMPT,
     BiliMetadata,
     BiliTarget,
     Context,
-    CORE_INTERNAL_SYSTEM_PROMPT,
     DailyLifeRuntime,
     DataManager,
     DayRecord,
@@ -3414,30 +3414,28 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertIn("视频理解超时", insight.error)
         self.assertFalse(event.call_llm)
 
-    async def test_video_material_preparation_runs_audio_and_video_in_parallel(self):
+    async def test_video_material_preparation_reuses_video_for_audio(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.config = LifeSettings.from_dict({})
         runtime.data_path = Path(tempfile.mkdtemp()) / "daily_life.db"
         reader = SightReader(runtime)
         runtime._sight_reader = reader
-        audio_started = asyncio.Event()
-        video_started = asyncio.Event()
         source_path = runtime.data_path.parent / "video.mp4"
         source_path.write_bytes(b"video")
+        calls = []
 
-        async def prepare_audio(source):
-            audio_started.set()
-            await asyncio.wait_for(video_started.wait(), timeout=0.5)
-            return None
+        async def prepare_audio(source, *, prepared_video=None):
+            calls.append(("audio", source, prepared_video))
+            return prepared_video
 
         async def read_audio(event, clip, audio_path):
+            calls.append(("transcribe", audio_path))
             return SightTextResult(
-                transcript="并发准备完成", transcript_source="测试转写"
+                transcript="共享素材准备完成", transcript_source="测试转写"
             )
 
         async def prepare_video(*args, **kwargs):
-            video_started.set()
-            await asyncio.wait_for(audio_started.wait(), timeout=0.5)
+            calls.append(("video", args[0]))
             return source_path
 
         reader.prepare_audio = prepare_audio
@@ -3448,10 +3446,16 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         with patch("core.sight.bridge.prepare_sample_video_source", prepare_video):
             prepared = await runtime._prepare_sight_clip_material(event, clip)
 
-        self.assertTrue(audio_started.is_set())
-        self.assertTrue(video_started.is_set())
         self.assertEqual(prepared["source_path"], source_path)
-        self.assertEqual(prepared["text_result"].transcript, "并发准备完成")
+        self.assertEqual(prepared["text_result"].transcript, "共享素材准备完成")
+        self.assertEqual(
+            calls,
+            [
+                ("video", clip.source),
+                ("audio", clip.source, source_path),
+                ("transcribe", source_path),
+            ],
+        )
 
     async def test_bili_material_uses_configured_audio_transcription(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
@@ -3463,9 +3467,9 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         source_path.write_bytes(b"video")
         calls = []
 
-        async def prepare_audio(source):
-            calls.append(("prepare", source))
-            return None
+        async def prepare_audio(source, *, prepared_video=None):
+            calls.append(("prepare", source, prepared_video))
+            return prepared_video
 
         async def read_audio(event, clip, audio_path):
             calls.append(("transcribe", audio_path))
@@ -3487,8 +3491,8 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             prepared = await runtime._prepare_sight_clip_material(Event(), clip)
 
         self.assertEqual(prepared["text_result"].transcript, "ASR 转写内容")
-        self.assertEqual(calls[0][0], "prepare")
-        self.assertEqual(calls[1], ("transcribe", None))
+        self.assertEqual(calls[0], ("prepare", clip.source, source_path))
+        self.assertEqual(calls[1], ("transcribe", source_path))
 
     async def test_professional_evidence_path_skips_chat_brief(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)

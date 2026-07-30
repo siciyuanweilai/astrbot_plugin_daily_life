@@ -1457,6 +1457,8 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
             *,
             use_last_reverse_prompt=False,
             subject_route="free",
+            current_outfit_change=False,
+            current_outfit_instruction="",
             resolution="",
         ):
             calls.append(
@@ -1465,6 +1467,8 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
                     event,
                     text,
                     subject_route,
+                    current_outfit_change,
+                    current_outfit_instruction,
                     use_last_reverse_prompt,
                     resolution,
                 )
@@ -1614,6 +1618,13 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
             prompt="should be ignored",
             use_last_reverse_prompt=True,
         )
+        outfit_image_result = await plugin.tool_life_image_generate(
+            event,
+            prompt="站在门口准备出门",
+            subject_route="current_character",
+            current_outfit_change=True,
+            current_outfit_instruction="换甜妹穿搭",
+        )
         suite_result = await plugin.tool_life_photo_suite_generate(
             event,
             prompt="雨后公园散步",
@@ -1672,6 +1683,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(image_result, "图片已发送。")
         self.assertEqual(image_reverse_result, "图片已发送。")
         self.assertEqual(image_reverse_prompt_ignored_result, "图片已发送。")
+        self.assertEqual(outfit_image_result, "图片已发送。")
         self.assertEqual(suite_result, "套图生成已开始")
         self.assertEqual(edit_result, "图片已根据参考图生成。")
         self.assertEqual(reverse_result, "图片反推提示词：雨夜生活照")
@@ -1683,9 +1695,19 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             calls,
             [
-                ("image", event, "雨夜生活照", "scene", False, "4K"),
-                ("image", event, "", "free", True, ""),
-                ("image", event, "", "free", True, ""),
+                ("image", event, "雨夜生活照", "scene", False, "", False, "4K"),
+                ("image", event, "", "free", False, "", True, ""),
+                ("image", event, "", "free", False, "", True, ""),
+                (
+                    "image",
+                    event,
+                    "站在门口准备出门",
+                    "current_character",
+                    True,
+                    "换甜妹穿搭",
+                    False,
+                    "",
+                ),
                 (
                     "photo_suite",
                     event,
@@ -1792,6 +1814,9 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("未明确归属的单套穿搭默认只属于人物 A", image_doc)
         self.assertIn("不要根据姓名或昵称猜测性别", image_doc)
         self.assertIn("friend_scene_category(string)", image_doc)
+        self.assertIn("current_outfit_change(bool)", image_doc)
+        self.assertIn("current_outfit_instruction(string)", image_doc)
+        self.assertIn("仅看效果图时必须为 false", image_doc)
         self.assertNotIn("friend_style_pool(string)", image_doc)
         self.assertNotIn("friend_outfit_decision(string)", image_doc)
         self.assertIn("服装属性和造型决定由插件根据场景推导", image_doc)

@@ -877,6 +877,8 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         friend_outfit: str = "",
         friend_hair: str = "",
         friend_scene_category: str = "",
+        current_outfit_change: bool = False,
+        current_outfit_instruction: str = "",
         use_last_reverse_prompt: bool = False,
         resolution: str = "",
         provider: str = "",
@@ -886,9 +888,12 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         适合用户想看当前状态、穿搭、环境、自拍/生活照，或普通聊天里用画面展示此刻更自然的时候。
         用户已经明确要图片时，调用前可以先用角色口吻说一句简短、自然的行动确认；不能提前声称图片已经完成，
         也不要提及模型、任务、缓存、图片导演、文生图或图生图等内部过程。图片发送后再根据结果自然补一句，也可以不补。
-        如果用户本轮已经给出完整图片提示词，除单独填写 provider 外，prompt 必须原样保留画面要求，不要改写、摘要或另想场景；不要把协议选择语句混入画面提示词。
+        如果用户本轮已经给出完整图片提示词且 current_outfit_change=false，除单独填写 provider 外，prompt 必须原样保留画面要求，不要改写、摘要或另想场景；不要把协议选择语句混入画面提示词。
         使用 subject_route 明确图片主体：current_character 当前角色本人入镜；group 当前角色与一位已配置好友合影；scene 环境/氛围/状态；object 物品/食物；free 不限定主体或完整自由提示词。
         current_character 场景中，用户没有另行指定穿搭、发型或造型风格时，应参考系统注入的当前外观状态补足可见细节；用户本轮明确要求始终优先，不能用生活背景覆盖。
+        用户明确要求当前角色实际“换上、穿上、改成”某套穿搭时，设置 current_outfit_change=true，并把用户原始穿搭要求原样放入 current_outfit_instruction；工具会先更新真实生活穿搭状态，再使用更新后的同一套造型生图。
+        仅要求生成、查看、试穿效果或创作某种穿搭图片时，不得设置 current_outfit_change；这类画面不会改变当前角色的真实生活穿搭状态。
+        current_outfit_change=true 时，subject_route 只能填 current_character 或 group，prompt 只描述场景、动作、构图等画面要求，不要另外编造一套当前角色服装；插件会把已保存造型锁定到画面中。
         合影时 participants 必须填写系统上下文“可用于合影的好友参考档案”中对应的关系档案 ID，只选择一位好友；不要按姓名猜测或编造 ID。
         合影提示词中把当前角色作为人物 A、好友作为人物 B，分别描述两人的服装、发型、体态和外观呈现；未明确归属的单套穿搭默认只属于人物 A。
         人物 B 应根据好友参考图保持独立外观并选择符合场景的独立穿搭；不要根据姓名或昵称猜测性别。只有用户明确要求同款、情侣装或统一造型时才共享穿搭风格。
@@ -906,6 +911,8 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             friend_outfit(string): 人物 B 本次完整穿搭；首次合影必须与 friend_hair 同时填写，已有当天造型时仅在本轮换装时填写。
             friend_hair(string): 人物 B 本次发型；首次合影必须与 friend_outfit 同时填写，已有当天造型时仅在本轮改变发型时填写。
             friend_scene_category(string): 人物 B 当前画面场景，只能填 home、sleep、outdoor、public 或 mixed；subject_route=group 时每次填写。
+            current_outfit_change(bool): 是否把用户本轮要求作为当前角色真实换装写入生活状态；只有用户明确要求实际换装时设为 true，仅看效果图时必须为 false。
+            current_outfit_instruction(string): 当前角色真实换装要求；current_outfit_change=true 时填写用户原始要求，不得自行扩写成另一套服装，其他情况留空。
             use_last_reverse_prompt(bool): 是否使用本会话上一条图片反推提示词原文。
             resolution(string): 可选输出分辨率，只能填 1K、2K 或 4K；仅当用户明确要求输出分辨率时填写，“高清”等模糊描述不要推断，其他语境里的 1K、2K、4K 也不要误填。
             provider(string): 可选图片接口，只能填 auto、gpt 或 gemini；仅当用户明确要求使用 GPT 或 Gemini 时填写，否则留空。
@@ -923,6 +930,12 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             options["friend_hair"] = str(friend_hair).strip()
         if str(friend_scene_category or "").strip():
             options["friend_scene_category"] = str(friend_scene_category).strip()
+        apply_outfit_change = self._tool_bool(current_outfit_change)
+        if apply_outfit_change:
+            options["current_outfit_change"] = True
+            options["current_outfit_instruction"] = str(
+                current_outfit_instruction or ""
+            ).strip()
         requested_resolution = str(resolution or "").strip().upper()
         if requested_resolution:
             options["resolution"] = requested_resolution

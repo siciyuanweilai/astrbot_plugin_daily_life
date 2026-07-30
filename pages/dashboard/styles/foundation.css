@@ -1592,6 +1592,11 @@ h2::before {
   gap: 10px;
 }
 
+.template-list-control-compact .template-list-items {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .template-list-item {
   display: grid;
   gap: 10px;
@@ -1683,19 +1688,65 @@ h2::before {
 }
 
 .template-list-item-compact {
-  padding: 10px 12px;
+  width: 100%;
+  min-width: 0;
+  padding: 8px;
+}
+
+.template-list-item-inline {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: end;
+  min-width: 0;
 }
 
 .template-list-item-compact .template-list-item-grid {
   grid-template-columns:
-    minmax(116px, 0.8fr)
-    minmax(190px, 1.55fr)
-    minmax(190px, 1.55fr)
-    minmax(132px, 1fr)
-    minmax(92px, 0.62fr)
-    minmax(98px, 0.7fr)
-    minmax(86px, 0.55fr);
+    minmax(0, 1.45fr)
+    minmax(0, 1.1fr)
+    minmax(0, 1.05fr)
+    minmax(0, 1.05fr)
+    minmax(0, 1.2fr)
+    minmax(54px, 72px)
+    minmax(58px, 76px)
+    minmax(68px, 80px);
+  gap: 6px;
   align-items: end;
+}
+
+.template-list-item-compact :is(input, select, textarea) {
+  min-width: 0;
+  padding-inline: 8px;
+}
+
+.template-list-item-compact :is(input, textarea) {
+  min-height: 43px;
+}
+
+.template-list-item-compact select {
+  padding-right: 26px;
+  background-position:
+    calc(100% - 14px) 50%,
+    calc(100% - 9px) 50%;
+  background-size: 5px 5px, 5px 5px;
+}
+
+.template-list-item-compact .life-select-trigger {
+  min-height: 43px;
+  gap: 4px;
+  padding-inline: 8px;
+}
+
+.template-list-item-compact .life-select-arrow {
+  width: 7px;
+  height: 7px;
+}
+
+.template-list-item-inline > .danger {
+  align-self: end;
+  padding-inline: 9px;
+  white-space: nowrap;
 }
 
 .template-list-item-compact .template-list-subfield {
@@ -2001,9 +2052,6 @@ h2::before {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .template-list-item-compact .template-list-item-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
 }
 
 @media (max-width: 980px) {
@@ -2103,7 +2151,6 @@ h2::before {
   .number-line,
   .emoji-record,
   .template-list-item-grid,
-  .template-list-item-compact .template-list-item-grid,
   .timeline-edit-fields,
   .timeline-edit-row {
     grid-template-columns: 1fr;

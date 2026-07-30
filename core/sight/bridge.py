@@ -15,15 +15,15 @@ from astrbot.api.event import MessageChain
 from astrbot.api.message_components import Image, Plain
 from astrbot.core.agent.message import TextPart
 
-from ..runtime.markers import LOG_PREFIX
 from ..runtime.delivery import BackgroundTextMode
+from ..runtime.markers import LOG_PREFIX
 from .bili import BiliTarget, fetch_bili_metadata, find_bili_target, resolve_bili_target
 from .brief import SightBrief
 from .clip import SightClip, SightInsight
 from .cookie import BiliCookieJar
 from .digest import (
-    ToolResultText,
     VIDEO_ANSWER_BOUNDARY_RULE,
+    ToolResultText,
     batch_frame_notes_from_text,
     batch_frame_prompt,
     content_details,
@@ -41,7 +41,6 @@ from .flight import (
 )
 from .identity import SightIdentityMixin
 from .login import BiliLoginService, BiliLoginStatus
-from .provider import get_sight_provider
 from .note import (
     PROFESSIONAL_NOTE_CACHE_SCHEMA,
     SightNote,
@@ -58,22 +57,22 @@ from .probe import (
     payload_from_item,
     source_from_value,
 )
+from .provider import get_sight_provider
+from .prune import SightCleanupMixin
+from .reader import (
+    AUDIO_TRANSCRIPT_TIMEOUT_SECONDS,
+    LOCAL_ASR_BATCH_SIZE_SECONDS,
+    TRANSCRIPT_CAPTURE_CHARS,
+    SightReader,
+    SightTextResult,
+)
 from .sample import (
     SightFrame,
     extract_video_frames,
     prepare_sample_video_source,
     sight_cache_dir,
 )
-from .prune import SightCleanupMixin
-from .reader import (
-    AUDIO_TRANSCRIPT_TIMEOUT_SECONDS,
-    LOCAL_ASR_BATCH_SIZE_SECONDS,
-    SightReader,
-    SightTextResult,
-    TRANSCRIPT_CAPTURE_CHARS,
-)
 from .vault import SightVault
-
 
 BILI_RESOLVE_TIMEOUT_SECONDS = 10
 DEFAULT_SIGHT_TOTAL_TIMEOUT_SECONDS = 300
@@ -802,9 +801,7 @@ class SightMixin(SightCleanupMixin, SightIdentityMixin):
         note = seconds("professional_note_seconds")
         delivery = seconds("render_send_seconds")
         total = material + extract + vision + note + delivery
-        transcript_source = str(
-            getattr(insight, "transcript_source", "") or "仅画面"
-        )
+        transcript_source = str(getattr(insight, "transcript_source", "") or "仅画面")
         if transcript_source == "本地ASR":
             transcript_source = "本地语音识别"
         vision_mode = {
@@ -1137,14 +1134,18 @@ class SightMixin(SightCleanupMixin, SightIdentityMixin):
         metrics = dict(metadata.get("sight_metrics") or {})
         material_started = time.monotonic()
 
-        async def prepare_audio_branch() -> tuple[SightTextResult, float]:
+        async def prepare_audio_branch(
+            prepared_video: Path | None,
+        ) -> tuple[SightTextResult, float]:
             started = time.monotonic()
             reader = self._sight_reader_for_runtime()
             audio_path: Path | None = None
             try:
-                audio_path = await reader.prepare_audio(clip.source)
+                audio_path = await reader.prepare_audio(
+                    clip.source, prepared_video=prepared_video
+                )
                 if audio_path:
-                    logger.debug(f"{LOG_PREFIX} 视频音频下载完成")
+                    logger.debug(f"{LOG_PREFIX} 视频音频准备完成")
             except Exception as exc:
                 logger.debug(f"{LOG_PREFIX} 视频音频准备跳过：{str(exc)[:160]}")
             result = await reader.read_prepared_audio(event, clip, audio_path)
@@ -1172,18 +1173,15 @@ class SightMixin(SightCleanupMixin, SightIdentityMixin):
                 if source_path is None:
                     error = "没有抽取到可用视频画面"
                 else:
-                    logger.debug(f"{LOG_PREFIX} 视频文件下载完成")
+                    logger.debug(f"{LOG_PREFIX} 视频文件准备完成")
             except Exception as exc:
                 error = str(exc)[:160]
                 logger.debug(f"{LOG_PREFIX} 视频文件准备跳过：{error}")
             return source_path, error, time.monotonic() - started
 
         if clip.source:
-            audio_result, video_result = await asyncio.gather(
-                prepare_audio_branch(), prepare_video_branch()
-            )
-            text_result, audio_seconds = audio_result
-            source_path, error, video_seconds = video_result
+            source_path, error, video_seconds = await prepare_video_branch()
+            text_result, audio_seconds = await prepare_audio_branch(source_path)
         else:
             text_result = SightTextResult()
             source_path = None

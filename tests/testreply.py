@@ -1,3 +1,4 @@
+# ruff: noqa: I001
 import asyncio
 import json
 import types
@@ -211,9 +212,7 @@ class SemanticSegmentTest(unittest.TestCase):
             )
 
         self.assertFalse(plan.valid)
-        debug.assert_any_call(
-            "[日常生活] 模型语义分段返回无效，已改用自然分段"
-        )
+        debug.assert_any_call("[日常生活] 模型语义分段返回无效，已改用自然分段")
 
     def test_semantic_timeout_uses_concise_warning(self):
         runtime = self._runtime("")
@@ -600,6 +599,33 @@ class SemanticSegmentTest(unittest.TestCase):
         self.assertEqual(len(event.sent_messages), 2)
         self.assertEqual(refresh_calls, [event])
         self.assertFalse(hasattr(event, runtime._SEMANTIC_SEGMENT_PLAN_ATTR))
+
+    def test_invalid_semantic_plan_uses_soft_pause_natural_fallback(self):
+        runtime = self._runtime("{}")
+        runtime.context = Context(
+            Provider([]), config={"t2i": False, "t2i_word_threshold": 120}
+        )
+        runtime.note_structured_sent_result = lambda event: None
+        runtime.note_media_source_event = lambda event: None
+        runtime.note_proactive_bot_reply = lambda event: None
+        runtime.note_voice_switch_text_result = lambda event: None
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:11")
+        source = "煲仔饭！这个好，我想吃窝蛋牛肉的，必须带一点焦香的锅巴底~"
+        event.set_result(event.chain_result([types.SimpleNamespace(text=source)]))
+
+        changed = asyncio.run(runtime.apply_semantic_segment_before_send(event))
+        natural_sent = asyncio.run(runtime.send_chat_style_segments_if_needed(event))
+
+        self.assertTrue(changed)
+        self.assertTrue(natural_sent)
+        self.assertEqual(
+            [message.chain[0].text for message in event.sent_messages],
+            [
+                "煲仔饭",
+                "这个好 我想吃窝蛋牛肉的",
+                "必须带一点焦香的锅巴底~",
+            ],
+        )
 
     def test_send_uses_saved_plan_when_text_result_components_are_recombined(self):
         runtime = self._runtime(

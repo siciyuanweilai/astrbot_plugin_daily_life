@@ -2530,6 +2530,8 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertIn("pointermove", config)
         self.assertIn("animateListFrom", config)
         self.assertIn("IMAGE_CHANNEL_LIST_PATHS", config)
+        self.assertIn('node("div", "template-list-item-inline")', config)
+        self.assertIn("row.append(dragButton, body, removeButton)", config)
         self.assertIn('"image_generation_config.text_channels"', config)
         self.assertIn('"image_generation_config.edit_channels"', config)
         self.assertIn("拖动排序", config)
@@ -2545,6 +2547,22 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertIn("will-change: transform", style)
         self.assertIn(".template-list-item-grid", style)
         self.assertIn("grid-template-columns: repeat(3, minmax(0, 1fr))", style)
+        self.assertIn(".template-list-control-compact .template-list-items", style)
+        self.assertIn(
+            ".template-list-control-compact .template-list-items {\n"
+            "  min-width: 0;\n"
+            "  max-width: 100%;\n"
+            "}",
+            style,
+        )
+        self.assertIn(".template-list-item-inline", style)
+        self.assertIn("minmax(0, 1.45fr)", style)
+        self.assertIn("minmax(54px, 72px)", style)
+        self.assertIn("minmax(58px, 76px)", style)
+        self.assertIn("minmax(68px, 80px)", style)
+        self.assertIn(".template-list-item-compact :is(input, select, textarea)", style)
+        self.assertIn(".template-list-item-compact .life-select-trigger", style)
+        self.assertNotIn("min-width: 1420px", style)
 
     def test_dashboard_settings_use_explicit_section_order(self):
         from pathlib import Path
@@ -2709,7 +2727,9 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
             ),
             generation_group.index("image_generation_config.friend_reference_profiles"),
         )
-        self.assertNotIn("image_generation_config.reference_max_count", generation_group)
+        self.assertNotIn(
+            "image_generation_config.reference_max_count", generation_group
+        )
         self.assertIn("const MAX_CHARACTER_REFERENCE_IMAGES = 6;", config)
         self.assertIn("return MAX_CHARACTER_REFERENCE_IMAGES;", config)
 

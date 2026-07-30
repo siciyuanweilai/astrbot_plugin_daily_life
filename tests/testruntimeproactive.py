@@ -3,6 +3,7 @@ import unittest
 from runtimehelpers import (
     BehaviorPatternRecord,
     BehaviorSceneRecord,
+    CommitmentRecord,
     Context,
     DailyLifeRuntime,
     DataManager,
@@ -77,7 +78,9 @@ class RuntimeProactiveTest(ResponseGateRuntimeMixin, unittest.TestCase):
         removed = runtime._prune_disabled_proactive_candidates()
 
         self.assertEqual(removed, 1)
-        self.assertEqual(runtime._proactive_idle_candidates, {"private": {"is_group": False}})
+        self.assertEqual(
+            runtime._proactive_idle_candidates, {"private": {"is_group": False}}
+        )
 
     def test_proactive_rechecks_switch_before_sending(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
@@ -438,9 +441,7 @@ class RuntimeProactiveTest(ResponseGateRuntimeMixin, unittest.TestCase):
         reminder = history[-1]["content"][1]["text"]
         self.assertIn("<system_reminder>", reminder)
         self.assertIn("用户 ID：10001，昵称：测试用户乙", reminder)
-        self.assertIn(
-            "当前时间：2026-06-27 18:05 (CST)，星期六", reminder
-        )
+        self.assertIn("当前时间：2026-06-27 18:05 (CST)，星期六", reminder)
         inserted = runtime.context.message_history_manager.inserts[-1]
         self.assertEqual(inserted.platform_id, "aiocqhttp")
         self.assertEqual(inserted.user_id, "10001")
@@ -773,7 +774,9 @@ class RuntimeProactiveAsyncTest(
         self.assertTrue(scheduled)
         self.assertEqual(len(queued), 1)
         self.assertEqual(
-            runtime._proactive_feedback_watch["aiocqhttp:FriendMessage:123456"]["source"],
+            runtime._proactive_feedback_watch["aiocqhttp:FriendMessage:123456"][
+                "source"
+            ],
             "regular_reply",
         )
         self.assertEqual(await runtime.archive.get_reply_effects(limit=10), [])
@@ -2166,6 +2169,7 @@ class RuntimeProactiveAsyncTest(
             "reason": "闲时续话",
             "reply_effect_id": effect.id,
         }
+
         async def classify(*args, **kwargs):
             return {
                 "outcome": "positive",
@@ -2284,10 +2288,7 @@ class RuntimeProactiveAsyncTest(
 
     async def test_response_gate_semantic_wait_uses_accumulated_messages(self):
         runtime, provider = self._make_proactive_runtime(
-            [
-                '{"action":"reply","confidence":0.92,'
-                '"reason":"连续内容已经完整"}'
-            ]
+            ['{"action":"reply","confidence":0.92,"reason":"连续内容已经完整"}']
         )
         runtime._init_response_gate_state()
         scope = "aiocqhttp:FriendMessage:10001"
@@ -2346,10 +2347,7 @@ class RuntimeProactiveAsyncTest(
 
             async def get_embeddings(self, texts):
                 self.batch_calls += 1
-                return [
-                    [1.0, 0.0] if "贴近" in text else [0.0, 1.0]
-                    for text in texts
-                ]
+                return [[1.0, 0.0] if "贴近" in text else [0.0, 1.0] for text in texts]
 
         runtime, _ = self._make_proactive_runtime([])
         embedding = EmbeddingProvider()
@@ -2362,9 +2360,7 @@ class RuntimeProactiveAsyncTest(
             ]
         }
 
-        first = await runtime.rank_embedding_groups(
-            "当前语义", groups, {"memories": 2}
-        )
+        first = await runtime.rank_embedding_groups("当前语义", groups, {"memories": 2})
         second = await runtime.rank_embedding_groups(
             "当前语义", groups, {"memories": 2}
         )
@@ -3285,7 +3281,7 @@ class RuntimeProactiveAsyncTest(
                 '{"should_reply": true, "confidence": 0.9, "decision": "reply", '
                 '"reason": "关系里有自然回访点", "reply_text": "刚想起你上次说的那个展，后来有新进展吗？", '
                 '"memory_note": "主动回访看展话题"}',
-                '{"segments":[{"text":"刚想起你上次说的那个展，后来有新进展吗？","relation":"standalone","pause":"none"}]}'
+                '{"segments":[{"text":"刚想起你上次说的那个展，后来有新进展吗？","relation":"standalone","pause":"none"}]}',
             ],
             provider_id="proactive-model",
         )
@@ -3296,7 +3292,7 @@ class RuntimeProactiveAsyncTest(
                     "provider": "proactive-model",
                     "private_revisit_enabled": True,
                     "revisit_min_confidence": 0.8,
-                }
+                },
             }
         )
         runtime.archive = DataManager()
@@ -3363,6 +3359,243 @@ class RuntimeProactiveAsyncTest(
             provider.prompts[0].index("一个喜欢看展的人"),
             provider.prompts[0].index("【眼前内容】"),
         )
+
+    async def test_private_revisit_waits_for_private_idle_window(self):
+        runtime, provider = self._make_proactive_runtime(
+            [
+                '{"should_reply": true, "confidence": 0.95, "decision": "reply", '
+                '"reason": "继续刚才的话题", "reply_text": "刚才那张看到了吗？"}'
+            ],
+            provider_id="proactive-model",
+        )
+        target = "aiocqhttp:FriendMessage:10001"
+        runtime.config = LifeSettings.from_dict(
+            {
+                "proactive_config": {
+                    "provider": "proactive-model",
+                    "private_revisit_enabled": True,
+                    "private_idle_minutes": 60,
+                    "revisit_min_confidence": 0.8,
+                }
+            }
+        )
+        runtime.composer.config = runtime.config
+        await runtime.archive.touch_relationship(
+            "10001",
+            name="阿林",
+            note="刚才聊到拍照",
+            date_str="2026-07-30",
+            platform="aiocqhttp",
+            user_id="10001",
+            contact_type="friend",
+            target_scope=target,
+        )
+        now = datetime.datetime(2026, 7, 30, 20, 30)
+        image_message = runtime.note_structured_bot_message(
+            target, "[图片已发送]", media="图片"
+        )
+        image_message.timestamp = (now - datetime.timedelta(minutes=19)).timestamp()
+
+        with patch("core.runtime.proactive.revisit.life_now", return_value=now):
+            await runtime.evaluate_private_revisit_candidates()
+
+        self.assertEqual(provider.prompts, [])
+        self.assertEqual(runtime.context.sent_messages, [])
+        state = runtime._get_proactive_air_state(target)
+        self.assertEqual(state["last_decision"], "wait")
+        self.assertIn("尚未达到 60 分钟回访静默门槛", state["last_reason"])
+
+    async def test_private_revisit_rejects_ungrounded_media_and_state_claims(self):
+        runtime, provider = self._make_proactive_runtime(
+            [
+                '{"should_reply": true, "confidence": 0.95, "decision": "reply", '
+                '"reason": "照片刚发完，洗澡也结束了", '
+                '"reply_text": "照片发你啦，我洗好了，该你去啦。"}',
+                '{"valid": false, "reason": "旧照片不是本轮发送，当前仍在糖水铺且洗澡尚未发生", '
+                '"conflicts": ["媒体时序冲突", "当前活动冲突"]}',
+            ],
+            provider_id="proactive-model",
+        )
+        target = "aiocqhttp:FriendMessage:10001"
+        runtime.config = LifeSettings.from_dict(
+            {
+                "chat_style_config": {"enabled": False},
+                "proactive_config": {
+                    "provider": "proactive-model",
+                    "private_revisit_enabled": True,
+                    "private_idle_minutes": 60,
+                    "revisit_min_confidence": 0.8,
+                },
+            }
+        )
+        runtime.composer.config = runtime.config
+        await runtime.archive.touch_relationship(
+            "10001",
+            name="阿林",
+            note="之前聊到回家洗澡和拍照",
+            date_str="2026-07-30",
+            platform="aiocqhttp",
+            user_id="10001",
+            contact_type="friend",
+            target_scope=target,
+        )
+        await runtime.archive.save_day(
+            DayRecord(
+                date="2026-07-30",
+                timeline=[
+                    TimelineItem(
+                        time="19:00",
+                        activity="在糖水铺吃糖水、翻看刚拍的照片",
+                        status="尚未回家",
+                    ),
+                    TimelineItem(
+                        time="21:30",
+                        activity="回到家洗澡",
+                        status="计划中",
+                    ),
+                ],
+                state=LifeState(summary="仍在糖水铺休息，准备稍后回家"),
+            )
+        )
+        await runtime.archive.save_commitment(
+            CommitmentRecord(
+                content="回家洗完澡后叫对方",
+                source_session=target,
+                status="active",
+            )
+        )
+        now = datetime.datetime(2026, 7, 30, 20, 30)
+        user_message = runtime.note_structured_bot_message(
+            target, "拍张照看看", media=""
+        )
+        user_message.is_bot = False
+        user_message.sender_name = "阿林"
+        user_message.sender_card = "阿林"
+        user_message.timestamp = (now - datetime.timedelta(minutes=91)).timestamp()
+        image_message = runtime.note_structured_bot_message(
+            target, "[图片已发送]", media="图片"
+        )
+        image_message.timestamp = (now - datetime.timedelta(minutes=90)).timestamp()
+
+        with patch("core.runtime.proactive.revisit.life_now", return_value=now):
+            await runtime.evaluate_private_revisit_candidates()
+
+        self.assertEqual(runtime.context.sent_messages, [])
+        self.assertEqual(len(provider.prompts), 2)
+        decision_prompt, audit_prompt = provider.prompts
+        self.assertIn("[18:59，1 小时前] 阿林: 拍张照看看", decision_prompt)
+        self.assertIn("[19:00，1 小时前] 我: [媒体：图片]", decision_prompt)
+        self.assertIn("在糖水铺吃糖水、翻看刚拍的照片", decision_prompt)
+        self.assertIn("21:30 回到家洗澡", decision_prompt)
+        self.assertIn("回家洗完澡后叫对方", decision_prompt)
+        self.assertIn("本轮发送能力：仅文字", audit_prompt)
+        self.assertIn("照片发你啦，我洗好了，该你去啦。", audit_prompt)
+
+    async def test_private_revisit_continuity_audit_allows_grounded_question(self):
+        runtime, _ = self._make_proactive_runtime(
+            [
+                '{"should_reply": true, "confidence": 0.95, "decision": "reply", '
+                '"reason": "自然关心近况", "reply_text": "最近雨一直下，你那边还好吗？"}',
+                '{"valid": true, "reason": "只是开放式问候，没有改写当前事实", "conflicts": []}',
+                '{"valid": true, "reason": "人物指代一致", "conflicts": [], "replacements": []}',
+            ],
+            provider_id="proactive-model",
+        )
+        target = "aiocqhttp:FriendMessage:10001"
+        runtime.config = LifeSettings.from_dict(
+            {
+                "chat_style_config": {"enabled": False},
+                "proactive_config": {
+                    "provider": "proactive-model",
+                    "private_revisit_enabled": True,
+                    "revisit_min_confidence": 0.8,
+                },
+            }
+        )
+        runtime.composer.config = runtime.config
+        await runtime.archive.save_day(
+            DayRecord(
+                date="2026-07-30",
+                timeline=[TimelineItem(time="20:00", activity="在家看书")],
+            )
+        )
+        await runtime.archive.touch_relationship(
+            "10001",
+            name="阿林",
+            note="最近聊到连续下雨",
+            date_str="2026-07-30",
+            platform="aiocqhttp",
+            user_id="10001",
+            contact_type="friend",
+            target_scope=target,
+            persona_hint="朋友，称呼阿林",
+        )
+        now = datetime.datetime(2026, 7, 30, 21, 0)
+
+        with patch("core.runtime.proactive.revisit.life_now", return_value=now):
+            await runtime.evaluate_private_revisit_candidates()
+
+        self.assertEqual(len(runtime.context.sent_messages), 1)
+        self.assertEqual(
+            runtime.context.sent_messages[0][1].items,
+            ["最近雨一直下，你那边还好吗？"],
+        )
+
+    async def test_private_revisit_cancels_when_context_changes_during_audit(self):
+        runtime, _ = self._make_proactive_runtime(
+            [
+                '{"should_reply": true, "confidence": 0.95, "decision": "reply", '
+                '"reason": "自然问候", "reply_text": "刚想起你，今天过得怎么样？"}',
+                '{"valid": true, "reason": "人物指代一致", "conflicts": [], "replacements": []}',
+            ],
+            provider_id="proactive-model",
+        )
+        target = "aiocqhttp:FriendMessage:10001"
+        runtime.config = LifeSettings.from_dict(
+            {
+                "chat_style_config": {"enabled": False},
+                "proactive_config": {
+                    "provider": "proactive-model",
+                    "private_revisit_enabled": True,
+                    "revisit_min_confidence": 0.8,
+                },
+            }
+        )
+        runtime.composer.config = runtime.config
+        await runtime.archive.save_day(
+            DayRecord(
+                date="2026-07-30",
+                timeline=[TimelineItem(time="20:00", activity="在家看书")],
+            )
+        )
+        await runtime.archive.touch_relationship(
+            "10001",
+            name="阿林",
+            note="最近偶尔聊日常",
+            date_str="2026-07-30",
+            platform="aiocqhttp",
+            user_id="10001",
+            contact_type="friend",
+            target_scope=target,
+        )
+
+        async def audit_with_new_message(**kwargs):
+            message = runtime.note_structured_bot_message(target, "你在吗？")
+            message.is_bot = False
+            message.sender_name = "阿林"
+            message.sender_card = "阿林"
+            return True, "候选本身没有事实冲突"
+
+        runtime._audit_private_revisit_continuity = audit_with_new_message
+        now = datetime.datetime(2026, 7, 30, 21, 0)
+
+        with patch("core.runtime.proactive.revisit.life_now", return_value=now):
+            await runtime.evaluate_private_revisit_candidates()
+
+        self.assertEqual(runtime.context.sent_messages, [])
+        state = runtime._get_proactive_air_state(target)
+        self.assertEqual(state["last_decision"], "wait")
+        self.assertIn("发送前会话或生活状态已变化", state["last_reason"])
 
     async def test_private_revisit_respects_chat_style_length_budget(self):
         runtime, provider = self._make_proactive_runtime(

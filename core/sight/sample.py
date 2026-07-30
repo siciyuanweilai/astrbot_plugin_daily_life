@@ -11,15 +11,15 @@ from typing import Any
 from urllib.parse import urlparse
 
 import aiohttp
+
 from astrbot.api import logger
 
+from ..runtime.markers import LOG_PREFIX
 from .auth import browser_headers
 from .bili import fetch_bili_metadata, resolve_bili_target, target_from_text
-from .ffmpeg import ffmpeg_executable, ffprobe_executable
 from .cookie import BiliCookieJar
+from .ffmpeg import ffmpeg_executable, ffprobe_executable
 from .probe import VIDEO_SUFFIXES, clean_source
-from ..runtime.markers import LOG_PREFIX
-
 
 MAX_REMOTE_VIDEO_BYTES = 500 * 1024 * 1024
 BILI_SAMPLE_VIDEO_QN = 32
@@ -138,6 +138,7 @@ async def _download_remote_video_with_reason(
     cache_dir: Path,
     *,
     headers: dict[str, str] | None = None,
+    cache_identity: str = "",
     max_bytes: int = MAX_REMOTE_VIDEO_BYTES,
     timeout_seconds: int = 240,
 ) -> tuple[Path | None, str]:
@@ -147,7 +148,9 @@ async def _download_remote_video_with_reason(
     media_dir = cache_dir / "media"
     await asyncio.to_thread(media_dir.mkdir, parents=True, exist_ok=True)
     has_video_suffix = _remote_has_video_suffix(source)
-    target = media_dir / f"{source_fingerprint(source)}{_suffix_for_remote(source)}"
+    target = media_dir / (
+        f"{source_fingerprint(cache_identity or source)}{_suffix_for_remote(source)}"
+    )
     cached_ready = await asyncio.to_thread(
         lambda: (
             target.is_file()
@@ -304,6 +307,7 @@ async def _download_bili_direct_video(
         direct,
         cache_dir,
         headers=browser_headers(cookies, referer=resolved.canonical_url),
+        cache_identity=f"bilibili:{resolved.bvid}:{cid}",
         max_bytes=max_bytes,
         timeout_seconds=timeout_seconds,
     )
@@ -447,7 +451,7 @@ def select_frame_seconds(duration: float, max_frames: int) -> list[float]:
     count = max(1, int(max_frames or 8))
     duration = float(duration or 0.0)
     if duration <= 0:
-        return [second for second in FALLBACK_FRAME_SECONDS[:count]]
+        return list(FALLBACK_FRAME_SECONDS[:count])
     if duration <= count:
         return [min(duration * 0.5, 0.5)]
     step = duration / count

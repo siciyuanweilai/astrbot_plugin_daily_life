@@ -1,3 +1,4 @@
+import datetime
 from typing import Any
 
 from astrbot.api import logger
@@ -226,17 +227,56 @@ class ProactiveContextMixin:
             content = (
                 f"{content}（{prefix}{quote}）" if content else f"（{prefix}{quote}）"
             )
+        media = str(message.get("media") or "").strip()
+        if media:
+            marker = f"[媒体：{media}]"
+            if marker not in content:
+                content = f"{marker} {content}".strip()
         if len(content) > limit:
             content = content[:limit].rstrip() + "..."
         return content
 
-    def _format_recent_context_messages(self, messages: list[dict[str, str]]) -> str:
+    def _format_recent_context_messages(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        now: datetime.datetime | None = None,
+    ) -> str:
         lines: list[str] = []
-        for message in messages[-6:]:
+        for message in messages[-8:]:
             label = self._format_context_message_label(message)
             content = self._format_context_message_content(message, limit=140)
             if content:
-                lines.append(f"- {label}: {content}")
+                timestamp = 0.0
+                raw_timestamp = message.get("timestamp")
+                try:
+                    timestamp = float(raw_timestamp or 0.0)
+                except (TypeError, ValueError):
+                    try:
+                        timestamp = datetime.datetime.fromisoformat(
+                            str(raw_timestamp or "").replace("Z", "+00:00")
+                        ).timestamp()
+                    except (TypeError, ValueError):
+                        timestamp = 0.0
+                time_prefix = ""
+                if timestamp > 0:
+                    occurred_at = datetime.datetime.fromtimestamp(timestamp)
+                    time_text = (
+                        occurred_at.strftime("%H:%M")
+                        if now and occurred_at.date() == now.date()
+                        else occurred_at.strftime("%m-%d %H:%M")
+                    )
+                    if now:
+                        age_seconds = max(0, int(now.timestamp() - timestamp))
+                        if age_seconds < 60:
+                            age_text = "不到 1 分钟前"
+                        elif age_seconds < 3600:
+                            age_text = f"{age_seconds // 60} 分钟前"
+                        else:
+                            age_text = f"{age_seconds // 3600} 小时前"
+                        time_text = f"{time_text}，{age_text}"
+                    time_prefix = f"[{time_text}] "
+                lines.append(f"- {time_prefix}{label}: {content}")
         return "\n".join(lines) if lines else "暂无可读取的最近对话片段。"
 
     async def _build_recent_context_for_proactive(

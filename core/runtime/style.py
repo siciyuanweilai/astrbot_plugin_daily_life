@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import copy
 import asyncio
+import copy
 import random
 import re
 from dataclasses import dataclass
@@ -510,6 +510,12 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
         cap = max(2, min(10, max_segments_cap))
         target = max(12, min(60, limit if limit > 0 else 24))
         text_length = len(cls._chat_style_compact_text(source.normalized))
+        leading_strong_length = (
+            len(cls._chat_style_compact_text(source.units[0].text))
+            if source.units and source.units[0].break_kind == "strong"
+            else 0
+        )
+        short_strong_lead = 4 <= leading_strong_length <= max(4, min(8, target // 2))
         length_segments = max(2, (text_length + target - 1) // target)
         explicit_segments = max(1, source.explicit_line_count)
         max_segments = min(
@@ -526,7 +532,11 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
             max(length_segments, explicit_segments, boundary_segments),
         )
         max_segments = max(2, max_segments)
-        allow_soft_split = strong_break_count == 0 or text_length > target * 2
+        if short_strong_lead and text_length - leading_strong_length > target:
+            max_segments = min(cap, len(source.units), max_segments + 1)
+        allow_soft_split = (
+            strong_break_count == 0 or text_length > target * 2 or short_strong_lead
+        )
         balanced_target = max(8, (text_length + max_segments - 1) // max_segments)
         min_current = (
             2
@@ -562,7 +572,10 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
                 and len(segments) + 1 < max_segments
                 and room_for_another
                 and (
-                    (current_break == "strong" and len(compact_current) >= min_current)
+                    (
+                        current_break == "strong"
+                        and len(compact_current) >= min(min_current, 4)
+                    )
                     or (
                         allow_soft_split
                         and current_break == "soft"
@@ -570,6 +583,12 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
                         and len(compact_current)
                         + len(cls._chat_style_compact_text(unit_text))
                         > target
+                        and abs(target - len(compact_current))
+                        <= abs(
+                            target
+                            - len(compact_current)
+                            - len(cls._chat_style_compact_text(unit_text))
+                        )
                     )
                 )
             )

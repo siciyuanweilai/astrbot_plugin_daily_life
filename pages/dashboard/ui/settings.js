@@ -1155,7 +1155,6 @@ export function createConfigPanel({
           reorderItem(index, index + 1);
         }
       });
-      titleLine.append(dragButton, node("strong", "", itemTitle));
       const headActions = node("div", "template-list-item-actions");
       const removeButton = node("button", "danger", "删除");
       removeButton.type = "button";
@@ -1164,7 +1163,6 @@ export function createConfigPanel({
         { itemIds: itemIds.filter((_, itemIndex) => itemIndex !== index) }
       ));
       headActions.append(removeButton);
-      head.append(titleLine, headActions);
       const body = node("div", "template-list-item-grid");
       if (templateEntries(spec).length > 1) {
         const templateSelect = document.createElement("select");
@@ -1198,7 +1196,15 @@ export function createConfigPanel({
         label.append(title, control);
         body.append(label);
       }
-      card.append(head, body);
+      if (compactChannels) {
+        const row = node("div", "template-list-item-inline");
+        row.append(dragButton, body, removeButton);
+        card.append(row);
+      } else {
+        titleLine.append(dragButton, node("strong", "", itemTitle));
+        head.append(titleLine, headActions);
+        card.append(head, body);
+      }
       return card;
     };
     const renderList = () => {

@@ -224,8 +224,7 @@ class GeminiImageService:
         if not current_profile:
             return ""
         return (
-            f"人物 A 稳定体貌：{current_profile}。"
-            f"{PHYSICAL_IDENTITY_CONTINUITY_RULE}"
+            f"人物 A 稳定体貌：{current_profile}。{PHYSICAL_IDENTITY_CONTINUITY_RULE}"
         )
 
     async def generate_image(
@@ -557,9 +556,7 @@ class GeminiImageService:
         friend_parts = await self._person_reference_parts(
             f"人物 B：好友 {friend_name}", friend_sources
         )
-        physical_identity = self._group_physical_identity_instruction(
-            identity_profiles
-        )
+        physical_identity = self._group_physical_identity_instruction(identity_profiles)
         if not current_parts:
             raise ValueError("当前角色参考图均不可用")
         if not friend_parts:
@@ -737,7 +734,8 @@ class GeminiImageService:
             timeout = aiohttp.ClientTimeout(total=route.timeout_seconds)
             requested_size = self._request_size_label(route)
             logger.debug(
-                f"{LOG_PREFIX} 图片请求：模式={self._mode_label(mode)}；"
+                f"{LOG_PREFIX} 图片请求：通道={route_label}；"
+                f"模式={self._mode_label(mode)}；"
                 f"协议={self._protocol_label(route.protocol)}；"
                 f"来源={route.resolution_source}；分辨率={route.resolution}；"
                 f"比例={route.aspect_ratio}；请求尺寸={requested_size}"
@@ -772,7 +770,8 @@ class GeminiImageService:
                 width, height = _image_dimensions(image_bytes)
                 actual_size = f"{width}×{height}" if width and height else "未知"
                 logger.debug(
-                    f"{LOG_PREFIX} 图片完成：请求={requested_size}；实际={actual_size}"
+                    f"{LOG_PREFIX} 图片完成：通道={route_label}；"
+                    f"请求={requested_size}；实际={actual_size}"
                 )
                 if (
                     route.protocol == "openai"
@@ -782,6 +781,7 @@ class GeminiImageService:
                 ):
                     logger.warning(
                         f"{LOG_PREFIX} 图片接口返回尺寸与请求不一致："
+                        f"通道={route_label}；"
                         f"请求={requested_size}；实际={actual_size}"
                     )
                 return image_bytes, route
@@ -927,7 +927,7 @@ class GeminiImageService:
                 channel.api_url,
                 channel.api_key,
                 channel.model,
-                f"{mode_label}接口通道 {index}",
+                channel.group_name or f"{mode_label}接口通道 {index}",
                 channel.protocol,
                 channel.resolution,
                 channel.aspect_ratio,

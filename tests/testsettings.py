@@ -95,6 +95,7 @@ class LifeSettingsTest(unittest.TestCase):
                     "text_channels": [
                         {
                             "__template_key": "gemini",
+                            "group_name": "主线路 A",
                             "api_url": "https://relay-a.example/",
                             "api_key": "relay-key",
                             "model": "gemini-relay-a",
@@ -112,6 +113,7 @@ class LifeSettingsTest(unittest.TestCase):
                     "edit_channels": [
                         {
                             "__template_key": "openai",
+                            "group_name": "  备用   GPT 线路  ",
                             "api_url": "https://relay-b.example",
                             "api_key": "relay-key-b",
                             "model": "",
@@ -289,6 +291,9 @@ class LifeSettingsTest(unittest.TestCase):
         )
         self.assertEqual(config.image_generation.text_channels[0].api_key, "relay-key")
         self.assertEqual(
+            config.image_generation.text_channels[0].group_name, "主线路 A"
+        )
+        self.assertEqual(
             config.image_generation.text_channels[0].model, "gemini-relay-a"
         )
         self.assertEqual(config.image_generation.text_channels[0].protocol, "gemini")
@@ -301,6 +306,9 @@ class LifeSettingsTest(unittest.TestCase):
         )
         self.assertEqual(
             config.image_generation.edit_channels[0].api_key, "relay-key-b"
+        )
+        self.assertEqual(
+            config.image_generation.edit_channels[0].group_name, "备用 GPT 线路"
         )
         self.assertEqual(config.image_generation.edit_channels[0].model, "gpt-image-2")
         self.assertEqual(config.image_generation.edit_channels[0].protocol, "openai")
@@ -388,8 +396,7 @@ class LifeSettingsTest(unittest.TestCase):
             {
                 "image_generation_config": {
                     "character_reference_images": [
-                        {"path": f"D:/ref/character-{index}.png"}
-                        for index in range(8)
+                        {"path": f"D:/ref/character-{index}.png"} for index in range(8)
                     ]
                 }
             }
@@ -562,6 +569,29 @@ class LifeSettingsTest(unittest.TestCase):
 
         self.assertTrue(items["semantic_max_segments"]["hint"].strip())
         self.assertTrue(items["semantic_timeout_seconds"]["hint"].strip())
+
+    def test_image_channel_schema_exposes_custom_group_names(self):
+        schema = json.loads(
+            (PLUGIN_ROOT / "_conf_schema.json").read_text(encoding="utf-8")
+        )
+        image_items = schema["image_generation_config"]["items"]
+
+        for list_key in ("text_channels", "edit_channels"):
+            for template_key, expected_default in (
+                ("gemini", "Gemini"),
+                ("openai", "GPT Image"),
+            ):
+                channel_items = image_items[list_key]["templates"][template_key][
+                    "items"
+                ]
+                self.assertEqual(channel_items["group_name"]["description"], "分组名称")
+                self.assertEqual(
+                    channel_items["group_name"]["default"], expected_default
+                )
+                self.assertLess(
+                    list(channel_items).index("group_name"),
+                    list(channel_items).index("api_url"),
+                )
 
     def test_conf_schema_no_longer_exposes_catalog_workshop(self):
         schema = json.loads(
@@ -863,6 +893,9 @@ class LifeSettingsTest(unittest.TestCase):
         channel_items = image_items["text_channels"]["templates"]["gemini"]["items"]
         self.assertNotIn("name", channel_items)
         self.assertNotIn("protocol", channel_items)
+        self.assertIn("group_name", channel_items)
+        self.assertEqual(channel_items["group_name"]["description"], "分组名称")
+        self.assertEqual(channel_items["group_name"]["default"], "Gemini")
         self.assertIn("api_url", channel_items)
         self.assertIn("api_key", channel_items)
         self.assertIn("model", channel_items)
@@ -874,6 +907,10 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertIn("9:16", channel_items["aspect_ratio"]["options"])
         self.assertIn("16:9", channel_items["aspect_ratio"]["options"])
         self.assertEqual(channel_items["timeout_seconds"]["default"], 120)
+        self.assertLess(
+            list(channel_items).index("group_name"),
+            list(channel_items).index("api_url"),
+        )
         self.assertLess(
             list(channel_items).index("model"), list(channel_items).index("resolution")
         )
@@ -889,6 +926,7 @@ class LifeSettingsTest(unittest.TestCase):
             "items"
         ]
         self.assertNotIn("protocol", openai_channel_items)
+        self.assertEqual(openai_channel_items["group_name"]["default"], "GPT Image")
         self.assertEqual(openai_channel_items["api_url"]["default"], "")
         self.assertEqual(openai_channel_items["model"]["default"], "gpt-image-2")
         self.assertEqual(openai_channel_items["resolution"]["default"], "4K")
@@ -976,9 +1014,15 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertNotIn("reference_max_mb", schema["image_generation_config"]["items"])
         self.assertNotIn("use_proxy", schema["image_generation_config"]["items"])
         self.assertNotIn("proxy_url", schema["image_generation_config"]["items"])
-        self.assertNotIn("reference_max_count", schema["image_generation_config"]["items"])
+        self.assertNotIn(
+            "reference_max_count", schema["image_generation_config"]["items"]
+        )
         self.assertIn(
-            "最多管理 6 张",
+            "支持上传 1～6 张",
+            image_items["character_reference_images"]["hint"],
+        )
+        self.assertIn(
+            "自然面部、半身和全身视角",
             image_items["character_reference_images"]["hint"],
         )
         video_items = schema["video_generation_config"]["items"]
@@ -1250,13 +1294,12 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertIn("记忆沉淀", dashboard_config)
         self.assertIn('label="表情素材采集"', runtime_chain)
 
-    def test_release_starts_at_version_1_0_0(self):
+    def test_release_version_is_consistent(self):
         metadata = (PLUGIN_ROOT / "metadata.yaml").read_text(encoding="utf-8")
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertIn("version: 1.0.0", metadata)
-        self.assertNotIn("version: 2.0.0", metadata)
-        self.assertNotIn("## v2 ", readme)
-        self.assertIn("### v1.0.0", changelog)
-        self.assertNotIn("### v2.0.0", changelog)
+        self.assertIn("version: 1.0.1", metadata)
+        self.assertIn("version-1.0.1", readme)
+        self.assertIn("v1.0.1 · 2026-07-30", changelog)
+        self.assertLess(changelog.index("v1.0.1"), changelog.index("v1.0.0"))

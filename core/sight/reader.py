@@ -7,19 +7,19 @@ from typing import Any
 
 from astrbot.api import logger
 
+from ..runtime.markers import LOG_PREFIX
+from .clip import SightClip
 from .hearing import (
     AudioTranscriptError,
+    extract_audio,
     prepare_audio_source,
     transcribe_bcut,
     transcribe_bcut_audio,
 )
-from .clip import SightClip
 from .local import LocalAsrConfig, transcribe_local, transcribe_local_audio
-from .probe import clean_source
+from .probe import VIDEO_SUFFIXES, clean_source
 from .sample import sight_cache_dir
 from .transcript import TranscriptResult
-from ..runtime.markers import LOG_PREFIX
-
 
 AUDIO_TRANSCRIPT_TIMEOUT_SECONDS = 240
 LOCAL_ASR_BATCH_SIZE_SECONDS = 300
@@ -79,13 +79,20 @@ class SightReader:
             clip, transcript, base_metadata, errors
         )
 
-    async def prepare_audio(self, source: str) -> Path | None:
+    async def prepare_audio(
+        self, source: str, *, prepared_video: Path | None = None
+    ) -> Path | None:
         if not self.transcript_enabled:
             return None
+        if prepared_video is not None and self._transcript_routes()[0] == "local":
+            return prepared_video
         source = clean_source(source)
         if not source:
             return None
-        return await prepare_audio_source(source, self._cache_dir())
+        return await prepare_audio_source(
+            str(prepared_video) if prepared_video is not None else source,
+            self._cache_dir(),
+        )
 
     async def read_prepared_audio(
         self, _event: Any, clip: SightClip, audio_path: Path | None
@@ -98,6 +105,13 @@ class SightReader:
             transcript = await self._read_prepared_transcript(
                 audio_path, errors=errors, log_stage=True
             )
+            if transcript is None:
+                source = clean_source(clip.source or clip.text)
+                transcript = (
+                    await self._read_transcript(source, errors=errors, log_stage=True)
+                    if source
+                    else None
+                )
         else:
             source = clean_source(clip.source or clip.text)
             transcript = (
@@ -274,6 +288,11 @@ class SightReader:
                 config=self.local_asr_config,
                 max_chars=self.max_chars,
             )
+        if audio_path.suffix.lower() in VIDEO_SUFFIXES:
+            extracted = await extract_audio(audio_path, self._cache_dir())
+            if extracted is None:
+                raise AudioTranscriptError("视频音频提取失败")
+            audio_path = extracted
         return await transcribe_bcut_audio(
             audio_path,
             cache_dir=self._cache_dir(),

@@ -749,7 +749,7 @@
           "max": 1440,
           "step": 5
         },
-        "hint": "同一个私聊最后一条可参考消息后，至少安静多久才允许进入闲时回复裁定。"
+        "hint": "同一个私聊最后一条可参考消息后，至少安静多久才允许进入闲时回复或私聊回访裁定。"
       },
       "cooldown_minutes": {
         "description": "群聊冷却(分钟)",
@@ -1124,7 +1124,7 @@
           "type": "object"
         },
         "default": [],
-        "hint": "点击选择图片上传到插件数据目录，最多管理 6 张当前角色参考图，用于保持角色生活照、自拍、穿搭图等画面的身份一致。"
+        "hint": "当前角色形象支持上传 1～6 张参考图片，用于保持生活照、自拍等画面的身份一致。参考图建议包含自然面部、半身和全身视角。"
       },
       "photo_suite_planning_timeout_seconds": {
         "description": "套图规划超时（秒）",
@@ -1145,7 +1145,7 @@
           "type": "object"
         },
         "default": [],
-        "hint": "从已有关系档案中选择好友并上传 1～3 张参考图片。合影时会与当前角色参考图分开绑定，不会自动采集聊天图片；参考图建议包含自然面部、半身和全身视角，需要先把上方角色形象参考设为智能判断或始终参考。"
+        "hint": "从已有关系档案中选择好友并上传 1～3 张参考图片。合影时会参考好友形象；参考图建议包含自然面部、半身和全身视角。"
       },
       "text_channels": {
         "description": "文生图接口通道",
@@ -1156,6 +1156,12 @@
           "gemini": {
             "name": "Gemini",
             "items": {
+              "group_name": {
+                "description": "分组名称",
+                "type": "string",
+                "default": "Gemini",
+                "hint": "自定义这条文生图接口通道的名称，用于区分不同接口分组。"
+              },
               "api_url": {
                 "description": "接口地址",
                 "type": "string",
@@ -1223,6 +1229,12 @@
           "openai": {
             "name": "GPT Image",
             "items": {
+              "group_name": {
+                "description": "分组名称",
+                "type": "string",
+                "default": "GPT Image",
+                "hint": "自定义这条文生图接口通道的名称，用于区分不同接口分组。"
+              },
               "api_url": {
                 "description": "接口地址",
                 "type": "string",
@@ -1298,6 +1310,12 @@
           "gemini": {
             "name": "Gemini",
             "items": {
+              "group_name": {
+                "description": "分组名称",
+                "type": "string",
+                "default": "Gemini",
+                "hint": "自定义这条图生图接口通道的名称，用于区分不同接口分组。"
+              },
               "api_url": {
                 "description": "接口地址",
                 "type": "string",
@@ -1365,6 +1383,12 @@
           "openai": {
             "name": "GPT Image",
             "items": {
+              "group_name": {
+                "description": "分组名称",
+                "type": "string",
+                "default": "GPT Image",
+                "hint": "自定义这条图生图接口通道的名称，用于区分不同接口分组。"
+              },
               "api_url": {
                 "description": "接口地址",
                 "type": "string",

@@ -125,6 +125,7 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
                         },
                         {
                             "__template_key": "openai",
+                            "group_name": "OpenAI 备用线路",
                             "api_url": "https://openai.example/v1",
                             "api_key": "openai-key",
                             "model": "gpt-image-2",
@@ -140,9 +141,14 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
 
         service._get_session = get_session
 
-        await service.generate_image("雨夜生活照", protocol="openai")
+        with patch.object(picture_canvas.logger, "debug") as debug_log:
+            await service.generate_image("雨夜生活照", protocol="openai")
 
         self.assertEqual(calls, ["https://openai.example/v1/images/generations"])
+        request_routes = await service._request_routes("text", protocol="openai")
+        self.assertEqual(request_routes[0].label, "OpenAI 备用线路")
+        logs = "\n".join(str(call.args[0]) for call in debug_log.call_args_list)
+        self.assertIn("通道=https://openai.example / OpenAI 备用线路", logs)
 
     async def test_generate_image_tries_next_channel_after_first_failure(self):
         output_bytes = b"\x89PNG\r\n\x1a\noutput"
@@ -585,7 +591,9 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("明确要求同款、情侣装或统一造型", parts[0]["text"])
         self.assertIn("人物 A 稳定体貌：整体纤细匀称", parts[0]["text"])
         self.assertNotIn("人物 B 稳定体貌", parts[0]["text"])
-        self.assertIn("不得因通用审美压平、夸张、扩大、缩小或重塑身体结构", parts[0]["text"])
+        self.assertIn(
+            "不得因通用审美压平、夸张、扩大、缩小或重塑身体结构", parts[0]["text"]
+        )
         self.assertIn("仅作为场景、构图或姿态参考", parts[1]["text"])
         self.assertEqual(
             base64.b64decode(parts[2]["inlineData"]["data"]),
@@ -905,11 +913,7 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
                 return _Response(
                     payload={
                         "data": [
-                            {
-                                "b64_json": base64.b64encode(output_bytes).decode(
-                                    "ascii"
-                                )
-                            }
+                            {"b64_json": base64.b64encode(output_bytes).decode("ascii")}
                         ]
                     }
                 )
@@ -943,11 +947,7 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         await service.edit_image("窗边半身生活照", str(first))
 
         form = calls[0][1]
-        image_fields = [
-            field
-            for field in form.fields
-            if field[0] == "image"
-        ]
+        image_fields = [field for field in form.fields if field[0] == "image"]
         self.assertEqual(len(image_fields), 2)
         self.assertIn("当前角色身份图", _form_field(form, "prompt"))
 

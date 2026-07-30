@@ -1,6 +1,6 @@
 import asyncio
-import sys
 import json
+import sys
 import tempfile
 import types
 import unittest
@@ -8,13 +8,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from support import async_return
+
 from core.sight import SightClip, SightInsight, TranscriptResult, TranscriptSegment
-from core.sight.hearing import (
-    AudioTranscriptError,
-    _transcript_from_bcut,
-    prepare_audio_source,
-    transcribe_bcut_audio,
-)
+from core.sight import sample as sample_module
 from core.sight.auth import enrich_bili_cookies
 from core.sight.bili import (
     BiliTarget,
@@ -26,6 +22,12 @@ from core.sight.brief import SightBrief
 from core.sight.cookie import BiliCookieJar
 from core.sight.digest import frame_prompt
 from core.sight.embed import embed_local_markdown_images
+from core.sight.hearing import (
+    AudioTranscriptError,
+    _transcript_from_bcut,
+    prepare_audio_source,
+    transcribe_bcut_audio,
+)
 from core.sight.local import ensure_wav, transcribe_local_audio, transcript_from_payload
 from core.sight.note import (
     PROFESSIONAL_NOTE_CACHE_SCHEMA,
@@ -35,7 +37,6 @@ from core.sight.note import (
     professional_note_prompt_key,
 )
 from core.sight.reader import SightReader
-from core.sight import sample as sample_module
 from core.sight.sample import (
     SightFrame,
     extract_video_frames,
@@ -111,7 +112,9 @@ class SightPipelineTest(unittest.TestCase):
 
         self.assertEqual(SightMixin._cached_sight_note_markdown(insight), "")
         insight.metadata["professional_note_schema"] = PROFESSIONAL_NOTE_CACHE_SCHEMA
-        insight.metadata["professional_note_prompt_key"] = professional_note_prompt_key()
+        insight.metadata["professional_note_prompt_key"] = (
+            professional_note_prompt_key()
+        )
         self.assertEqual(
             SightMixin._cached_sight_note_markdown(insight), "# 过期缓存摘要"
         )
@@ -573,7 +576,7 @@ class SightFrameCompatibilityTest(unittest.IsolatedAsyncioTestCase):
             return "https://example.com/video.mp4"
 
         async def download(source, cache_dir, **kwargs):
-            calls.append(("download", source))
+            calls.append(("download", source, kwargs.get("cache_identity")))
             path = Path(cache_dir) / "media" / "single-page.mp4"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"\x00\x00\x00\x18ftypmp42fake-video")
@@ -628,6 +631,39 @@ class SightFrameCompatibilityTest(unittest.IsolatedAsyncioTestCase):
             ),
             calls,
         )
+        self.assertIn(
+            (
+                "download",
+                "https://example.com/video.mp4",
+                "bilibili:BV1VST56DEHu:39496714106",
+            ),
+            calls,
+        )
+
+    async def test_reader_reuses_prepared_video_for_local_asr(self):
+        runtime = types.SimpleNamespace(
+            config=types.SimpleNamespace(
+                sight=types.SimpleNamespace(audio_transcript_mode="local")
+            ),
+            data_path=Path("D:/tmp/daily_life.db"),
+        )
+        reader = SightReader(runtime)
+
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch(
+                "core.sight.reader.prepare_audio_source",
+                side_effect=AssertionError("不应再次下载音频或视频"),
+            ),
+        ):
+            source_path = Path(tmpdir) / "prepared.mp4"
+            source_path.write_bytes(b"video")
+            result = await reader.prepare_audio(
+                "https://www.bilibili.com/video/BV1xx411c7mD",
+                prepared_video=source_path,
+            )
+
+        self.assertEqual(result, source_path)
 
     async def test_prepare_audio_source_uses_ytdlp_audio_for_video_page(self):
         seen_options = {}
@@ -787,7 +823,7 @@ class SightFrameCompatibilityTest(unittest.IsolatedAsyncioTestCase):
 
         def extract(ffmpeg, source, target, second):
             calls.append((ffmpeg, second))
-            target.write_bytes(f"frame-{second}".encode("utf-8"))
+            target.write_bytes(f"frame-{second}".encode())
             return True
 
         ffmpeg_module = types.ModuleType("imageio_ffmpeg")
@@ -1085,8 +1121,8 @@ class SightFrameCompatibilityTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_local_mode_falls_back_to_bcut(self):
-        from support import DailyLifeRuntime, LifeSettings
         from core.sight.hearing import AudioTranscriptError
+        from support import DailyLifeRuntime, LifeSettings
 
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.config = LifeSettings.from_dict(
@@ -1511,10 +1547,11 @@ class SightFrameCompatibilityTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(default_provider.prompts, [])
 
     async def test_sight_brief_checkpoint_resumes_after_saved_partial_group(self):
-        from support import Context, DailyLifeRuntime, LifeSettings, Provider
+        import json
+
         from core.sight.checkpoint import audio_outline_checkpointed
         from core.sight.sample import sight_cache_dir
-        import json
+        from support import Context, DailyLifeRuntime, LifeSettings, Provider
 
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.data_path = Path(tempfile.mkdtemp())

@@ -44,6 +44,7 @@ IMAGE_ASPECT_RATIOS = (
 class ImageApiChannel:
     api_url: str
     api_key: str
+    group_name: str = ""
     model: str = ""
     protocol: str = "gemini"
     resolution: str = "4K"
@@ -71,6 +72,7 @@ def _image_channels(value: Any) -> list[ImageApiChannel]:
             continue
         api_url = as_str(raw.get("api_url", "")).strip().rstrip("/")
         api_key = as_str(raw.get("api_key", "")).strip()
+        group_name = " ".join(as_str(raw.get("group_name", "")).split())[:40]
         protocol = (
             as_str(
                 raw.get("protocol") or raw.get("__template_key") or "gemini", "gemini"
@@ -107,6 +109,7 @@ def _image_channels(value: Any) -> list[ImageApiChannel]:
             ImageApiChannel(
                 api_url=api_url,
                 api_key=api_key,
+                group_name=group_name,
                 model=model,
                 protocol=protocol,
                 resolution=resolution,
