@@ -2532,6 +2532,8 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertIn("IMAGE_CHANNEL_LIST_PATHS", config)
         self.assertIn('node("div", "template-list-item-inline")', config)
         self.assertIn("row.append(dragButton, body, removeButton)", config)
+        self.assertIn('templateField.dataset.templateField = "__template_key"', config)
+        self.assertIn("label.dataset.templateField = fieldKey", config)
         self.assertIn('"image_generation_config.text_channels"', config)
         self.assertIn('"image_generation_config.edit_channels"', config)
         self.assertIn("拖动排序", config)
@@ -2562,6 +2564,13 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertIn("minmax(68px, 80px)", style)
         self.assertIn(".template-list-item-compact :is(input, select, textarea)", style)
         self.assertIn(".template-list-item-compact .life-select-trigger", style)
+        self.assertIn("overflow-x: hidden", style)
+        self.assertIn("@media (min-width: 681px)", style)
+        self.assertIn("width: 120px;\n    min-width: 100%;", style)
+        self.assertIn("grid-template-columns: repeat(6, minmax(0, 1fr))", style)
+        self.assertIn("grid-column: 1 / -1;\n    grid-row: 2;", style)
+        self.assertIn('[data-template-field="api_url"]', style)
+        self.assertIn('[data-template-field="resolution"]', style)
         self.assertNotIn("min-width: 1420px", style)
 
     def test_dashboard_settings_use_explicit_section_order(self):
@@ -3452,6 +3461,7 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
             relationships,
         )
         self.assertIn("function relationshipTextResolver(status = {})", relationships)
+        self.assertNotIn("firstPersonRelationshipText", relationships)
         self.assertIn("function addGroupScopeName(index, key, label)", relationships)
         self.assertIn(
             "function relationshipRecordLines(items, relationshipText)", relationships
@@ -3468,6 +3478,7 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertIn(
             "recordLines([relationshipText(evidenceText(item.summary))])", app
         )
+        self.assertIn("recordLines([clean(item.meaning)", app)
         self.assertIn(".experience-panel .tabs", style)
         self.assertIn(".world-panel .tabs", style)
         self.assertIn("overflow-x: auto", style)

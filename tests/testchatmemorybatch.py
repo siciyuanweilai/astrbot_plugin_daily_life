@@ -324,6 +324,9 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(source["scope"]["group_id"], "group-1")
         self.assertTrue(source["messages"][0]["is_directed"])
         self.assertIn("自然语言字段必须使用简体中文", prompt)
+        self.assertIn("当前角色参与的动作、感受、关系和互动使用第一人称", prompt)
+        self.assertIn("叙述视角必须依据主体身份确定", prompt)
+        self.assertIn("不能通过词面替换推断主体", prompt)
         self.assertIn("没有内容时字段留空", prompt)
         self.assertIn("不得复制 row_id、message_id、target_id", prompt)
 
@@ -360,9 +363,7 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
 
         normalized = self.runtime._normalize_chat_memory_batch_payload(payload, batch)
 
-        self.assertEqual(
-            normalized["life_terms"][0]["evidence"], "来自 2 条聊天消息"
-        )
+        self.assertEqual(normalized["life_terms"][0]["evidence"], "来自 2 条聊天消息")
         self.assertEqual(
             normalized["life_terms"][1]["evidence"], "用户明确使用这个称呼"
         )
@@ -415,9 +416,7 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             await self.runtime.archive.get_message_visibility_records(10), []
         )
-        self.assertEqual(
-            await self.runtime.archive.get_action_decision_records(10), []
-        )
+        self.assertEqual(await self.runtime.archive.get_action_decision_records(10), [])
         self.assertEqual(
             (await self.runtime.archive.get_day("2026-07-10")).state_log, []
         )

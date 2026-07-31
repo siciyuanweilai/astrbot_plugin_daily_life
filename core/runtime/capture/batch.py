@@ -11,6 +11,7 @@ from astrbot.api import logger
 
 from ...clock import now as life_now
 from ...models import ChatSummaryRecord, CommitmentRecord
+from ...prompts import CORE_PERSONA_PRONOUN_RULES
 from ..markers import LOG_PREFIX
 from .jsonclean import call_pure_json
 
@@ -396,6 +397,7 @@ class ChatMemoryBatchMixin:
             "输入中的 role=user 是用户消息，role=assistant 是我实际已经发送的回复；"
             "区分稳定事实、偏好、关系认识、生活事件、纠错和未来约定。暂时情绪、寒暄、无证据推断与重复信息不保存。"
             "无法可靠归属的信息不要输出。群聊中的人物必须使用输入给出的 profile_id。"
+            f"人物称谓与叙述视角规则：\n{CORE_PERSONA_PRONOUN_RULES}\n"
             "所有面向用户展示的自然语言字段必须使用简体中文；没有内容时字段留空，不要用任何语言解释为什么没有内容。"
             "自然语言字段必须写可读的事实摘要，不得复制 row_id、message_id、target_id 或其他内部编号；"
             "内部编号只能填写到名称明确的专用 ID 字段。"
@@ -546,10 +548,7 @@ class ChatMemoryBatchMixin:
 
         def sanitize(item: Any, field: str = "") -> Any:
             if isinstance(item, dict):
-                return {
-                    key: sanitize(raw, str(key))
-                    for key, raw in item.items()
-                }
+                return {key: sanitize(raw, str(key)) for key, raw in item.items()}
             if isinstance(item, list):
                 return [sanitize(raw, field) for raw in item]
             if field in cls._BATCH_READABLE_FIELDS and isinstance(item, str):

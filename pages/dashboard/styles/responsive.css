@@ -198,6 +198,60 @@
     grid-template-columns: 1fr;
   }
 
+  .template-list-item-compact {
+    padding: 10px;
+  }
+
+  .template-list-item-compact .template-list-item-inline {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .template-list-item-compact .template-list-drag {
+    grid-column: 1;
+    grid-row: 1;
+    justify-self: start;
+    width: 40px;
+    min-width: 40px;
+    height: 40px;
+    min-height: 40px;
+  }
+
+  .template-list-item-compact .template-list-item-grid {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 10px 8px;
+    width: 100%;
+  }
+
+  .template-list-item-compact .template-list-subfield {
+    grid-column: span 3;
+  }
+
+  .template-list-item-compact .template-list-subfield:is(
+      [data-template-field="api_url"],
+      [data-template-field="api_key"],
+      [data-template-field="model"]
+    ) {
+    grid-column: 1 / -1;
+  }
+
+  .template-list-item-compact .template-list-subfield:is(
+      [data-template-field="resolution"],
+      [data-template-field="aspect_ratio"],
+      [data-template-field="timeout_seconds"]
+    ) {
+    grid-column: span 2;
+  }
+
+  .template-list-item-compact .template-list-item-inline > .danger {
+    grid-column: 2;
+    grid-row: 1;
+    align-self: center;
+  }
+
   .facts {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px;

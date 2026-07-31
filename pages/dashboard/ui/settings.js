@@ -1177,6 +1177,7 @@ export function createConfigPanel({
           saveItems(next, { itemIds });
         });
         const templateField = node("label", "template-list-subfield");
+        templateField.dataset.templateField = "__template_key";
         templateField.append(node("span", "", "条目类型"), templateSelect);
         body.append(templateField);
       }
@@ -1184,6 +1185,7 @@ export function createConfigPanel({
         const inputId = [...path, index, fieldKey].join("__");
         const fieldLabel = configLabel(fieldKey, fieldSpec);
         const label = node(fieldSpec.type === "bool" ? "div" : "label", "template-list-subfield");
+        label.dataset.templateField = fieldKey;
         if (fieldSpec.type !== "bool") label.htmlFor = inputId;
         const title = node("span", "", fieldLabel);
         const control = renderTemplateListItemControl(

@@ -112,7 +112,8 @@
   right: 0;
   z-index: 4;
   max-height: min(var(--life-select-menu-max-height, 268px), calc(100vh - 24px));
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   scrollbar-gutter: stable;
   display: grid;
   gap: 3px;

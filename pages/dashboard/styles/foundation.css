@@ -1753,6 +1753,20 @@ h2::before {
   gap: 4px;
 }
 
+@media (min-width: 681px) {
+  .template-list-item-compact
+    .template-list-subfield:is(
+      [data-template-field="resolution"],
+      [data-template-field="aspect_ratio"]
+    )
+    .life-select-menu {
+    left: auto;
+    right: 0;
+    width: 120px;
+    min-width: 100%;
+  }
+}
+
 .template-list-subfield {
   display: grid;
   gap: 5px;
