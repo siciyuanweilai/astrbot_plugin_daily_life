@@ -8,15 +8,34 @@ from collections.abc import Callable, Mapping
 
 SCHEMA_VERSION_KEY = "schema_version"
 BASELINE_SCHEMA_VERSION = 1
-SCHEMA_VERSION = 1
-BASELINE_SCHEMA_FINGERPRINT = (
+SCHEMA_VERSION = 2
+LEGACY_BASELINE_SCHEMA_FINGERPRINT = (
     "9e6243276bf6bd509f6019502e30192310da4197838bd0f7d478f0100f8750a5"
+)
+BASELINE_SCHEMA_FINGERPRINT = (
+    "993af376991a7d179ccbc4c22d796d9beb2f18c2238a461e973a8596829749c0"
 )
 
 MigrationStep = Callable[[sqlite3.Connection], None]
 
+
+def _migrate_timeline_execution_state(conn: sqlite3.Connection) -> None:
+    columns = {
+        str(row[1]) for row in conn.execute("PRAGMA table_info(timelines)").fetchall()
+    }
+    additions = {
+        "execution_state": "TEXT NOT NULL DEFAULT 'planned'",
+        "execution_reason": "TEXT NOT NULL DEFAULT ''",
+        "execution_evidence": "TEXT NOT NULL DEFAULT ''",
+        "execution_updated_at": "TEXT NOT NULL DEFAULT ''",
+    }
+    for name, definition in additions.items():
+        if name not in columns:
+            conn.execute(f"ALTER TABLE timelines ADD COLUMN {name} {definition}")
+
+
 # 键是迁移完成后的目标版本；每个步骤只负责从前一版本升级一次。
-MIGRATIONS: dict[int, MigrationStep] = {}
+MIGRATIONS: dict[int, MigrationStep] = {2: _migrate_timeline_execution_state}
 
 
 class SchemaMigrationError(RuntimeError):
@@ -53,7 +72,10 @@ def schema_fingerprint(conn: sqlite3.Connection) -> str:
 
 
 def is_baseline_schema(conn: sqlite3.Connection) -> bool:
-    return schema_fingerprint(conn) == BASELINE_SCHEMA_FINGERPRINT
+    return schema_fingerprint(conn) in {
+        BASELINE_SCHEMA_FINGERPRINT,
+        LEGACY_BASELINE_SCHEMA_FINGERPRINT,
+    }
 
 
 def read_schema_version(conn: sqlite3.Connection) -> int | None:
@@ -101,9 +123,7 @@ def validate_migration_registry(
     unexpected = sorted(actual - expected)
     if missing:
         first = missing[0]
-        raise SchemaMigrationError(
-            f"缺少数据库迁移步骤：{first - 1} -> {first}"
-        )
+        raise SchemaMigrationError(f"缺少数据库迁移步骤：{first - 1} -> {first}")
     if unexpected:
         raise SchemaMigrationError(
             "数据库迁移表包含超出当前版本的步骤："

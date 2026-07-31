@@ -1299,7 +1299,7 @@ class LifeSettingsTest(unittest.TestCase):
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertIn("version: 1.0.2", metadata)
-        self.assertIn("version-1.0.2", readme)
-        self.assertIn("v1.0.2 · 2026-07-31", changelog)
-        self.assertLess(changelog.index("v1.0.2"), changelog.index("v1.0.1"))
+        self.assertIn("version: 1.0.3", metadata)
+        self.assertIn("version-1.0.3", readme)
+        self.assertIn("v1.0.3 · 2026-07-31", changelog)
+        self.assertLess(changelog.index("v1.0.3"), changelog.index("v1.0.2"))

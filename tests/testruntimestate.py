@@ -150,7 +150,7 @@ class RuntimeStateTest(unittest.TestCase):
                 "voice_generation_config": {
                     "enabled": True,
                     "smart_switch_probability": 45,
-                }
+                },
             }
         )
         data = DayRecord(
@@ -599,6 +599,36 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         await asyncio.gather(*list(runtime._background_scheduler.tasks))
 
         self.assertEqual(len(runtime.archive.days), 1)
+
+    async def test_startup_missing_day_bootstraps_current_life_day(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.config = LifeSettings.from_dict({"schedule_time": "07:30"})
+        runtime.archive = DataManager()
+        runtime.failed_dates = {}
+        calls = []
+
+        async def generate_daily(**kwargs):
+            calls.append(kwargs)
+            day = DayRecord(
+                date=kwargs["date"].strftime("%Y-%m-%d"),
+                timeline=[TimelineItem(time="09:00", activity="慢慢醒来")],
+            )
+            await runtime.archive.save_day(day)
+            return types.SimpleNamespace(day=day)
+
+        runtime.run_daily_generation = generate_daily
+        runtime.resolve_injection_target = lambda now: async_return(
+            (now.strftime("%Y-%m-%d"), False)
+        )
+        now = datetime.datetime(2026, 7, 31, 14, 20)
+
+        await runtime.ensure_startup_day_data(now)
+        await runtime.ensure_startup_day_data(now)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["source"], "startup_seed")
+        stored = await runtime.archive.get_day("2026-07-31")
+        self.assertEqual(stored.date, "2026-07-31")
 
     async def test_injection_no_longer_runs_rule_based_period_update(self):
         archive = DataManager()
@@ -1200,9 +1230,7 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         runtime._close_runtime_services = close_services
 
         with self.assertRaisesRegex(RuntimeError, "提交失败"):
-            await runtime.apply_config(
-                {"rhythm_config": {"schedule_time": "09:30"}}
-            )
+            await runtime.apply_config({"rhythm_config": {"schedule_time": "09:30"}})
 
         self.assertEqual(runtime.config.schedule_time, "07:00")
         self.assertEqual(runtime.raw_config["rhythm_config"]["schedule_time"], "07:00")

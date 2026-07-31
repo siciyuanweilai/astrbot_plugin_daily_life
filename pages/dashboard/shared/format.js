@@ -63,9 +63,12 @@ function healthCheckRows(checks = []) {
     const key = text(item.key).trim();
     if (!key) return;
     const count = Number(item.count || 0);
+    const mappedLabel = enumLabelStrict(key, HEALTH_CHECK_LABELS, "");
     rows.set(key, {
       key,
-      label: clean(item.label || enumLabel(key, HEALTH_CHECK_LABELS)),
+      label:
+        mappedLabel
+        || enumLabelOrReadableText(item.label, HEALTH_CHECK_LABELS, "其他检查"),
       count: Number.isFinite(count) ? count : 0,
       index,
     });
@@ -214,7 +217,10 @@ function node(tag, className = "", content = "") {
 function enumLabel(value, labels) {
   const key = text(value).trim();
   if (!key) return "";
-  return labels[key] || labels[key.toLowerCase()] || humanizeToken(key);
+  const known = labels[key] || labels[key.toLowerCase()];
+  if (known) return known;
+  const readable = humanizeToken(key);
+  return /[A-Za-z]/.test(readable) ? "其他" : readable;
 }
 
 function enumLabelStrict(value, labels, fallback = "") {

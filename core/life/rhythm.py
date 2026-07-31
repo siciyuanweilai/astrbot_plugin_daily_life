@@ -13,7 +13,11 @@ from ..prompts import (
 )
 from ..clock import now as life_now
 from .appearance import format_life_preference_context
-from .tools import extract_json_from_text, format_timeline_to_text
+from .tools import (
+    extract_json_from_text,
+    format_timeline_to_text,
+    reconcile_timeline_execution,
+)
 
 
 def _clamp_float(value: float, min_value: float, max_value: float) -> float:
@@ -261,6 +265,9 @@ class LifecycleMixin:
   ],
   "decision_outcomes": [
     {{"decision_id": 当天已有生活决策编号, "outcome": "根据实际时间轴和已结算互动得出的真实结果"}}
+  ],
+  "timeline_updates": [
+    {{"item_index": 时间轴数组下标, "status": "completed|skipped|cancelled", "reason": "为什么这样收束", "evidence": "当天状态、互动或事件中的具体依据"}}
   ]
 }}
 
@@ -269,6 +276,7 @@ class LifecycleMixin:
 - life_events 是能自然延续几天的小事件，不要编造重大剧情。
 - event_updates 只更新输入中已有的开放事件；仍会继续影响后续生活就保持 open，已经完成或取消时及时收束。
 - decision_outcomes 只更新输入中已有的当天生活决策。它必须描述实际发生的结果，不能复述原计划或编造未发生事项。
+- timeline_updates 只在有具体依据时把活动标成 skipped/cancelled；正常随时间推进的活动标成 completed，不得用关键词猜测执行结果。
 - 根据 state.sleep、sleep_debt 和时间轴判断睡眠债增减；不要用固定文本匹配活动文字。
 """
         dynamic = f"""日期：{day.date}
@@ -335,7 +343,9 @@ class LifecycleMixin:
             self.archive.get_behavior_feedback(limit=12),
             self.archive.get_reply_effects(limit=12),
         )
-        feedback = [item for item in feedback if str(getattr(item, "date", "")) == date_str]
+        feedback = [
+            item for item in feedback if str(getattr(item, "date", "")) == date_str
+        ]
         reply_effects = [
             item
             for item in reply_effects
@@ -378,9 +388,8 @@ class LifecycleMixin:
         await self._apply_life_event_review_updates(
             events, review_payload, date_str=date_str
         )
-        await self._apply_life_decision_review_outcomes(
-            decisions, review_payload
-        )
+        await self._apply_life_decision_review_outcomes(decisions, review_payload)
+        await self._apply_timeline_review_updates(day, review_payload)
 
         if review.memory_points:
             await self.archive.add_events(
@@ -410,11 +419,54 @@ class LifecycleMixin:
             )
         return saved
 
+    async def _apply_timeline_review_updates(
+        self, day, payload: dict[str, Any]
+    ) -> None:
+        raw_items = payload.get("timeline_updates") if isinstance(payload, dict) else []
+        updated_at = f"{day.date} 23:59"
+        if isinstance(raw_items, list):
+            for raw in raw_items[: len(day.timeline)]:
+                if not isinstance(raw, dict):
+                    continue
+                try:
+                    item_index = int(raw.get("item_index"))
+                except (TypeError, ValueError):
+                    continue
+                status = str(raw.get("status") or "").strip().lower()
+                reason = _compact(raw.get("reason"), 160)
+                evidence = _compact(raw.get("evidence"), 200)
+                if not (0 <= item_index < len(day.timeline)) or status not in {
+                    "completed",
+                    "skipped",
+                    "cancelled",
+                }:
+                    continue
+                if status in {"skipped", "cancelled"} and not evidence:
+                    continue
+                item = day.timeline[item_index]
+                item.execution_state = status
+                item.execution_reason = reason or "夜间复盘收束"
+                item.execution_evidence = evidence or "夜间复盘"
+                item.execution_updated_at = updated_at
+
+        review_end = datetime.datetime.strptime(
+            day.date, "%Y-%m-%d"
+        ) + datetime.timedelta(days=1)
+        reconcile_timeline_execution(
+            day.timeline,
+            review_end,
+            day.date,
+            evidence="夜间复盘：时间轴收束",
+        )
+        await self.archive.save_day(day)
+
     async def _apply_life_decision_review_outcomes(
         self, decisions: list[Any], payload: dict[str, Any]
     ) -> None:
         updater = getattr(self.archive, "update_life_decision_outcome", None)
-        raw_items = payload.get("decision_outcomes") if isinstance(payload, dict) else None
+        raw_items = (
+            payload.get("decision_outcomes") if isinstance(payload, dict) else None
+        )
         if not callable(updater) or not isinstance(raw_items, list):
             return
         allowed = {int(getattr(item, "id", 0) or 0) for item in decisions}

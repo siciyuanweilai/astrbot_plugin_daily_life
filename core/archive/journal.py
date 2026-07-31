@@ -52,10 +52,20 @@ class DayArchiveMixin:
 
         timeline = [
             TimelineItem(
-                time=item["time"], activity=item["activity"], status=item["status"]
+                time=item["time"],
+                activity=item["activity"],
+                status=item["status"],
+                execution_state=item["execution_state"],
+                execution_reason=item["execution_reason"],
+                execution_evidence=item["execution_evidence"],
+                execution_updated_at=item["execution_updated_at"],
             )
             for item in self._conn.execute(
-                "SELECT time, activity, status FROM timelines WHERE date = ? ORDER BY sort_order",
+                """
+                SELECT time, activity, status, execution_state, execution_reason,
+                       execution_evidence, execution_updated_at
+                FROM timelines WHERE date = ? ORDER BY sort_order
+                """,
                 (date_str,),
             ).fetchall()
         ]
@@ -278,13 +288,22 @@ class DayArchiveMixin:
         self._conn.execute("DELETE FROM timelines WHERE date = ?", (date_str,))
         for idx, item in enumerate(timeline):
             self._conn.execute(
-                "INSERT INTO timelines(date, sort_order, time, activity, status) VALUES (?, ?, ?, ?, ?)",
+                """
+                INSERT INTO timelines(
+                    date, sort_order, time, activity, status, execution_state,
+                    execution_reason, execution_evidence, execution_updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
                 (
                     date_str,
                     idx,
                     item.time,
                     item.activity,
                     item.status,
+                    item.execution_state,
+                    item.execution_reason,
+                    item.execution_evidence,
+                    item.execution_updated_at,
                 ),
             )
 

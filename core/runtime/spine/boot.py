@@ -103,6 +103,11 @@ class SpineBootMixin:
         self.rhythm.start()
         self._runtime_initialized = True
         self._schedule_background_task(
+            self.ensure_startup_day_data(),
+            label="首次生活初始化",
+            key="startup_life_day",
+        )
+        self._schedule_background_task(
             self.maintain_emoji_assets(),
             label="表情素材维护",
             key="startup_emoji_asset_maintenance",
@@ -322,7 +327,9 @@ class SpineBootMixin:
         cancel_generations = getattr(self, "_cancel_daily_generation_tasks", None)
         if callable(cancel_generations):
             await cancel_generations()
-        close_appearance_tasks = getattr(self, "_close_character_appearance_tasks", None)
+        close_appearance_tasks = getattr(
+            self, "_close_character_appearance_tasks", None
+        )
         if callable(close_appearance_tasks):
             await close_appearance_tasks()
         await self._shutdown_chat_memory_batcher()

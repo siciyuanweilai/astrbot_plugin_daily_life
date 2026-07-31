@@ -89,9 +89,7 @@ def validate_schema(conn: sqlite3.Connection) -> None:
         return
 
     raise ArchiveSchemaError(
-        "数据库结构不符合当前定义（"
-        + "；".join(problems)
-        + "）。数据库没有被修改。"
+        "数据库结构不符合当前定义（" + "；".join(problems) + "）。数据库没有被修改。"
     )
 
 
@@ -130,11 +128,8 @@ def _upgrade_unversioned_baseline(conn: sqlite3.Connection) -> None:
     conn.execute("BEGIN IMMEDIATE")
     try:
         if not is_baseline_schema(conn):
-            if SCHEMA_VERSION == BASELINE_SCHEMA_VERSION:
-                validate_schema(conn)
-            raise SchemaMigrationError(
-                "数据库未记录结构版本，且结构不符合当前迁移基线"
-            )
+            validate_schema(conn)
+            raise SchemaMigrationError("数据库未记录结构版本，且结构不符合当前迁移基线")
         write_schema_version(conn, BASELINE_SCHEMA_VERSION)
         if BASELINE_SCHEMA_VERSION < SCHEMA_VERSION:
             apply_migrations(

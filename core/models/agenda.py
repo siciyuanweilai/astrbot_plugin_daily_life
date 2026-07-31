@@ -12,20 +12,45 @@ class TimelineItem:
     time: str = ""
     activity: str = ""
     status: str = ""
+    execution_state: str = "planned"
+    execution_reason: str = ""
+    execution_evidence: str = ""
+    execution_updated_at: str = ""
 
     @staticmethod
     def from_value(value: Any) -> "TimelineItem":
         if isinstance(value, TimelineItem):
             return value
         raw = value if isinstance(value, dict) else {}
+        execution_state = str(raw.get("execution_state") or "planned").strip().lower()
+        if execution_state not in {
+            "planned",
+            "active",
+            "completed",
+            "skipped",
+            "cancelled",
+        }:
+            execution_state = "planned"
         return TimelineItem(
             time=str(raw.get("time") or "").strip(),
             activity=str(raw.get("activity") or "").strip(),
             status=str(raw.get("status") or "").strip(),
+            execution_state=execution_state,
+            execution_reason=str(raw.get("execution_reason") or "").strip(),
+            execution_evidence=str(raw.get("execution_evidence") or "").strip(),
+            execution_updated_at=str(raw.get("execution_updated_at") or "").strip(),
         )
 
     def as_dict(self) -> dict[str, str]:
-        return {"time": self.time, "activity": self.activity, "status": self.status}
+        return {
+            "time": self.time,
+            "activity": self.activity,
+            "status": self.status,
+            "execution_state": self.execution_state,
+            "execution_reason": self.execution_reason,
+            "execution_evidence": self.execution_evidence,
+            "execution_updated_at": self.execution_updated_at,
+        }
 
 
 @dataclass(slots=True)

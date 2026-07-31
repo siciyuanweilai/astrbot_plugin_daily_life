@@ -36,6 +36,21 @@ class PortalLineMixin:
             if not date_str:
                 date_str, _ = await self.runtime.resolve_injection_target(now)
             timeline = self._page_validate_timeline(body.get("timeline"))
+            existing = await self.runtime.archive.get_day(date_str)
+            if existing:
+                for index, item in enumerate(timeline):
+                    if index >= len(existing.timeline):
+                        break
+                    previous = existing.timeline[index]
+                    if (item.time, item.activity) != (
+                        previous.time,
+                        previous.activity,
+                    ):
+                        continue
+                    item.execution_state = previous.execution_state
+                    item.execution_reason = previous.execution_reason
+                    item.execution_evidence = previous.execution_evidence
+                    item.execution_updated_at = previous.execution_updated_at
             day = await self.runtime.archive.replace_day_timeline(date_str, timeline)
             if not day:
                 raise ValueError(f"未找到日期：{date_str}")

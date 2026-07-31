@@ -580,6 +580,72 @@ def get_current_timeline_status(
     return current_item, next_item
 
 
+TIMELINE_EXECUTION_STATES = frozenset(
+    {"planned", "active", "completed", "skipped", "cancelled"}
+)
+TIMELINE_TERMINAL_STATES = frozenset({"completed", "skipped", "cancelled"})
+
+
+def reconcile_timeline_execution(
+    timeline: list,
+    current_time: datetime.datetime,
+    timeline_date: Any,
+    *,
+    evidence: str = "时间轴时钟",
+) -> bool:
+    """依据权威时间轴时钟推进模拟生活活动的执行状态。"""
+    date = coerce_date(timeline_date)
+    if not timeline or date is None:
+        return False
+
+    now_key = current_time
+    changed = False
+    timed_items = []
+    for item in timeline:
+        item_time = timeline_item_datetime(item, date)
+        if item_time is not None:
+            timed_items.append((item_time, item))
+    timed_items.sort(key=lambda entry: entry[0])
+    if not timed_items:
+        return False
+
+    current_index = -1
+    for index, (item_time, _item) in enumerate(timed_items):
+        if item_time <= now_key:
+            current_index = index
+        else:
+            break
+
+    updated_at = current_time.strftime("%Y-%m-%d %H:%M")
+    for index, (_item_time, item) in enumerate(timed_items):
+        previous = _timeline_field(item, "execution_state", "planned").lower()
+        previous = previous if previous in TIMELINE_EXECUTION_STATES else "planned"
+        if previous in {"skipped", "cancelled"}:
+            continue
+        if date < current_time.date():
+            target = "completed"
+            reason = "历史时间轴已结束"
+        elif date > current_time.date() or current_index < 0 or index > current_index:
+            target = "planned"
+            reason = "等待计划开始"
+        elif index < current_index:
+            target = "completed"
+            reason = "时间轴已推进到后续活动"
+        else:
+            target = "active"
+            reason = "已到达计划开始时间"
+        if previous == "completed" and target != "completed":
+            continue
+        if previous == target:
+            continue
+        setattr(item, "execution_state", target)
+        setattr(item, "execution_reason", reason)
+        setattr(item, "execution_evidence", evidence)
+        setattr(item, "execution_updated_at", updated_at)
+        changed = True
+    return changed
+
+
 def format_timeline_to_text(timeline: list) -> str:
     if not timeline:
         return "暂无详细日程"
@@ -589,5 +655,7 @@ def format_timeline_to_text(timeline: list) -> str:
         act = _timeline_field(item, "activity")
         status = _timeline_field(item, "status")
         status_str = f" [{status}]" if status else ""
-        lines.append(f"{time_str} - {act}{status_str}")
+        execution = _timeline_field(item, "execution_state", "planned")
+        execution_str = f" [执行:{execution}]" if execution else ""
+        lines.append(f"{time_str} - {act}{status_str}{execution_str}")
     return "\n".join(lines)

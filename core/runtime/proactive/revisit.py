@@ -194,7 +194,7 @@ class ProactiveRevisitMixin:
             try:
                 commitments = await getter(status="active", limit=8)
             except Exception as exc:
-                logger.debug(f"{LOG_PREFIX} Failed to read revisit commitments: {exc}")
+                logger.debug(f"{LOG_PREFIX} 读取私聊回访承诺失败：{exc}")
         commitments = [
             item
             for item in commitments

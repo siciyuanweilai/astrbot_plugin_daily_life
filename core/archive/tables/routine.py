@@ -31,6 +31,10 @@ CREATE TABLE IF NOT EXISTS timelines (
             time TEXT NOT NULL DEFAULT '',
             activity TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL DEFAULT '',
+            execution_state TEXT NOT NULL DEFAULT 'planned',
+            execution_reason TEXT NOT NULL DEFAULT '',
+            execution_evidence TEXT NOT NULL DEFAULT '',
+            execution_updated_at TEXT NOT NULL DEFAULT '',
             PRIMARY KEY(date, sort_order),
             FOREIGN KEY(date) REFERENCES days(date) ON DELETE CASCADE
         );

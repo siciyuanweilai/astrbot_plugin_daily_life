@@ -57,6 +57,7 @@ class DailyGenerationMixin:
         "command_reset": "命令重生",
         "outfit_seed": "穿搭补全",
         "injection_seed": "即时补全",
+        "startup_seed": "首次启动补全",
         "daily_refresh": "每日刷新",
     }
 
@@ -120,7 +121,11 @@ class DailyGenerationMixin:
         date_str = date.strftime("%Y-%m-%d")
         async with self._daily_generation_guard:
             current = self._daily_generation_active.get(date_str)
-            if current is not None and current.task is not None and not current.task.done():
+            if (
+                current is not None
+                and current.task is not None
+                and not current.task.done()
+            ):
                 if reject_if_busy:
                     raise DailyGenerationBusy(f"{date_str} 的生活安排正在重生，请稍等")
                 task = current.task
@@ -130,10 +135,12 @@ class DailyGenerationMixin:
                     operation_id=uuid.uuid4().hex[:8],
                     date=date_str,
                     source=source,
-                    source_label=self._DAILY_GENERATION_SOURCE_LABELS.get(source, source),
-                    started_at=datetime.datetime.now().astimezone().isoformat(
-                        timespec="seconds"
+                    source_label=self._DAILY_GENERATION_SOURCE_LABELS.get(
+                        source, source
                     ),
+                    started_at=datetime.datetime.now()
+                    .astimezone()
+                    .isoformat(timespec="seconds"),
                 )
                 task = asyncio.create_task(
                     self._execute_daily_generation(
@@ -230,8 +237,8 @@ class DailyGenerationMixin:
             if isinstance(failed_dates, dict):
                 failed_dates.pop(operation.date, None)
             operation.phase = "completed"
-            operation.finished_at = datetime.datetime.now().astimezone().isoformat(
-                timespec="seconds"
+            operation.finished_at = (
+                datetime.datetime.now().astimezone().isoformat(timespec="seconds")
             )
             logger.info(
                 f"{LOG_PREFIX} 日程任务完成：任务={task_id}；"
@@ -242,15 +249,15 @@ class DailyGenerationMixin:
         except asyncio.CancelledError:
             operation.phase = "failed"
             operation.error = "日程生成已取消"
-            operation.finished_at = datetime.datetime.now().astimezone().isoformat(
-                timespec="seconds"
+            operation.finished_at = (
+                datetime.datetime.now().astimezone().isoformat(timespec="seconds")
             )
             raise
         except Exception as exc:
             operation.phase = "failed"
             operation.error = str(exc) or "日程生成失败"
-            operation.finished_at = datetime.datetime.now().astimezone().isoformat(
-                timespec="seconds"
+            operation.finished_at = (
+                datetime.datetime.now().astimezone().isoformat(timespec="seconds")
             )
             logger.warning(
                 f"{LOG_PREFIX} 日程任务失败：任务={task_id}；原因={operation.error}；"

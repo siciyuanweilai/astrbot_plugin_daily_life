@@ -112,6 +112,13 @@ const MEMO_EMPTY_TEXT = "暂无备忘录";
 const CURRENT_ACTIVITY_EMPTY_TEXT = "暂无当前活动";
 const METER_EMPTY_TEXT = "暂无数据";
 const TIMELINE_TIME_EMPTY_TEXT = "未定";
+const TIMELINE_EXECUTION_LABELS = {
+  planned: "待进行",
+  active: "进行中",
+  completed: "已完成",
+  skipped: "已跳过",
+  cancelled: "已取消",
+};
 const TODAY_FACT_EMPTY_TEXT = {
   weatherText: "暂无天气",
   themeText: "暂无主题",
@@ -138,17 +145,17 @@ const FACT_CARD_ORDER = [
 
 const HERO_COPY = {
   dashboard: {
-    eyebrow: "Daily Life · 把今天装进生活手帐",
+    eyebrow: "日常生活 · 把今天装进生活手帐",
     title: "日常生活工作台",
     subtitle: "今日、时间轴、状态和记忆分格摆好，像一张柔软又清楚的少女生活桌面。",
   },
   emoji: {
-    eyebrow: "Emoji Pocket · 把情绪收进贴纸夹",
+    eyebrow: "表情口袋 · 把情绪收进贴纸夹",
     title: "表情管理",
     subtitle: "收藏、识图、导入和启停都放在一处，让表情在合适的时候自然出现。",
   },
   settings: {
-    eyebrow: "Soft Settings · 把规则整理成抽屉",
+    eyebrow: "运行设置 · 把规则整理成抽屉",
     title: "运行规则",
     subtitle: "调整聊天表达、生活节奏、媒体能力和记忆边界，让角色按你的习惯运行。",
   },
@@ -538,7 +545,7 @@ function typedLabel(value, labels, fallbackLabels = []) {
     const translated = table[raw] || table[raw.toLowerCase()];
     if (translated) return translated;
   }
-  return clean(raw, raw);
+  return enumLabel(raw, labels);
 }
 
 function uniqueExperienceFeedback(items) {
@@ -668,7 +675,6 @@ function renderMeters(day = {}, status = {}) {
   const bodyCondition = rhythm.body_condition || {};
   const optionalCycle = rhythm.optional_cycle || {};
   const meta = day.meta || {};
-  const runtimeConfig = status.config && typeof status.config === "object" ? status.config : {};
   const items = [
     ["体力", lifeState.energy],
     ["心情值", lifeState.mood_score],
@@ -734,12 +740,6 @@ function renderMeters(day = {}, status = {}) {
       clean(lifeState.interrupt_reason, ""),
     ].filter(Boolean).join(" · ")
   );
-  appendInfoBox(
-    "定时任务",
-    runtimeConfig.scheduler_running
-      ? "运行中"
-      : clean(runtimeConfig.scheduler_error, "未运行")
-  );
 }
 
 function cloneTimeline(timeline = []) {
@@ -747,6 +747,10 @@ function cloneTimeline(timeline = []) {
     time: clean(item.time, ""),
     activity: clean(item.activity, ""),
     status: clean(item.status, ""),
+    execution_state: clean(item.execution_state, "planned"),
+    execution_reason: clean(item.execution_reason, ""),
+    execution_evidence: clean(item.execution_evidence, ""),
+    execution_updated_at: clean(item.execution_updated_at, ""),
   }));
 }
 
@@ -769,6 +773,20 @@ function renderTimelineDisplay(timeline) {
       const body = node("div");
       body.append(node("div", "timeline-activity", clean(item.activity)));
       if (item.status) body.append(node("div", "status", clean(item.status)));
+      const executionState = clean(item.execution_state, "planned");
+      const executionLabel = TIMELINE_EXECUTION_LABELS[executionState];
+      if (executionLabel) {
+        const execution = node(
+          "div",
+          `status execution-status execution-${executionState}`,
+          executionLabel
+        );
+        const detail = [clean(item.execution_reason, ""), clean(item.execution_updated_at, "")]
+          .filter(Boolean)
+          .join(" · ");
+        if (detail) execution.title = detail;
+        body.append(execution);
+      }
       li.append(body);
       return li;
     })
@@ -1479,8 +1497,11 @@ function experienceGroups(status) {
     const record = node("div", "record");
     const title = node("div", "record-title");
     const scope = relationshipScopeLabel(item.scope, relationshipNames);
+    const titleText = relationshipScopeLabel(item.title || item.scope, relationshipNames)
+      || clean(item.title, "")
+      || longTermMemoryCategoryLabel(item.category);
     title.append(
-      node("span", "", relationshipScopeLabel(item.title || item.scope, relationshipNames) || clean(item.title || item.category, "长期记忆")),
+      node("span", "", titleText),
       node("span", "muted", scope || longTermMemoryCategoryLabel(item.category))
     );
     record.append(title, recordLines([
@@ -2432,7 +2453,7 @@ function cancelTimelineEdit() {
 
 function addTimelineItem() {
   updateTimelineDraftFromInputs();
-  state.timelineDraft.push({ time: "12:00", activity: "", status: "" });
+  state.timelineDraft.push({ time: "12:00", activity: "", status: "", execution_state: "planned" });
   renderTimelineEditor();
 }
 

@@ -10,6 +10,8 @@ from support import (
     resolve_daily_suggested,
 )
 from core.life.tools import get_matching_hairstyle
+from core.life.tools import reconcile_timeline_execution
+from core.models import TimelineItem
 from core.life.surroundings import normalize_event_items, normalize_place_names
 from core.life.future import future_outfit_timing_issue
 from core.life.wardrobe import (
@@ -19,6 +21,38 @@ from core.life.wardrobe import (
 
 
 class LifeToolsTest(unittest.TestCase):
+    def test_timeline_execution_follows_clock_and_preserves_skips(self):
+        timeline = [
+            TimelineItem(time="09:00", activity="早餐"),
+            TimelineItem(time="12:00", activity="午饭"),
+            TimelineItem(
+                time="15:00",
+                activity="散步",
+                execution_state="skipped",
+                execution_reason="临时下雨",
+                execution_evidence="天气更新",
+            ),
+        ]
+
+        changed = reconcile_timeline_execution(
+            timeline,
+            datetime.datetime(2026, 5, 24, 10, 0),
+            "2026-05-24",
+        )
+        self.assertTrue(changed)
+        self.assertEqual(timeline[0].execution_state, "active")
+        self.assertEqual(timeline[1].execution_state, "planned")
+        self.assertEqual(timeline[2].execution_state, "skipped")
+
+        reconcile_timeline_execution(
+            timeline,
+            datetime.datetime(2026, 5, 24, 13, 0),
+            "2026-05-24",
+        )
+        self.assertEqual(timeline[0].execution_state, "completed")
+        self.assertEqual(timeline[1].execution_state, "active")
+        self.assertEqual(timeline[2].execution_state, "skipped")
+
     def test_home_scene_does_not_force_sleep_style_pool(self):
         self.assertEqual(style_pool_for_scene_category("home"), "mixed")
         self.assertEqual(style_pool_for_scene_category("sleep"), "sleep_styles")

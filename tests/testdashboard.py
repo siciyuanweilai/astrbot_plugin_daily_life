@@ -1808,6 +1808,24 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertTrue((root / "ui" / "effects.js").exists())
         self.assertTrue((root / "ui" / "selects.js").exists())
 
+    def test_dashboard_visible_page_copy_uses_chinese(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1] / "pages" / "dashboard"
+        html = (root / "index.html").read_text(encoding="utf-8")
+        app = (root / "app.js").read_text(encoding="utf-8")
+        formatter = (root / "shared" / "format.js").read_text(encoding="utf-8")
+
+        visible_source = f"{html}\n{app}"
+        for english_heading in ("Daily Life ·", "Emoji Pocket ·", "Soft Settings ·"):
+            self.assertNotIn(english_heading, visible_source)
+        for chinese_heading in ("日常生活 ·", "表情口袋 ·", "运行设置 ·"):
+            self.assertIn(chinese_heading, visible_source)
+        self.assertIn(
+            'return /[A-Za-z]/.test(readable) ? "其他" : readable;',
+            formatter,
+        )
+
     def test_dashboard_local_assets_do_not_use_version_queries(self):
         from pathlib import Path
 
@@ -3643,6 +3661,12 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertIn('evidence: "证据"', display)
         self.assertIn('evidencetype: "证据类型"', display)
         self.assertIn('chat_state_refresh: "聊天触发状态巡检"', labels)
+        self.assertIn('auto_check: "自动检查"', labels)
+        self.assertIn('chat_batch: "会话批次"', labels)
+        self.assertIn('private_revisit: "私聊回访"', labels)
+        self.assertIn('regular_reply: "普通回复"', labels)
+        self.assertIn('previous_reply: "上一轮回复"', labels)
+        self.assertIn('superseded: "已被替代"', labels)
         self.assertIn('["生活模式", SCHEDULE_TONE_LABELS, "日程基调"]', display)
         self.assertIn('["日程倾向", SCHEDULE_INTENT_LABELS, "活动倾向"]', display)
         self.assertIn("export const PLAN_OUTFIT_DECISION_LABELS = {", labels)
@@ -3888,6 +3912,12 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertIn("LIFE_DECISION_KIND_LABELS", display)
         self.assertIn("WEEK_PROGRESS_STATUS_LABELS", display)
         self.assertIn("typedLabel(decision.kind, LIFE_DECISION_KIND_LABELS)", app)
+        self.assertIn("return enumLabel(raw, labels);", app)
+        self.assertIn(
+            'enumLabelOrReadableText(item.label, HEALTH_CHECK_LABELS, "其他检查")',
+            display,
+        )
+        self.assertIn("longTermMemoryCategoryLabel(item.category)", app)
         self.assertNotIn("clean(item.kind)", app)
         self.assertNotIn('clean(item.target_type || "memory")', app)
         self.assertIn("stateLogText(entry)", app)
