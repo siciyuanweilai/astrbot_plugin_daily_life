@@ -223,6 +223,25 @@ class LifeEvolutionService:
                     source="日常复盘",
                     weight=max(0.1, min(1.0 + delta, 2.0)),
                 )
+            fact_writer = getattr(self.archive, "upsert_current_temporal_fact", None)
+            if callable(fact_writer):
+                await fact_writer(
+                    scope="global",
+                    subject=f"relationship:{update.profile_id}",
+                    predicate="latest_change",
+                    object_value={
+                        "familiarity_delta": update.familiarity_delta,
+                        "trust_delta": update.trust_delta,
+                        "affinity_delta": update.affinity_delta,
+                        "reason": update.reason,
+                    },
+                    observed_at=now.strftime("%Y-%m-%d %H:%M:%S"),
+                    source="daily_review",
+                    source_type="relationship_update",
+                    source_id=f"relationship:{update.profile_id}:{date}",
+                    provenance={"evidence_ids": update.evidence_ids, "date": date},
+                    evidence_summary=update.reason,
+                )
             saved_count += 1
         return saved_count
 
@@ -232,6 +251,7 @@ class LifeEvolutionService:
         *,
         allowed_evidence_ids: set[str],
         scope: str,
+        now: datetime.datetime,
     ) -> tuple[bool, float, str]:
         raw_score = (
             payload.get("reflection_score")
@@ -258,6 +278,21 @@ class LifeEvolutionService:
         saver = getattr(self.archive, "save_reflection", None)
         if not gate.should_reflect or not summary or not evidence or not callable(saver):
             return False, gate.importance, gate.reason_code
+        getter = getattr(self.archive, "get_reflections", None)
+        if callable(getter):
+            previous = await getter(scope=scope, limit=1)
+            if previous:
+                last_created_at = str(getattr(previous[0], "created_at", "") or "")
+                try:
+                    last_time = datetime.datetime.fromisoformat(
+                        last_created_at.replace("Z", "+00:00")
+                    ).replace(tzinfo=None)
+                except ValueError:
+                    last_time = None
+                if last_time and now.replace(tzinfo=None) < last_time + datetime.timedelta(
+                    hours=12
+                ):
+                    return False, gate.importance, "reflection_cooldown"
         assertion = raw.get("assertion") if isinstance(raw.get("assertion"), dict) else {}
         await saver(
             ReflectionRecord(
@@ -340,6 +375,7 @@ class LifeEvolutionService:
             payload,
             allowed_evidence_ids=allowed,
             scope=scope,
+            now=now,
         )
         diary = self.affect.grounded_diary_from_payload(
             payload,

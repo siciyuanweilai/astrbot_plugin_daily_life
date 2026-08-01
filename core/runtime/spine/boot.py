@@ -31,6 +31,7 @@ _DURABLE_TASK_LABELS = {
     "daily_review": "夜间生活复盘",
     "private_revisit": "私聊回访检查",
     "proactive_idle": "闲时主动检查",
+    "media_delivery": "媒体投递恢复",
 }
 
 
@@ -234,7 +235,10 @@ class SpineBootMixin:
         )
         completed = 0
         for task in tasks:
-            handler = getattr(self, "_durable_runtime_handlers", {}).get(task.kind)
+            if task.kind == "media_delivery":
+                handler = getattr(self, "resume_durable_media_delivery", None)
+            else:
+                handler = getattr(self, "_durable_runtime_handlers", {}).get(task.kind)
             if not callable(handler):
                 await self.archive.fail_durable_task(
                     task.id,
@@ -243,7 +247,7 @@ class SpineBootMixin:
                 )
                 continue
             try:
-                await handler()
+                result = await handler(task) if task.kind == "media_delivery" else await handler()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -257,7 +261,7 @@ class SpineBootMixin:
             else:
                 await self.archive.complete_durable_task(
                     task.id,
-                    {
+                    result if isinstance(result, dict) else {
                         "kind": task.kind,
                         "completed_at": datetime.datetime.now().isoformat(),
                     },

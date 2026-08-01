@@ -12,6 +12,7 @@ from ..models import (
     LifeActionIntent,
     LifeActionOutcome,
     LifeState,
+    PlaceRecord,
     PlanRevision,
     ReflectionDecision,
     ReflectionSignal,
@@ -20,6 +21,7 @@ from ..models import (
 
 ACTION_SETTLEMENT_META_KEY = "life_action_settlements"
 SCHEDULE_ANCHOR_META_KEY = "schedule_anchors"
+SCHEDULE_REPLAN_META_KEY = "schedule_replan_pending"
 
 _NUMERIC_STATE_FIELDS = frozenset(
     {
@@ -182,7 +184,12 @@ class LifeActionMixin:
             if current_value is not None and current_value < minimum_value:
                 reason = f"{minimum_field} 低于动作最低可行值 {minimum_value}"
 
-        allowed_day_fields = {"day.date", "day.outfit", "day.time_period"}
+        allowed_day_fields = {
+            "day.date",
+            "day.outfit",
+            "day.time_period",
+            "day.current_place",
+        }
         for condition in action.preconditions if not reason else []:
             actual: Any = None
             known_field = True
@@ -202,7 +209,19 @@ class LifeActionMixin:
                 else:
                     actual = day.timeline[action.timeline_index].execution_state
             elif condition.field in allowed_day_fields:
-                actual = getattr(day, condition.field.removeprefix("day."), None)
+                field_name = condition.field.removeprefix("day.")
+                actual = (
+                    str((day.meta or {}).get("current_place") or "").strip()
+                    if field_name == "current_place"
+                    else getattr(day, field_name, None)
+                )
+            elif condition.field.startswith("weather."):
+                field_name = condition.field.removeprefix("weather.")
+                weather = day.weather_info
+                aliases = {"condition": "condition", "temp": "temp"}
+                actual = getattr(weather, aliases.get(field_name, field_name), None)
+                if actual is None:
+                    known_field = False
             else:
                 known_field = False
 
@@ -285,6 +304,16 @@ class LifeActionMixin:
                 day.outfit = action.target
                 day.outfit_history[committed_at] = action.target
                 day.meta["outfit_decision"] = "life_action"
+            if action.action_type == "move" and action.target:
+                day.meta["current_place"] = action.target
+                if not any(place.name == action.target for place in day.places):
+                    day.places.append(
+                        PlaceRecord(
+                            name=action.target,
+                            source="life_action",
+                            last_seen=committed_at,
+                        )
+                    )
             if action.timeline_index is not None:
                 item = day.timeline[action.timeline_index]
                 item.execution_state = "completed"
@@ -301,12 +330,321 @@ class LifeActionMixin:
             )
         return outcome
 
+    async def sync_day_world_facts(
+        self,
+        day: DayRecord,
+        *,
+        observed_at: str = "",
+        source: str = "daily_state",
+        source_id: str = "",
+        evidence: str = "",
+    ) -> list[Any]:
+        """把当前生活状态同步为可替代的时间事实。
+
+        Args:
+            day: 当前日记录。
+            observed_at: 本次观察或结算时间。
+            source: 事实来源类别。
+            source_id: 可追溯来源编号。
+            evidence: 当前状态的简短证据。
+
+        Returns:
+            实际写入或确认的事实记录。
+        """
+
+        writer = getattr(self.archive, "upsert_current_temporal_fact", None)
+        if not callable(writer):
+            return []
+        timestamp = observed_at or datetime.datetime.now().strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        facts: list[tuple[str, Any]] = []
+        if day.outfit:
+            facts.append(("current_outfit", day.outfit))
+        current_place = str((day.meta or {}).get("current_place") or "").strip()
+        if current_place:
+            facts.append(("current_place", current_place))
+        if day.state:
+            for field_name in sorted(_NUMERIC_STATE_FIELDS):
+                value = getattr(day.state, field_name, None)
+                if value is not None:
+                    facts.append((f"state.{field_name}", value))
+        saved = []
+        for predicate, value in facts:
+            fact = await writer(
+                scope="global",
+                subject="self",
+                predicate=predicate,
+                object_value=value,
+                observed_at=timestamp,
+                source=source,
+                source_type="life_state",
+                source_id=source_id,
+                provenance={"date": day.date, "source_id": source_id},
+                evidence_summary=evidence,
+            )
+            if fact is not None:
+                saved.append(fact)
+        return saved
+
+    async def _save_action_receipt(
+        self,
+        day: DayRecord,
+        action: LifeActionIntent,
+        receipt: dict[str, Any],
+        *,
+        now: datetime.datetime,
+    ) -> Any:
+        saver = getattr(self.archive, "save_life_action_receipt", None)
+        if not callable(saver):
+            return None
+        evidence = receipt.get("evidence")
+        if not isinstance(evidence, list):
+            evidence = [evidence] if str(evidence or "").strip() else []
+        return await saver(
+            {
+                "receipt_id": str(receipt.get("receipt_id") or "").strip(),
+                "action_id": action.action_id,
+                "date": day.date,
+                "action_type": action.action_type,
+                "status": str(receipt.get("status") or "confirmed").strip(),
+                "evidence": evidence,
+                "source": str(receipt.get("source") or "").strip(),
+                "source_id": str(receipt.get("source_id") or "").strip(),
+                "artifact_path": str(receipt.get("artifact_path") or "").strip(),
+                "occurred_at": str(receipt.get("occurred_at") or "").strip()
+                or now.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+        )
+
+    @staticmethod
+    def _receipt_evidence_text(receipt: dict[str, Any], fallback: str = "") -> str:
+        evidence = receipt.get("evidence")
+        values = evidence if isinstance(evidence, list) else [evidence]
+        for value in values:
+            text = " ".join(str(value or "").split())
+            if text:
+                return text[:240]
+        return " ".join(str(fallback or "").split())[:240]
+
+    async def record_life_action_receipt(
+        self,
+        day: DayRecord,
+        action_id: str,
+        receipt: dict[str, Any],
+        *,
+        now: datetime.datetime | None = None,
+    ) -> LifeActionOutcome | None:
+        """使用外部或模拟回执结算一项已计划动作。
+
+        Args:
+            day: 当前日记录。
+            action_id: 日程生成时分配的动作编号。
+            receipt: 已确认、模拟、失败或取消的回执。
+            now: 结算时间，缺省时使用插件时钟。
+
+        Returns:
+            已持久化的动作结果；找不到对应动作时返回空。
+        """
+
+        current_time = now or life_now()
+        raw_actions = str((day.meta or {}).get("planned_life_actions") or "")
+        try:
+            planned_actions = json.loads(raw_actions) if raw_actions else []
+        except (TypeError, ValueError, json.JSONDecodeError):
+            planned_actions = []
+        action = next(
+            (
+                LifeActionIntent.from_value(item)
+                for item in planned_actions
+                if isinstance(item, dict)
+                and str(item.get("action_id") or "").strip() == str(action_id).strip()
+            ),
+            None,
+        )
+        if action is None or action.action_type not in LIFE_ACTION_TYPES:
+            return None
+        status = str(receipt.get("status") or "confirmed").strip().lower()
+        if status not in {"confirmed", "simulated", "failed", "cancelled"}:
+            return None
+        evidence = self._receipt_evidence_text(receipt, action.evidence)
+        receipt = {
+            **receipt,
+            "status": status,
+            "occurred_at": str(receipt.get("occurred_at") or "").strip()
+            or current_time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        await self._save_action_receipt(day, action, receipt, now=current_time)
+        if status in {"failed", "cancelled"}:
+            outcome = LifeActionOutcome(
+                action_id=action.action_id,
+                action_type=action.action_type,
+                status=status,
+                reason=self._receipt_evidence_text(receipt, "动作未能执行"),
+                committed_at=current_time.strftime("%Y-%m-%d %H:%M:%S"),
+                timeline_index=action.timeline_index,
+                evidence=evidence,
+            )
+            if action.timeline_index is not None and 0 <= action.timeline_index < len(
+                day.timeline
+            ):
+                item = day.timeline[action.timeline_index]
+                # 时间轴不存储 failed；失败的动作视为已跳过，其结果仍完整保留在回执与动作结果中。
+                item.execution_state = "cancelled" if status == "cancelled" else "skipped"
+                item.execution_reason = outcome.reason
+                item.execution_evidence = evidence
+                item.execution_updated_at = outcome.committed_at
+            day.meta[SCHEDULE_REPLAN_META_KEY] = json.dumps(
+                {
+                    "action_id": action.action_id,
+                    "action_type": action.action_type,
+                    "status": status,
+                    "reason": outcome.reason,
+                    "evidence": evidence,
+                    "occurred_at": outcome.committed_at,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            await self.archive.save_day(day)
+            saver = getattr(self.archive, "save_life_action_outcome", None)
+            if callable(saver):
+                await saver(
+                    {
+                        "action_id": action.action_id,
+                        "date": day.date,
+                        "action_type": action.action_type,
+                        "target": action.target,
+                        "preconditions": {"all": [item.as_dict() for item in action.preconditions]},
+                        "effects": {"requested": [item.as_dict() for item in action.effects]},
+                        "status": status,
+                        "reason": outcome.reason,
+                        "evidence": [evidence] if evidence else [],
+                        "started_at": action.requested_at,
+                        "committed_at": outcome.committed_at,
+                    }
+                )
+            tracer = getattr(self.archive, "save_decision_trace", None)
+            if callable(tracer):
+                await tracer(
+                    {
+                        "trace_id": f"life_action:{action.action_id}",
+                        "scope": f"day:{day.date}",
+                        "stage": "receipt",
+                        "reason_code": f"action_{status}",
+                        "decision": status,
+                        "evidence": [evidence] if evidence else [],
+                        "outcome": outcome.reason,
+                    }
+                )
+            return outcome
+
+        if action.timeline_index is not None and 0 <= action.timeline_index < len(
+            day.timeline
+        ):
+            item = day.timeline[action.timeline_index]
+            item.execution_state = "completed"
+            item.execution_reason = "已收到动作执行回执"
+            item.execution_evidence = evidence
+            item.execution_updated_at = current_time.strftime("%Y-%m-%d %H:%M:%S")
+        action.source = "daily_plan"
+        action.evidence = evidence
+        outcome = await self.settle_and_persist_life_action(
+            day,
+            action,
+            now=current_time,
+            fact_source="life_action_receipt",
+            fact_evidence=evidence,
+        )
+        if outcome.status == "committed":
+            if action.action_type in {"chat", "social"} and action.target:
+                writer = getattr(self.archive, "upsert_current_temporal_fact", None)
+                if callable(writer):
+                    await writer(
+                        scope="global",
+                        subject=action.target,
+                        predicate="latest_interaction",
+                        object_value={
+                            "action_type": action.action_type,
+                            "date": day.date,
+                            "evidence": evidence,
+                        },
+                        observed_at=outcome.committed_at,
+                        source="life_action_receipt",
+                        source_type="action_receipt",
+                        source_id=action.action_id,
+                        provenance={"date": day.date, "receipt_status": status},
+                        evidence_summary=evidence,
+                    )
+        return outcome
+
+    async def record_matching_life_action_receipt(
+        self,
+        day: DayRecord,
+        action_type: str,
+        receipt: dict[str, Any],
+        *,
+        now: datetime.datetime | None = None,
+    ) -> LifeActionOutcome | None:
+        """为当前尚未结算的同类型动作提交回执。
+
+        Args:
+            day: 当前日记录。
+            action_type: 已确认的工具或外部行为类型。
+            receipt: 回执内容。
+            now: 结算时间。
+
+        Returns:
+            匹配并结算后的动作结果；没有明确计划动作时返回空。
+        """
+
+        raw_actions = str((day.meta or {}).get("planned_life_actions") or "")
+        try:
+            planned_actions = json.loads(raw_actions) if raw_actions else []
+        except (TypeError, ValueError, json.JSONDecodeError):
+            planned_actions = []
+        settlements = str((day.meta or {}).get(ACTION_SETTLEMENT_META_KEY) or "")
+        try:
+            settled = json.loads(settlements) if settlements else {}
+        except (TypeError, ValueError, json.JSONDecodeError):
+            settled = {}
+        candidates = []
+        for raw in planned_actions if isinstance(planned_actions, list) else []:
+            action = LifeActionIntent.from_value(raw)
+            if (
+                action.action_type != action_type
+                or not action.action_id
+                or action.action_id in settled
+                or action.timeline_index is None
+                or not 0 <= action.timeline_index < len(day.timeline)
+            ):
+                continue
+            state = day.timeline[action.timeline_index].execution_state
+            if state in {"skipped", "cancelled", "completed"}:
+                continue
+            candidates.append(action)
+        if not candidates:
+            return None
+        candidates.sort(
+            key=lambda item: (
+                0
+                if day.timeline[item.timeline_index].execution_state == "active"
+                else 1,
+                item.timeline_index,
+            )
+        )
+        return await self.record_life_action_receipt(
+            day, candidates[0].action_id, receipt, now=now
+        )
+
     async def settle_and_persist_life_action(
         self,
         day: DayRecord,
         intent: LifeActionIntent | dict[str, Any],
         *,
         now: datetime.datetime | None = None,
+        fact_source: str = "life_action",
+        fact_evidence: str = "",
     ) -> LifeActionOutcome:
         """结算动作并同步保存日状态、动作结果和决策轨迹。
 
@@ -314,6 +652,8 @@ class LifeActionMixin:
             day: 动作发生的当日日记录。
             intent: 结构化生活动作意图。
             now: 结算时间，缺省时使用插件时钟。
+            fact_source: 结算后的世界事实来源。
+            fact_evidence: 覆盖动作默认说明的事实证据。
 
         Returns:
             已持久化的幂等动作结果。
@@ -358,6 +698,14 @@ class LifeActionMixin:
                     "outcome": outcome.reason,
                 }
             )
+        if outcome.status == "committed":
+            await self.sync_day_world_facts(
+                day,
+                observed_at=outcome.committed_at,
+                source=fact_source,
+                source_id=action.action_id,
+                evidence=fact_evidence or outcome.evidence,
+            )
         return outcome
 
     async def settle_completed_planned_actions(
@@ -393,16 +741,23 @@ class LifeActionMixin:
             timeline_item = day.timeline[action.timeline_index]
             if timeline_item.execution_state != "completed":
                 continue
-            action.source = "daily_plan"
-            action.evidence = (
-                timeline_item.execution_evidence
-                or action.evidence
-                or f"时间轴第 {action.timeline_index} 项已完成"
-            )
             outcomes.append(
-                await self.settle_and_persist_life_action(day, action, now=now)
+                await self.record_life_action_receipt(
+                    day,
+                    action.action_id,
+                    {
+                        "receipt_id": f"timeline:{action.action_id}",
+                        "status": "simulated",
+                        "source": "timeline_clock",
+                        "source_id": f"timeline:{day.date}:{action.timeline_index}",
+                        "evidence": timeline_item.execution_evidence
+                        or action.evidence
+                        or f"时间轴第 {action.timeline_index} 项已完成",
+                    },
+                    now=now,
+                )
             )
-        return outcomes
+        return [item for item in outcomes if item is not None]
 
     def extract_schedule_anchors(
         self,

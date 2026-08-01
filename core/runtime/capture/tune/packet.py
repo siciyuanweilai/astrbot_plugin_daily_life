@@ -9,7 +9,7 @@ from astrbot.api import logger
 from ....life.tools import extract_json_from_text
 from ....prompts import (
     CORE_JSON_OUTPUT_RULES,
-    CORE_PERSONA_PRONOUN_RULES,
+    CORE_PERSONA_AUDIT_POLICY,
     cache_friendly_prompt,
 )
 from ...markers import LOG_PREFIX
@@ -21,6 +21,7 @@ class PacketMixin:
         "brief",
         "long_summary",
         "people",
+        "commitments",
         "visibility",
         "group_environment",
         "action_decision",
@@ -82,8 +83,7 @@ class PacketMixin:
         )
         fixed = f"""审阅一份聊天记忆提炼结果是否和当前角色人设线索冲突。
 
-人物称谓与性别规则：
-{CORE_PERSONA_PRONOUN_RULES}
+{CORE_PERSONA_AUDIT_POLICY}
 
 JSON 输出要求：
 {CORE_JSON_OUTPUT_RULES}
@@ -96,6 +96,7 @@ JSON 输出要求：
     "brief": "可选，修正后的一句话摘要",
     "long_summary": "可选，修正后的较完整摘要",
     "people": ["可选，修正后的人物列表"],
+    "commitments": [{{"可选": "修正后的承诺完整列表"}}],
     "visibility": {{"可选": "修正后的留意结果"}},
     "group_environment": {{"可选": "修正后的群聊环境"}},
     "action_decision": {{"可选": "修正后的行动裁定"}},
@@ -122,11 +123,9 @@ JSON 输出要求：
 }}
 
 规则：
-- 这不是文本清洗，不要机械替换字词；必须按语义判断提炼结果是否和人设线索冲突。
 - 如果没有冲突，needs_revision=false，revised 为空对象。
 - 如果有冲突，只修正冲突相关字段，不要改变消息事实、关系事实、profile_id、session_id、日期或 worth_saving。
 - revised 只放需要修正的字段；列表字段一旦修正，必须返回该字段修正后的完整列表。
-- 按人物边界审阅，不新增人设没有支持的新设定。
 - 输出内容必须站在我的第一人称体验写，不要写成工具或平台视角。"""
         dynamic = f"""当前角色：{current_role_label}
 记录视角：当前角色第一人称
@@ -186,9 +185,13 @@ JSON 输出要求：
         persona_hint: str,
     ) -> dict:
         persona_hint = self._str_payload(persona_hint)
-        if not persona_hint or not self._memory_payload_has_saveable_context(payload):
+        if not self._memory_payload_has_saveable_context(payload):
             return payload
-        provider = await self._get_memory_provider()
+        try:
+            provider = await self._get_memory_provider()
+        except Exception as exc:
+            logger.debug(f"{LOG_PREFIX} 聊天记忆语义校准无法获取模型：{exc}")
+            return payload
         if not provider:
             return payload
         session_id = f"daily_life_memory_calibration_{uuid.uuid4().hex[:8]}"

@@ -1,9 +1,10 @@
 # ruff: noqa: I001
 import datetime
 import json
+import tempfile
 import unittest
 
-from support import DayRecord, LifeState, TimelineItem
+from support import DayRecord, LifeArchive, LifeState, TimelineItem
 
 from core.life.actions import LifeActionMixin
 from core.life.assembly import DailyAssemblyMixin
@@ -311,6 +312,100 @@ class _RecordStub(DailyRecordMixin):
 
 
 class LifeActionIntegrationTest(unittest.IsolatedAsyncioTestCase):
+    async def test_external_receipt_commits_world_fact_and_keeps_receipt(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(f"{tmpdir}/daily_life.db")
+            try:
+                composer = LifeActionMixin()
+                composer.archive = archive
+                day = DayRecord(
+                    date="2026-08-01",
+                    state=LifeState(energy=70, stress=30),
+                    timeline=[TimelineItem(time="18:00", activity="去公园")],
+                    meta={
+                        "planned_life_actions": json.dumps(
+                            [
+                                {
+                                    "action_id": "move-receipt-1",
+                                    "action_type": "move",
+                                    "target": "公园",
+                                    "timeline_index": 0,
+                                }
+                            ],
+                            ensure_ascii=False,
+                        )
+                    },
+                )
+
+                outcome = await composer.record_life_action_receipt(
+                    day,
+                    "move-receipt-1",
+                    {
+                        "receipt_id": "receipt:move:1",
+                        "status": "confirmed",
+                        "source": "location_probe",
+                        "source_id": "probe:1",
+                        "evidence": "已抵达公园",
+                    },
+                    now=datetime.datetime(2026, 8, 1, 18, 12),
+                )
+
+                self.assertEqual(outcome.status, "committed")
+                self.assertEqual(day.meta["current_place"], "公园")
+                receipts = await archive.get_life_action_receipts(
+                    action_id="move-receipt-1"
+                )
+                self.assertEqual(receipts[0].source, "location_probe")
+                facts = await archive.get_temporal_facts(
+                    scope="global", subject="self", predicate="current_place"
+                )
+                self.assertEqual(facts[0].object_value, "公园")
+            finally:
+                archive.close()
+
+    async def test_failed_receipt_skips_timeline_and_marks_replan_evidence(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(f"{tmpdir}/daily_life.db")
+            try:
+                composer = LifeActionMixin()
+                composer.archive = archive
+                day = DayRecord(
+                    date="2026-08-01",
+                    timeline=[TimelineItem(time="20:00", activity="拍照")],
+                    meta={
+                        "planned_life_actions": json.dumps(
+                            [
+                                {
+                                    "action_id": "photo-failed-1",
+                                    "action_type": "photo",
+                                    "timeline_index": 0,
+                                }
+                            ],
+                            ensure_ascii=False,
+                        )
+                    },
+                )
+
+                outcome = await composer.record_life_action_receipt(
+                    day,
+                    "photo-failed-1",
+                    {
+                        "receipt_id": "receipt:photo:failed:1",
+                        "status": "failed",
+                        "source": "image_delivery",
+                        "evidence": "接口超时",
+                    },
+                    now=datetime.datetime(2026, 8, 1, 20, 5),
+                )
+
+                self.assertEqual(outcome.status, "failed")
+                self.assertEqual(day.timeline[0].execution_state, "skipped")
+                pending = json.loads(day.meta["schedule_replan_pending"])
+                self.assertEqual(pending["action_id"], "photo-failed-1")
+                self.assertEqual(pending["status"], "failed")
+            finally:
+                archive.close()
+
     async def test_daily_generation_keeps_only_explicit_valid_action_proposals(self):
         assembler = DailyAssemblyMixin()
         day = assembler._day_from_generation(

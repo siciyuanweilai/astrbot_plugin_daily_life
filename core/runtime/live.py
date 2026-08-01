@@ -24,6 +24,7 @@ from .reaction import ToolReactionMixin
 from .style import ChatStyleRuntimeMixin
 from .reply import SemanticSegmentRuntimeMixin
 from .addressing import ChatAddressingMixin
+from .action import RuntimeActionReceiptMixin
 from .background import BackgroundTaskMixin
 from .generation import DailyGenerationMixin
 from .meaning import MeaningRuntimeMixin
@@ -43,6 +44,7 @@ class DailyLifeRuntime(
     SightMixin,
     ResponseGateMixin,
     RefreshMixin,
+    RuntimeActionReceiptMixin,
     ChatAddressingMixin,
     TextForwardMixin,
     ChatStyleRuntimeMixin,

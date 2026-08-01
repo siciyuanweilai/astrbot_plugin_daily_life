@@ -113,6 +113,20 @@ CREATE TABLE IF NOT EXISTS life_action_outcomes (
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
+CREATE TABLE IF NOT EXISTS life_action_receipts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            receipt_id TEXT NOT NULL UNIQUE,
+            action_id TEXT NOT NULL,
+            date TEXT NOT NULL DEFAULT '',
+            action_type TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'confirmed',
+            evidence_json TEXT NOT NULL DEFAULT '[]',
+            source TEXT NOT NULL DEFAULT '',
+            source_id TEXT NOT NULL DEFAULT '',
+            artifact_path TEXT NOT NULL DEFAULT '',
+            occurred_at TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
 CREATE TABLE IF NOT EXISTS affective_states (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             scope TEXT NOT NULL DEFAULT '',
@@ -169,6 +183,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_decision_traces_stage
 ON decision_traces(trace_id, stage);
 CREATE INDEX IF NOT EXISTS idx_life_action_outcomes_recent
 ON life_action_outcomes(date DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_life_action_receipts_action
+ON life_action_receipts(action_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_affective_states_active
 ON affective_states(scope, layer, status, valid_from DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_grounded_diary_recent

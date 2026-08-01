@@ -415,11 +415,23 @@ class RuntimeVideoMediaMixin:
         started_at: float,
     ) -> None:
         generated_url = str(getattr(execution.generated, "url", "") or "").strip()
+        delivery_task = await self.stage_durable_media_delivery(
+            request.scope,
+            "video",
+            [generated_url],
+            action_type="video",
+            evidence="视频已生成，等待投递确认",
+        )
         if not await self.send_message_if_not_recalled(
             request.scope,
             self.video_message_chain(generated_url),
             source_event=request.event,
         ):
+            await self.finalize_durable_media_delivery(
+                delivery_task,
+                outcome="cancelled",
+                detail="原消息已撤回，取消视频投递",
+            )
             self._update_life_video_request(
                 request.request_id, video_status="cancelled"
             )
@@ -448,6 +460,20 @@ class RuntimeVideoMediaMixin:
                 execution.friend_look,
             )
         self.note_life_media_sent(request.event or request.scope, "视频")
+        receipt_recorder = getattr(self, "record_current_life_action_receipt", None)
+        if callable(receipt_recorder):
+            await receipt_recorder(
+                request.event,
+                "video",
+                evidence="视频已生成并成功发送",
+                source="video_delivery",
+                artifact_path=generated_url,
+            )
+        await self.finalize_durable_media_delivery(
+            delivery_task,
+            outcome="sent",
+            detail="视频已发送",
+        )
         await self._send_life_video_followup(
             request.scope,
             request.prompt,

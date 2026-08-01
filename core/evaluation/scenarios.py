@@ -238,9 +238,9 @@ def default_virtual_life_scenarios() -> list[ScenarioCase]:
             case_id="outfit_duplicate_change",
             scene="life_action",
             input_data={"outfit_changed": True, "new_evidence": False},
-            expected_decision="reject",
+            expected_decision="replay",
             expected_state={"outfit_change_count": 1},
-            required_stages=("proposed", "rejected"),
+            required_stages=("proposed", "committed", "replayed"),
         ),
         ScenarioCase(
             case_id="action_precondition_failed",

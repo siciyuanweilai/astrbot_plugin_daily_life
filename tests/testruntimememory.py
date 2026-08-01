@@ -106,7 +106,8 @@ class RuntimeMemoryTest(unittest.TestCase):
             ]
         ).format_for_generation()
         self.assertIn("人物事实边界", person_context)
-        self.assertIn("零散出现的他/她不作为性别依据", person_context)
+        self.assertIn("称谓依据=证据不足", person_context)
+        self.assertIn("称呼策略=使用姓名或中性称呼", person_context)
         self.assertIn("关系叙事：她平时会记得我想去看展。", text)
 
     def test_hidden_context_can_include_commitments(self):
@@ -307,6 +308,61 @@ class RuntimeMemoryAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTe
         )
         self.assertEqual(relationship.notes, [])
         self.assertEqual(relationship.memory_points, [])
+
+    async def test_relationship_calibration_without_persona_hint_uses_neutral_context(self):
+        provider = Provider(
+            [
+                '{"needs_revision":true,"reason":"没有明确性别依据，改用中性称呼。",'
+                '"relationship_story":"我和测试对象聊到水果，对方愿意帮忙准备。",'
+                '"note":"按证据不足规则改用中性称呼。",'
+                '"relationship_points":["测试对象愿意帮忙准备水果。"]}'
+            ]
+        )
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.context = Context(provider)
+        runtime.config = LifeSettings.from_dict(
+            {"memory_config": {"min_message_length": 1}}
+        )
+        runtime.archive = DataManager()
+        runtime._relationship_calibration_cache = {}
+        await runtime.archive.touch_relationship(
+            "synthetic-profile",
+            name="测试对象",
+            date_str="2026-05-23",
+            relationship_story="我和测试对象聊到水果，她愿意帮忙准备。",
+        )
+
+        class Composer:
+            async def _get_provider(self, provider_id=""):
+                return provider
+
+            async def _call_llm_text(
+                self,
+                provider,
+                prompt,
+                session_id,
+                empty_retries=0,
+                primary_provider_id="",
+            ):
+                resp = await provider.text_chat(
+                    prompt, session_id, system_prompt=CORE_INTERNAL_SYSTEM_PROMPT
+                )
+                return resp.completion_text
+
+            async def _cleanup_conversation(self, session_id):
+                return None
+
+        runtime.composer = Composer()
+        await runtime._calibrate_relationship_profile(
+            "synthetic-profile", "", "2026-05-24"
+        )
+
+        relationship = await runtime.archive.get_relationship("synthetic-profile")
+        self.assertEqual(
+            relationship.relationship_story,
+            "我和测试对象聊到水果，对方愿意帮忙准备。",
+        )
+        self.assertIn("称谓依据：证据不足", provider.prompts[0])
 
     async def test_persona_hint_semantic_extract_sees_late_persona_sections(self):
         provider = Provider(

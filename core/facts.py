@@ -7,6 +7,7 @@ from typing import Any, Iterable, Sequence
 
 from .prompts import (
     CORE_JSON_OUTPUT_RULES,
+    CORE_PERSONA_AUDIT_POLICY,
     CORE_PERSONA_PRONOUN_RULES,
     cache_friendly_prompt,
 )
@@ -95,7 +96,7 @@ class PersonFactContext:
             lines.append(
                 "- 暂无明确人设线索的人物："
                 + "、".join(self.unverified_people)
-                + "；旧关系叙事或记忆里零散出现的他/她不作为性别依据，使用姓名或中性称呼。"
+                + "；称谓依据=证据不足；称呼策略=使用姓名或中性称呼。"
             )
         return "\n".join(lines)
 
@@ -248,8 +249,7 @@ def build_person_fact_audit_prompt(
     fixed = f"""审计一份{subject}里的人物身份与称谓是否和明确资料一致。
 这只检查人物指代、称呼、性别、亲疏和关系归属，不评价文风、剧情、日程安排或其他内容。
 
-人物事实规则：
-{CORE_PERSONA_PRONOUN_RULES}
+{CORE_PERSONA_AUDIT_POLICY}
 
 {CORE_JSON_OUTPUT_RULES}
 
@@ -262,14 +262,10 @@ def build_person_fact_audit_prompt(
 }}
 
 要求：
-- 只能依据给出的明确人物资料，不根据姓名、昵称、语气或刻板印象推测。
-- 需要先做同一人物的本名、昵称、备注和关系档案名语义对应。
-- 当前角色与其他人物必须分开，不要把当前角色的性别套给好友。
 - 没有冲突时 valid=true，conflicts 和 replacements 都为空数组。
 - 有冲突时 valid=false；只为确有冲突的既有字符串字段提供 replacement。
 - replacement.path 必须原样使用候选字段里的路径；不能新增、删除、移动字段或数组项。
-- 证据不足不算冲突；保留原文或改成中性称呼，不补造性别与关系。
-- 不改写无关表达，不润色，不扩写。"""
+- replacement.value 必须是修正后的完整字符串字段。"""
     dynamic = f"""{context.format_for_generation(include_persona=True, include_rules=False)}
 
 可审计字段：

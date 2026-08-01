@@ -1370,7 +1370,8 @@ class RuntimeProactiveAsyncTest(
 
         prompt = provider.prompts[0]
         self.assertIn("关系印象：", prompt)
-        self.assertIn("零散出现的他/她不作为性别依据", prompt)
+        self.assertIn("称谓依据=证据不足", prompt)
+        self.assertIn("称呼策略=使用姓名或中性称呼", prompt)
         self.assertIn("她平时会记得我想去看展。", prompt)
 
     async def test_proactive_prompt_includes_air_state_and_target_candidates(self):
@@ -4061,8 +4062,7 @@ class RuntimeProactiveAsyncTest(
 
         prompt = provider.prompts[0]
         self.assertIn("人设线索：无", prompt)
-        self.assertIn("称谓边界：人设线索优先", prompt)
-        self.assertIn("关系叙事或最近印象里零散出现的他/她不能当作性别依据", prompt)
+        self.assertIn("称谓依据：证据不足，使用中性称呼", prompt)
         self.assertIn("关系叙事：她平时会记得我想去看展。", prompt)
 
     async def test_private_revisit_uses_complete_session_persona_text(self):

@@ -549,6 +549,35 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(terms[0].meaning, "群里用来调侃机器人的称呼")
         self.assertEqual(terms[0].evidence, "来自 2 条聊天消息")
 
+    async def test_batch_payload_calibrates_before_persisting(self):
+        calls = []
+
+        async def calibrate(payload, meta, persona_hint):
+            calls.append((payload, meta, persona_hint))
+            return payload
+
+        self.runtime._calibrate_chat_memory_payload = calibrate
+        message = ChatMemoryArchiveTest.snapshot(
+            session_id="private:synthetic",
+            message_id="m1",
+            text="测试对象提到周末安排",
+        )
+        message["sender_profile_id"] = "synthetic-profile"
+        message["sender_name"] = "测试对象"
+        message["id"] = 1
+
+        await self.runtime._save_chat_memory_batch_payload(
+            {
+                "worth_saving": False,
+                "brief": "测试对象提到周末安排",
+                "visibility": {"level": "seen", "reason": "测试"},
+            },
+            {"session_id": "private:synthetic", "messages": [message]},
+        )
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1]["sender_profile_id"], "synthetic-profile")
+
 
 if __name__ == "__main__":
     unittest.main()

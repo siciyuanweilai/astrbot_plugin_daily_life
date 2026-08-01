@@ -777,6 +777,43 @@ class ChatMemoryBatchMixin:
             "quote_context": str(last.get("quote_context") or ""),
             "structured": str(last.get("structured_context") or ""),
         }
+        relationship = None
+        profile_id = meta["sender_profile_id"]
+        relationship_getter = getattr(self.archive, "get_relationship", None)
+        if profile_id and callable(relationship_getter):
+            try:
+                relationship = await relationship_getter(profile_id)
+            except Exception as exc:
+                logger.debug(f"{LOG_PREFIX} 读取聊天对象关系档案失败：{exc}")
+        persona_hint = ""
+        hint_getter = getattr(self, "_extract_speaker_persona_hint", None)
+        if callable(hint_getter):
+            try:
+                persona_hint = self._str_payload(
+                    await hint_getter(
+                        meta["sender_name"],
+                        relationship=relationship,
+                    )
+                )
+            except Exception as exc:
+                logger.debug(f"{LOG_PREFIX} 提取聊天对象人设线索失败：{exc}")
+        role_getter = getattr(self, "_current_role_label", None)
+        if callable(role_getter):
+            try:
+                meta["current_role_label"] = self._str_payload(
+                    await role_getter()
+                ) or "我"
+            except Exception as exc:
+                logger.debug(f"{LOG_PREFIX} 读取当前角色称呼失败：{exc}")
+                meta["current_role_label"] = "我"
+        else:
+            meta["current_role_label"] = "我"
+        payload = await self._calibrate_chat_memory_payload(
+            payload,
+            meta,
+            persona_hint,
+        )
+        payload = self._normalize_chat_memory_batch_payload(payload, batch)
         commitments = await self._save_batch_commitments(payload, batch)
         temporal_facts = await self._save_batch_temporal_facts(payload, batch)
         await self._save_memory_awareness_records(payload, meta)

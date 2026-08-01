@@ -9,7 +9,7 @@ from .tables.cognition import COGNITION_INDEX_SQL, COGNITION_SQL
 
 SCHEMA_VERSION_KEY = "schema_version"
 BASELINE_SCHEMA_VERSION = 1
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 LEGACY_BASELINE_SCHEMA_FINGERPRINT = (
     "9e6243276bf6bd509f6019502e30192310da4197838bd0f7d478f0100f8750a5"
 )
@@ -18,6 +18,9 @@ BASELINE_SCHEMA_FINGERPRINT = (
 )
 PREVIOUS_BASELINE_SCHEMA_FINGERPRINT = (
     "993af376991a7d179ccbc4c22d796d9beb2f18c2238a461e973a8596829749c0"
+)
+CURRENT_SCHEMA_FINGERPRINT = (
+    "03d44d9dd88b6c381a60f6c72e41fadfd9dbd0edc3239f05ab9fe1653ff91e03"
 )
 
 MigrationStep = Callable[[sqlite3.Connection], None]
@@ -72,10 +75,31 @@ def _migrate_cognition_runtime(conn: sqlite3.Connection) -> None:
             raise ValueError("认知数据表迁移脚本存在不完整语句")
 
 
+def _migrate_action_receipts(conn: sqlite3.Connection) -> None:
+    """创建动作执行回执表和索引。
+
+    Args:
+        conn: 正在迁移的 SQLite 连接。
+    """
+
+    for script in (COGNITION_SQL, COGNITION_INDEX_SQL):
+        buffer = ""
+        for line in script.splitlines(keepends=True):
+            buffer += line
+            if sqlite3.complete_statement(buffer):
+                statement = buffer.strip()
+                buffer = ""
+                if statement:
+                    conn.execute(statement)
+        if buffer.strip():
+            raise ValueError("动作回执迁移脚本存在不完整语句")
+
+
 # 键是迁移完成后的目标版本；每个步骤只负责从前一版本升级一次。
 MIGRATIONS: dict[int, MigrationStep] = {
     2: _migrate_timeline_execution_state,
     3: _migrate_cognition_runtime,
+    4: _migrate_action_receipts,
 }
 
 
@@ -117,6 +141,7 @@ def is_baseline_schema(conn: sqlite3.Connection) -> bool:
         BASELINE_SCHEMA_FINGERPRINT,
         PREVIOUS_BASELINE_SCHEMA_FINGERPRINT,
         LEGACY_BASELINE_SCHEMA_FINGERPRINT,
+        CURRENT_SCHEMA_FINGERPRINT,
     }
 
 
@@ -201,6 +226,7 @@ def apply_migrations(
 
 __all__ = [
     "BASELINE_SCHEMA_FINGERPRINT",
+    "CURRENT_SCHEMA_FINGERPRINT",
     "BASELINE_SCHEMA_VERSION",
     "MIGRATIONS",
     "PREVIOUS_BASELINE_SCHEMA_FINGERPRINT",

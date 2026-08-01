@@ -9,7 +9,7 @@ from astrbot.api import logger
 from ....life.tools import extract_json_from_text
 from ....prompts import (
     CORE_JSON_OUTPUT_RULES,
-    CORE_PERSONA_PRONOUN_RULES,
+    CORE_PERSONA_AUDIT_POLICY,
     cache_friendly_prompt,
 )
 from ...markers import LOG_PREFIX
@@ -43,8 +43,7 @@ class TargetMixin:
     ) -> str:
         fixed = f"""审阅一条目标人物记忆是否和该目标在人设中的明确线索冲突。
 
-人物称谓与性别规则：
-{CORE_PERSONA_PRONOUN_RULES}
+{CORE_PERSONA_AUDIT_POLICY}
 
 JSON 输出要求：
 {CORE_JSON_OUTPUT_RULES}
@@ -63,12 +62,11 @@ JSON 输出要求：
 }}
 
 规则：
-- 这不是文本清洗，不要机械替换字词；必须按语义判断目标记忆是否和人设线索冲突。
 - 如果没有冲突，needs_revision=false，revised 为空对象。
 - 如果有冲突，只修正冲突相关字段，不要改变 profile_id、name、alias、source 或消息事实。
 - revised 只放需要修正的字段；列表字段一旦修正，必须返回修正后的完整列表。
 - 身份字段：current_role=当前角色；speaker=消息发送者；target_person=原始目标记忆对应人物；perspective=当前角色第一人称。
-- 修正范围=只处理与目标人物人设线索冲突的字段；新增内容必须有人设线索支持。"""
+- 修正范围=只处理与目标人物人设线索冲突的字段。"""
         current_role = meta.get("current_role_label") or "我"
         sender_name = meta.get("sender_name") or meta.get("sender_profile_id") or "未知"
         target_name = target.get("name") or target.get("profile_id") or "未知"

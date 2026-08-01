@@ -238,6 +238,32 @@ class CognitionArchiveTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 archive.close()
 
+    async def test_pending_durable_media_task_can_be_finalized_after_delivery(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(Path(tmpdir) / "daily_life.db")
+            try:
+                task = await archive.enqueue_durable_task(
+                    "media_delivery:test-1",
+                    "media_delivery",
+                    {
+                        "scope": "private:test",
+                        "media_kind": "image",
+                        "artifacts": ["/tmp/test.png"],
+                    },
+                )
+                self.assertTrue(
+                    await archive.finalize_durable_task(
+                        task.id,
+                        {"delivery": "sent", "detail": "测试投递完成"},
+                    )
+                )
+                rows = await archive.get_durable_tasks(
+                    kind="media_delivery", status="completed"
+                )
+                self.assertEqual(rows[0].result["delivery"], "sent")
+            finally:
+                archive.close()
+
     async def test_trace_action_affect_and_grounded_diary_round_trip(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             archive = LifeArchive(Path(tmpdir) / "daily_life.db")

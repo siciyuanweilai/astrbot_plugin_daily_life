@@ -295,6 +295,24 @@ class LifeActionOutcomeRecord(_RecordMappingMixin):
 
 
 @dataclass(slots=True)
+class LifeActionReceiptRecord(_RecordMappingMixin):
+    """可追溯的生活动作执行回执。"""
+
+    id: int = 0
+    receipt_id: str = ""
+    action_id: str = ""
+    date: str = ""
+    action_type: str = ""
+    status: str = "confirmed"
+    evidence: list[Any] = field(default_factory=list)
+    source: str = ""
+    source_id: str = ""
+    artifact_path: str = ""
+    occurred_at: str = ""
+    created_at: str = ""
+
+
+@dataclass(slots=True)
 class AffectiveStateRecord(_RecordMappingMixin):
     """短时、日级或关系级的可衰减情绪状态。"""
 
@@ -339,6 +357,7 @@ __all__ = [
     "FactEvidenceSignalRecord",
     "GroundedDiaryEntryRecord",
     "LifeActionOutcomeRecord",
+    "LifeActionReceiptRecord",
     "PersonaAssertionRecord",
     "ReflectionRecord",
     "TemporalFactRecord",

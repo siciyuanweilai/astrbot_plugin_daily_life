@@ -165,6 +165,7 @@ JSON 输出要求：
                 )
                 if sender_name and persona_hint
                 else (),
+                unverified_people=(sender_name,) if sender_name and not persona_hint else (),
             )
             auditor = getattr(
                 getattr(self, "composer", None), "_audit_person_payload", None

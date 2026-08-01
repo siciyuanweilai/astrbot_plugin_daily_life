@@ -70,6 +70,23 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(context.fact_for_name("阿林").name, "林远")
         self.assertIsNone(context.fact_for_name("相似昵称"))
 
+    async def test_person_audit_includes_unverified_people_without_facts(self):
+        composer, provider, _, _ = make_composer(
+            ['{"valid":true,"reason":"无明确性别冲突","conflicts":[],"replacements":[]}']
+        )
+        context = PersonFactContext(unverified_people=("测试对象",))
+
+        result = await composer._audit_person_payload(
+            {"reason": "测试对象说她晚点回复"},
+            context=context,
+            patterns=(("reason",),),
+            provider=provider,
+            subject="测试人物记录",
+        )
+
+        self.assertEqual(result.status, "passed")
+        self.assertIn("称谓依据=证据不足", provider.prompts[0])
+
     async def test_current_persona_fact_overrides_saved_relationship_hint(self):
         composer, _, _, archive = make_composer(
             [],
@@ -457,7 +474,8 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("## 关系档案", provider.prompts[0])
         self.assertIn("暂无明确人设线索的人物：小林", provider.prompts[0])
-        self.assertIn("零散出现的他/她不作为性别依据", provider.prompts[0])
+        self.assertIn("称谓依据=证据不足", provider.prompts[0])
+        self.assertIn("称呼策略=使用姓名或中性称呼", provider.prompts[0])
         self.assertIn("关系叙事：她平时会记得我想去看展。", provider.prompts[0])
 
     async def test_daily_prompt_uses_configurable_story_rules(self):

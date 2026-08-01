@@ -101,9 +101,6 @@ class ImprintPortraitMixin:
                 relationship_story=relationship_story,
                 **contact_payload,
             )
-            await self._calibrate_relationship_profile(
-                profile_id, target_persona_hint, meta["date"]
-            )
             for point in points[:6]:
                 await self.archive.add_relationship_point(
                     profile_id,
@@ -111,6 +108,10 @@ class ImprintPortraitMixin:
                     date_str=meta["date"],
                     source="chat_memory_target",
                 )
+            # 关系点在这里才真正写入，必须在最后统一校准一次，避免追加内容绕过审计。
+            await self._calibrate_relationship_profile(
+                profile_id, target_persona_hint, meta["date"]
+            )
             saved_targets.append(
                 {
                     **target,

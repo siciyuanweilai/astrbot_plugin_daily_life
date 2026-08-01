@@ -15,6 +15,7 @@ from ..models import (
     FactEvidenceSignalRecord,
     GroundedDiaryEntryRecord,
     LifeActionOutcomeRecord,
+    LifeActionReceiptRecord,
     PersonaAssertionRecord,
     ReflectionRecord,
     TemporalFactRecord,
@@ -257,6 +258,83 @@ class CognitionArchiveMixin:
             return [self._compose_temporal_fact(row) for row in rows]
 
         return await self._run_db(dbwork)
+
+    async def upsert_current_temporal_fact(
+        self,
+        *,
+        scope: str,
+        subject: str,
+        predicate: str,
+        object_value: Any,
+        observed_at: str = "",
+        confidence: float = 1.0,
+        source: str = "observation",
+        source_type: str = "",
+        source_id: str = "",
+        provenance: dict[str, Any] | None = None,
+        evidence_summary: str = "",
+    ) -> TemporalFactRecord | None:
+        """按当前值自动创建、替代或确认一条时间事实。
+
+        Args:
+            scope: 事实作用域。
+            subject: 稳定主体标识。
+            predicate: 稳定谓词标识。
+            object_value: 当前有效的结构化值。
+            observed_at: 本次观察时间。
+            confidence: 观察置信度。
+            source: 来源类别。
+            source_type: 细分来源类型。
+            source_id: 可追溯的来源编号。
+            provenance: 补充来源信息。
+            evidence_summary: 可供审计的证据摘要。
+
+        Returns:
+            当前有效事实；输入无效时返回空。
+        """
+
+        normalized_scope = self._text(scope)
+        normalized_subject = self._text(subject)
+        normalized_predicate = self._text(predicate)
+        if not (normalized_scope and normalized_subject and normalized_predicate):
+            return None
+        current = await self.get_current_temporal_fact(
+            normalized_scope, normalized_subject, normalized_predicate
+        )
+        operation = "ADD"
+        if current is not None:
+            operation = "NONE" if current.object_value == object_value else "UPDATE"
+        fact = await self.write_temporal_fact(
+            operation,
+            {
+                "scope": normalized_scope,
+                "subject": normalized_subject,
+                "predicate": normalized_predicate,
+                "object_value": object_value,
+                "observed_at": observed_at,
+                "valid_from": observed_at,
+                "confidence": confidence,
+                "source": source,
+                "source_type": source_type,
+                "source_id": source_id,
+                "provenance": provenance or {},
+            },
+        )
+        if fact and operation != "NONE" and evidence_summary:
+            await self.add_fact_evidence_signal(
+                {
+                    "fact_id": fact.id,
+                    "signal": "reinforce",
+                    "weight": 1.0,
+                    "confidence": confidence,
+                    "summary": evidence_summary,
+                    "source": source,
+                    "source_id": source_id,
+                    "observed_at": observed_at,
+                    "provenance": provenance or {},
+                }
+            )
+        return fact
 
     def _compose_fact_evidence(self, row: sqlite3.Row) -> FactEvidenceSignalRecord:
         return FactEvidenceSignalRecord(
@@ -877,6 +955,41 @@ class CognitionArchiveMixin:
 
         return await self._run_db(dbwork)
 
+    async def finalize_durable_task(
+        self, task_id: int, result: dict[str, Any]
+    ) -> bool:
+        """收束尚未被工作器租用的已完成任务。
+
+        适用于“产物已生成，当前请求正在投递”的短窗口。任务先入库以便
+        崩溃后恢复；当前投递成功或明确取消后无需等待工作器再次租用。
+
+        Args:
+            task_id: 任务编号。
+            result: 最终投递结果。
+
+        Returns:
+            是否成功把待执行任务标记为已完成。
+        """
+
+        def dbwork() -> bool:
+            cursor = self._conn.execute(
+                """
+                UPDATE durable_tasks
+                SET status = 'completed', result_json = ?, lease_owner = '',
+                    lease_expires_at = '', completed_at = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status = 'pending'
+                """,
+                (
+                    self._cognition_json(result, default={}),
+                    self._cognition_now(),
+                    int(task_id),
+                ),
+            )
+            self._conn.commit()
+            return int(cursor.rowcount or 0) > 0
+
+        return await self._run_db(dbwork)
+
     async def fail_durable_task(
         self,
         task_id: int,
@@ -1141,6 +1254,115 @@ class CognitionArchiveMixin:
                 params.append(int(limit))
             rows = self._conn.execute(sql, tuple(params)).fetchall()
             return [self._compose_life_action_outcome(row) for row in rows]
+
+        return await self._run_db(dbwork)
+
+    def _compose_life_action_receipt(
+        self, row: sqlite3.Row
+    ) -> LifeActionReceiptRecord:
+        return LifeActionReceiptRecord(
+            id=int(row["id"] or 0),
+            receipt_id=self._text(row["receipt_id"]),
+            action_id=self._text(row["action_id"]),
+            date=self._text(row["date"]),
+            action_type=self._text(row["action_type"]),
+            status=self._text(row["status"]) or "confirmed",
+            evidence=self._cognition_value(row["evidence_json"], default=[]),
+            source=self._text(row["source"]),
+            source_id=self._text(row["source_id"]),
+            artifact_path=self._text(row["artifact_path"]),
+            occurred_at=self._text(row["occurred_at"]),
+            created_at=self._text(row["created_at"]),
+        )
+
+    async def save_life_action_receipt(
+        self, receipt: LifeActionReceiptRecord | dict[str, Any]
+    ) -> LifeActionReceiptRecord:
+        """幂等保存一条动作执行回执。
+
+        Args:
+            receipt: 动作、来源、证据和执行状态。
+
+        Returns:
+            已持久化的回执。
+
+        Raises:
+            ValueError: 动作编号或回执编号缺失时抛出。
+        """
+
+        serializer = getattr(receipt, "as_dict", None)
+        raw = serializer() if callable(serializer) else dict(receipt)
+        receipt_id = self._text(raw.get("receipt_id")) or uuid.uuid4().hex
+        action_id = self._text(raw.get("action_id"))
+        if not action_id:
+            raise ValueError("动作回执必须包含 action_id")
+        status = self._text(raw.get("status") or "confirmed").lower()
+        if status not in {"confirmed", "simulated", "failed", "cancelled"}:
+            raise ValueError("动作回执状态无效")
+        evidence = raw.get("evidence")
+        if not isinstance(evidence, list):
+            evidence = [evidence] if self._text(evidence) else []
+
+        def dbwork() -> LifeActionReceiptRecord:
+            self._conn.execute(
+                """
+                INSERT INTO life_action_receipts(
+                    receipt_id, action_id, date, action_type, status, evidence_json,
+                    source, source_id, artifact_path, occurred_at, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(receipt_id) DO UPDATE SET
+                    action_id = excluded.action_id, date = excluded.date,
+                    action_type = excluded.action_type, status = excluded.status,
+                    evidence_json = excluded.evidence_json, source = excluded.source,
+                    source_id = excluded.source_id, artifact_path = excluded.artifact_path,
+                    occurred_at = excluded.occurred_at
+                """,
+                (
+                    receipt_id,
+                    action_id,
+                    self._text(raw.get("date")),
+                    self._text(raw.get("action_type")),
+                    status,
+                    self._cognition_json(evidence, default=[]),
+                    self._text(raw.get("source")),
+                    self._text(raw.get("source_id")),
+                    self._text(raw.get("artifact_path"))[:1000],
+                    self._text(raw.get("occurred_at")),
+                ),
+            )
+            self._conn.commit()
+            row = self._conn.execute(
+                "SELECT * FROM life_action_receipts WHERE receipt_id = ?", (receipt_id,)
+            ).fetchone()
+            return self._compose_life_action_receipt(row)
+
+        return await self._run_db(dbwork)
+
+    async def get_life_action_receipts(
+        self, *, action_id: str = "", limit: int = 100
+    ) -> list[LifeActionReceiptRecord]:
+        """读取动作的来源回执。
+
+        Args:
+            action_id: 可选动作编号。
+            limit: 最大返回数量。
+
+        Returns:
+            按最新顺序排列的动作回执。
+        """
+
+        def dbwork() -> list[LifeActionReceiptRecord]:
+            params: list[Any] = []
+            sql = "SELECT * FROM life_action_receipts"
+            if self._text(action_id):
+                sql += " WHERE action_id = ?"
+                params.append(self._text(action_id))
+            sql += " ORDER BY id DESC"
+            if limit > 0:
+                sql += " LIMIT ?"
+                params.append(int(limit))
+            rows = self._conn.execute(sql, tuple(params)).fetchall()
+            return [self._compose_life_action_receipt(row) for row in rows]
 
         return await self._run_db(dbwork)
 

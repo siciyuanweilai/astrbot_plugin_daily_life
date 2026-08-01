@@ -374,9 +374,10 @@ JSON 输出要求：
         expression_section = (
             f"聊天表达设置：\n{expression_style}\n" if expression_style else ""
         )
-        relation_boundary = (
-            "人设线索优先；如果人设线索为空，关系叙事或最近印象里零散出现的他/她不能当作性别依据，"
-            "回复和理由都用目标对象、昵称或对方。"
+        relation_basis = (
+            "明确人设线索"
+            if relationship_snapshot["persona_hint"]
+            else "证据不足，使用中性称呼"
         )
         fixed = f"""我在心里掂量：此刻要不要主动给一个私聊对象发一句自然问候或轻回访。
 这不是任务提醒文案，也不是硬性打卡；只有在关系、最近印象或此刻状态自然适合时才回复。
@@ -422,7 +423,7 @@ JSON 输出要求：
 目标对象：{relationship_snapshot["target_name"]}
 主观称呼：{relationship_snapshot["subjective_name"] or "无"}
 人设线索：{relationship_snapshot["persona_hint"] or "无"}
-称谓边界：{relation_boundary}
+称谓依据：{relation_basis}
 关系叙事：{relationship_snapshot["relationship_story"] or "无"}
 最近印象：{relationship_snapshot["note"] or "无"}
 

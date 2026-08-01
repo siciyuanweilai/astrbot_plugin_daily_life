@@ -205,6 +205,9 @@ class PageViewMixin:
         action_outcomes = await self._page_archive_records(
             "get_life_action_outcomes", limit=30
         )
+        action_receipts = await self._page_archive_records(
+            "get_life_action_receipts", limit=30
+        )
         affective_states = await self._page_archive_records(
             "get_affective_states", limit=30
         )
@@ -264,6 +267,7 @@ class PageViewMixin:
                 "persona_assertions": [item.as_dict() for item in persona_assertions],
                 "decision_traces": [item.as_dict() for item in decision_traces],
                 "action_outcomes": [item.as_dict() for item in action_outcomes],
+                "action_receipts": [item.as_dict() for item in action_receipts],
                 "affective_states": [item.as_dict() for item in affective_states],
                 "emotion_arcs": [
                     self._page_readable_evidence_record(item.as_dict())

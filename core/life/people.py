@@ -182,7 +182,9 @@ class PersonFactMixin:
         provider_id: str = "",
         subject: str,
     ) -> PersonAuditResult:
-        if not context.has_external_facts:
+        # 仅在有具体人物事实或待核实人物时审阅；角色自身的一般人设不应
+        # 让每一份无人物内容都额外触发一次模型调用。
+        if not (context.has_external_facts or context.unverified_people):
             return PersonAuditResult(payload, "skipped")
         if not allowed_string_fields(payload, patterns):
             return PersonAuditResult(payload, "skipped")

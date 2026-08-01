@@ -1265,11 +1265,23 @@ class RuntimeImageMediaMixin:
             logger.debug(
                 f"{LOG_PREFIX} 图片生成模式：{plan.generation_mode}；长度：{len(directed_prompt)}"
             )
+            delivery_task = await self.stage_durable_media_delivery(
+                scope,
+                "image",
+                [str(generated.path)],
+                action_type="photo",
+                evidence="图片已生成，等待投递确认",
+            )
             if not await self.send_message_if_not_recalled(
                 scope,
                 self.image_message_chain(generated.path),
                 source_event=event,
             ):
+                await self.finalize_durable_media_delivery(
+                    delivery_task,
+                    outcome="cancelled",
+                    detail="原消息已撤回，取消图片投递",
+                )
                 return "原消息已撤回，已取消图片发送。"
             self.note_structured_bot_message(
                 scope, "[图片已发送]", source_event=event, media="图片"
@@ -1280,6 +1292,20 @@ class RuntimeImageMediaMixin:
                     scope, plan.participant_ids[0], friend_look
                 )
             self.note_life_media_sent(event, "图片")
+            receipt_recorder = getattr(self, "record_current_life_action_receipt", None)
+            if callable(receipt_recorder):
+                await receipt_recorder(
+                    event,
+                    "photo",
+                    evidence="图片已生成并成功发送",
+                    source="image_delivery",
+                    artifact_path=str(generated.path),
+                )
+            await self.finalize_durable_media_delivery(
+                delivery_task,
+                outcome="sent",
+                detail="图片已发送",
+            )
             summary = await self._media_result_summary(generated.path, started_at)
             logger.info(f"{LOG_PREFIX} 图片已发送：{summary}")
             return self._image_delivery_result("generate")
@@ -1378,17 +1404,43 @@ class RuntimeImageMediaMixin:
         generated: Any,
         started_at: float,
     ) -> str:
+        delivery_task = await self.stage_durable_media_delivery(
+            scope,
+            "image",
+            [str(generated.path)],
+            action_type="photo",
+            evidence="参考图图片已生成，等待投递确认",
+        )
         if not await self.send_message_if_not_recalled(
             scope,
             self.image_message_chain(generated.path),
             source_event=event,
         ):
+            await self.finalize_durable_media_delivery(
+                delivery_task,
+                outcome="cancelled",
+                detail="原消息已撤回，取消参考图图片投递",
+            )
             return "原消息已撤回，已取消图片发送。"
         self.note_structured_bot_message(
             scope, "[图片已发送]", source_event=event, media="图片"
         )
         self._remember_life_image_for_scope(scope, generated.path)
         self.note_life_media_sent(event, "图片")
+        receipt_recorder = getattr(self, "record_current_life_action_receipt", None)
+        if callable(receipt_recorder):
+            await receipt_recorder(
+                event,
+                "photo",
+                evidence="参考图图片已生成并成功发送",
+                source="image_delivery",
+                artifact_path=str(generated.path),
+            )
+        await self.finalize_durable_media_delivery(
+            delivery_task,
+            outcome="sent",
+            detail="参考图图片已发送",
+        )
         summary = await self._media_result_summary(generated.path, started_at)
         logger.info(f"{LOG_PREFIX} 参考图生成结果已发送：{summary}")
         return self._image_delivery_result("edit")

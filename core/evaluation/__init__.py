@@ -5,6 +5,7 @@ from .scenarios import (
     ScenarioRunner,
     default_virtual_life_scenarios,
 )
+from .runtime import ProductionScenarioEvaluator
 
 __all__ = [
     "ScenarioCase",
@@ -12,4 +13,5 @@ __all__ = [
     "ScenarioReport",
     "ScenarioRunner",
     "default_virtual_life_scenarios",
+    "ProductionScenarioEvaluator",
 ]

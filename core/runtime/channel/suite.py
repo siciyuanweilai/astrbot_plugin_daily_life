@@ -521,6 +521,15 @@ class RuntimePhotoSuiteMediaMixin:
         ):
             await self._remember_friend_daily_look(scope, participants[0], friend_look)
         self.note_life_media_sent(event or scope, "图片")
+        receipt_recorder = getattr(self, "record_current_life_action_receipt", None)
+        if callable(receipt_recorder):
+            await receipt_recorder(
+                event,
+                "photo",
+                evidence=f"套图已生成并成功发送 {len(sent_indexes)} 张",
+                source="photo_suite_delivery",
+                artifact_path=str(last_shot.get("path") or ""),
+            )
         logger.info(
             f"{LOG_PREFIX} 套图已发送：本次={len(sent_indexes)}/{len(indexes)}；"
             f"整组可用={total_available}/{count}"
@@ -587,6 +596,13 @@ class RuntimePhotoSuiteMediaMixin:
             successful = await self._photo_suite_available_shots(
                 manifest, indexes=indexes, generated_only=True
             )
+            delivery_task = await self.stage_durable_media_delivery(
+                scope,
+                "images",
+                [str(shot.get("path") or "") for shot in successful],
+                action_type="photo",
+                evidence=f"套图已生成 {len(successful)} 张，等待投递确认",
+            )
             sent_indexes = await self._photo_suite_send_images(scope, event, successful)
             (
                 total_available,
@@ -607,6 +623,15 @@ class RuntimePhotoSuiteMediaMixin:
                 sent_indexes,
                 total_available,
                 count,
+            )
+            await self.finalize_durable_media_delivery(
+                delivery_task,
+                outcome="sent" if delivery_success else "cancelled",
+                detail=(
+                    f"套图已发送 {len(sent_indexes)} 张"
+                    if delivery_success
+                    else "本次没有可发送的套图，取消投递"
+                ),
             )
 
             if isinstance(marker, dict):

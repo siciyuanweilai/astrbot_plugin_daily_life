@@ -8,7 +8,7 @@ from astrbot.api import logger
 from ....life.tools import extract_json_from_text
 from ....prompts import (
     CORE_JSON_OUTPUT_RULES,
-    CORE_PERSONA_PRONOUN_RULES,
+    CORE_PERSONA_AUDIT_POLICY,
     cache_friendly_prompt,
 )
 from ...markers import LOG_PREFIX
@@ -62,8 +62,7 @@ class ProfileMixin:
         ]
         fixed = f"""审阅一份关系档案是否和当前角色人设线索冲突。
 
-人物称谓与性别规则：
-{CORE_PERSONA_PRONOUN_RULES}
+{CORE_PERSONA_AUDIT_POLICY}
 
 JSON 输出要求：
 {CORE_JSON_OUTPUT_RULES}
@@ -80,12 +79,14 @@ JSON 输出要求：
 }}
 
 规则：
-- 这不是文本清洗，不要机械替换字词；必须按语义判断档案是否和人设线索冲突。
 - 如果档案没有冲突，needs_revision=false，其余字段可留空。
-- 如果有冲突，只重写冲突相关内容，不要新增人设没有支持的新设定。
+- 如果有冲突，只重写冲突相关内容。
 - 输出内容必须站在我的第一人称体验写，不要写成工具或平台视角。"""
+        normalized_persona_hint = self._str_payload(persona_hint)
+        persona_evidence = "已提供" if normalized_persona_hint else "证据不足"
         dynamic = f"""对象称呼：{self._str_payload(getattr(relationship, "name", "")) or self._str_payload(getattr(relationship, "id", ""))}
-对方在人设中的线索：{self._str_payload(persona_hint)}
+对方在人设中的线索：{normalized_persona_hint or "无"}
+称谓依据：{persona_evidence}
 已保存人设线索：{self._str_payload(getattr(relationship, "persona_hint", "")) or "无"}
 主观称呼：{self._str_payload(getattr(relationship, "subjective_name", "")) or "无"}
 主观标签：{"、".join(tags) if tags else "无"}
@@ -101,7 +102,7 @@ JSON 输出要求：
         date_str: str,
     ) -> None:
         persona_hint = self._str_payload(persona_hint)
-        if not profile_id or not persona_hint:
+        if not profile_id:
             return
         relationship = await self.archive.get_relationship(profile_id)
         if not relationship:
@@ -113,7 +114,11 @@ JSON 输出要求：
             self._relationship_calibration_cache = cache
         if cache.get(profile_id) == signature:
             return
-        provider = await self._get_memory_provider()
+        try:
+            provider = await self._get_memory_provider()
+        except Exception as exc:
+            logger.debug(f"{LOG_PREFIX} 关系档案语义校准无法获取模型：{exc}")
+            return
         if not provider:
             return
         session_id = f"daily_life_relation_calibration_{uuid.uuid4().hex[:8]}"

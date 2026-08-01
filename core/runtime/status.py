@@ -1,5 +1,6 @@
 import copy
 import datetime
+import json
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -13,7 +14,11 @@ from ..life.condition import (
     state_log_entry,
 )
 from ..life.signals import physiological_rhythm_log_from_state
-from ..life.tools import extract_json_from_text, get_current_timeline_status
+from ..life.tools import (
+    extract_json_from_text,
+    get_current_timeline_status,
+    timeline_item_datetime,
+)
 from ..models import DayRecord, EmotionArcRecord, LifeState
 from ..prompts import (
     CORE_AUTONOMY_RULES,
@@ -57,6 +62,26 @@ class StatusMixin:
         state_log_text = "\n".join(str(item) for item in state_log[-6:]) or "无"
         lifecycle_text = ""
         meta = data.meta or {}
+        future_anchors = []
+        for index, item in enumerate(data.timeline):
+            item_time = timeline_item_datetime(item, data.date)
+            if (
+                item_time is None
+                or item_time <= now.replace(tzinfo=None)
+                or item.execution_state != "planned"
+            ):
+                continue
+            future_anchors.append(
+                {
+                    "anchor_id": f"{data.date}:{index}",
+                    "time": item.time,
+                    "activity": item.activity,
+                    "status": item.status,
+                }
+            )
+            if len(future_anchors) >= 4:
+                break
+        pending_replan = str(meta.get("schedule_replan_pending") or "").strip()
         lifecycle_text = (
             "\n连续生活参数："
             f"\n- 日程基调 life_mode: {meta.get('life_mode') or '未知'}"
@@ -64,7 +89,7 @@ class StatusMixin:
             f"\n- sleep_debt: {meta.get('sleep_debt') or '0'}/10"
             f"\n- energy_carryover: {meta.get('energy_carryover') or '未知'}/100"
         )
-        fixed = f"""更新当前角色此刻的身体和情绪状态，不改写日程、穿搭或事件。
+        fixed = f"""更新当前角色此刻的身体和情绪状态。日程默认不变；只有新的状态、天气或已失败动作明确使后续安排不可行时，才提出局部重排。
 
 【通用自主原则】
 {CORE_AUTONOMY_RULES}
@@ -105,12 +130,14 @@ class StatusMixin:
   "source": "触发来源原样写入",
   "emotion_arc": {{"label": "此刻最主要的情绪脉络", "valence": -100到100, "arousal": 0-100, "intensity": 0-100, "stability": 0-100, "trigger": "触发点", "evidence": "依据", "influence": "会怎样轻微影响生活判断"}},
   "preference_points": [{{"category": "{LIFE_PREFERENCE_CATEGORY_ENUM}", "content": "稳定偏好", "weight": 0.1-1.0, "evidence": "本次触发依据"}}],
-  "life_events": [{{"title": "新的生活事件", "detail": "细节", "effect": "未来影响", "status": "open"}}]
+  "life_events": [{{"title": "新的生活事件", "detail": "细节", "effect": "未来影响", "status": "open"}}],
+  "schedule_replan": {{"should_replan": false, "reason": "明确的新证据或空字符串", "replacements": [{{"replaces_anchor_id": "下方未来锚点的 anchor_id", "time": "HH:MM", "activity": "调整后的自然活动", "status": "短状态", "evidence": "本次触发依据"}}]}}
 }}
 
 要求：
 {CORE_JSON_OUTPUT_RULES}
 - 这是实时微调，不是重新生成一天。变化要自然、克制，不要大起大落。
+- schedule_replan 默认 should_replan=false 且 replacements 为空。只有下方给出的待处理原因或本轮状态明确使未来锚点不可行时才填写；只能替换给出的未来锚点，不能新增、删除、改写已开始项目，也不能仅为了丰富日程而重排。
 - 根据当前活动、时间、天气、触发信息和原状态推断。
 - 体力低时 summary 可以体现“不太想出门/更想低强度互动”；社交意愿低时体现慢热和低负担。
 - mood_score 表示当下心情正向程度，不等同于 emotional_stability；情绪稳定但低落、开心但容易波动都可以存在。
@@ -141,7 +168,9 @@ class StatusMixin:
 {lifecycle_text}
 当前时间：{now.strftime("%Y-%m-%d %H:%M")}
 触发来源：{source}
-触发信息：{detail or "无"}"""
+触发信息：{detail or "无"}
+可局部重排的未来锚点：{json.dumps(future_anchors, ensure_ascii=False)}
+待处理重排原因：{pending_replan or "无"}"""
         return cache_friendly_prompt(fixed, dynamic)
 
     @staticmethod
@@ -359,8 +388,56 @@ class StatusMixin:
         if spec.source_event is not None:
             self._apply_state_continuity(data, state, debt, delta, carryover)
 
+        revision = None
+        raw_replan = result.get("schedule_replan")
+        replan_payload = raw_replan if isinstance(raw_replan, dict) else {}
+        replanner = getattr(self.composer, "replan_future_anchors", None)
+        if replan_payload.get("should_replan") is True and callable(replanner):
+            replacements = replan_payload.get("replacements")
+            if isinstance(replacements, list):
+                revision = replanner(data, replacements, now=spec.now)
+                if revision.status == "applied":
+                    data.meta.pop("schedule_replan_pending", None)
+                    data.meta["schedule_replan_reason"] = str(
+                        replan_payload.get("reason") or revision.reason
+                    ).strip()[:240]
+
         data.state_log = [*data.state_log, state_log_entry(state, spec.now)][-10:]
         await self.archive.save_day(data)
+        sync_world_facts = getattr(self.composer, "sync_day_world_facts", None)
+        if callable(sync_world_facts):
+            await sync_world_facts(
+                data,
+                observed_at=spec.now.strftime("%Y-%m-%d %H:%M:%S"),
+                source="state_refresh",
+                source_id=f"state:{spec.date_str}:{spec.now.strftime('%H%M')}",
+                evidence=state.summary,
+            )
+        if revision is not None:
+            trace_saver = getattr(self.archive, "save_decision_trace", None)
+            if callable(trace_saver):
+                await trace_saver(
+                    {
+                        "trace_id": f"schedule_replan:{data.date}:{spec.now.strftime('%H%M')}",
+                        "scope": f"day:{data.date}",
+                        "stage": "committed" if revision.status == "applied" else "rejected",
+                        "reason_code": "state_schedule_replan",
+                        "decision": revision.status,
+                        "evidence": [
+                            item
+                            for item in [
+                                str(replan_payload.get("reason") or "").strip(),
+                                *[
+                                    str(item.get("evidence") or "").strip()
+                                    for item in replan_payload.get("replacements", [])
+                                    if isinstance(item, dict)
+                                ],
+                            ]
+                            if item
+                        ],
+                        "outcome": revision.reason,
+                    }
+                )
         await self._persist_state_side_records(
             result,
             state,

@@ -220,6 +220,7 @@ COGNITION_TABLES = (
     "durable_tasks",
     "decision_traces",
     "life_action_outcomes",
+    "life_action_receipts",
     "affective_states",
     "grounded_diary_entries",
 )
@@ -230,6 +231,7 @@ COGNITION_CLEAR_ORDER = (
     "reflections",
     "durable_tasks",
     "decision_traces",
+    "life_action_receipts",
     "life_action_outcomes",
     "affective_states",
     "grounded_diary_entries",
@@ -259,7 +261,12 @@ STORAGE_CATEGORIES: dict[str, StorageCategory] = {
             StorageTableGroup(
                 "runtime",
                 "运行轨迹",
-                ("durable_tasks", "decision_traces", "life_action_outcomes"),
+                (
+                    "durable_tasks",
+                    "decision_traces",
+                    "life_action_outcomes",
+                    "life_action_receipts",
+                ),
             ),
             StorageTableGroup(
                 "affect",

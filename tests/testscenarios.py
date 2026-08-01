@@ -1,8 +1,12 @@
 import unittest
+import tempfile
+from pathlib import Path
 
+from support import LifeArchive
 from core.evaluation import (
     ScenarioObservation,
     ScenarioRunner,
+    ProductionScenarioEvaluator,
     default_virtual_life_scenarios,
 )
 
@@ -42,6 +46,21 @@ class ScenarioRunnerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report.proactive_overreach_rate, 1.0)
         self.assertEqual(report.unsupported_claim_rate, 1.0)
         self.assertEqual(report.results[0].missing_stages, ["cooldown"])
+
+    async def test_production_evaluator_replays_real_domain_boundaries(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(Path(tmpdir) / "daily_life.db")
+            try:
+                evaluator = ProductionScenarioEvaluator(archive)
+                report = await ScenarioRunner().run(
+                    default_virtual_life_scenarios(), evaluator.evaluate
+                )
+                self.assertEqual(report.total, 8)
+                self.assertEqual(report.passed, 8)
+                self.assertEqual(report.unsupported_claim_rate, 0.0)
+                self.assertEqual(report.lifecycle_completeness, 1.0)
+            finally:
+                archive.close()
 
 
 if __name__ == "__main__":

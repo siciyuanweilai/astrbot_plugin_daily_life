@@ -2,6 +2,7 @@ DROP_SCHEMA_SQL = """
 PRAGMA foreign_keys = OFF;
         DROP TABLE IF EXISTS grounded_diary_entries;
         DROP TABLE IF EXISTS affective_states;
+        DROP TABLE IF EXISTS life_action_receipts;
         DROP TABLE IF EXISTS life_action_outcomes;
         DROP TABLE IF EXISTS decision_traces;
         DROP TABLE IF EXISTS durable_tasks;

@@ -47,6 +47,15 @@ class DailyRecordMixin:
             date_str, [item.id for item in due_commitments]
         )
         await self.archive.save_day(day)
+        sync_world_facts = getattr(self, "sync_day_world_facts", None)
+        if callable(sync_world_facts):
+            await sync_world_facts(
+                day,
+                observed_at=f"{date_str} 00:00:00",
+                source="daily_generation",
+                source_id=f"day:{date_str}",
+                evidence="当日日程生成完成",
+            )
         raw_actions = (day.meta or {}).get("planned_life_actions")
         try:
             planned_actions = json.loads(raw_actions) if raw_actions else []

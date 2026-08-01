@@ -1,9 +1,30 @@
 import tempfile
+from types import SimpleNamespace
 import unittest
 from pathlib import Path
 
 from core.archive import LifeArchive
+from core.runtime.action import RuntimeActionReceiptMixin
 from core.runtime.spine.boot import SpineBootMixin
+
+
+class _MediaRuntime(RuntimeActionReceiptMixin):
+    def __init__(self, archive, image_path):
+        self.archive = archive
+        self.image_path = image_path
+        self.sent = []
+        self.receipts = []
+        self.context = SimpleNamespace(send_message=self._send)
+
+    async def _send(self, scope, chain):
+        self.sent.append((scope, chain))
+
+    @staticmethod
+    def image_message_chain(path):
+        return {"type": "image", "file": str(path)}
+
+    async def record_current_life_action_receipt(self, event, action_type, **kwargs):
+        self.receipts.append((event, action_type, kwargs))
 
 
 class DurableRuntimeTest(unittest.IsolatedAsyncioTestCase):
@@ -76,6 +97,28 @@ class DurableRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recovered, 1)
         self.assertEqual(tasks[0].status, "pending")
         self.assertEqual(tasks[0].lease_owner, "")
+
+    async def test_media_delivery_recovery_sends_saved_artifact_and_records_receipt(self):
+        image_path = Path(self.directory.name) / "generated.png"
+        image_path.write_bytes(b"fake-image")
+        runtime = _MediaRuntime(self.archive, image_path)
+        task = await self.archive.enqueue_durable_task(
+            "media_delivery:recovery-1",
+            "media_delivery",
+            {
+                "scope": "private:test",
+                "media_kind": "image",
+                "artifacts": [str(image_path)],
+                "action_type": "photo",
+                "evidence": "重启后恢复投递",
+            },
+        )
+
+        result = await runtime.resume_durable_media_delivery(task)
+
+        self.assertEqual(result["delivery"], "recovered")
+        self.assertEqual(runtime.sent[0][0], "private:test")
+        self.assertEqual(runtime.receipts[0][1], "photo")
 
 
 if __name__ == "__main__":
