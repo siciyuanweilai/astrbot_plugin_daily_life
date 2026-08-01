@@ -300,6 +300,7 @@ class ChatMemoryBatchMixin:
             },
             "participants": list(participants.values()),
             "messages": messages,
+            "current_temporal_facts": batch.get("current_temporal_facts", []),
         }
         schema = {
             "worth_saving": True,
@@ -391,6 +392,18 @@ class ChatMemoryBatchMixin:
                     "source_message_ids": [],
                 }
             ],
+            "temporal_facts": [
+                {
+                    "operation": "ADD|UPDATE|INVALIDATE|NONE",
+                    "subject": "稳定主体编号或明确名称",
+                    "predicate": "稳定、单一、可复用的关系名",
+                    "object_value": "任意 JSON 值；INVALIDATE 和 NONE 时可为空",
+                    "confidence": 0.0,
+                    "source_message_id": "输入消息中真实存在的 message_id",
+                    "evidence_signal": "reinforce|dispute",
+                    "evidence_summary": "证据的简短中文概括",
+                }
+            ],
         }
         return (
             "你负责把一个连续聊天批次整理成可长期复用的记忆。只依据输入证据，保持每条信息的说话人归属；"
@@ -407,6 +420,9 @@ class ChatMemoryBatchMixin:
             "worth_saving 只控制长期摘要；这三个实际感知字段有依据时可以独立输出。"
             "behavior_feedback 只记录发生在我的回复之后、由后续用户消息明确证实的真实反馈；life_terms 只记录后续理解仍有帮助的黑话、梗或代称。"
             "behavior_feedback 或 life_terms 有内容时属于可复用信息，应同时给出有效摘要并设置 worth_saving=true。\n"
+            "temporal_facts 只记录有明确证据、以后仍需按时间查询的结构化事实；subject 和 predicate 必须是稳定结构键，不得从措辞关键词临时拼接。"
+            "对照 current_temporal_facts：新增键用 ADD，同键值改变用 UPDATE，明确失效用 INVALIDATE，没有变化用 NONE；不得省略历史变化而直接覆盖。"
+            "source_message_id 必须来自输入批次，evidence_signal 只能是 reinforce 或 dispute；没有可靠消息证据就不要输出该事实。\n"
             f"输出结构：{json.dumps(schema, ensure_ascii=False, separators=(',', ':'))}\n"
             f"输入批次：{json.dumps(source, ensure_ascii=False, separators=(',', ':'))}"
         )
@@ -596,6 +612,110 @@ class ChatMemoryBatchMixin:
             saved.append(await self.archive.save_commitment(commitment))
         return saved
 
+    async def _save_batch_temporal_facts(
+        self,
+        payload: dict[str, Any],
+        batch: dict[str, Any],
+    ) -> list[Any]:
+        """保存批次中由显式结构化操作描述的时间事实。
+
+        Args:
+            payload: 已归一化的聊天记忆结果。
+            batch: 包含真实消息编号与时间的批次。
+
+        Returns:
+            成功写入或确认的事实记录。
+        """
+
+        writer = getattr(self.archive, "write_temporal_fact", None)
+        evidence_saver = getattr(self.archive, "add_fact_evidence_signal", None)
+        raw_facts = payload.get("temporal_facts")
+        if not callable(writer) or not isinstance(raw_facts, list):
+            return []
+        rows_by_message_id: dict[str, dict[str, Any]] = {}
+        for row in batch.get("messages", []):
+            if not isinstance(row, dict):
+                continue
+            for key in ("message_id", "id"):
+                message_id = str(row.get(key) or "").strip()
+                if message_id:
+                    rows_by_message_id[message_id] = row
+        scope = str(batch.get("session_id") or "").strip()
+        if not scope:
+            return []
+        saved: list[Any] = []
+        for raw in raw_facts[:12]:
+            if not isinstance(raw, dict):
+                continue
+            operation = str(raw.get("operation") or "NONE").strip().upper()
+            if operation not in {"ADD", "UPDATE", "INVALIDATE", "NONE"}:
+                continue
+            source_message_id = str(raw.get("source_message_id") or "").strip()
+            source_row = rows_by_message_id.get(source_message_id)
+            if source_row is None:
+                continue
+            observed_at = str(source_row.get("occurred_at") or "").strip()
+            try:
+                confidence = max(0.0, min(float(raw.get("confidence") or 0.0), 1.0))
+            except (TypeError, ValueError):
+                confidence = 0.0
+            subject = str(raw.get("subject") or "").strip()[:180]
+            predicate = str(raw.get("predicate") or "").strip()[:120]
+            if not subject or not predicate:
+                continue
+            try:
+                fact = await writer(
+                    operation,
+                    {
+                        "scope": scope,
+                        "subject": subject,
+                        "predicate": predicate,
+                        "object_value": raw.get("object_value"),
+                        "observed_at": observed_at,
+                        "valid_from": observed_at,
+                        "confidence": confidence,
+                        "source": "chat_batch",
+                        "source_type": "chat_message",
+                        "source_id": source_message_id,
+                        "provenance": {
+                            "session_id": scope,
+                            "message_id": source_message_id,
+                            "batch_id": batch.get("id"),
+                        },
+                    },
+                )
+            except ValueError:
+                continue
+            if fact is None:
+                continue
+            saved.append(fact)
+            signal = str(raw.get("evidence_signal") or "").strip().lower()
+            if (
+                operation != "NONE"
+                and signal in {"reinforce", "dispute"}
+                and callable(evidence_saver)
+                and int(getattr(fact, "id", 0) or 0) > 0
+            ):
+                await evidence_saver(
+                    {
+                        "fact_id": int(fact.id),
+                        "signal": signal,
+                        "weight": 1.0,
+                        "confidence": confidence,
+                        "summary": self._chinese_text_payload(
+                            raw.get("evidence_summary")
+                        ),
+                        "source": "chat_batch",
+                        "source_id": source_message_id,
+                        "observed_at": observed_at,
+                        "provenance": {
+                            "session_id": scope,
+                            "message_id": source_message_id,
+                        },
+                    }
+                )
+        return saved
+
     async def _save_batch_memory_targets(
         self,
         payload: dict[str, Any],
@@ -658,6 +778,7 @@ class ChatMemoryBatchMixin:
             "structured": str(last.get("structured_context") or ""),
         }
         commitments = await self._save_batch_commitments(payload, batch)
+        temporal_facts = await self._save_batch_temporal_facts(payload, batch)
         await self._save_memory_awareness_records(payload, meta)
         try:
             observed_at = datetime.datetime.fromisoformat(
@@ -677,7 +798,7 @@ class ChatMemoryBatchMixin:
             }
         )
         if not summary:
-            if commitments:
+            if commitments or temporal_facts:
                 return None
             raise ValueError("模型标记值得保存，但没有给出有效摘要")
         saved = await self.archive.save_chat_summary(summary)
@@ -711,6 +832,18 @@ class ChatMemoryBatchMixin:
             f"{LOG_PREFIX} 开始聊天记忆批处理：会话={batch['session_id']}，消息={len(batch['messages'])}"
         )
         try:
+            fact_getter = getattr(self.archive, "get_temporal_facts", None)
+            if callable(fact_getter):
+                current_facts = await fact_getter(
+                    scope=str(batch.get("session_id") or ""),
+                    limit=30,
+                )
+                batch = {
+                    **batch,
+                    "current_temporal_facts": [
+                        item.as_dict() for item in current_facts
+                    ],
+                }
             payload = await call_pure_json(
                 self,
                 provider,

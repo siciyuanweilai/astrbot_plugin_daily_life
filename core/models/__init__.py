@@ -1,12 +1,43 @@
-from .decisions import LifeDecisionRecord
-from .promise import CommitmentRecord
+from .actions import (
+    LIFE_ACTION_TYPES,
+    LifeActionEffect,
+    LifeActionIntent,
+    LifeActionOutcome,
+    LifeActionPrecondition,
+    PlanRevision,
+    ReflectionDecision,
+    ReflectionSignal,
+    ScheduleAnchor,
+)
 from .agenda import DayRecord, TimelineItem
+from .cognition import (
+    AffectiveStateRecord,
+    DecisionTraceRecord,
+    DurableTaskRecord,
+    FactEvidenceSignalRecord,
+    GroundedDiaryEntryRecord,
+    LifeActionOutcomeRecord,
+    PersonaAssertionRecord,
+    ReflectionRecord,
+    TemporalFactRecord,
+)
+from .decisions import LifeDecisionRecord
+from .lasting import (
+    LongTermMemoryRecord,
+    MemoryConflictRecord,
+    MemoryDecisionLinkRecord,
+    MemoryEntityRecord,
+    MemoryEpisodeClusterRecord,
+)
+from .milestones import DailyReviewRecord, LifeEventRecord, PreferenceRecord
+from .plans import WeekPlanRecord
+from .promise import CommitmentRecord
 from .records import (
-    BehaviorSceneRecord,
-    EmotionArcRecord,
     BehaviorFeedbackRecord,
     BehaviorPatternRecord,
+    BehaviorSceneRecord,
     EmojiAssetRecord,
+    EmotionArcRecord,
     ExpressionIntentRecord,
     ExpressionProfileRecord,
     ExpressionReviewRecord,
@@ -23,24 +54,6 @@ from .records import (
     SessionMidSummaryRecord,
     TemporaryExpressionStateRecord,
 )
-from .milestones import DailyReviewRecord, LifeEventRecord, PreferenceRecord
-from .reversal import ReversePromptRecord
-from .lasting import (
-    LongTermMemoryRecord,
-    MemoryConflictRecord,
-    MemoryDecisionLinkRecord,
-    MemoryEntityRecord,
-    MemoryEpisodeClusterRecord,
-)
-from .vitals import (
-    BodyCondition,
-    LifeState,
-    OptionalCycle,
-    PhysiologicalRhythm,
-    SleepState,
-    WeatherInfo,
-)
-from .plans import WeekPlanRecord
 from .relations import (
     ActionDecisionRecord,
     ChatSummaryRecord,
@@ -53,9 +66,19 @@ from .relations import (
     RelationshipPoint,
     RelationshipRecord,
 )
+from .reversal import ReversePromptRecord
+from .vitals import (
+    BodyCondition,
+    LifeState,
+    OptionalCycle,
+    PhysiologicalRhythm,
+    SleepState,
+    WeatherInfo,
+)
 
 __all__ = [
     "ActionDecisionRecord",
+    "AffectiveStateRecord",
     "BehaviorFeedbackRecord",
     "BehaviorPatternRecord",
     "BehaviorSceneRecord",
@@ -63,19 +86,29 @@ __all__ = [
     "ChatSummaryRecord",
     "CommitmentRecord",
     "DailyReviewRecord",
+    "DecisionTraceRecord",
     "DayRecord",
+    "DurableTaskRecord",
     "EmotionArcRecord",
     "EmojiAssetRecord",
     "EventRecord",
     "ExpressionIntentRecord",
     "ExpressionProfileRecord",
     "ExpressionReviewRecord",
+    "FactEvidenceSignalRecord",
     "FocusSlotRecord",
     "FocusTargetRecord",
     "GroupEnvironmentRecord",
+    "GroundedDiaryEntryRecord",
     "LifeEpisodeRecord",
     "LifeEventRecord",
     "LifeDecisionRecord",
+    "LIFE_ACTION_TYPES",
+    "LifeActionEffect",
+    "LifeActionIntent",
+    "LifeActionOutcome",
+    "LifeActionOutcomeRecord",
+    "LifeActionPrecondition",
     "LifeState",
     "LifeTermRecord",
     "LongTermMemoryRecord",
@@ -89,7 +122,9 @@ __all__ = [
     "MemoryMaintenanceRecord",
     "MessageVisibilityRecord",
     "OptionalCycle",
+    "PersonaAssertionRecord",
     "PhysiologicalRhythmLogRecord",
+    "PlanRevision",
     "PlaceRecord",
     "PreferenceRecord",
     "PhysiologicalRhythm",
@@ -99,9 +134,14 @@ __all__ = [
     "RelationshipPoint",
     "RelationshipRecord",
     "ReplyEffectRecord",
+    "ReflectionDecision",
+    "ReflectionRecord",
+    "ReflectionSignal",
+    "ScheduleAnchor",
     "SessionMidSummaryRecord",
     "SleepState",
     "TemporaryExpressionStateRecord",
+    "TemporalFactRecord",
     "TimelineItem",
     "WeatherInfo",
     "WeekPlanRecord",

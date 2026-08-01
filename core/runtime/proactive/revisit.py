@@ -394,6 +394,11 @@ JSON 输出要求：
 {{
   "should_reply": true,
   "confidence": 0.0,
+  "benefit": 0,
+  "timeliness": 0,
+  "continuity": 0,
+  "disruption": 0,
+  "uncertainty": 0,
   "decision": "reply|observe|wait|skip",
   "reason": "为什么此刻适合或不适合发起私聊回访",
   "reply_text": "一句自然、短、像真人的私聊问候",
@@ -401,6 +406,8 @@ JSON 输出要求：
 }}
 裁定方式：
 - 先看“回访依据”，判断 reply、observe、wait 或 skip。
+- benefit、timeliness、continuity、disruption、uncertainty 必须分别填写 0 至 100 的整数；前三项是回访收益，后两项是打扰与不确定风险。
+- 只有回访收益确实高于风险时才设 should_reply=true；不值得打扰时选择 observe 或 wait。
 - reply_text 只写一句自然短问候，{expression_guidance}
 {expression_limit_line}
 - 近期消息必须按其明确时间理解；旧照片、旧回复或未来约定不能表述成刚发生或已经完成。
@@ -479,25 +486,59 @@ JSON 输出要求：
     ) -> dict[str, Any]:
         confidence = self._clamp_float(payload.get("confidence"))
         reply_text = self._proactive_reply_text(payload.get("reply_text"))
+        requested = self._proactive_bool(payload.get("should_reply"))
+        expression_passed = self._expression_review_passed(payload)
+        utility, utility_valid = self._normalize_proactive_utility(
+            payload, confidence=confidence
+        )
         style_reject_reason = self._proactive_reply_style_reject_reason(
             target_scope, reply_text
         )
         should_reply = (
-            self._proactive_bool(payload.get("should_reply"))
+            requested
             and confidence >= self.config.proactive.revisit_min_confidence
-            and self._expression_review_passed(payload)
+            and expression_passed
             and bool(reply_text)
             and bool(revisit_evidence["can_revisit"])
             and not style_reject_reason
+            and utility_valid
+            and utility >= self._PROACTIVE_UTILITY_THRESHOLD
         )
+        reason_code = "proposal_approved"
+        if not requested:
+            reason_code = "model_declined"
+        elif confidence < self.config.proactive.revisit_min_confidence:
+            reason_code = "confidence_below_threshold"
+        elif not expression_passed:
+            reason_code = "expression_review_failed"
+        elif not reply_text:
+            reason_code = "empty_reply"
+        elif not utility_valid:
+            reason_code = "invalid_utility_scores"
+        elif utility < self._PROACTIVE_UTILITY_THRESHOLD:
+            reason_code = "utility_below_threshold"
         if style_reject_reason:
             payload["decision"] = "observe"
             payload["reason"] = style_reject_reason
+            reason_code = "style_rejected"
         if not revisit_evidence["can_revisit"]:
             payload["decision"] = "observe"
             payload["reason"] = payload.get("reason") or revisit_evidence["reason"]
+            reason_code = "revisit_evidence_missing"
+        if requested and reason_code in {
+            "invalid_utility_scores",
+            "utility_below_threshold",
+        }:
+            payload["decision"] = "observe"
+            payload["reason"] = (
+                "回访收益不足，继续观察以避免打扰"
+                if utility_valid
+                else "回访收益评分不完整，暂不发送"
+            )
         payload["should_reply"] = should_reply
         payload["confidence"] = confidence
+        payload["stage"] = "proposal"
+        payload["reason_code"] = reason_code
         payload["reply_text"] = reply_text if should_reply else ""
         payload["revisit_evidence"] = revisit_evidence
         return payload
@@ -612,6 +653,7 @@ JSON 输出要求：
                         "decision": "wait",
                         "reason": "回访生成期间出现了新消息，交给普通聊天优先处理",
                         "reply_text": "",
+                        "reason_code": "context_changed_during_evaluation",
                     }
                 )
                 return normalized
@@ -649,6 +691,7 @@ JSON 输出要求：
                             "reason": continuity_reason
                             or "回访内容与当前事实或时间连续性不一致",
                             "reply_text": "",
+                            "reason_code": "continuity_audit_failed",
                         }
                     )
                     return normalized
@@ -683,6 +726,7 @@ JSON 输出要求：
                         "decision": "observe",
                         "reason": "人物事实尚未核对清楚",
                         "reply_text": "",
+                        "reason_code": "person_audit_failed",
                     }
                 )
                 return normalized
@@ -723,14 +767,90 @@ JSON 输出要求：
             if isinstance(last_revisit_at, datetime.datetime):
                 if int((now - last_revisit_at).total_seconds()) < cooldown_seconds:
                     continue
+            lifecycle_state = str(
+                self._proactive_lifecycle_snapshot(key).get("state") or ""
+            )
+            if lifecycle_state == "engaged":
+                self._transition_proactive_lifecycle(
+                    key,
+                    "closing",
+                    event="engagement_timeout",
+                    reason="上一轮主动互动已超过回访冷却期",
+                    now=now,
+                )
+                self._transition_proactive_lifecycle(
+                    key,
+                    "cooldown",
+                    event="engagement_closed",
+                    reason="上一轮主动互动已闭环",
+                    now=now,
+                )
+            elif lifecycle_state == "sending":
+                self._transition_proactive_lifecycle(
+                    key,
+                    "interrupted",
+                    event="stale_send_recovered",
+                    reason="恢复时发现未完成的旧发送阶段",
+                    now=now,
+                )
+            self._transition_proactive_lifecycle(
+                key,
+                "considering",
+                event="revisit_evaluation_started",
+                reason="开始评估私聊回访价值",
+                now=now,
+            )
             payload = await self._evaluate_private_revisit_payload(
                 target_scope,
                 relationship=relationship,
                 now=now,
             )
             reply_text = str(payload.get("reply_text") or "").strip()
+            payload["source"] = "private_revisit"
+            event = self._private_revisit_event(target_scope, reply_text, relationship)
+            sender_name = str(getattr(relationship, "name", "") or target_scope)
+            await self._save_proactive_expression_records(
+                event, payload, reply_text, source="private_revisit"
+            )
+            try:
+                await self._save_proactive_decision(
+                    event=event,
+                    sender_name=sender_name,
+                    payload=payload,
+                    now=now,
+                    sent=False,
+                    reply_text=reply_text,
+                    stage="proposal",
+                )
+            except Exception as exc:
+                logger.warning(f"{LOG_PREFIX} 私聊回访提案审计记录失败：{exc}")
             if not payload.get("should_reply") or not reply_text:
                 self._update_proactive_air_after_decision(key, payload, now, sent=False)
+                decision_name = str(payload.get("decision") or "observe")
+                reason_code = str(payload.get("reason_code") or "")
+                target_state = (
+                    "interrupted"
+                    if reason_code == "context_changed_during_evaluation"
+                    else "cooldown"
+                    if decision_name == "cooldown"
+                    else "waiting"
+                    if decision_name in {"wait", "observe", "air_delay"}
+                    else "abandoned"
+                )
+                self._transition_proactive_lifecycle(
+                    key,
+                    target_state,
+                    event="revisit_deferred",
+                    reason=str(payload.get("reason") or "本轮暂不回访"),
+                    now=now,
+                )
+                await self._advance_proactive_decision_trace(
+                    event,
+                    payload,
+                    stage=target_state,
+                    reason_code=reason_code or "revisit_deferred",
+                    outcome=str(payload.get("reason") or "本轮暂不回访"),
+                )
                 continue
             context_marker = payload.pop("_revisit_context_marker", None)
             life_context = str(payload.pop("_revisit_life_context", "") or "")
@@ -761,14 +881,39 @@ JSON 输出要求：
                         "decision": "wait",
                         "reason": "发送前会话或生活状态已变化，取消旧回访",
                         "reply_text": "",
+                        "stage": "proposal",
+                        "reason_code": "context_changed_before_send",
                     }
                 )
                 self._update_proactive_air_after_decision(key, payload, now, sent=False)
+                self._transition_proactive_lifecycle(
+                    key,
+                    "interrupted",
+                    event="context_marker_changed",
+                    reason="发送前会话或生活状态已变化",
+                    now=now,
+                )
+                await self._advance_proactive_decision_trace(
+                    event,
+                    payload,
+                    stage="interrupted",
+                    reason_code="context_changed_before_send",
+                    outcome="发送前会话或生活状态已变化",
+                )
                 continue
-            payload["source"] = "private_revisit"
-            event = self._private_revisit_event(target_scope, reply_text, relationship)
-            await self._save_proactive_expression_records(
-                event, payload, reply_text, source="private_revisit"
+            self._transition_proactive_lifecycle(
+                key,
+                "sending",
+                event="proposal_approved",
+                reason=str(payload.get("reason") or "回访收益与连续性通过"),
+                now=now,
+            )
+            await self._advance_proactive_decision_trace(
+                event,
+                payload,
+                stage="sending",
+                reason_code="proposal_approved",
+                outcome="准备发送私聊回访",
             )
             if await self._send_proactive_message(
                 target_scope,
@@ -778,8 +923,23 @@ JSON 输出要求：
                 contact_type="friend",
                 send_payload=payload,
             ):
+                await self._commit_proactive_decision(
+                    event,
+                    sender_name,
+                    payload,
+                    reply_text,
+                    now,
+                    source="private_revisit",
+                )
                 self._reset_proactive_air_state(key)
                 self._proactive_private_last_revisit_at[key] = now
+                self._transition_proactive_lifecycle(
+                    key,
+                    "engaged",
+                    event="send_succeeded",
+                    reason="私聊回访已实际送达，开始观察互动效果",
+                    now=now,
+                )
                 self._track_proactive_reply_effect(
                     key,
                     event,
@@ -790,24 +950,25 @@ JSON 输出要求：
                 )
                 await self._save_pending_reply_effect(key, event, payload, reply_text)
                 try:
-                    await self._save_proactive_decision(
-                        event=event,
-                        sender_name=str(
-                            getattr(relationship, "name", "") or target_scope
-                        ),
-                        payload=payload,
-                        now=now,
-                        sent=True,
-                        reply_text=reply_text,
-                    )
-                except Exception as exc:
-                    logger.warning(f"{LOG_PREFIX} 私聊回访审计记录失败：{exc}")
-                try:
                     await self.mark_page_status_changed("private_revisit")
                 except Exception as exc:
                     logger.warning(f"{LOG_PREFIX} 私聊回访面板刷新通知失败：{exc}")
                 logger.info(f"{LOG_PREFIX} 私聊回访已发送：长度={len(reply_text)}")
             else:
+                self._transition_proactive_lifecycle(
+                    key,
+                    "abandoned",
+                    event="send_failed",
+                    reason="私聊回访未能成功发送",
+                    now=now,
+                )
+                await self._advance_proactive_decision_trace(
+                    event,
+                    payload,
+                    stage="abandoned",
+                    reason_code="send_failed",
+                    outcome="私聊回访发送失败",
+                )
                 self._update_proactive_air_after_decision(
                     key,
                     {

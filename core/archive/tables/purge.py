@@ -1,5 +1,14 @@
 DROP_SCHEMA_SQL = """
 PRAGMA foreign_keys = OFF;
+        DROP TABLE IF EXISTS grounded_diary_entries;
+        DROP TABLE IF EXISTS affective_states;
+        DROP TABLE IF EXISTS life_action_outcomes;
+        DROP TABLE IF EXISTS decision_traces;
+        DROP TABLE IF EXISTS durable_tasks;
+        DROP TABLE IF EXISTS persona_assertions;
+        DROP TABLE IF EXISTS reflections;
+        DROP TABLE IF EXISTS fact_evidence_signals;
+        DROP TABLE IF EXISTS temporal_facts;
         DROP TABLE IF EXISTS chat_memory_batches;
         DROP TABLE IF EXISTS chat_memory_sessions;
         DROP TABLE IF EXISTS chat_memory_messages;

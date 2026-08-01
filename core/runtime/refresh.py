@@ -13,11 +13,42 @@ from ..life.tools import (
     timeline_item_datetime,
 )
 from ..models import DayRecord
-from .markers import LOG_PREFIX
 from .locks import operation_lock
+from .markers import LOG_PREFIX
 
 
 class RefreshMixin:
+    async def _settle_timeline_planning(
+        self,
+        data: DayRecord,
+        now: datetime.datetime,
+    ) -> bool:
+        """刷新近期锚点并结算已完成的显式生活动作。
+
+        Args:
+            data: 已完成时间轴时钟校准的当日日记录。
+            now: 当前巡检时间。
+
+        Returns:
+            近期锚点或动作结算是否改变了日记录。
+        """
+
+        before = (
+            str((data.meta or {}).get("near_term_anchors") or ""),
+            str((data.meta or {}).get("life_action_settlements") or ""),
+        )
+        refine = getattr(self.composer, "refine_upcoming_anchors", None)
+        if callable(refine):
+            refine(data, now=now)
+        settle = getattr(self.composer, "settle_completed_planned_actions", None)
+        if callable(settle):
+            await settle(data, now=now)
+        after = (
+            str((data.meta or {}).get("near_term_anchors") or ""),
+            str((data.meta or {}).get("life_action_settlements") or ""),
+        )
+        return before != after
+
     @staticmethod
     def _meta_datetime(value: Any) -> datetime.datetime | None:
         text = str(value or "").strip()
@@ -218,7 +249,8 @@ class RefreshMixin:
                 data.date,
                 evidence=f"{execution_source}：时间轴时钟",
             )
-            if execution_changed:
+            planning_changed = await self._settle_timeline_planning(data, now)
+            if execution_changed or planning_changed:
                 await self.archive.save_day(data)
             state_due = self._auto_life_check_due(data, now)
             state_changed = False
@@ -296,6 +328,7 @@ class RefreshMixin:
                 stable = not any(
                     (
                         execution_changed,
+                        planning_changed,
                         state_changed,
                         outfit_context_changed,
                         outfit_changed,

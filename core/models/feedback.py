@@ -3,8 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from .coerce import compact_text as _text
+from .coerce import compact_texts as _texts
 from .primitive import optional_bool, optional_float, optional_int
-from .coerce import compact_text as _text, compact_texts as _texts
 
 
 @dataclass(slots=True)
@@ -22,6 +23,10 @@ class EmotionArcRecord:
     influence: str = ""
     expires_at: str = ""
     status: str = "active"
+    layer: str = "transient"
+    baseline: float = 50.0
+    half_life_minutes: float = 240.0
+    last_decay_at: str = ""
     source: str = "state"
     created_at: str = ""
     updated_at: str = ""
@@ -38,7 +43,7 @@ class EmotionArcRecord:
     @staticmethod
     def from_value(
         value: Any, *, date: str = "", source: str = "state"
-    ) -> "EmotionArcRecord | None":
+    ) -> EmotionArcRecord | None:
         if isinstance(value, EmotionArcRecord):
             return value
         if not isinstance(value, dict):
@@ -50,6 +55,10 @@ class EmotionArcRecord:
         influence = _text(raw.get("influence") or raw.get("effect"), 240)
         if not (label or evidence or trigger or influence):
             return None
+        layer = _text(raw.get("layer") or "transient", 40)
+        if layer not in {"transient", "daily", "relationship"}:
+            layer = "transient"
+        baseline = optional_float(raw.get("baseline"))
         return EmotionArcRecord(
             id=optional_int(raw.get("id")) or 0,
             scope=_text(raw.get("scope"), 180),
@@ -66,6 +75,12 @@ class EmotionArcRecord:
             influence=influence,
             expires_at=_text(raw.get("expires_at"), 40),
             status=_text(raw.get("status") or "active", 40) or "active",
+            layer=layer,
+            baseline=max(0.0, min(baseline if baseline is not None else 50.0, 100.0)),
+            half_life_minutes=max(
+                optional_float(raw.get("half_life_minutes")) or 240.0, 1.0
+            ),
+            last_decay_at=_text(raw.get("last_decay_at"), 40),
             source=_text(raw.get("source") or source, 40) or source,
             created_at=_text(raw.get("created_at"), 40),
             updated_at=_text(raw.get("updated_at"), 40),
@@ -86,6 +101,10 @@ class EmotionArcRecord:
             "influence": self.influence,
             "expires_at": self.expires_at,
             "status": self.status,
+            "layer": self.layer,
+            "baseline": self.baseline,
+            "half_life_minutes": self.half_life_minutes,
+            "last_decay_at": self.last_decay_at,
             "source": self.source,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -144,7 +163,7 @@ class PhysiologicalRhythmLogRecord:
         *,
         date: str = "",
         source: str = "state",
-    ) -> "PhysiologicalRhythmLogRecord | None":
+    ) -> PhysiologicalRhythmLogRecord | None:
         if isinstance(value, PhysiologicalRhythmLogRecord):
             return value
         if not isinstance(value, dict):
@@ -256,7 +275,7 @@ class BehaviorFeedbackRecord:
     @staticmethod
     def from_value(
         value: Any, *, date: str = "", source: str = "chat_memory"
-    ) -> "BehaviorFeedbackRecord | None":
+    ) -> BehaviorFeedbackRecord | None:
         if isinstance(value, BehaviorFeedbackRecord):
             return value
         if not isinstance(value, dict):
@@ -320,7 +339,7 @@ class ReplyEffectRecord:
     @staticmethod
     def from_value(
         value: Any, *, source: str = "proactive_reply"
-    ) -> "ReplyEffectRecord | None":
+    ) -> ReplyEffectRecord | None:
         if isinstance(value, ReplyEffectRecord):
             return value
         if not isinstance(value, dict):
@@ -383,7 +402,7 @@ class MemoryCorrectionRecord:
     @staticmethod
     def from_value(
         value: Any, *, source: str = "chat_memory"
-    ) -> "MemoryCorrectionRecord | None":
+    ) -> MemoryCorrectionRecord | None:
         if isinstance(value, MemoryCorrectionRecord):
             return value
         if not isinstance(value, dict):

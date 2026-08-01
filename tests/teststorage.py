@@ -7,8 +7,11 @@ import time
 import unittest
 from unittest.mock import patch
 
-from support import LifeArchive, LifeSettings
+from core.archive.categories import STORAGE_CATEGORIES, validate_storage_categories
+from core.archive.ddl import iter_schema_sql
+from core.archive.schema import SCHEMA_VERSION, ArchiveSchemaError
 from core.clock import today as life_today
+from core.labels import event_status_label
 from core.models import (
     ActionDecisionRecord,
     BehaviorFeedbackRecord,
@@ -18,8 +21,8 @@ from core.models import (
     CommitmentRecord,
     DailyReviewRecord,
     DayRecord,
-    EmotionArcRecord,
     EmojiAssetRecord,
+    EmotionArcRecord,
     EventRecord,
     ExpressionIntentRecord,
     ExpressionProfileRecord,
@@ -29,31 +32,28 @@ from core.models import (
     GroupEnvironmentRecord,
     LifeDecisionRecord,
     LifeEpisodeRecord,
-    LifeState,
     LifeEventRecord,
+    LifeState,
     LifeTermRecord,
+    LongTermMemoryRecord,
     MemoryBoundaryRecord,
     MemoryCorrectionRecord,
     MemoryEvidenceRecord,
     MemoryMaintenanceRecord,
-    LongTermMemoryRecord,
     MessageVisibilityRecord,
     PhysiologicalRhythmLogRecord,
     PlaceRecord,
     PreferenceRecord,
-    ReversePromptRecord,
     ReplyEffectRecord,
+    ReversePromptRecord,
     SessionMidSummaryRecord,
-    TemporaryExpressionStateRecord,
     SleepState,
+    TemporaryExpressionStateRecord,
     TimelineItem,
     WeekPlanRecord,
 )
-from core.archive.categories import STORAGE_CATEGORIES, validate_storage_categories
-from core.archive.ddl import iter_schema_sql
-from core.archive.schema import ArchiveSchemaError, SCHEMA_VERSION
-from core.labels import event_status_label
 from core.sight import SightClip, SightInsight, SightVault
+from support import LifeArchive, LifeSettings
 
 
 class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
@@ -151,6 +151,10 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                         "expression_intents",
                         "terms",
                         "boundaries",
+                        "temporal_facts",
+                        "persona_assertions",
+                        "affective_states",
+                        "grounded_diary_entries",
                     },
                 )
             finally:
@@ -240,9 +244,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             conn = sqlite3.connect(db_path)
             for script in iter_schema_sql():
                 conn.executescript(script)
-            conn.execute(
-                "INSERT INTO meta(key, value) VALUES('schema_version', '1')"
-            )
+            conn.execute("INSERT INTO meta(key, value) VALUES('schema_version', '1')")
             conn.commit()
             conn.close()
 
@@ -315,9 +317,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             conn = sqlite3.connect(db_path)
             for script in iter_schema_sql():
                 conn.executescript(script)
-            conn.execute(
-                "INSERT INTO meta(key, value) VALUES('schema_version', '1')"
-            )
+            conn.execute("INSERT INTO meta(key, value) VALUES('schema_version', '1')")
             conn.commit()
             conn.close()
 
@@ -351,9 +351,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             conn = sqlite3.connect(db_path)
             for script in iter_schema_sql():
                 conn.executescript(script)
-            conn.execute(
-                "INSERT INTO meta(key, value) VALUES('schema_version', '1')"
-            )
+            conn.execute("INSERT INTO meta(key, value) VALUES('schema_version', '1')")
             conn.commit()
             conn.close()
 
@@ -2164,9 +2162,9 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
     async def test_conversation_cleanup_preserves_pending_memory_messages(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             archive = LifeArchive(f"{tmpdir}/daily_life.db")
-            old_time = (
-                datetime.datetime.now() - datetime.timedelta(days=90)
-            ).strftime("%Y-%m-%d %H:%M:%S")
+            old_time = (datetime.datetime.now() - datetime.timedelta(days=90)).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
             processed_session = "session:processed"
             archive._conn.executemany(
                 """
@@ -2468,7 +2466,9 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                 LifeEventRecord(date="2026-05-24", title="当前事件")
             )
 
-            self.assertTrue(await archive.set_life_event_status(current.id, "completed"))
+            self.assertTrue(
+                await archive.set_life_event_status(current.id, "completed")
+            )
             self.assertEqual(await archive.close_stale_life_events("2026-05-10"), 1)
 
             events = {item.id: item for item in await archive.get_life_events(limit=10)}

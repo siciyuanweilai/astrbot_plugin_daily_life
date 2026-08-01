@@ -1,4 +1,5 @@
 import asyncio
+import json
 from typing import Any
 
 from astrbot.api import logger
@@ -313,6 +314,89 @@ class LayerChainMixin:
             boundaries=list(snapshot.get("boundaries") or [])[:2],
         )
 
+    @staticmethod
+    def _format_cognition_context(snapshot: dict[str, Any]) -> str:
+        """格式化时间事实、人格断言和三层情绪的隐藏上下文。
+
+        Args:
+            snapshot: 单次锁定读取的归档快照。
+
+        Returns:
+            可注入模型且保留时间边界的中文上下文。
+        """
+
+        sections: list[str] = []
+        fact_lines = []
+        for item in list(snapshot.get("temporal_facts") or [])[:12]:
+            value = json.dumps(
+                getattr(item, "object_value", None),
+                ensure_ascii=False,
+                separators=(",", ":"),
+                default=str,
+            )
+            valid_from = str(getattr(item, "valid_from", "") or "未记录")
+            valid_to = str(getattr(item, "valid_to", "") or "当前")
+            fact_lines.append(
+                f"- {getattr(item, 'subject', '')}.{getattr(item, 'predicate', '')}="
+                f"{value}；有效期 {valid_from} 至 {valid_to}；"
+                f"置信度 {float(getattr(item, 'confidence', 0.0) or 0.0):.2f}"
+            )
+        if fact_lines:
+            sections.append("当前时间事实：\n" + "\n".join(fact_lines))
+
+        assertion_lines = []
+        persona_assertions = list(snapshot.get("persona_assertions") or []) + list(
+            snapshot.get("scoped_persona_assertions") or []
+        )
+        for item in persona_assertions[:6]:
+            value = json.dumps(
+                getattr(item, "object_value", None),
+                ensure_ascii=False,
+                separators=(",", ":"),
+                default=str,
+            )
+            assertion_lines.append(
+                f"- {getattr(item, 'subject', '')}.{getattr(item, 'predicate', '')}="
+                f"{value}；置信度 {float(getattr(item, 'confidence', 0.0) or 0.0):.2f}"
+            )
+        if assertion_lines:
+            sections.append("已晋升人格认识：\n" + "\n".join(assertion_lines))
+
+        affect_lines = []
+        layer_labels = {
+            "transient": "短时情绪",
+            "daily": "当日心境",
+            "relationship": "关系感受",
+        }
+        affective_states = list(snapshot.get("affective_states") or []) + list(
+            snapshot.get("scoped_affective_states") or []
+        )
+        for item in affective_states[:6]:
+            layer = str(getattr(item, "layer", "") or "")
+            affect_lines.append(
+                f"- {layer_labels.get(layer, '情绪状态')}："
+                f"{getattr(item, 'label', '')}；效价 "
+                f"{float(getattr(item, 'valence', 0.0) or 0.0):.2f}；强度 "
+                f"{float(getattr(item, 'intensity', 0.0) or 0.0):.2f}"
+            )
+        if affect_lines:
+            sections.append("可衰减情绪状态：\n" + "\n".join(affect_lines))
+
+        diary_lines = [
+            f"- {getattr(item, 'date', '')}：{getattr(item, 'summary', '')}"
+            for item in list(snapshot.get("grounded_diary_entries") or [])[:2]
+            if str(getattr(item, "summary", "") or "").strip()
+        ]
+        if diary_lines:
+            sections.append("有证据的近期日记：\n" + "\n".join(diary_lines))
+        if not sections:
+            return ""
+        rules = (
+            "时间事实只在标注有效期内可作为当前事实；已结束版本不得当作当前状态。"
+            "情绪状态只影响表达倾向，不能替代消息、图片、日程或人物事实。"
+        )
+        return "\n\n[HiddenCognition]\n" + rules + "\n" + "\n\n".join(sections)
+
     async def _build_available_life_context(
         self,
         data: Any,
@@ -351,6 +435,7 @@ class LayerChainMixin:
             self._select_world_context(snapshot, data, event_message),
             self._format_snapshot_experience_context(snapshot, event_message),
         )
+        cognition_context = self._format_cognition_context(snapshot)
         return (
             self.build_hidden_life_context(
                 data,
@@ -371,6 +456,7 @@ class LayerChainMixin:
             )
             + heuristic_memory
             + person_facts
+            + cognition_context
         )
 
     async def inject_life_context(

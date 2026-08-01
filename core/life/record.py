@@ -1,12 +1,16 @@
+import json
+
 from ..labels import (
     plan_outfit_decision_label,
     schedule_intent_label,
     schedule_tone_label,
 )
 from ..models import (
+    LIFE_ACTION_TYPES,
     CommitmentRecord,
     DayRecord,
     EventRecord,
+    LifeActionIntent,
     LifeEpisodeRecord,
     MemoryEvidenceRecord,
 )
@@ -43,6 +47,48 @@ class DailyRecordMixin:
             date_str, [item.id for item in due_commitments]
         )
         await self.archive.save_day(day)
+        raw_actions = (day.meta or {}).get("planned_life_actions")
+        try:
+            planned_actions = json.loads(raw_actions) if raw_actions else []
+        except (TypeError, ValueError, json.JSONDecodeError):
+            planned_actions = []
+        save_outcome = getattr(self.archive, "save_life_action_outcome", None)
+        save_trace = getattr(self.archive, "save_decision_trace", None)
+        for raw_action in planned_actions if isinstance(planned_actions, list) else []:
+            action = LifeActionIntent.from_value(raw_action)
+            if not action.action_id or action.action_type not in LIFE_ACTION_TYPES:
+                continue
+            if callable(save_outcome):
+                await save_outcome(
+                    {
+                        "action_id": action.action_id,
+                        "date": date_str,
+                        "action_type": action.action_type,
+                        "target": action.target,
+                        "preconditions": {
+                            "all": [item.as_dict() for item in action.preconditions]
+                        },
+                        "effects": {
+                            "requested": [item.as_dict() for item in action.effects]
+                        },
+                        "status": "proposed",
+                        "reason": "由当日分层日程提出，等待真实执行证据结算",
+                        "evidence": [action.evidence] if action.evidence else [],
+                        "started_at": action.requested_at,
+                    }
+                )
+            if callable(save_trace):
+                await save_trace(
+                    {
+                        "trace_id": f"life_action:{action.action_id}",
+                        "scope": f"day:{date_str}",
+                        "stage": "proposed",
+                        "reason_code": "action_planned",
+                        "decision": "proposed",
+                        "evidence": [action.evidence] if action.evidence else [],
+                        "outcome": "等待真实执行证据",
+                    }
+                )
         await self._persist_physiological_rhythm_log(
             date_str, day, source="daily_generation"
         )

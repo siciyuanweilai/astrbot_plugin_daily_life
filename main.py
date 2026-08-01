@@ -1091,7 +1091,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         Args:
             reference_image(string): 可选图片路径或 URL；留空时自动尝试当前消息或引用消息里的图片。
             source_prompt(string): 可选参考重点；用户要求重点保留人物、穿搭、姿势、构图、场景、光线、文字或风格时填写对应要求。
-            profile(string): 可选反推方案，例如“通用”“通用超详细”“生活照”“人像”“CCD人像”“棚拍”“棚拍人像”“古风”“古风特调”“商品”“插画”。
+            profile(string): 可选反推方案，例如“通用”“通用超详细”“生活照”“人像”“CCD人像”“棚拍”“棚拍人像”“古风”“古风特调”“商品”“视觉封面”“设计视觉”“插画”。
         """
         return await self.runtime.life_image_reverse_prompt(
             event,

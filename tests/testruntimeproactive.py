@@ -38,6 +38,35 @@ from runtimehelpers import (
 
 
 class RuntimeProactiveTest(ResponseGateRuntimeMixin, unittest.TestCase):
+    def test_proactive_lifecycle_accepts_only_declared_transitions(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        now = datetime.datetime(2026, 5, 24, 12, 0)
+
+        runtime._transition_proactive_lifecycle(
+            "scope", "candidate", event="activity_observed", reason="收到活动", now=now
+        )
+        runtime._transition_proactive_lifecycle(
+            "scope",
+            "considering",
+            event="evaluation_started",
+            reason="开始裁定",
+            now=now,
+        )
+        runtime._transition_proactive_lifecycle(
+            "scope", "sending", event="proposal_approved", reason="提案通过", now=now
+        )
+        runtime._transition_proactive_lifecycle(
+            "scope", "engaged", event="send_succeeded", reason="发送成功", now=now
+        )
+
+        snapshot = runtime._proactive_lifecycle_snapshot("scope")
+        self.assertEqual(snapshot["state"], "engaged")
+        self.assertEqual(len(snapshot["history"]), 4)
+        with self.assertRaises(ValueError):
+            runtime._transition_proactive_lifecycle(
+                "scope", "candidate", event="invalid", reason="非法回跳", now=now
+            )
+
     def test_proactive_raw_group_switch_wins_over_stale_parsed_config(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.config = LifeSettings.from_dict(
@@ -754,6 +783,19 @@ class RuntimeProactiveTest(ResponseGateRuntimeMixin, unittest.TestCase):
 class RuntimeProactiveAsyncTest(
     RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTestCase
 ):
+    @staticmethod
+    def _capture_decision_traces(runtime):
+        traces = []
+
+        async def save_trace(payload):
+            saved = dict(payload)
+            saved["trace_id"] = saved.get("trace_id") or "trace-test"
+            traces.append(saved)
+            return types.SimpleNamespace(trace_id=saved["trace_id"])
+
+        runtime.archive.save_decision_trace = save_trace
+        return traces
+
     async def test_regular_reply_effect_registers_watch_before_background_save(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.archive = DataManager()
@@ -1084,15 +1126,76 @@ class RuntimeProactiveAsyncTest(
         )
         self.assertEqual(life_decision_evidence[0].evidence_type, "decision")
         self.assertIn("群里聊到看展", life_decision_evidence[0].summary)
-        self.assertEqual(len(await runtime.archive.get_life_episodes(10)), 1)
+        self.assertEqual(len(await runtime.archive.get_life_episodes(10)), 0)
         self.assertEqual(
             len(
                 await runtime.archive.get_memory_evidence(
                     target_type="action_decision", limit=10
                 )
             ),
-            1,
+            0,
         )
+
+    async def test_proactive_low_utility_blocks_send_proposal(self):
+        runtime, _ = self._make_proactive_runtime(
+            [
+                '{"should_reply": true, "confidence": 0.95, "decision": "reply", '
+                '"benefit": 20, "timeliness": 15, "continuity": 20, '
+                '"disruption": 70, "uncertainty": 65, '
+                '"reason": "可以接一句", "reply_text": "我也觉得"}'
+            ],
+            provider_id="proactive-model",
+        )
+        runtime.config = LifeSettings.from_dict(
+            {
+                "proactive_config": {
+                    "provider": "proactive-model",
+                    "group_enabled": True,
+                    "min_confidence": 0.7,
+                }
+            }
+        )
+        runtime.archive = DataManager()
+        trace_records = self._capture_decision_traces(runtime)
+        await runtime.archive.save_day(
+            DayRecord(
+                date="2026-05-24",
+                state=LifeState.from_value(
+                    {
+                        "energy": 80,
+                        "social": 80,
+                        "interaction_capacity": 80,
+                        "attention_openness": 80,
+                        "interrupt_level": "ordinary",
+                    }
+                ),
+            )
+        )
+        event = Event(
+            sender_name="阿林",
+            sender_id="u1",
+            platform_name="aiocqhttp",
+            unified_msg_origin="aiocqhttp:GroupMessage:10001",
+            group_id="10001",
+            group_name="看展群",
+        )
+        event.message_str = "周末去看展吧。"
+
+        result = await runtime.evaluate_proactive_reply(
+            event, now=datetime.datetime(2026, 5, 24, 20, 0)
+        )
+
+        self.assertFalse(result["should_reply"])
+        self.assertEqual(result["decision"], "observe")
+        self.assertEqual(result["reason_code"], "utility_below_threshold")
+        self.assertLess(result["utility"], result["utility_threshold"])
+        self.assertEqual(await runtime.archive.get_life_episodes(10), [])
+        self.assertEqual(len(trace_records), 1)
+        self.assertEqual(trace_records[0]["stage"], "proposal")
+        self.assertEqual(
+            trace_records[0]["reason_code"], "utility_below_threshold"
+        )
+        self.assertFalse(trace_records[0]["scores"]["sent"])
 
     async def test_proactive_reply_absorbs_used_short_term_focus(self):
         runtime, _ = self._make_proactive_runtime(
@@ -1668,8 +1771,17 @@ class RuntimeProactiveAsyncTest(
             }
         )
         runtime.archive = DataManager()
+        trace_records = self._capture_decision_traces(runtime)
         runtime._proactive_last_reply_at = {}
         runtime._proactive_idle_candidates = {}
+        decision_stages = []
+        save_decision = runtime._save_proactive_decision
+
+        async def record_decision(*args, **kwargs):
+            decision_stages.append((kwargs.get("stage"), kwargs.get("sent")))
+            return await save_decision(*args, **kwargs)
+
+        runtime._save_proactive_decision = record_decision
         event = Event(
             sender_name="阿林",
             sender_id="u1",
@@ -1699,9 +1811,77 @@ class RuntimeProactiveAsyncTest(
         self.assertEqual(target, "aiocqhttp:GroupMessage:10001")
         self.assertEqual(chain.items, ["这个展听起来确实挺适合慢慢逛"])
         self.assertEqual(runtime._proactive_idle_candidates, {})
+        self.assertEqual(decision_stages, [("proposal", False), ("commit", True)])
+        self.assertEqual(
+            runtime._proactive_lifecycle_snapshot("10001")["state"], "engaged"
+        )
+        self.assertEqual(len(await runtime.archive.get_life_episodes(10)), 1)
+        self.assertEqual(
+            {item["stage"] for item in trace_records},
+            {"proposal", "sending", "commit"},
+        )
+        commit_trace = [
+            item for item in trace_records if item["stage"] == "commit"
+        ][0]
+        self.assertTrue(commit_trace["scores"]["sent"])
         self.assertIn("会话已安静：21 分钟", provider.prompts[0])
         self._assert_last_assistant_history(
             runtime, "aiocqhttp:GroupMessage:10001", "这个展听起来确实挺适合慢慢逛"
+        )
+
+    async def test_idle_proactive_revision_change_interrupts_old_send(self):
+        runtime, _ = self._make_proactive_runtime([], provider_id="proactive-model")
+        runtime.config = LifeSettings.from_dict(
+            {
+                "proactive_config": {
+                    "provider": "proactive-model",
+                    "group_enabled": True,
+                    "idle_minutes": 1,
+                }
+            }
+        )
+        runtime._runtime_initialized = False
+        runtime._proactive_idle_candidates = {}
+        event = Event(
+            sender_name="阿林",
+            sender_id="u1",
+            platform_name="aiocqhttp",
+            unified_msg_origin="aiocqhttp:GroupMessage:10001",
+            group_id="10001",
+            group_name="看展群",
+        )
+        event.message_str = "第一条消息"
+        base_time = datetime.datetime(2026, 5, 24, 12, 0)
+        runtime.note_proactive_activity(event, now=base_time)
+        old_candidate = runtime._proactive_idle_candidates["10001"]
+        send_calls = []
+
+        async def evaluate(_event, now=None):
+            event.message_str = "裁定期间的新消息"
+            runtime.note_proactive_activity(
+                event, now=base_time + datetime.timedelta(minutes=2)
+            )
+            return {
+                "should_reply": True,
+                "decision": "reply",
+                "reply_text": "旧候选回复",
+            }
+
+        async def send(*args, **kwargs):
+            send_calls.append((args, kwargs))
+            return True
+
+        runtime.evaluate_proactive_reply = evaluate
+        runtime._send_proactive_message = send
+
+        await runtime._evaluate_idle_candidate(
+            "10001", old_candidate, base_time + datetime.timedelta(minutes=1)
+        )
+
+        self.assertEqual(send_calls, [])
+        self.assertEqual(runtime._proactive_idle_candidates["10001"]["revision"], 2)
+        self.assertEqual(
+            runtime._proactive_lifecycle_snapshot("10001")["state"], "candidate"
         )
 
     async def test_idle_proactive_wait_keeps_candidate_and_delays_retry(self):
@@ -3596,6 +3776,9 @@ class RuntimeProactiveAsyncTest(
         state = runtime._get_proactive_air_state(target)
         self.assertEqual(state["last_decision"], "wait")
         self.assertIn("发送前会话或生活状态已变化", state["last_reason"])
+        self.assertEqual(
+            runtime._proactive_lifecycle_snapshot(target)["state"], "interrupted"
+        )
 
     async def test_private_revisit_respects_chat_style_length_budget(self):
         runtime, provider = self._make_proactive_runtime(
@@ -3983,6 +4166,7 @@ class RuntimeProactiveAsyncTest(
             }
         )
         runtime.archive = DataManager()
+        trace_records = self._capture_decision_traces(runtime)
         runtime._proactive_private_last_revisit_at = {}
         target = "aiocqhttp:FriendMessage:10001"
         runtime.context.send_failures[target] = RuntimeError(
@@ -4008,3 +4192,15 @@ class RuntimeProactiveAsyncTest(
         profile = (await runtime.archive.get_recent_relationships(1))[0]
         self.assertFalse(profile.contacts[0].is_reachable)
         self.assertEqual(profile.contacts[0].blocked_reason, "不是好友或当前不可私聊")
+        self.assertEqual(
+            runtime._proactive_lifecycle_snapshot(target)["state"], "abandoned"
+        )
+        decisions = await runtime.archive.get_recent_action_decisions(10)
+        self.assertEqual(len(decisions), 1)
+        self.assertEqual(decisions[0].scene_type, "私聊回访/proposal")
+        self.assertEqual(await runtime.archive.get_life_episodes(10), [])
+        self.assertEqual(
+            {item["stage"] for item in trace_records},
+            {"proposal", "sending", "abandoned"},
+        )
+        self.assertNotIn("commit", {item["stage"] for item in trace_records})

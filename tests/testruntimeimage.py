@@ -30,6 +30,29 @@ from runtimehelpers import (
 
 
 class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTestCase):
+    def test_reverse_prompt_visual_profiles_have_distinct_focus(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+
+        cover_name, cover_instruction = runtime._reverse_prompt_profile_instruction(
+            "视觉封面"
+        )
+        cover_contract = runtime._reverse_prompt_contract("", "视觉封面")
+        self.assertEqual(cover_name, "视觉封面")
+        self.assertIn("标题或文案留白", cover_instruction)
+        self.assertIn("裁切安全区", cover_instruction)
+        self.assertIn("反推方案：视觉封面", cover_contract)
+        self.assertIn("只记录实际可见文字", cover_contract)
+
+        design_name, design_instruction = runtime._reverse_prompt_profile_instruction(
+            "设计视觉"
+        )
+        design_contract = runtime._reverse_prompt_contract("", "设计视觉")
+        self.assertEqual(design_name, "设计视觉")
+        self.assertIn("网格与对齐", design_instruction)
+        self.assertIn("文字层级", design_instruction)
+        self.assertIn("反推方案：设计视觉", design_contract)
+        self.assertIn("无法辨认的文字留空", design_contract)
+
     async def test_character_appearance_profile_uses_semantics_and_persona_cache(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         personas = ["成年女性，整体纤细匀称，上半身曲线自然丰满，与肩腰胯比例协调。"]

@@ -1,0 +1,721 @@
+from __future__ import annotations
+
+import datetime
+import json
+from typing import Any
+
+from ..clock import now as life_now
+from ..models import (
+    LIFE_ACTION_TYPES,
+    DayRecord,
+    LifeActionEffect,
+    LifeActionIntent,
+    LifeActionOutcome,
+    LifeState,
+    PlanRevision,
+    ReflectionDecision,
+    ReflectionSignal,
+    ScheduleAnchor,
+)
+
+ACTION_SETTLEMENT_META_KEY = "life_action_settlements"
+SCHEDULE_ANCHOR_META_KEY = "schedule_anchors"
+
+_NUMERIC_STATE_FIELDS = frozenset(
+    {
+        "energy",
+        "mood_score",
+        "busyness",
+        "social",
+        "stress",
+        "focus",
+        "sleepiness",
+        "outgoing",
+        "emotional_stability",
+        "interaction_capacity",
+        "boredom",
+        "fishing",
+        "attention_openness",
+    }
+)
+
+_ACTION_RULES: dict[str, dict[str, Any]] = {
+    "rest": {
+        "effects": (("energy", 12), ("stress", -8), ("sleepiness", -12)),
+        "allowed": {"energy", "stress", "sleepiness", "mood_score"},
+    },
+    "meal": {
+        "effects": (("energy", 8), ("stress", -2), ("mood_score", 3)),
+        "allowed": {"energy", "stress", "mood_score"},
+    },
+    "move": {
+        "effects": (("energy", -5), ("stress", -5), ("mood_score", 4)),
+        "allowed": {"energy", "stress", "mood_score", "sleepiness"},
+        "minimum": ("energy", 10),
+    },
+    "work": {
+        "effects": (("energy", -10), ("stress", 4), ("focus", -8)),
+        "allowed": {"energy", "stress", "focus", "busyness"},
+        "minimum": ("energy", 10),
+    },
+    "study": {
+        "effects": (("energy", -8), ("stress", 3), ("focus", -6)),
+        "allowed": {"energy", "stress", "focus", "mood_score"},
+        "minimum": ("energy", 10),
+    },
+    "groom": {
+        "effects": (("mood_score", 4), ("stress", -2)),
+        "allowed": {"mood_score", "stress"},
+    },
+    "change_outfit": {
+        "effects": (("mood_score", 2),),
+        "allowed": {"mood_score", "stress"},
+        "requires_target": True,
+    },
+    "social": {
+        "effects": (
+            ("energy", -8),
+            ("social", 8),
+            ("interaction_capacity", -8),
+            ("mood_score", 4),
+        ),
+        "allowed": {
+            "energy",
+            "social",
+            "interaction_capacity",
+            "mood_score",
+            "stress",
+        },
+        "minimum": ("interaction_capacity", 8),
+    },
+    "chat": {
+        "effects": (
+            ("energy", -3),
+            ("social", 4),
+            ("interaction_capacity", -3),
+        ),
+        "allowed": {
+            "energy",
+            "social",
+            "interaction_capacity",
+            "mood_score",
+        },
+        "minimum": ("interaction_capacity", 5),
+    },
+    "photo": {
+        "effects": (("energy", -4), ("focus", -2), ("mood_score", 3)),
+        "allowed": {"energy", "focus", "mood_score", "stress"},
+        "minimum": ("energy", 8),
+    },
+    "video": {
+        "effects": (("energy", -8), ("focus", -5), ("mood_score", 4)),
+        "allowed": {"energy", "focus", "mood_score", "stress"},
+        "minimum": ("energy", 8),
+    },
+}
+
+
+class LifeActionMixin:
+    """提供生活动作结算、分层日程和反思门槛能力。"""
+
+    def settle_life_action(
+        self,
+        day: DayRecord,
+        intent: LifeActionIntent | dict[str, Any],
+        *,
+        now: datetime.datetime | None = None,
+    ) -> LifeActionOutcome:
+        """校验并幂等结算一项显式生活动作。
+
+        Args:
+            day: 动作发生的当日日记录。
+            intent: 包含动作类型、前置条件和影响的结构化意图。
+            now: 结算时间，缺省时使用插件时钟。
+
+        Returns:
+            已提交、拒绝或从历史结算中重放的动作结果。
+        """
+        action = LifeActionIntent.from_value(intent)
+        current_time = now or life_now()
+        committed_at = current_time.strftime("%Y-%m-%d %H:%M:%S")
+        settlements: dict[str, Any] = {}
+        stored_text = str((day.meta or {}).get(ACTION_SETTLEMENT_META_KEY) or "")
+        if stored_text:
+            try:
+                stored_value = json.loads(stored_text)
+                if isinstance(stored_value, dict):
+                    settlements = stored_value
+            except (TypeError, ValueError, json.JSONDecodeError):
+                settlements = {}
+
+        if action.action_id and isinstance(settlements.get(action.action_id), dict):
+            replayed = LifeActionOutcome.from_value(settlements[action.action_id])
+            replayed.replayed = True
+            return replayed
+
+        reason = ""
+        if not action.action_id:
+            reason = "缺少 action_id，无法保证动作幂等"
+        elif action.action_type not in LIFE_ACTION_TYPES:
+            reason = "action_type 不在受支持的生活动作集合中"
+
+        rule = _ACTION_RULES.get(action.action_type, {})
+        if not reason and rule.get("requires_target") and not action.target:
+            reason = "该动作需要明确 target"
+        if not reason and action.timeline_index is not None:
+            if not 0 <= action.timeline_index < len(day.timeline):
+                reason = "timeline_index 超出当日时间轴范围"
+            elif day.timeline[action.timeline_index].execution_state in {
+                "skipped",
+                "cancelled",
+            } or (
+                day.timeline[action.timeline_index].execution_state == "completed"
+                and action.source != "daily_plan"
+            ):
+                reason = "对应日程已经收束，不能重复结算新动作"
+
+        state = day.state
+        minimum = rule.get("minimum")
+        if not reason and minimum and state is not None:
+            minimum_field, minimum_value = minimum
+            current_value = getattr(state, minimum_field, None)
+            if current_value is not None and current_value < minimum_value:
+                reason = f"{minimum_field} 低于动作最低可行值 {minimum_value}"
+
+        allowed_day_fields = {"day.date", "day.outfit", "day.time_period"}
+        for condition in action.preconditions if not reason else []:
+            actual: Any = None
+            known_field = True
+            if condition.field.startswith("state."):
+                field_name = condition.field.removeprefix("state.")
+                if field_name in _NUMERIC_STATE_FIELDS or field_name in {
+                    "mood",
+                    "watch_state",
+                    "interrupt_level",
+                }:
+                    actual = getattr(state, field_name, None) if state else None
+                else:
+                    known_field = False
+            elif condition.field == "timeline.execution_state":
+                if action.timeline_index is None:
+                    known_field = False
+                else:
+                    actual = day.timeline[action.timeline_index].execution_state
+            elif condition.field in allowed_day_fields:
+                actual = getattr(day, condition.field.removeprefix("day."), None)
+            else:
+                known_field = False
+
+            passed = known_field
+            expected = condition.expected
+            if condition.operator == "present":
+                passed = passed and actual is not None and actual != ""
+            elif condition.operator == "eq":
+                passed = passed and actual == expected
+            elif condition.operator == "ne":
+                passed = passed and actual != expected
+            elif condition.operator in {"in", "not_in"}:
+                if not isinstance(expected, (list, tuple, set)):
+                    passed = False
+                else:
+                    contained = actual in expected
+                    passed = passed and (
+                        contained if condition.operator == "in" else not contained
+                    )
+            elif condition.operator in {"gte", "lte"}:
+                try:
+                    left = float(actual)
+                    right = float(expected)
+                except (TypeError, ValueError):
+                    passed = False
+                else:
+                    passed = (
+                        left >= right if condition.operator == "gte" else left <= right
+                    )
+            if not passed:
+                reason = f"前置条件未满足：{condition.field} {condition.operator}"
+                break
+
+        effects = action.effects or [
+            LifeActionEffect(field=field_name, operation="add", value=value)
+            for field_name, value in rule.get("effects", ())
+        ]
+        allowed_effects = rule.get("allowed", set())
+        if not reason:
+            for effect in effects:
+                if (
+                    effect.field not in _NUMERIC_STATE_FIELDS
+                    or effect.field not in allowed_effects
+                ):
+                    reason = f"动作不允许修改状态字段：{effect.field}"
+                    break
+
+        outcome = LifeActionOutcome(
+            action_id=action.action_id,
+            action_type=action.action_type,
+            status="rejected" if reason else "committed",
+            reason=reason or "动作已通过可行性校验并结算",
+            committed_at=committed_at,
+            timeline_index=action.timeline_index,
+            evidence=action.evidence,
+        )
+        if not reason:
+            state = state or LifeState()
+            day.state = state
+            changes: dict[str, dict[str, float | int | None]] = {}
+            for effect in effects:
+                previous = getattr(state, effect.field, None)
+                base_value = float(previous) if previous is not None else 50.0
+                updated = (
+                    base_value + effect.value
+                    if effect.operation == "add"
+                    else effect.value
+                )
+                updated = round(max(0.0, min(100.0, updated)), 2)
+                normalized: int | float = (
+                    int(updated) if updated.is_integer() else updated
+                )
+                setattr(state, effect.field, normalized)
+                changes[effect.field] = {"before": previous, "after": normalized}
+            outcome.state_changes = changes
+            state.updated_at = committed_at
+            state.source = f"life_action:{action.action_type}"
+
+            if action.action_type == "change_outfit":
+                day.outfit = action.target
+                day.outfit_history[committed_at] = action.target
+                day.meta["outfit_decision"] = "life_action"
+            if action.timeline_index is not None:
+                item = day.timeline[action.timeline_index]
+                item.execution_state = "completed"
+                item.execution_reason = f"生活动作已结算：{action.action_type}"
+                item.execution_evidence = action.evidence or action.action_id
+                item.execution_updated_at = committed_at
+
+        if action.action_id:
+            settlements[action.action_id] = outcome.as_dict()
+            day.meta[ACTION_SETTLEMENT_META_KEY] = json.dumps(
+                settlements,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        return outcome
+
+    async def settle_and_persist_life_action(
+        self,
+        day: DayRecord,
+        intent: LifeActionIntent | dict[str, Any],
+        *,
+        now: datetime.datetime | None = None,
+    ) -> LifeActionOutcome:
+        """结算动作并同步保存日状态、动作结果和决策轨迹。
+
+        Args:
+            day: 动作发生的当日日记录。
+            intent: 结构化生活动作意图。
+            now: 结算时间，缺省时使用插件时钟。
+
+        Returns:
+            已持久化的幂等动作结果。
+        """
+        action = LifeActionIntent.from_value(intent)
+        outcome = self.settle_life_action(day, action, now=now)
+        await self.archive.save_day(day)
+
+        save_outcome = getattr(self.archive, "save_life_action_outcome", None)
+        if callable(save_outcome) and action.action_id and action.action_type:
+            await save_outcome(
+                {
+                    "action_id": action.action_id,
+                    "date": day.date,
+                    "action_type": action.action_type,
+                    "target": action.target,
+                    "preconditions": {
+                        "all": [item.as_dict() for item in action.preconditions]
+                    },
+                    "effects": {
+                        "requested": [item.as_dict() for item in action.effects],
+                        "settled": outcome.state_changes,
+                    },
+                    "status": outcome.status,
+                    "reason": outcome.reason,
+                    "evidence": [action.evidence] if action.evidence else [],
+                    "started_at": action.requested_at,
+                    "committed_at": outcome.committed_at,
+                }
+            )
+
+        save_trace = getattr(self.archive, "save_decision_trace", None)
+        if callable(save_trace) and action.action_id:
+            await save_trace(
+                {
+                    "trace_id": f"life_action:{action.action_id}",
+                    "scope": f"day:{day.date}",
+                    "stage": "settled",
+                    "reason_code": f"action_{outcome.status}",
+                    "decision": outcome.status,
+                    "evidence": [action.evidence] if action.evidence else [],
+                    "outcome": outcome.reason,
+                }
+            )
+        return outcome
+
+    async def settle_completed_planned_actions(
+        self,
+        day: DayRecord,
+        *,
+        now: datetime.datetime | None = None,
+    ) -> list[LifeActionOutcome]:
+        """结算时间轴已经确认完成的显式日程动作。
+
+        Args:
+            day: 已经过时间轴执行态校准的当日日记录。
+            now: 结算时间，缺省时使用插件时钟。
+
+        Returns:
+            本轮找到的动作结果，已经结算的动作以重放结果返回。
+        """
+        raw_actions = str((day.meta or {}).get("planned_life_actions") or "")
+        try:
+            planned_actions = json.loads(raw_actions) if raw_actions else []
+        except (TypeError, ValueError, json.JSONDecodeError):
+            planned_actions = []
+        outcomes = []
+        for raw_action in planned_actions if isinstance(planned_actions, list) else []:
+            action = LifeActionIntent.from_value(raw_action)
+            if (
+                not action.action_id
+                or action.action_type not in LIFE_ACTION_TYPES
+                or action.timeline_index is None
+                or not 0 <= action.timeline_index < len(day.timeline)
+            ):
+                continue
+            timeline_item = day.timeline[action.timeline_index]
+            if timeline_item.execution_state != "completed":
+                continue
+            action.source = "daily_plan"
+            action.evidence = (
+                timeline_item.execution_evidence
+                or action.evidence
+                or f"时间轴第 {action.timeline_index} 项已完成"
+            )
+            outcomes.append(
+                await self.settle_and_persist_life_action(day, action, now=now)
+            )
+        return outcomes
+
+    def extract_schedule_anchors(
+        self,
+        day: DayRecord,
+        *,
+        maximum: int = 6,
+    ) -> list[ScheduleAnchor]:
+        """从日时间轴均匀提炼四至六个稳定锚点。
+
+        时间轴不足四项时保留全部真实项目，不补造活动；超过上限时保留
+        首尾并在中间等距取样，不分析活动文本。
+
+        Args:
+            day: 需要提炼的当日日记录。
+            maximum: 最多保留的锚点数，约束在四至六之间。
+
+        Returns:
+            按时间排序的结构化锚点。
+        """
+        maximum = max(4, min(6, int(maximum)))
+        candidates: list[tuple[int, int]] = []
+        for index, item in enumerate(day.timeline):
+            try:
+                parsed = datetime.datetime.strptime(item.time, "%H:%M")
+            except (TypeError, ValueError):
+                continue
+            candidates.append((parsed.hour * 60 + parsed.minute, index))
+        candidates.sort(key=lambda item: (item[0], item[1]))
+
+        if len(candidates) > maximum:
+            chosen_positions = {
+                round(position * (len(candidates) - 1) / (maximum - 1))
+                for position in range(maximum)
+            }
+            candidates = [
+                item
+                for position, item in enumerate(candidates)
+                if position in chosen_positions
+            ]
+
+        anchors = []
+        for _, source_index in candidates:
+            item = day.timeline[source_index]
+            anchors.append(
+                ScheduleAnchor(
+                    anchor_id=f"{day.date}:{source_index}",
+                    time=item.time,
+                    activity=item.activity,
+                    status=item.status,
+                    source_index=source_index,
+                    execution_state=item.execution_state,
+                    evidence=item.execution_evidence,
+                )
+            )
+        day.meta[SCHEDULE_ANCHOR_META_KEY] = json.dumps(
+            [item.as_dict() for item in anchors],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        return anchors
+
+    def refine_upcoming_anchors(
+        self,
+        day: DayRecord,
+        *,
+        now: datetime.datetime | None = None,
+        horizon_minutes: int = 180,
+    ) -> list[ScheduleAnchor]:
+        """把临近锚点细化为即将开始或准备中状态。
+
+        Args:
+            day: 当前日记录。
+            now: 当前时间，缺省时使用插件时钟。
+            horizon_minutes: 向前细化的分钟窗口。
+
+        Returns:
+            位于当前时刻至窗口末端之间的锚点副本。
+        """
+        current_time = now or life_now()
+        horizon_minutes = max(1, min(720, int(horizon_minutes)))
+        refined = []
+        for anchor in self.extract_schedule_anchors(day):
+            try:
+                anchor_time = datetime.datetime.strptime(
+                    f"{day.date} {anchor.time}", "%Y-%m-%d %H:%M"
+                )
+            except (TypeError, ValueError):
+                continue
+            remaining = (
+                anchor_time - current_time.replace(tzinfo=None)
+            ).total_seconds() / 60
+            if 0 <= remaining <= horizon_minutes and anchor.execution_state in {
+                "planned",
+                "active",
+            }:
+                refined.append(
+                    ScheduleAnchor(
+                        **{
+                            **anchor.as_dict(),
+                            "refinement_state": (
+                                "ready" if remaining <= 30 else "near_term"
+                            ),
+                        }
+                    )
+                )
+        day.meta["near_term_anchors"] = json.dumps(
+            [item.as_dict() for item in refined],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        return refined
+
+    def replan_future_anchors(
+        self,
+        day: DayRecord,
+        replacements: list[ScheduleAnchor | dict[str, Any]],
+        *,
+        now: datetime.datetime | None = None,
+        affected_anchor_ids: list[str] | None = None,
+    ) -> PlanRevision:
+        """只替换明确指定且尚未开始的未来日程锚点。
+
+        Args:
+            day: 当前日记录。
+            replacements: 带 replaces_anchor_id 的替换锚点。
+            now: 当前时间，缺省时使用插件时钟。
+            affected_anchor_ids: 允许修改的原锚点编号白名单。
+
+        Returns:
+            原子校验并应用后的局部重排结果。
+        """
+        current_time = (now or life_now()).replace(tzinfo=None)
+        revised_at = current_time.strftime("%Y-%m-%d %H:%M:%S")
+        normalized = [ScheduleAnchor.from_value(item) for item in replacements]
+        allowed_ids = set(affected_anchor_ids or [])
+        if not allowed_ids:
+            allowed_ids = {
+                item.replaces_anchor_id
+                for item in normalized
+                if item.replaces_anchor_id
+            }
+        anchor_map = {
+            item.anchor_id: item for item in self.extract_schedule_anchors(day)
+        }
+        if not normalized:
+            return PlanRevision(reason="没有提供替换锚点", revised_at=revised_at)
+        if len(normalized) != len(allowed_ids):
+            return PlanRevision(
+                reason="替换锚点与 affected_anchor_ids 不是一一对应",
+                revised_at=revised_at,
+            )
+
+        prepared: dict[int, ScheduleAnchor] = {}
+        for replacement in normalized:
+            original_id = replacement.replaces_anchor_id
+            original = anchor_map.get(original_id)
+            if original_id not in allowed_ids or original is None:
+                return PlanRevision(
+                    reason=f"锚点不在允许修改范围：{original_id or '空'}",
+                    revised_at=revised_at,
+                )
+            if original.source_index in prepared:
+                return PlanRevision(
+                    reason="同一锚点不能在一次重排中替换两次",
+                    revised_at=revised_at,
+                )
+            timeline_item = day.timeline[original.source_index]
+            if timeline_item.execution_state not in {"planned"}:
+                return PlanRevision(
+                    reason=f"锚点已经开始或收束：{original_id}",
+                    revised_at=revised_at,
+                )
+            try:
+                old_time = datetime.datetime.strptime(
+                    f"{day.date} {timeline_item.time}", "%Y-%m-%d %H:%M"
+                )
+                new_time = datetime.datetime.strptime(
+                    f"{day.date} {replacement.time}", "%Y-%m-%d %H:%M"
+                )
+            except (TypeError, ValueError):
+                return PlanRevision(
+                    reason=f"锚点时间格式无效：{original_id}",
+                    revised_at=revised_at,
+                )
+            if old_time <= current_time or new_time <= current_time:
+                return PlanRevision(
+                    reason=f"只能重排尚未开始的未来锚点：{original_id}",
+                    revised_at=revised_at,
+                )
+            if not replacement.activity:
+                return PlanRevision(
+                    reason=f"替换锚点缺少 activity：{original_id}",
+                    revised_at=revised_at,
+                )
+            prepared[original.source_index] = replacement
+
+        proposed_times = []
+        for index, item in enumerate(day.timeline):
+            value = prepared[index].time if index in prepared else item.time
+            try:
+                parsed = datetime.datetime.strptime(value, "%H:%M")
+            except (TypeError, ValueError):
+                continue
+            proposed_times.append(parsed.hour * 60 + parsed.minute)
+        if proposed_times != sorted(proposed_times) or len(proposed_times) != len(
+            set(proposed_times)
+        ):
+            return PlanRevision(
+                reason="重排后的时间轴必须严格递增且不能重叠",
+                revised_at=revised_at,
+            )
+
+        changed_indexes = []
+        applied_ids = []
+        for source_index, replacement in prepared.items():
+            timeline_item = day.timeline[source_index]
+            timeline_item.time = replacement.time
+            timeline_item.activity = replacement.activity
+            timeline_item.status = replacement.status or timeline_item.status
+            timeline_item.execution_reason = "日程局部重排"
+            timeline_item.execution_evidence = replacement.evidence
+            timeline_item.execution_updated_at = revised_at
+            changed_indexes.append(source_index)
+            applied_ids.append(replacement.replaces_anchor_id)
+
+        try:
+            revision = int(str(day.meta.get("schedule_revision") or "0")) + 1
+        except (TypeError, ValueError):
+            revision = 1
+        day.meta["schedule_revision"] = str(revision)
+        day.meta["schedule_last_replanned_at"] = revised_at
+        self.extract_schedule_anchors(day)
+        return PlanRevision(
+            status="applied",
+            reason="已只更新指定的未来锚点",
+            applied_anchor_ids=applied_ids,
+            changed_indexes=changed_indexes,
+            revised_at=revised_at,
+        )
+
+    def evaluate_reflection_threshold(
+        self,
+        signal: ReflectionSignal | dict[str, Any],
+        *,
+        now: datetime.datetime | None = None,
+        threshold: float = 65.0,
+        last_reflection_at: str = "",
+        cooldown_hours: float = 12.0,
+    ) -> ReflectionDecision:
+        """按数值信号和冷却期决定是否生成生活反思。
+
+        Args:
+            signal: 重要度、新奇度、情绪强度和复现度评分。
+            now: 当前时间，缺省时使用插件时钟。
+            threshold: 触发阈值，约束在零至一百。
+            last_reflection_at: 上一次反思的 ISO 时间。
+            cooldown_hours: 两次反思之间的最短小时数。
+
+        Returns:
+            带加权分、证据和下次可触发时间的决策。
+        """
+        item = ReflectionSignal.from_value(signal)
+        threshold = round(max(0.0, min(100.0, float(threshold))), 2)
+        cooldown_hours = max(0.0, min(168.0, float(cooldown_hours)))
+        score = round(
+            item.importance * 0.35
+            + item.novelty * 0.25
+            + item.emotional_intensity * 0.25
+            + item.recurrence * 0.15,
+            2,
+        )
+        current_time = (now or life_now()).replace(tzinfo=None)
+        next_eligible_at = ""
+        if last_reflection_at:
+            try:
+                previous = datetime.datetime.fromisoformat(last_reflection_at).replace(
+                    tzinfo=None
+                )
+            except (TypeError, ValueError):
+                previous = None
+            if previous is not None:
+                eligible = previous + datetime.timedelta(hours=cooldown_hours)
+                next_eligible_at = eligible.isoformat(timespec="seconds")
+                if current_time < eligible:
+                    return ReflectionDecision(
+                        score=score,
+                        threshold=threshold,
+                        reason="仍处于反思冷却期",
+                        next_eligible_at=next_eligible_at,
+                        evidence=item.evidence,
+                    )
+        if not item.evidence:
+            return ReflectionDecision(
+                score=score,
+                threshold=threshold,
+                reason="缺少可追溯证据，不生成反思",
+                next_eligible_at=next_eligible_at,
+            )
+        should_reflect = score >= threshold
+        return ReflectionDecision(
+            should_reflect=should_reflect,
+            score=score,
+            threshold=threshold,
+            reason=(
+                "综合评分达到反思阈值" if should_reflect else "综合评分未达到反思阈值"
+            ),
+            next_eligible_at=next_eligible_at,
+            evidence=item.evidence,
+        )
+
+
+__all__ = [
+    "ACTION_SETTLEMENT_META_KEY",
+    "SCHEDULE_ANCHOR_META_KEY",
+    "LifeActionMixin",
+]

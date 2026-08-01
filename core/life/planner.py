@@ -7,16 +7,17 @@ from astrbot.core.star.context import Context
 
 from ..archive import LifeArchive
 from ..config.options import LifeSettings
+from ..prompts import CORE_INTERNAL_SYSTEM_PROMPT
 from ..search import SearchService
 from ..sources import SavedHistoryReader
-from .daily import DailyMixin
+from .actions import LifeActionMixin
 from .autonomy import LifeAutonomyMixin
+from .daily import DailyMixin
 from .invite import InviteMixin
-from .rhythm import LifecycleMixin
 from .outfit import OutfitMixin
 from .people import PersonFactMixin
-from ..prompts import CORE_INTERNAL_SYSTEM_PROMPT
 from .reference import ReferenceMixin
+from .rhythm import LifecycleMixin
 from .tools import extract_json_from_text, get_time_period
 from .weather import WeatherClient
 from .weekly import WeekMixin
@@ -29,6 +30,7 @@ class LifeBackgroundComposer(
     WeekMixin,
     DailyMixin,
     LifecycleMixin,
+    LifeActionMixin,
     InviteMixin,
     OutfitMixin,
 ):
@@ -198,6 +200,7 @@ class LifeBackgroundComposer(
         current_provider = provider
         provider_meta_id = self._provider_meta_id(provider)
         current_provider_id = provider_meta_id or primary_provider_id
+
         async def switch_to_temporary_provider(reason: str) -> bool:
             nonlocal current_provider, current_provider_id
             if not primary_provider_id or current_provider_id != primary_provider_id:

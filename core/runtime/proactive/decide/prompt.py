@@ -1,9 +1,9 @@
 import datetime
 from typing import Any
 
+from ....facts import person_fact_context_from_relationships
 from ....life.condition import format_state_prompt, normalize_state
 from ....life.tools import format_timeline_to_text
-from ....facts import person_fact_context_from_relationships
 from ....prompts import (
     CORE_HIDDEN_CONTEXT_RULES,
     CORE_JSON_OUTPUT_RULES,
@@ -302,6 +302,11 @@ JSON 输出要求：
 {{
   "should_reply": true,
   "confidence": 0.0,
+  "benefit": 0,
+  "timeliness": 0,
+  "continuity": 0,
+  "disruption": 0,
+  "uncertainty": 0,
   "decision": "reply|observe|wait|skip",
   "reason": "为什么此刻适合或不适合自然回应",
   "target_message_id": "如果回复，写最自然承接的消息ID；没有明确目标则空字符串",
@@ -312,6 +317,8 @@ JSON 输出要求：
 
 裁定方式：
 - 先看本地门控与候选消息，再判断 reply、observe 或 wait。
+- benefit、timeliness、continuity、disruption、uncertainty 必须分别填写 0 至 100 的整数；前三项是主动回复收益，后两项是打扰与不确定风险。
+- 只有主动收益确实高于风险时才设 should_reply=true；不值得打扰时选择 observe 或 wait。
 - reply_text 只写一句自然短文本；口吻跟随角色人设和本轮表达约束。
 - 只输出上面列出的字段，不添加内部过程或发送控制字段。
 """
@@ -321,6 +328,11 @@ JSON 输出要求：
         now = scene["now"]
         readiness_text = scene["readiness_text"]
         records = scene["records"]
+        style_line = (
+            f"- 表达节奏：{scene['style_prompt']}"
+            if scene["style_prompt"]
+            else "- 没有额外表达节奏要求。"
+        )
         return f"""角色人设摘要：
 {scene["persona_context"]}
 
@@ -404,7 +416,7 @@ MemOS 外部长期记忆参考：
 本轮表达约束：
 - 对方：{scene["audience_name"]}
 - reply_text 参考长度约 {scene["proactive_limit"]} 字。
-{f"- 表达节奏：{scene["style_prompt"]}" if scene["style_prompt"] else "- 没有额外表达节奏要求。"}"""
+{style_line}"""
 
     async def _build_proactive_prompt(
         self,

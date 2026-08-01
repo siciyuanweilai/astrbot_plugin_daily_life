@@ -5,14 +5,18 @@ import json
 import sqlite3
 from collections.abc import Callable, Mapping
 
+from .tables.cognition import COGNITION_INDEX_SQL, COGNITION_SQL
 
 SCHEMA_VERSION_KEY = "schema_version"
 BASELINE_SCHEMA_VERSION = 1
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 LEGACY_BASELINE_SCHEMA_FINGERPRINT = (
     "9e6243276bf6bd509f6019502e30192310da4197838bd0f7d478f0100f8750a5"
 )
 BASELINE_SCHEMA_FINGERPRINT = (
+    "c4f6c1b47523c4e78f70887f457be7787381efe781862ab628983b255977d485"
+)
+PREVIOUS_BASELINE_SCHEMA_FINGERPRINT = (
     "993af376991a7d179ccbc4c22d796d9beb2f18c2238a461e973a8596829749c0"
 )
 
@@ -34,8 +38,45 @@ def _migrate_timeline_execution_state(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE timelines ADD COLUMN {name} {definition}")
 
 
+def _migrate_cognition_runtime(conn: sqlite3.Connection) -> None:
+    """创建时间化认知和可恢复执行所需的数据表。
+
+    Args:
+        conn: 正在迁移的 SQLite 连接。
+    """
+
+    emotion_columns = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(emotion_arcs)").fetchall()
+    }
+    emotion_additions = {
+        "layer": "TEXT NOT NULL DEFAULT 'transient'",
+        "baseline": "REAL NOT NULL DEFAULT 50",
+        "half_life_minutes": "REAL NOT NULL DEFAULT 240",
+        "last_decay_at": "TEXT NOT NULL DEFAULT ''",
+    }
+    for name, definition in emotion_additions.items():
+        if name not in emotion_columns:
+            conn.execute(f"ALTER TABLE emotion_arcs ADD COLUMN {name} {definition}")
+
+    for script in (COGNITION_SQL, COGNITION_INDEX_SQL):
+        buffer = ""
+        for line in script.splitlines(keepends=True):
+            buffer += line
+            if sqlite3.complete_statement(buffer):
+                statement = buffer.strip()
+                buffer = ""
+                if statement:
+                    conn.execute(statement)
+        if buffer.strip():
+            raise ValueError("认知数据表迁移脚本存在不完整语句")
+
+
 # 键是迁移完成后的目标版本；每个步骤只负责从前一版本升级一次。
-MIGRATIONS: dict[int, MigrationStep] = {2: _migrate_timeline_execution_state}
+MIGRATIONS: dict[int, MigrationStep] = {
+    2: _migrate_timeline_execution_state,
+    3: _migrate_cognition_runtime,
+}
 
 
 class SchemaMigrationError(RuntimeError):
@@ -74,6 +115,7 @@ def schema_fingerprint(conn: sqlite3.Connection) -> str:
 def is_baseline_schema(conn: sqlite3.Connection) -> bool:
     return schema_fingerprint(conn) in {
         BASELINE_SCHEMA_FINGERPRINT,
+        PREVIOUS_BASELINE_SCHEMA_FINGERPRINT,
         LEGACY_BASELINE_SCHEMA_FINGERPRINT,
     }
 
@@ -161,6 +203,7 @@ __all__ = [
     "BASELINE_SCHEMA_FINGERPRINT",
     "BASELINE_SCHEMA_VERSION",
     "MIGRATIONS",
+    "PREVIOUS_BASELINE_SCHEMA_FINGERPRINT",
     "SCHEMA_VERSION",
     "SCHEMA_VERSION_KEY",
     "MigrationStep",

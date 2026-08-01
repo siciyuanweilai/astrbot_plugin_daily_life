@@ -7,12 +7,12 @@ from ..prompts import (
     cache_friendly_prompt,
 )
 from .appearance import CURRENT_APPEARANCE_GENERATION_RULES
+from .tools import format_text_list
 from .wardrobe import (
     OUTFIT_CONTINUITY_RULES,
     OUTFIT_SCENE_CATEGORY_ENUM,
     OUTFIT_STYLE_POOL_ENUM,
 )
-from .tools import format_text_list
 
 
 class DailyDraftMixin:
@@ -124,6 +124,19 @@ class DailyDraftMixin:
     {{"time": "08:15", "activity": "具体的行为描写，富有沉浸感", "status": "当前情绪/状态词"}},
     {{"time": "09:30", "activity": "...", "status": "..."}}
   ],
+  "planned_actions": [
+    {{
+      "action_id": "包含目标日期的唯一动作编号",
+      "action_type": "rest | meal | move | work | study | groom | change_outfit | social | chat | photo | video",
+      "target": "动作目标；change_outfit 必须填写明确穿搭，其余可为空",
+      "timeline_index": 0,
+      "duration_minutes": 30,
+      "preconditions": [{{"field": "state.energy", "operator": "gte", "expected": 20}}],
+      "effects": [{{"field": "energy", "operation": "add", "value": -5}}],
+      "evidence": "对应的日程节点和生活决策依据",
+      "source": "daily_plan"
+    }}
+  ],
   "decision_summary": {{
     "decision": "一句话概括今天为什么这样过",
     "reason": "结合身体状态、天气、记忆、承诺、短期目标和重复抑制作出的内部判断",
@@ -174,6 +187,10 @@ class DailyDraftMixin:
 {self.config.timeline_prompt}
 - 系统会根据 timeline 自动检查时间覆盖，不需要输出额外时间覆盖说明。
 - 正常整日生成需要形成从较早生活起点到晚间或睡前收束的自然跨度；目标时段生成只写目标时段。
+4.1 planned_actions 要求：
+- 只为确实需要状态结算的 timeline 节点输出，可为空数组，不要为了填满而制造动作。
+- action_type、timeline_index、前置条件和影响必须显式填写；不得要求系统从 activity 文案猜动作。
+- action_id 在不同日期和节点间必须唯一；effects 只写该动作真实会改变的数值状态。
 5. 地点与事件要求：
 {self.config.world_prompt}
 """

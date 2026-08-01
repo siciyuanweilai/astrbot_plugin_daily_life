@@ -1,6 +1,10 @@
+import json
+
 from ..models import (
+    LIFE_ACTION_TYPES,
     DayRecord,
     EventRecord,
+    LifeActionIntent,
     LifeState,
     PlaceRecord,
     TimelineItem,
@@ -56,6 +60,23 @@ class DailyAssemblyMixin:
             normalize_state(result.get("state"), source="daily")
         )
         outfit = str(result.get("outfit", "")).strip()
+        planned_actions = []
+        raw_actions = result.get("planned_actions")
+        for raw_action in raw_actions if isinstance(raw_actions, list) else []:
+            action = LifeActionIntent.from_value(raw_action)
+            if (
+                action.action_id
+                and action.action_type in LIFE_ACTION_TYPES
+                and action.timeline_index is not None
+                and 0 <= action.timeline_index < len(timeline)
+            ):
+                planned_actions.append(action.as_dict())
+        if planned_actions:
+            meta["planned_life_actions"] = json.dumps(
+                planned_actions,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
         return DayRecord(
             date=date_str,
             state=state,

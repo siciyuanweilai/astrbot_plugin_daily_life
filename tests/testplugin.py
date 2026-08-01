@@ -1843,6 +1843,8 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("通用超详细", reverse_image_doc)
         self.assertIn("CCD人像", reverse_image_doc)
         self.assertIn("古风特调", reverse_image_doc)
+        self.assertIn("视觉封面", reverse_image_doc)
+        self.assertIn("设计视觉", reverse_image_doc)
         self.assertIn("不生成图片", reverse_image_doc)
         self.assertIn("prompt(string)", video_doc)
         self.assertIn("subject_route(string)", video_doc)

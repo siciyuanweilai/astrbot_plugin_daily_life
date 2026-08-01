@@ -119,6 +119,92 @@ const TIMELINE_EXECUTION_LABELS = {
   skipped: "已跳过",
   cancelled: "已取消",
 };
+const COGNITION_STATUS_LABELS = {
+  proposed: "已提出",
+  pending: "待处理",
+  leased: "执行中",
+  completed: "已完成",
+  failed: "待重试",
+  dead: "已终止",
+  active: "当前",
+  committed: "已提交",
+  rejected: "已拒绝",
+  invalidated: "已失效",
+  superseded: "已被替代",
+  promoted: "已晋升",
+};
+const DURABLE_TASK_KIND_LABELS = {
+  daily_refresh: "每日生活刷新",
+  daily_review: "夜间生活复盘",
+  private_revisit: "私聊回访检查",
+  proactive_idle: "闲时主动检查",
+};
+const DECISION_STAGE_LABELS = {
+  proposed: "提出候选",
+  proposal: "候选裁定",
+  candidate: "形成候选",
+  considering: "正在考虑",
+  validated: "证据通过",
+  waiting: "继续等待",
+  sending: "正在发送",
+  commit: "发送提交",
+  committed: "完成提交",
+  settled: "动作结算",
+  engaged: "收到互动",
+  closing: "自然收束",
+  cooldown: "进入冷却",
+  interrupted: "已被打断",
+  abandoned: "已放弃",
+};
+const DECISION_VALUE_LABELS = {
+  reply: "发送回复",
+  observe: "继续观察",
+  wait: "继续等待",
+  skip: "跳过",
+  reject: "拒绝执行",
+  accepted: "接受",
+  committed: "已提交",
+};
+const DECISION_REASON_LABELS = {
+  action_planned: "动作已纳入计划",
+  channel_disabled: "发送通道不可用",
+  confidence_below_threshold: "置信度未达门槛",
+  context_changed_before_send: "发送前上下文已变化",
+  context_changed_during_evaluation: "评估期间上下文已变化",
+  continuity_audit_failed: "连续性审计未通过",
+  conversation_revision_changed: "会话已经更新",
+  empty_reply: "没有可发送内容",
+  expression_review_failed: "表达审计未通过",
+  group_anchor_missing: "群聊缺少自然承接点",
+  invalid_utility_scores: "主动收益评分不完整",
+  model_declined: "模型建议不发送",
+  person_audit_failed: "人物事实审计未通过",
+  proposal_approved: "候选裁定通过",
+  review_evidence_validated: "复盘证据已核验",
+  revisit_evidence_missing: "回访依据不足",
+  send_failed: "发送失败",
+  send_succeeded: "发送成功",
+  style_rejected: "聊天表达规则未通过",
+  utility_below_threshold: "主动净收益未达门槛",
+};
+const LIFE_ACTION_TYPE_LABELS = {
+  rest: "休息",
+  meal: "用餐",
+  move: "移动或散步",
+  work: "工作",
+  study: "学习",
+  groom: "整理仪容",
+  change_outfit: "更换穿搭",
+  social: "社交活动",
+  chat: "聊天互动",
+  photo: "拍照",
+  video: "拍摄视频",
+};
+const COGNITION_LAYER_LABELS = {
+  transient: "短时情绪",
+  daily: "日级情绪",
+  relationship: "关系情绪",
+};
 const TODAY_FACT_EMPTY_TEXT = {
   weatherText: "暂无天气",
   themeText: "暂无主题",
@@ -1271,10 +1357,15 @@ function renderLifecycle(status) {
   const lifecycle = status.lifecycle || {};
   const relationshipText = relationshipTextResolver(status).text;
   const reviews = objectItems(lifecycle.reviews);
+  const reflections = objectItems(lifecycle.reflections);
+  const diaries = objectItems(lifecycle.grounded_diary);
+  const durableTasks = objectItems(lifecycle.durable_tasks);
   const preferences = objectItems(lifecycle.preferences);
   const events = objectItems(lifecycle.life_events);
   const total = reviews.length + preferences.length + events.length;
-  if (!total) {
+  const cognitionTotal = reflections.length + diaries.length + durableTasks.length;
+  const totalRecords = total + cognitionTotal;
+  if (!totalRecords) {
     el.lifecycleList.replaceChildren(empty("暂无生活演化记录"));
     return;
   }
@@ -1284,6 +1375,43 @@ function renderLifecycle(status) {
     const title = node("div", "record-title");
     title.append(node("span", "", `复盘 ${clean(item.date)}`), node("span", "muted", "复盘"));
     record.append(title, node("div", "record-body", relationshipText(item.summary)));
+    records.push(record);
+  });
+  reflections.slice(0, 3).forEach((item) => {
+    const record = node("div", "record");
+    const title = node("div", "record-title");
+    title.append(
+      node("span", "", relationshipText(item.summary || "生活反思")),
+      node("span", "muted", `${COGNITION_STATUS_LABELS[item.status] || "候选状态"} · 重要度 ${Math.round(Number(item.importance || 0) * 100)}`)
+    );
+    record.append(title, recordLines([
+      item.assertion_subject && item.assertion_predicate
+        ? `人格断言：${clean(item.assertion_subject)} · ${clean(item.assertion_predicate)} · ${clean(typeof item.assertion_object === "string" ? item.assertion_object : JSON.stringify(item.assertion_object || ""))}`
+        : "",
+      item.evidence_ids?.length ? `依据 ${item.evidence_ids.length} 条` : "",
+    ]));
+    records.push(record);
+  });
+  diaries.slice(0, 3).forEach((item) => {
+    const record = node("div", "record");
+    const title = node("div", "record-title");
+    title.append(node("span", "", clean(item.title || "生活日记")), node("span", "muted", clean(item.date)));
+    record.append(title, recordLines([
+      relationshipText(item.summary),
+      item.mood_label ? `心绪：${clean(item.mood_label)}` : "",
+      item.evidence_ids?.length ? `有证据依据 ${item.evidence_ids.length} 条` : "",
+    ]));
+    records.push(record);
+  });
+  durableTasks.slice(0, 3).forEach((item) => {
+    const record = node("div", "record");
+    const title = node("div", "record-title");
+    title.append(node("span", "", DURABLE_TASK_KIND_LABELS[item.kind] || "生活任务"), node("span", "muted", COGNITION_STATUS_LABELS[item.status] || "状态未知"));
+    record.append(title, recordLines([
+      item.available_at ? `可执行：${clean(item.available_at)}` : "",
+      item.attempts ? `尝试次数：${item.attempts}/${item.max_attempts || "-"}` : "",
+      item.last_error ? "最近执行未完成，已记录重试原因" : "",
+    ]));
     records.push(record);
   });
   preferences.slice(0, 4).forEach((item) => {
@@ -1350,6 +1478,11 @@ function healthExperienceRecord(health = {}) {
 function experienceGroups(status) {
   const experience = status.experience || {};
   const episodes = objectItems(experience.episodes);
+  const temporalFacts = objectItems(experience.temporal_facts);
+  const personaAssertions = objectItems(experience.persona_assertions);
+  const decisionTraces = objectItems(experience.decision_traces);
+  const actionOutcomes = objectItems(experience.action_outcomes);
+  const affectiveStates = objectItems(experience.affective_states);
   const visibleEpisodes = visibleLifeEpisodes(episodes);
   const evidence = objectItems(experience.evidence);
   const visibleEvidence = visibleExperienceEvidence(evidence, episodes);
@@ -1368,6 +1501,16 @@ function experienceGroups(status) {
   const health = experience.health && typeof experience.health === "object" ? experience.health : {};
   const relationshipNames = relationshipNameIndex(status);
   const relationshipText = (value) => relationshipReferenceText(value, relationshipNames);
+  const cognitionScopeText = (value) => {
+    const raw = text(value).trim();
+    if (!raw || raw === "global") return "全局生活";
+    return relationshipNames.get(raw) || "当前会话";
+  };
+  const objectText = (value) => {
+    if (value === null || value === undefined || value === "") return "";
+    if (typeof value === "string") return value;
+    try { return JSON.stringify(value); } catch (_) { return String(value); }
+  };
   const groups = {
     relationships: [],
     behavior: [],
@@ -1418,6 +1561,69 @@ function experienceGroups(status) {
       item.expires_at ? `有效期：${clean(item.expires_at)}` : "",
     ]));
     groups.behavior.push(record);
+  });
+
+  affectiveStates.slice(0, 4).forEach((item) => {
+    const record = node("div", "record");
+    const title = node("div", "record-title");
+    title.append(
+      node("span", "", clean(item.label, "当前心绪")),
+      node("span", "muted", COGNITION_LAYER_LABELS[item.layer] || clean(item.layer, "情绪"))
+    );
+    record.append(title, recordLines([
+      `强度 ${Math.round(Number(item.intensity || 0) * 100)} · 正负向 ${Number(item.valence || 0).toFixed(2)} · 唤醒度 ${Number(item.arousal || 0).toFixed(2)}`,
+      item.scope ? `范围：${cognitionScopeText(item.scope)}` : "",
+      item.evidence?.length ? `依据 ${item.evidence.length} 条` : "",
+    ]));
+    groups.behavior.push(record);
+  });
+
+  actionOutcomes.slice(0, 4).forEach((item) => {
+    const record = node("div", "record");
+    const title = node("div", "record-title");
+    title.append(node("span", "", clean(item.target || LIFE_ACTION_TYPE_LABELS[item.action_type] || "生活动作")), node("span", "muted", COGNITION_STATUS_LABELS[item.status] || "已记录"));
+    record.append(title, recordLines([
+      item.reason ? relationshipText(item.reason) : "",
+      item.date ? `日期：${clean(item.date)}` : "",
+      item.evidence?.length ? `依据 ${item.evidence.length} 条` : "",
+    ]));
+    groups.behavior.push(record);
+  });
+
+  decisionTraces.slice(0, 4).forEach((item) => {
+    const record = node("div", "record");
+    const title = node("div", "record-title");
+    title.append(node("span", "", "决策轨迹"), node("span", "muted", DECISION_STAGE_LABELS[item.stage] || "内部阶段"));
+    record.append(title, recordLines([
+      item.decision ? `裁定：${DECISION_VALUE_LABELS[item.decision] || "其他裁定"}` : "",
+      item.reason_code ? `原因：${DECISION_REASON_LABELS[item.reason_code] || "其他结构化规则"}` : "",
+      item.outcome ? `结果：${relationshipText(item.outcome)}` : "",
+      item.evidence?.length ? `依据 ${item.evidence.length} 条` : "",
+    ]));
+    groups.evidence.push(record);
+  });
+
+  temporalFacts.slice(0, 5).forEach((item) => {
+    const record = node("div", "record");
+    const title = node("div", "record-title");
+    title.append(node("span", "", clean(item.subject || "时间事实")), node("span", "muted", COGNITION_STATUS_LABELS[item.status] || "当前"));
+    record.append(title, recordLines([
+      `${clean(item.predicate)}：${objectText(item.object_value)}`,
+      item.valid_from ? `生效：${clean(item.valid_from)}` : "",
+      `置信度 ${Math.round(Number(item.confidence || 0) * 100)}%${item.scope ? ` · ${cognitionScopeText(item.scope)}` : ""}`,
+    ]));
+    groups.evidence.push(record);
+  });
+
+  personaAssertions.slice(0, 4).forEach((item) => {
+    const record = node("div", "record");
+    const title = node("div", "record-title");
+    title.append(node("span", "", "已沉淀人格断言"), node("span", "muted", `置信度 ${Math.round(Number(item.confidence || 0) * 100)}%`));
+    record.append(title, recordLines([
+      `${clean(item.subject)} · ${clean(item.predicate)}：${objectText(item.object_value)}`,
+      item.scope ? `范围：${cognitionScopeText(item.scope)}` : "",
+    ]));
+    groups.language.push(record);
   });
 
   visibleEpisodes.slice(0, 4).forEach((item) => {

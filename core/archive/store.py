@@ -1,23 +1,24 @@
 import asyncio
 import contextvars
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, TypeVar
+from typing import Any, TypeVar
 
 from .categories import STORAGE_CATEGORIES
-from .queue import ChatMemoryQueueArchiveMixin
-from .promises import CommitmentArchiveMixin
+from .cognition import CognitionArchiveMixin
 from .common import CommonArchiveMixin
-from .journal import DayArchiveMixin
-from .gallery import MediaArchiveMixin
 from .experience import ExperienceArchiveMixin
-from .reflections import LifecycleArchiveMixin
+from .gallery import MediaArchiveMixin
+from .journal import DayArchiveMixin
 from .memory import MemoryArchiveMixin
+from .promises import CommitmentArchiveMixin
+from .queue import ChatMemoryQueueArchiveMixin
+from .reflections import LifecycleArchiveMixin
 from .schema import init_schema
 from .storage import StorageArchiveMixin
-from .weeks import WeekArchiveMixin
 from .vectors import MemoryVectorArchiveMixin
-
+from .weeks import WeekArchiveMixin
 
 T = TypeVar("T")
 _DIRECT_DB_READ = contextvars.ContextVar("daily_life_direct_db_read", default=False)
@@ -49,10 +50,17 @@ _CONTEXT_SNAPSHOT_KEYS = (
     "expression_intents",
     "terms",
     "boundaries",
+    "temporal_facts",
+    "persona_assertions",
+    "scoped_persona_assertions",
+    "affective_states",
+    "scoped_affective_states",
+    "grounded_diary_entries",
 )
 
 
 class LifeArchive(
+    CognitionArchiveMixin,
     MemoryVectorArchiveMixin,
     ChatMemoryQueueArchiveMixin,
     DayArchiveMixin,
@@ -152,15 +160,30 @@ class LifeArchive(
                 self.get_behavior_patterns(limit=4),
                 self.get_behavior_scenes(limit=4, scope=experience_scope),
                 self.get_session_mid_summaries(limit=3, session_id=session_id),
-                self.get_temporary_expression_states(
-                    limit=3, scope=experience_scope
-                ),
+                self.get_temporary_expression_states(limit=3, scope=experience_scope),
                 self.get_focus_slots(limit=4, scope=experience_scope),
                 self.get_expression_intents(limit=3, scope=experience_scope),
                 self.get_life_terms(limit=6, scope=experience_scope),
                 self.get_memory_boundaries(limit=4),
+                self.get_temporal_facts(scope=experience_scope, limit=12),
+                self.get_persona_assertions(scope="global", limit=6),
+                self.get_persona_assertions(scope=experience_scope, limit=6)
+                if experience_scope and experience_scope != "global"
+                else asyncio.sleep(0, result=[]),
+                self.get_affective_states(scope="global", limit=6),
+                self.get_affective_states(scope=experience_scope, limit=6)
+                if experience_scope and experience_scope != "global"
+                else asyncio.sleep(0, result=[]),
+                self.get_grounded_diary_entries(scope="global", limit=2),
             )
-            return dict(zip(_CONTEXT_SNAPSHOT_KEYS, values))
+            snapshot = dict(zip(_CONTEXT_SNAPSHOT_KEYS, values))
+            snapshot["persona_assertions"] = list(
+                snapshot.get("persona_assertions") or []
+            ) + list(snapshot.pop("scoped_persona_assertions", []) or [])
+            snapshot["affective_states"] = list(
+                snapshot.get("affective_states") or []
+            ) + list(snapshot.pop("scoped_affective_states", []) or [])
+            return snapshot
 
         def read() -> dict[str, Any]:
             token = _DIRECT_DB_READ.set(True)

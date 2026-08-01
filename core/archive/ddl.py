@@ -1,5 +1,7 @@
 from .tables import (
     AWARENESS_SQL,
+    COGNITION_INDEX_SQL,
+    COGNITION_SQL,
     COMMITMENT_SQL,
     CONVERSATION_SQL,
     CORE_SQL,
@@ -23,6 +25,8 @@ __all__ = [
     "DAILY_SQL",
     "WEEKLY_SQL",
     "COMMITMENT_SQL",
+    "COGNITION_SQL",
+    "COGNITION_INDEX_SQL",
     "CONVERSATION_SQL",
     "WORLD_SQL",
     "AWARENESS_SQL",

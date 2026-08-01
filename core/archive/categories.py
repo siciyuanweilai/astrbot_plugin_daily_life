@@ -212,8 +212,62 @@ REVIEW_CLEAR_ORDER = (
     "daily_reviews",
 )
 
+COGNITION_TABLES = (
+    "temporal_facts",
+    "fact_evidence_signals",
+    "reflections",
+    "persona_assertions",
+    "durable_tasks",
+    "decision_traces",
+    "life_action_outcomes",
+    "affective_states",
+    "grounded_diary_entries",
+)
+COGNITION_CLEAR_ORDER = (
+    "fact_evidence_signals",
+    "temporal_facts",
+    "persona_assertions",
+    "reflections",
+    "durable_tasks",
+    "decision_traces",
+    "life_action_outcomes",
+    "affective_states",
+    "grounded_diary_entries",
+)
+
 
 STORAGE_CATEGORIES: dict[str, StorageCategory] = {
+    "cognition": StorageCategory(
+        key="cognition",
+        label="认知运行",
+        description="时间化事实、反思人格、可恢复任务、决策轨迹、动作结算、分层情绪和有证据日记。",
+        tables=COGNITION_TABLES,
+        clear_order=COGNITION_CLEAR_ORDER,
+        default_keep_days=0,
+        auto_cleanup=True,
+        groups=(
+            StorageTableGroup(
+                "facts",
+                "时间事实",
+                ("temporal_facts", "fact_evidence_signals"),
+            ),
+            StorageTableGroup(
+                "reflection",
+                "反思人格",
+                ("reflections", "persona_assertions"),
+            ),
+            StorageTableGroup(
+                "runtime",
+                "运行轨迹",
+                ("durable_tasks", "decision_traces", "life_action_outcomes"),
+            ),
+            StorageTableGroup(
+                "affect",
+                "情绪日记",
+                ("affective_states", "grounded_diary_entries"),
+            ),
+        ),
+    ),
     "daily": StorageCategory(
         key="daily",
         label="日常记录",

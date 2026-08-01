@@ -46,8 +46,13 @@ class EmotionArchiveMixin:
     def _default_emotion_expiry(self, item: EmotionArcRecord) -> str:
         if item.expires_at:
             return item.expires_at
+        if item.layer == "relationship":
+            return ""
         created = self._parse_emotion_time(item.created_at) or datetime.datetime.now()
-        hours = 18 if item.source in {"daily_generation", "state"} else 8
+        if item.layer == "daily":
+            hours = 48
+        else:
+            hours = 18 if item.source in {"daily_generation", "state"} else 8
         return (created + datetime.timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
 
     def _compose_emotion_arc(self, row: sqlite3.Row) -> EmotionArcRecord:
@@ -65,6 +70,10 @@ class EmotionArchiveMixin:
             influence=self._text(row["influence"]),
             expires_at=self._text(row["expires_at"]),
             status=self._text(row["status"]) or "active",
+            layer=self._text(row["layer"]) or "transient",
+            baseline=max(0.0, min(float(row["baseline"] or 0.0), 100.0)),
+            half_life_minutes=max(float(row["half_life_minutes"] or 240.0), 1.0),
+            last_decay_at=self._text(row["last_decay_at"]),
             source=self._text(row["source"]) or "state",
             created_at=self._text(row["created_at"]),
             updated_at=self._text(row["updated_at"]),
@@ -77,20 +86,29 @@ class EmotionArchiveMixin:
             return item
         now = now or datetime.datetime.now()
         expires_at = self._parse_emotion_time(item.expires_at)
-        updated_at = self._parse_emotion_time(
-            item.updated_at
-        ) or self._parse_emotion_time(item.created_at)
-        if not expires_at or not updated_at:
+        reference_at = self._parse_emotion_time(
+            item.last_decay_at
+        ) or self._parse_emotion_time(item.updated_at)
+        if expires_at and expires_at <= now:
+            return replace(
+                item,
+                intensity=0,
+                status="expired",
+                last_decay_at=self._emotion_now_text(),
+            )
+        if not reference_at:
             return item
-        if expires_at <= now:
-            return replace(item, intensity=0, status="expired")
-        span = max((expires_at - updated_at).total_seconds(), 1.0)
-        remaining = max((expires_at - now).total_seconds(), 0.0)
-        decayed = round(item.intensity * min(1.0, remaining / span))
-        return replace(item, intensity=max(0, min(decayed, item.intensity)))
+        elapsed_minutes = max((now - reference_at).total_seconds() / 60.0, 0.0)
+        factor = 0.5 ** (elapsed_minutes / max(item.half_life_minutes, 1.0))
+        decayed = item.baseline + (item.intensity - item.baseline) * factor
+        return replace(
+            item,
+            intensity=max(0, min(round(decayed), 100)),
+            last_decay_at=self._emotion_now_text(),
+        )
 
     def _compact_active_emotion_arcs(
-        self, *, scope: str, label: str, keep_id: int
+        self, *, scope: str, layer: str, label: str, keep_id: int
     ) -> int:
         scope_text = self._text(scope)
         label_text = self._text(label)
@@ -104,10 +122,11 @@ class EmotionArchiveMixin:
                 updated_at = CURRENT_TIMESTAMP
             WHERE status = 'active'
               AND scope = ?
+              AND layer = ?
               AND label = ?
               AND id <> ?
             """,
-            (scope_text, label_text, keep_id),
+            (scope_text, self._text(layer) or "transient", label_text, keep_id),
         )
         return int(cursor.rowcount or 0)
 
@@ -124,6 +143,8 @@ class EmotionArchiveMixin:
             item.created_at = now_text
         if not item.updated_at:
             item.updated_at = now_text
+        if not item.last_decay_at:
+            item.last_decay_at = now_text
         item.expires_at = self._default_emotion_expiry(item)
 
         def dbwork():
@@ -166,6 +187,10 @@ class EmotionArchiveMixin:
                         influence = COALESCE(NULLIF(?, ''), influence),
                         expires_at = ?,
                         status = ?,
+                        layer = ?,
+                        baseline = ?,
+                        half_life_minutes = ?,
+                        last_decay_at = ?,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = ?
                     """,
@@ -177,11 +202,16 @@ class EmotionArchiveMixin:
                         self._text(item.influence),
                         self._text(item.expires_at),
                         self._text(item.status) or "active",
+                        self._text(item.layer) or "transient",
+                        max(0.0, min(float(item.baseline), 100.0)),
+                        max(float(item.half_life_minutes), 1.0),
+                        self._text(item.last_decay_at),
                         arc_id,
                     ),
                 )
                 self._compact_active_emotion_arcs(
                     scope=self._text(item.scope),
+                    layer=self._text(item.layer),
                     label=self._text(item.label),
                     keep_id=arc_id,
                 )
@@ -195,10 +225,11 @@ class EmotionArchiveMixin:
                 """
                 INSERT INTO emotion_arcs(
                     scope, date, label, valence, arousal, intensity, stability,
-                    trigger, evidence, influence, expires_at, status, source,
+                    trigger, evidence, influence, expires_at, status, layer,
+                    baseline, half_life_minutes, last_decay_at, source,
                     created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """,
                 (
                     self._text(item.scope),
@@ -213,13 +244,18 @@ class EmotionArchiveMixin:
                     self._text(item.influence),
                     self._text(item.expires_at),
                     self._text(item.status) or "active",
+                    self._text(item.layer) or "transient",
+                    max(0.0, min(float(item.baseline), 100.0)),
+                    max(float(item.half_life_minutes), 1.0),
+                    self._text(item.last_decay_at),
                     self._text(item.source) or "state",
                 ),
             )
             arc_id = int(cursor.lastrowid or 0)
             self._compact_active_emotion_arcs(
                 scope=self._text(item.scope),
-                label=self._text(item.label) or "鎯呯华娉㈠姩",
+                layer=self._text(item.layer),
+                label=self._text(item.label) or "情绪波动",
                 keep_id=arc_id,
             )
             self._conn.commit()

@@ -1,6 +1,7 @@
 from .air import ProactiveAirMixin
 from .decide import ProactiveJudgeMixin
 from .gesture import ProactiveGestureMixin
+from .lifecycle import ProactiveLifecycleMixin
 from .procontext import ProactiveContextMixin
 from .revisit import ProactiveRevisitMixin
 from .scope import ProactiveScopeMixin
@@ -9,6 +10,7 @@ from .send import ProactiveSendMixin
 
 
 class ProactiveMixin(
+    ProactiveLifecycleMixin,
     ProactiveAirMixin,
     ProactiveContextMixin,
     ProactiveGestureMixin,

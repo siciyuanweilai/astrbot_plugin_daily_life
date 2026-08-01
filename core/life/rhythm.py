@@ -4,6 +4,7 @@ import json
 import uuid
 from typing import Any
 
+from ..clock import now as life_now
 from ..models import DailyReviewRecord, EventRecord, LifeEventRecord, PreferenceRecord
 from ..prompts import (
     CORE_MEMORY_RULES,
@@ -11,8 +12,8 @@ from ..prompts import (
     cache_friendly_prompt,
     json_output_section,
 )
-from ..clock import now as life_now
 from .appearance import format_life_preference_context
+from .evolution import LifeEvolutionService
 from .tools import (
     extract_json_from_text,
     format_timeline_to_text,
@@ -92,6 +93,11 @@ class LifecycleMixin:
             )
             if event:
                 await self.archive.add_life_event(event)
+        extract_anchors = getattr(self, "extract_schedule_anchors", None)
+        if callable(extract_anchors):
+            anchors = extract_anchors(day)
+            day.meta["schedule_planning_mode"] = "hierarchical"
+            day.meta["schedule_anchor_count"] = str(len(anchors))
         return day
 
     async def _build_lifecycle_context(self, date: datetime.datetime) -> str:
@@ -250,7 +256,7 @@ class LifecycleMixin:
 
 返回结构：
 {{
-  "summary": "一句话复盘今天的生活质感和状态变化",
+  "summary": "用第一人称‘我’写一句话，复盘今天的生活质感和状态变化",
   "memory_points": ["以后生成生活背景值得引用的稳定记忆"],
   "preference_points": [
     {{"category": "{LIFE_PREFERENCE_CATEGORY_ENUM}", "content": "可复用偏好", "weight": 0.1-2.0, "evidence": "来自今天哪件事"}}
@@ -268,7 +274,20 @@ class LifecycleMixin:
   ],
   "timeline_updates": [
     {{"item_index": 时间轴数组下标, "status": "completed|skipped|cancelled", "reason": "为什么这样收束", "evidence": "当天状态、互动或事件中的具体依据"}}
-  ]
+  ],
+  "reflection_score": {{"novelty": 0.0-1.0, "emotional_intensity": 0.0-1.0, "goal_impact": 0.0-1.0, "social_impact": 0.0-1.0}},
+  "reflection": {{
+    "summary": "只有高价值时才填写的反思",
+    "evidence_ids": ["只能引用下方证据清单里的完整编号"],
+    "assertion": {{"subject": "可选主体", "predicate": "可选关系", "object": "可选结构化值"}}
+  }},
+  "affect_updates": [
+    {{"layer": "transient|daily|relationship", "label": "自然情绪标签", "valence": -1.0-1.0, "arousal": 0.0-1.0, "intensity": 0.0-1.0, "evidence_ids": ["完整证据编号"], "source": "daily_review"}}
+  ],
+  "relationship_updates": [
+    {{"profile_id": "已有关系档案编号", "familiarity_delta": -0.08-0.08, "trust_delta": -0.08-0.08, "affinity_delta": -0.08-0.08, "evidence_ids": ["完整证据编号"], "reason": "有证据的缓慢变化"}}
+  ],
+  "grounded_diary": {{"title": "简短标题", "summary": "用第一人称‘我’记录真实发生的内容", "evidence_ids": ["完整证据编号"], "mood_label": "当日心境"}}
 }}
 
 要求：
@@ -278,7 +297,23 @@ class LifecycleMixin:
 - decision_outcomes 只更新输入中已有的当天生活决策。它必须描述实际发生的结果，不能复述原计划或编造未发生事项。
 - timeline_updates 只在有具体依据时把活动标成 skipped/cancelled；正常随时间推进的活动标成 completed，不得用关键词猜测执行结果。
 - 根据 state.sleep、sleep_debt 和时间轴判断睡眠债增减；不要用固定文本匹配活动文字。
+- reflection_score 必须按四个数值维度独立评分；低价值日常允许 reflection 留空，系统会在阈值以下跳过模型反思沉淀。
+- affect_updates 和 relationship_updates 只能引用“可引用证据编号”，没有证据就返回空数组；关系数值只能小步变化。
+- grounded_diary 必须使用第一人称“我”，只能写可引用证据明确支持的内容；证据不足就返回空对象。
+- 不得从活动文案的词语、标点或固定句式猜测情绪、关系和执行结果。
 """
+        evidence_lines = []
+        for prefix, items in (
+            ("event", life_events),
+            ("decision", decisions),
+            ("feedback", feedback),
+            ("reply_effect", reply_effects),
+        ):
+            for item in items:
+                item_id = int(getattr(item, "id", 0) or 0)
+                if item_id > 0:
+                    evidence_lines.append(f"- {prefix}:{item_id}")
+        evidence_inventory = "\n".join(evidence_lines) or "无可引用证据"
         dynamic = f"""日期：{day.date}
 穿搭：{day.outfit or "无"}
 状态：{json.dumps(state, ensure_ascii=False)}
@@ -296,13 +331,15 @@ class LifecycleMixin:
 当天已结算行为反馈：
 {json.dumps([item.as_dict() for item in feedback], ensure_ascii=False)}
 近期已结算互动效果：
-{json.dumps([item.as_dict() for item in reply_effects], ensure_ascii=False)}"""
+{json.dumps([item.as_dict() for item in reply_effects], ensure_ascii=False)}
+可引用证据编号：
+{evidence_inventory}"""
         return cache_friendly_prompt(fixed, dynamic, dynamic_title="今日复盘资料")
 
     def _fallback_daily_review(self, day) -> DailyReviewRecord:
         state_summary = day.state.summary if day.state and day.state.summary else ""
         first = day.timeline[0].activity if day.timeline else ""
-        summary = state_summary or first or "今天以自然节奏度过。"
+        summary = state_summary or first or "我今天按自己的自然节奏生活。"
         debt = self._meta_float(day.meta or {}, "sleep_debt_delta", 0.0)
         carryover = self._meta_float(day.meta or {}, "energy_carryover", 60.0)
         return DailyReviewRecord(
@@ -390,6 +427,16 @@ class LifecycleMixin:
         )
         await self._apply_life_decision_review_outcomes(decisions, review_payload)
         await self._apply_timeline_review_updates(day, review_payload)
+        evolution = LifeEvolutionService(self.archive)
+        await evolution.settle_review(
+            review_payload,
+            date=date_str,
+            events=events,
+            decisions=decisions,
+            feedback=feedback,
+            reply_effects=reply_effects,
+            now=life_now(),
+        )
 
         if review.memory_points:
             await self.archive.add_events(
@@ -458,6 +505,9 @@ class LifecycleMixin:
             day.date,
             evidence="夜间复盘：时间轴收束",
         )
+        settle_actions = getattr(self, "settle_completed_planned_actions", None)
+        if callable(settle_actions):
+            await settle_actions(day, now=review_end)
         await self.archive.save_day(day)
 
     async def _apply_life_decision_review_outcomes(

@@ -1,4 +1,5 @@
 from .chronicle import EXPERIENCE_SQL
+from .cognition import COGNITION_INDEX_SQL, COGNITION_SQL
 from .conversation import CONVERSATION_SQL
 from .cycle import WEEKLY_SQL
 from .indexes import INDEX_SQL
@@ -10,7 +11,6 @@ from .routine import DAILY_SQL
 from .vows import COMMITMENT_SQL
 from .world import WORLD_SQL
 
-
 SCHEMA_GROUPS = (
     CORE_SQL,
     DAILY_SQL,
@@ -21,7 +21,9 @@ SCHEMA_GROUPS = (
     REVIEW_SQL,
     EXPERIENCE_SQL,
     CONVERSATION_SQL,
+    COGNITION_SQL,
     INDEX_SQL,
+    COGNITION_INDEX_SQL,
 )
 
 
@@ -35,6 +37,8 @@ __all__ = [
     "REVIEW_SQL",
     "EXPERIENCE_SQL",
     "CONVERSATION_SQL",
+    "COGNITION_SQL",
+    "COGNITION_INDEX_SQL",
     "INDEX_SQL",
     "DROP_SCHEMA_SQL",
     "SCHEMA_GROUPS",

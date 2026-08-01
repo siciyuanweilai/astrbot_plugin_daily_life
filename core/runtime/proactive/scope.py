@@ -73,7 +73,10 @@ class ProactiveScopeMixin:
             try:
                 await asyncio.sleep(delay)
                 current = self._proactive_idle_candidates.get(key)
-                if not isinstance(current, dict) or int(current.get("revision") or 0) != revision:
+                if (
+                    not isinstance(current, dict)
+                    or int(current.get("revision") or 0) != revision
+                ):
                     return
                 lease = getattr(self, "runtime_service_lease", None)
                 if callable(lease):
@@ -91,8 +94,7 @@ class ProactiveScopeMixin:
                 current = self._proactive_idle_candidates.get(key)
                 if (
                     owns_slot
-                    and
-                    isinstance(current, dict)
+                    and isinstance(current, dict)
                     and int(current.get("revision") or 0) == revision
                     and self._proactive_chat_enabled(bool(current.get("is_group")))
                 ):
@@ -110,9 +112,7 @@ class ProactiveScopeMixin:
 
         raw_config = getattr(self, "raw_config", None)
         raw_section = (
-            raw_config.get("proactive_config")
-            if isinstance(raw_config, dict)
-            else None
+            raw_config.get("proactive_config") if isinstance(raw_config, dict) else None
         )
         if isinstance(raw_section, dict) and field in raw_section:
             return as_bool(raw_section.get(field), parsed_value)
@@ -127,9 +127,22 @@ class ProactiveScopeMixin:
             return 0
         removed = 0
         for key, candidate in list(candidates.items()):
-            is_group = bool(candidate.get("is_group")) if isinstance(candidate, dict) else False
+            is_group = (
+                bool(candidate.get("is_group"))
+                if isinstance(candidate, dict)
+                else False
+            )
             if self._proactive_chat_enabled(is_group):
                 continue
+            if isinstance(candidate, dict):
+                self._transition_proactive_lifecycle(
+                    key,
+                    "abandoned",
+                    event="channel_disabled",
+                    reason="主动回复通道已关闭",
+                    revision=int(candidate.get("revision") or 0),
+                    candidate=candidate,
+                )
             candidates.pop(key, None)
             self._cancel_proactive_idle_task(key)
             removed += 1
@@ -236,6 +249,39 @@ class ProactiveScopeMixin:
         target_scope = self._event_session_id(event)
         if not key or not target_scope:
             return
+        previous = self._proactive_idle_candidates.get(key)
+        previous_revision = (
+            int(previous.get("revision") or 0) if isinstance(previous, dict) else 0
+        )
+        lifecycle = self._proactive_lifecycle_snapshot(key)
+        lifecycle_state = str(lifecycle.get("state") or "")
+        if lifecycle_state in {"candidate", "considering", "waiting", "sending"}:
+            self._transition_proactive_lifecycle(
+                key,
+                "interrupted",
+                event="conversation_revision_changed",
+                reason="收到新消息，旧主动候选失效",
+                now=now,
+                revision=previous_revision,
+                candidate=previous if isinstance(previous, dict) else None,
+            )
+        elif lifecycle_state == "engaged":
+            self._transition_proactive_lifecycle(
+                key,
+                "closing",
+                event="user_response_received",
+                reason="对方已回应主动消息",
+                now=now,
+                revision=previous_revision,
+            )
+            self._transition_proactive_lifecycle(
+                key,
+                "cooldown",
+                event="engagement_closed",
+                reason="本轮主动互动已闭环",
+                now=now,
+                revision=previous_revision,
+            )
         group_id, group_name = self._event_group_meta(event)
         recent_messages = self._recent_messages_for_candidate(
             self._proactive_idle_candidates.get(key)
@@ -251,7 +297,7 @@ class ProactiveScopeMixin:
             }
         )
         recent_messages = recent_messages[-self._AIR_MAX_RECENT_MESSAGES :]
-        self._proactive_idle_candidates[key] = {
+        candidate = {
             "key": key,
             "target_scope": target_scope,
             "message": str(getattr(event, "message_str", "") or "").strip(),
@@ -273,15 +319,21 @@ class ProactiveScopeMixin:
             "decision": "",
             "decision_reason": "",
             "revision": int(
-                (
-                    self._proactive_idle_candidates.get(key, {})
-                    if isinstance(self._proactive_idle_candidates.get(key), dict)
-                    else {}
-                ).get("revision")
-                or 0
+                (previous if isinstance(previous, dict) else {}).get("revision")
+                or previous_revision
             )
             + 1,
         }
+        self._proactive_idle_candidates[key] = candidate
+        self._transition_proactive_lifecycle(
+            key,
+            "candidate",
+            event="activity_observed",
+            reason="会话活动已进入静默候选观察",
+            now=now,
+            revision=int(candidate["revision"]),
+            candidate=candidate,
+        )
         self._record_virtual_life_metric("turn_received")
         self._schedule_proactive_idle_evaluation(key, now=now)
 
@@ -313,6 +365,15 @@ class ProactiveScopeMixin:
             return
         candidate = self._proactive_idle_candidates.get(key)
         if isinstance(candidate, dict):
+            self._transition_proactive_lifecycle(
+                key,
+                "abandoned",
+                event="ordinary_reply_committed",
+                reason="普通聊天已完成回应，取消主动续话",
+                now=now or life_now(),
+                revision=int(candidate.get("revision") or 0),
+                candidate=candidate,
+            )
             self._proactive_idle_candidates.pop(key, None)
             self._cancel_proactive_idle_task(key)
             self._record_virtual_life_metric("turn_closed_by_reply")

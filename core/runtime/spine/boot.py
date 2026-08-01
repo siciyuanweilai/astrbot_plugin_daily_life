@@ -14,17 +14,24 @@ from astrbot.core.star.context import Context
 
 from ...archive import LifeArchive
 from ...config.options import LifeSettings
+from ...life import LifeBackgroundComposer, WeatherClient
 from ...media import LifeMediaService
 from ...paths import runtime_data_path
 from ...search import SearchService
 from ...sources import ContactNameResolver
-from ...life import LifeBackgroundComposer, WeatherClient
-from ..markers import LOG_PREFIX
-from ..delivery import ReplyDeliveryService
-from ..scopes import RuntimeScopeState
 from ..context import ContextSnapshotRepository
+from ..delivery import ReplyDeliveryService
 from ..gateway import ModelGateway
+from ..markers import LOG_PREFIX
+from ..scopes import RuntimeScopeState
 from ..timer import LifeRhythmClock
+
+_DURABLE_TASK_LABELS = {
+    "daily_refresh": "每日生活刷新",
+    "daily_review": "夜间生活复盘",
+    "private_revisit": "私聊回访检查",
+    "proactive_idle": "闲时主动检查",
+}
 
 
 @dataclass(slots=True)
@@ -73,6 +80,8 @@ class SpineBootMixin:
         self._service_lease_owner = ContextVar(
             f"daily_life_service_lease_owner_{id(self)}", default=None
         )
+        self._durable_runtime_handlers: dict[str, Any] = {}
+        self._durable_task_owner = f"runtime:{id(self)}"
         self.archive = LifeArchive(self.data_path, initialize=not defer_start)
         self.context_snapshot = ContextSnapshotRepository(self.archive)
         self._init_sight()
@@ -96,6 +105,7 @@ class SpineBootMixin:
         if self._runtime_initialized:
             return
         await self.archive.initialize()
+        await self.archive.recover_leased_durable_tasks()
         friend_look_loader = getattr(self, "_load_friend_daily_looks", None)
         if callable(friend_look_loader):
             await friend_look_loader()
@@ -111,6 +121,11 @@ class SpineBootMixin:
             self.maintain_emoji_assets(),
             label="表情素材维护",
             key="startup_emoji_asset_maintenance",
+        )
+        self._schedule_background_task(
+            self._run_durable_task_worker(),
+            label="可恢复生活任务队列",
+            key="durable_task_worker",
         )
 
     def _runtime_data_path(self) -> Path:
@@ -176,26 +191,107 @@ class SpineBootMixin:
     def _bind_runtime(self, config: LifeSettings) -> None:
         self._install_runtime_services(self._build_runtime_services(config))
 
-    def _leased_rhythm_callback(self, callback):
+    def _leased_rhythm_callback(self, callback, *, durable_kind: str = ""):
+        handlers = getattr(self, "_durable_runtime_handlers", None)
+        if not isinstance(handlers, dict):
+            handlers = {}
+            self._durable_runtime_handlers = handlers
+        if durable_kind:
+            handlers[durable_kind] = callback
+
         async def run():
             async with self.runtime_service_lease():
-                await callback()
+                if durable_kind:
+                    now = datetime.datetime.now()
+                    task_key = self._durable_task_key(durable_kind, now)
+                    await self.archive.enqueue_durable_task(
+                        task_key,
+                        durable_kind,
+                        {"scheduled_at": now.strftime("%Y-%m-%d %H:%M:%S")},
+                        priority=80,
+                    )
+                    await self._run_durable_tasks_once()
+                else:
+                    await callback()
 
         return run
+
+    @staticmethod
+    def _durable_task_key(kind: str, now: datetime.datetime) -> str:
+        """为定时入口生成稳定的持久任务键。"""
+        if kind in {"daily_refresh", "daily_review"}:
+            return f"{kind}:{now.strftime('%Y-%m-%d')}"
+        return f"{kind}:{now.strftime('%Y-%m-%d-%H-%M')}"
+
+    async def _run_durable_tasks_once(self) -> int:
+        """租用并执行一批白名单生活任务，禁止持久化任意可执行代码。"""
+        owner = getattr(self, "_durable_task_owner", f"runtime:{id(self)}")
+        await self.archive.recover_expired_durable_tasks()
+        tasks = await self.archive.lease_durable_tasks(
+            owner,
+            limit=8,
+            lease_seconds=1800,
+        )
+        completed = 0
+        for task in tasks:
+            handler = getattr(self, "_durable_runtime_handlers", {}).get(task.kind)
+            if not callable(handler):
+                await self.archive.fail_durable_task(
+                    task.id,
+                    f"未知持久任务类型：{task.kind}",
+                    owner=owner,
+                )
+                continue
+            try:
+                await handler()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                await self.archive.fail_durable_task(
+                    task.id,
+                    str(exc),
+                    owner=owner,
+                )
+                task_label = _DURABLE_TASK_LABELS.get(task.kind, "未知生活任务")
+                logger.warning(f"{LOG_PREFIX} 持久生活任务失败（{task_label}）：{exc}")
+            else:
+                await self.archive.complete_durable_task(
+                    task.id,
+                    {
+                        "kind": task.kind,
+                        "completed_at": datetime.datetime.now().isoformat(),
+                    },
+                    owner=owner,
+                )
+                completed += 1
+        return completed
+
+    async def _run_durable_task_worker(self) -> None:
+        """启动时收束重启前遗留的任务；任务类型由运行时显式注册。"""
+        try:
+            await self._run_durable_tasks_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(f"{LOG_PREFIX} 持久生活任务恢复失败：{exc}")
 
     def _build_rhythm(self, config: LifeSettings | None = None) -> LifeRhythmClock:
         return LifeRhythmClock(
             config=config or self.config,
-            daily_task=self._leased_rhythm_callback(self.run_daily_refresh),
+            daily_task=self._leased_rhythm_callback(
+                self.run_daily_refresh, durable_kind="daily_refresh"
+            ),
             auto_update_task=self._leased_rhythm_callback(
                 self.check_autonomous_life_update
             ),
-            review_task=self._leased_rhythm_callback(self.run_nightly_review),
+            review_task=self._leased_rhythm_callback(
+                self.run_nightly_review, durable_kind="daily_review"
+            ),
             proactive_revisit_task=self._leased_rhythm_callback(
-                self.run_private_revisit_check
+                self.run_private_revisit_check, durable_kind="private_revisit"
             ),
             proactive_idle_task=self._leased_rhythm_callback(
-                self.run_proactive_idle_check
+                self.run_proactive_idle_check, durable_kind="proactive_idle"
             ),
         )
 

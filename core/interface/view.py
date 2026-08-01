@@ -1,12 +1,11 @@
-import copy
 import asyncio
+import copy
 import datetime
 import inspect
 import json
 import re
 from pathlib import Path
 
-from ..models.coerce import compact_text as _compact_text
 from ..clock import now as life_now
 from ..life.tools import (
     get_current_timeline_status,
@@ -14,7 +13,7 @@ from ..life.tools import (
     resolve_daily_hint,
     resolve_daily_suggested,
 )
-
+from ..models.coerce import compact_text as _compact_text
 
 CONF_SCHEMA_PATH = Path(__file__).resolve().parents[2] / "_conf_schema.json"
 PAGE_WORLD_RECORD_LIMIT = 20
@@ -22,6 +21,17 @@ PAGE_MEMO_CAROUSEL_LIMIT = 8
 
 
 class PageViewMixin:
+    async def _page_archive_records(self, method_name: str, **kwargs):
+        """读取可选的结构化面板记录，兼容旧测试夹具和旧数据库。"""
+        getter = getattr(self.runtime.archive, method_name, None)
+        if not callable(getter):
+            return []
+        try:
+            result = await getter(**kwargs)
+        except (AttributeError, KeyError, TypeError):
+            return []
+        return list(result or [])
+
     async def _build_page_config(self, saved: bool = False) -> dict:
         relationships = await self._page_reference_relationships()
         schema = await self._page_config_schema()
@@ -126,15 +136,15 @@ class PageViewMixin:
         target_date, extended_night = await self.runtime.resolve_injection_target(now)
         data = await self.runtime.archive.get_day(target_date)
         week_plan = await self.runtime.composer._get_week_plan()
-        relationship_records = await self.runtime.archive.get_recent_relationships(PAGE_WORLD_RECORD_LIMIT)
+        relationship_records = await self.runtime.archive.get_recent_relationships(PAGE_WORLD_RECORD_LIMIT)  # fmt: skip
         relationships = await self._page_relationships(relationship_records)
         places = await self.runtime.archive.get_recent_places(PAGE_WORLD_RECORD_LIMIT)
         events = await self.runtime.archive.get_recent_events(PAGE_WORLD_RECORD_LIMIT)
-        summaries = await self.runtime.archive.get_recent_chat_summaries(PAGE_WORLD_RECORD_LIMIT)
+        summaries = await self.runtime.archive.get_recent_chat_summaries(PAGE_WORLD_RECORD_LIMIT)  # fmt: skip
         group_environments = await self._page_group_environments(
-            await self.runtime.archive.get_recent_group_environments(PAGE_WORLD_RECORD_LIMIT)
+            await self.runtime.archive.get_recent_group_environments(PAGE_WORLD_RECORD_LIMIT)  # fmt: skip
         )
-        message_visibility = await self.runtime.archive.get_message_visibility_records(PAGE_WORLD_RECORD_LIMIT)
+        message_visibility = await self.runtime.archive.get_message_visibility_records(PAGE_WORLD_RECORD_LIMIT)  # fmt: skip
         action_decisions = self._page_action_decisions(
             await self._page_raw_action_decisions(),
             limit=PAGE_WORLD_RECORD_LIMIT,
@@ -182,6 +192,26 @@ class PageViewMixin:
         )
         memory_entities = await self.runtime.archive.get_memory_entities(limit=12)
         memory_conflicts = await self.runtime.archive.get_memory_conflicts(limit=8)
+        temporal_facts = await self._page_archive_records(
+            "get_temporal_facts", limit=40
+        )
+        reflections = await self._page_archive_records("get_reflections", limit=20)
+        persona_assertions = await self._page_archive_records(
+            "get_persona_assertions", limit=20
+        )
+        decision_traces = await self._page_archive_records(
+            "get_decision_traces", limit=30
+        )
+        action_outcomes = await self._page_archive_records(
+            "get_life_action_outcomes", limit=30
+        )
+        affective_states = await self._page_archive_records(
+            "get_affective_states", limit=30
+        )
+        grounded_diary = await self._page_archive_records(
+            "get_grounded_diary_entries", limit=20
+        )
+        durable_tasks = await self._page_archive_records("get_durable_tasks", limit=20)
         health = await self.runtime.archive.get_life_health_report(
             self.runtime.config.storage
         )
@@ -219,6 +249,9 @@ class PageViewMixin:
             },
             "lifecycle": {
                 "reviews": [item.as_dict() for item in reviews],
+                "reflections": [item.as_dict() for item in reflections],
+                "grounded_diary": [item.as_dict() for item in grounded_diary],
+                "durable_tasks": [item.as_dict() for item in durable_tasks],
                 "preferences": [
                     self._page_readable_evidence_record(item.as_dict())
                     for item in preferences
@@ -227,6 +260,11 @@ class PageViewMixin:
             },
             "experience": {
                 "episodes": [item.as_dict() for item in episodes],
+                "temporal_facts": [item.as_dict() for item in temporal_facts],
+                "persona_assertions": [item.as_dict() for item in persona_assertions],
+                "decision_traces": [item.as_dict() for item in decision_traces],
+                "action_outcomes": [item.as_dict() for item in action_outcomes],
+                "affective_states": [item.as_dict() for item in affective_states],
                 "emotion_arcs": [
                     self._page_readable_evidence_record(item.as_dict())
                     for item in emotion_arcs
@@ -294,7 +332,9 @@ class PageViewMixin:
         return (
             len(lowered) >= 20
             and "-" in lowered
-            and all(char.isdigit() or "a" <= char <= "f" or char == "-" for char in lowered)
+            and all(
+                char.isdigit() or "a" <= char <= "f" or char == "-" for char in lowered
+            )
         )
 
     @classmethod

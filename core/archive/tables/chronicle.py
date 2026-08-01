@@ -72,6 +72,10 @@ CREATE TABLE IF NOT EXISTS emotion_arcs (
             influence TEXT NOT NULL DEFAULT '',
             expires_at TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL DEFAULT 'active',
+            layer TEXT NOT NULL DEFAULT 'transient',
+            baseline REAL NOT NULL DEFAULT 50,
+            half_life_minutes REAL NOT NULL DEFAULT 240,
+            last_decay_at TEXT NOT NULL DEFAULT '',
             source TEXT NOT NULL DEFAULT 'state',
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
