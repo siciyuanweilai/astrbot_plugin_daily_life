@@ -233,11 +233,15 @@ class CognitionArchiveMixin:
         def dbwork() -> list[TemporalFactRecord]:
             clauses: list[str] = []
             params: list[Any] = []
-            for column, value in (
-                ("scope", scope),
-                ("subject", subject),
-                ("predicate", predicate),
-            ):
+            if self._text(scope):
+                scope_text = self._text(scope)
+                if scope_text != "global":
+                    clauses.append("(scope = ? OR scope = 'global')")
+                    params.append(scope_text)
+                else:
+                    clauses.append("scope = ?")
+                    params.append(scope_text)
+            for column, value in (("subject", subject), ("predicate", predicate)):
                 if self._text(value):
                     clauses.append(f"{column} = ?")
                     params.append(self._text(value))
@@ -846,6 +850,7 @@ class CognitionArchiveMixin:
         limit: int = 1,
         lease_seconds: int = 60,
         now: str = "",
+        exclude_kinds: tuple[str, ...] | list[str] = (),
     ) -> list[DurableTaskRecord]:
         """原子租用到期且可执行的持久任务。
 
@@ -885,14 +890,24 @@ class CognitionArchiveMixin:
                 """,
                 (point,),
             )
+            excluded = tuple(
+                sorted({self._text(item) for item in exclude_kinds if self._text(item)})
+            )
+            where = (
+                "status = 'pending' AND attempts < max_attempts "
+                "AND (available_at = '' OR available_at <= ?)"
+            )
+            params: list[Any] = [point]
+            if excluded:
+                placeholders = ",".join("?" for _ in excluded)
+                where += f" AND kind NOT IN ({placeholders})"
+                params.extend(excluded)
+            params.append(max(int(limit), 1))
             rows = self._conn.execute(
-                """
-                SELECT id FROM durable_tasks
-                WHERE status = 'pending' AND attempts < max_attempts
-                  AND (available_at = '' OR available_at <= ?)
-                ORDER BY priority DESC, id ASC LIMIT ?
-                """,
-                (point, max(int(limit), 1)),
+                "SELECT id FROM durable_tasks WHERE "
+                + where
+                + " ORDER BY priority DESC, id ASC LIMIT ?",
+                tuple(params),
             ).fetchall()
             ids = [int(row["id"]) for row in rows]
             for task_id in ids:
@@ -948,6 +963,76 @@ class CognitionArchiveMixin:
                     self._cognition_json(result, default={}),
                     self._cognition_now(),
                     *params,
+                ),
+            )
+            self._conn.commit()
+            return int(cursor.rowcount or 0) > 0
+
+        return await self._run_db(dbwork)
+
+    async def complete_durable_task_by_key(
+        self, task_key: str, result: dict[str, Any]
+    ) -> bool:
+        """按幂等键完成尚未被租用的持久任务。
+
+        Args:
+            task_key: 入队时使用的全局幂等键。
+            result: 任务最终结果。
+
+        Returns:
+            是否成功收束任务。
+        """
+
+        key = self._text(task_key)
+        if not key:
+            return False
+
+        def dbwork() -> bool:
+            cursor = self._conn.execute(
+                """
+                UPDATE durable_tasks
+                SET status = 'completed', result_json = ?, lease_owner = '',
+                    lease_expires_at = '', completed_at = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE task_key = ? AND status IN ('pending', 'leased')
+                """,
+                (
+                    self._cognition_json(result, default={}),
+                    self._cognition_now(),
+                    key,
+                ),
+            )
+            self._conn.commit()
+            return int(cursor.rowcount or 0) > 0
+
+        return await self._run_db(dbwork)
+
+    async def fail_durable_task_by_key(
+        self, task_key: str, error: str, result: dict[str, Any] | None = None
+    ) -> bool:
+        """按幂等键收束不可重试的外部任务失败。
+
+        外部异步任务已经有明确终态时，不能把错误结果写成 completed；
+        失败状态必须在重启后仍可被恢复器和状态查询识别。
+        """
+
+        key = self._text(task_key)
+        if not key:
+            return False
+
+        def dbwork() -> bool:
+            cursor = self._conn.execute(
+                """
+                UPDATE durable_tasks
+                SET status = 'failed', result_json = ?, last_error = ?,
+                    lease_owner = '', lease_expires_at = '',
+                    completed_at = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE task_key = ? AND status IN ('pending', 'leased')
+                """,
+                (
+                    self._cognition_json(result, default={}),
+                    self._text(error),
+                    self._cognition_now(),
+                    key,
                 ),
             )
             self._conn.commit()

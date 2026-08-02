@@ -20,6 +20,7 @@ from ..models import (
 )
 
 ACTION_SETTLEMENT_META_KEY = "life_action_settlements"
+ACTION_EXPIRATION_META_KEY = "life_action_expirations"
 SCHEDULE_ANCHOR_META_KEY = "schedule_anchors"
 SCHEDULE_REPLAN_META_KEY = "schedule_replan_pending"
 
@@ -364,11 +365,6 @@ class LifeActionMixin:
         current_place = str((day.meta or {}).get("current_place") or "").strip()
         if current_place:
             facts.append(("current_place", current_place))
-        if day.state:
-            for field_name in sorted(_NUMERIC_STATE_FIELDS):
-                value = getattr(day.state, field_name, None)
-                if value is not None:
-                    facts.append((f"state.{field_name}", value))
         saved = []
         for predicate, value in facts:
             fact = await writer(
@@ -435,12 +431,12 @@ class LifeActionMixin:
         *,
         now: datetime.datetime | None = None,
     ) -> LifeActionOutcome | None:
-        """使用外部或模拟回执结算一项已计划动作。
+        """使用可验证的外部回执结算一项已计划动作。
 
         Args:
             day: 当前日记录。
             action_id: 日程生成时分配的动作编号。
-            receipt: 已确认、模拟、失败或取消的回执。
+            receipt: 已确认、失败或取消的回执。
             now: 结算时间，缺省时使用插件时钟。
 
         Returns:
@@ -620,7 +616,7 @@ class LifeActionMixin:
             ):
                 continue
             state = day.timeline[action.timeline_index].execution_state
-            if state in {"skipped", "cancelled", "completed"}:
+            if state in {"skipped", "cancelled", "completed", "expired"}:
                 continue
             candidates.append(action)
         if not candidates:
@@ -728,7 +724,15 @@ class LifeActionMixin:
             planned_actions = json.loads(raw_actions) if raw_actions else []
         except (TypeError, ValueError, json.JSONDecodeError):
             planned_actions = []
+        expiration_text = str((day.meta or {}).get(ACTION_EXPIRATION_META_KEY) or "")
+        try:
+            expirations = json.loads(expiration_text) if expiration_text else {}
+        except (TypeError, ValueError, json.JSONDecodeError):
+            expirations = {}
+        if not isinstance(expirations, dict):
+            expirations = {}
         outcomes = []
+        changed = False
         for raw_action in planned_actions if isinstance(planned_actions, list) else []:
             action = LifeActionIntent.from_value(raw_action)
             if (
@@ -736,28 +740,69 @@ class LifeActionMixin:
                 or action.action_type not in LIFE_ACTION_TYPES
                 or action.timeline_index is None
                 or not 0 <= action.timeline_index < len(day.timeline)
+                or action.action_id in expirations
             ):
                 continue
             timeline_item = day.timeline[action.timeline_index]
             if timeline_item.execution_state != "completed":
                 continue
-            outcomes.append(
-                await self.record_life_action_receipt(
-                    day,
-                    action.action_id,
-                    {
-                        "receipt_id": f"timeline:{action.action_id}",
-                        "status": "simulated",
-                        "source": "timeline_clock",
-                        "source_id": f"timeline:{day.date}:{action.timeline_index}",
-                        "evidence": timeline_item.execution_evidence
-                        or action.evidence
-                        or f"时间轴第 {action.timeline_index} 项已完成",
-                    },
-                    now=now,
-                )
+            expired_at = (now or life_now()).strftime("%Y-%m-%d %H:%M:%S")
+            outcome = LifeActionOutcome(
+                action_id=action.action_id,
+                action_type=action.action_type,
+                status="expired",
+                reason="计划时间已经结束，但没有收到可验证的执行回执",
+                committed_at=expired_at,
+                timeline_index=action.timeline_index,
+                evidence=timeline_item.execution_evidence or action.evidence,
             )
-        return [item for item in outcomes if item is not None]
+            outcomes.append(outcome)
+            timeline_item.execution_state = "expired"
+            timeline_item.execution_reason = outcome.reason
+            timeline_item.execution_evidence = outcome.evidence
+            timeline_item.execution_updated_at = expired_at
+            expirations[action.action_id] = outcome.as_dict()
+            changed = True
+            save_outcome = getattr(self.archive, "save_life_action_outcome", None)
+            if callable(save_outcome):
+                await save_outcome(
+                    {
+                        "action_id": action.action_id,
+                        "date": day.date,
+                        "action_type": action.action_type,
+                        "target": action.target,
+                        "preconditions": {
+                            "all": [item.as_dict() for item in action.preconditions]
+                        },
+                        "effects": {
+                            "requested": [item.as_dict() for item in action.effects]
+                        },
+                        "status": "expired",
+                        "reason": outcome.reason,
+                        "evidence": [outcome.evidence] if outcome.evidence else [],
+                        "started_at": action.requested_at,
+                        "committed_at": expired_at,
+                    }
+                )
+            save_trace = getattr(self.archive, "save_decision_trace", None)
+            if callable(save_trace):
+                await save_trace(
+                    {
+                        "trace_id": f"life_action:{action.action_id}:expired",
+                        "scope": f"day:{day.date}",
+                        "stage": "expired",
+                        "reason_code": "action_expired_without_receipt",
+                        "decision": "expired",
+                        "evidence": [outcome.evidence] if outcome.evidence else [],
+                        "outcome": outcome.reason,
+                    }
+                )
+        if changed:
+            day.meta[ACTION_EXPIRATION_META_KEY] = json.dumps(
+                expirations, ensure_ascii=False, separators=(",", ":")
+            )
+            await self.archive.save_day(day)
+        return outcomes
 
     def extract_schedule_anchors(
         self,

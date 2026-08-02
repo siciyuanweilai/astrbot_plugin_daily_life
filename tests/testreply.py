@@ -558,6 +558,41 @@ class SemanticSegmentTest(unittest.TestCase):
         self.assertTrue(changed)
         self.assertEqual(event.get_result().chain[0].text, "你有想吃的吗")
 
+    def test_valid_but_unsplit_semantic_plan_uses_generic_natural_pause(self):
+        runtime = self._runtime(
+            json.dumps(
+                {
+                    "segments": [
+                        {
+                            "text": "煲仔饭！这个为什么不分段？",
+                            "relation": "standalone",
+                            "pause": "none",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        )
+        runtime.context = Context(
+            Provider([]), config={"t2i": False, "t2i_word_threshold": 120}
+        )
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:12")
+        event.set_result(
+            event.chain_result(
+                [types.SimpleNamespace(text="煲仔饭！这个为什么不分段？")]
+            )
+        )
+
+        changed = asyncio.run(runtime.apply_semantic_segment_before_send(event))
+        sent = asyncio.run(runtime.send_chat_style_segments_if_needed(event))
+
+        self.assertTrue(changed)
+        self.assertTrue(sent)
+        self.assertEqual(
+            [message.chain[0].text for message in event.sent_messages],
+            ["煲仔饭", "这个为什么不分段"],
+        )
+
     def test_punctuation_cleaning_preserves_ascii_url_syntax(self):
         cleanup_chars = LifeSettings.from_dict({}).chat_style.punctuation_cleanup_chars
         cleaned = DailyLifeRuntime._semantic_segment_clean_punctuation(

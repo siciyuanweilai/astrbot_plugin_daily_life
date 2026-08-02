@@ -24,7 +24,6 @@ from ..prompts import (
     CORE_AUTONOMY_RULES,
     CORE_JSON_OUTPUT_RULES,
     CORE_STATE_BEHAVIOR_RULES,
-    LIFE_PREFERENCE_CATEGORY_ENUM,
     cache_friendly_prompt,
 )
 from ..clock import now as life_now
@@ -82,6 +81,11 @@ class StatusMixin:
             if len(future_anchors) >= 4:
                 break
         pending_replan = str(meta.get("schedule_replan_pending") or "").strip()
+        near_term_text = str(meta.get("near_term_anchors") or "").strip()
+        try:
+            near_term = json.loads(near_term_text) if near_term_text else []
+        except (TypeError, ValueError, json.JSONDecodeError):
+            near_term = []
         lifecycle_text = (
             "\n连续生活参数："
             f"\n- 日程基调 life_mode: {meta.get('life_mode') or '未知'}"
@@ -129,8 +133,6 @@ class StatusMixin:
   "summary": "一句话概括此刻状态",
   "source": "触发来源原样写入",
   "emotion_arc": {{"label": "此刻最主要的情绪脉络", "valence": -100到100, "arousal": 0-100, "intensity": 0-100, "stability": 0-100, "trigger": "触发点", "evidence": "依据", "influence": "会怎样轻微影响生活判断"}},
-  "preference_points": [{{"category": "{LIFE_PREFERENCE_CATEGORY_ENUM}", "content": "稳定偏好", "weight": 0.1-1.0, "evidence": "本次触发依据"}}],
-  "life_events": [{{"title": "新的生活事件", "detail": "细节", "effect": "未来影响", "status": "open"}}],
   "schedule_replan": {{"should_replan": false, "reason": "明确的新证据或空字符串", "replacements": [{{"replaces_anchor_id": "下方未来锚点的 anchor_id", "time": "HH:MM", "activity": "调整后的自然活动", "status": "短状态", "evidence": "本次触发依据"}}]}}
 }}
 
@@ -152,7 +154,7 @@ class StatusMixin:
 - physiological_rhythm 是通用身体节律：包括精力曲线、身体状态、恢复动作、社交电量、注意力状态和可选周期字段。
 - 不要输出 meta.life_mode 或 meta.sleep_mode；它们属于今日生成的日程基调，不属于实时状态刷新。
 - emotion_arc 只记录当前情绪脉络的结构化摘要；没有新触发时可以延续原状态并降低强度。
-- preference_points、life_events 都是可选结构；只有有明确依据时才写，不能为了填字段编造。
+- 实时刷新只能更新此刻身体、情绪和未来日程可行性，不得推导或保存长期偏好、关系事实与生活事件。
 """
         rhythm_section = f"\n近期生理节律：\n{rhythm_context}" if rhythm_context else ""
         dynamic = f"""生活日程日期：{data.date or "未知"}
@@ -169,6 +171,7 @@ class StatusMixin:
 当前时间：{now.strftime("%Y-%m-%d %H:%M")}
 触发来源：{source}
 触发信息：{detail or "无"}
+近期锚点细化：{json.dumps(near_term[:4] if isinstance(near_term, list) else [], ensure_ascii=False)}
 可局部重排的未来锚点：{json.dumps(future_anchors, ensure_ascii=False)}
 待处理重排原因：{pending_replan or "无"}"""
         return cache_friendly_prompt(fixed, dynamic)
@@ -326,7 +329,33 @@ class StatusMixin:
         result: dict[str, Any],
         state: LifeState,
         spec: _StateRefreshSpec,
+        previous_state: LifeState | None = None,
     ) -> None:
+        tracked_fields = (
+            "energy",
+            "mood_score",
+            "stress",
+            "focus",
+            "sleepiness",
+            "social",
+            "interaction_capacity",
+        )
+        significant_change = previous_state is None or any(
+            abs(
+                self._state_score(getattr(state, field_name, 50))
+                - self._state_score(getattr(previous_state, field_name, 50))
+            )
+            >= 10
+            for field_name in tracked_fields
+        )
+        if previous_state is not None:
+            significant_change = significant_change or any(
+                str(getattr(state, field_name, "") or "").strip()
+                != str(getattr(previous_state, field_name, "") or "").strip()
+                for field_name in ("mood", "watch_state", "interrupt_level")
+            )
+        if not significant_change:
+            return
         save_rhythm_log = getattr(
             self.archive, "save_physiological_rhythm_log", None
         )
@@ -355,6 +384,7 @@ class StatusMixin:
         result: dict[str, Any],
         spec: _StateRefreshSpec,
     ) -> DayRecord:
+        previous_state = copy.deepcopy(data.state)
         state = LifeState.from_value(
             normalize_state(
                 result.get("state", result),
@@ -377,12 +407,6 @@ class StatusMixin:
         if spec.source_event is None:
             self._apply_state_continuity(data, state, debt, delta, carryover)
 
-        await self.composer.learn_preferences_from_payload(
-            result, date_str=spec.date_str, source=spec.source
-        )
-        await self.composer.persist_life_events_from_payload(
-            result, date_str=spec.date_str, source=spec.source
-        )
         if self._state_refresh_recalled(spec.source_event):
             return data
         if spec.source_event is not None:
@@ -442,6 +466,7 @@ class StatusMixin:
             result,
             state,
             spec,
+            previous_state,
         )
         if self._state_refresh_recalled(spec.source_event):
             return data

@@ -1,7 +1,7 @@
+import copy
 import datetime
 import json
 import sqlite3
-import copy
 from dataclasses import replace
 from typing import Any
 
@@ -417,15 +417,36 @@ class PhysiologicalRhythmArchiveMixin:
             if cache_key in cache:
                 return copy.deepcopy(cache[cache_key])
 
+            # 短期和持续节律在同一业务日可以同时有效。按日期只取一条会
+            # 把其中一类误删，导致趋势摘要看不到另一条有效证据。短期/
+            # 持续按生命周期各取最新一条，瞬时记录仍按日期取最新一条。
             rows = self._conn.execute(
                 """
-                SELECT * FROM physiological_rhythm_logs
-                WHERE date >= ?
+                SELECT *
+                FROM physiological_rhythm_logs
+                WHERE date >= ? AND status = 'active'
                 ORDER BY date DESC, updated_at DESC, id DESC
-                LIMIT ?
                 """,
-                (cutoff, limit),
+                (cutoff,),
             ).fetchall()
+            selected_rows: list[sqlite3.Row] = []
+            seen_lifecycles: set[str] = set()
+            seen_transient_dates: set[str] = set()
+            for row in rows:
+                lifecycle = self._text(row["lifecycle_kind"]) or "transient"
+                date_text = self._text(row["date"])
+                if lifecycle in self._RHYTHM_SINGLE_ACTIVE_LIFECYCLES:
+                    if lifecycle in seen_lifecycles:
+                        continue
+                    seen_lifecycles.add(lifecycle)
+                else:
+                    if date_text in seen_transient_dates:
+                        continue
+                    seen_transient_dates.add(date_text)
+                selected_rows.append(row)
+                if len(selected_rows) >= limit:
+                    break
+            rows = selected_rows
             logs = [
                 item
                 for item in (

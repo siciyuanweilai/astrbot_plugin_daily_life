@@ -483,11 +483,11 @@ class LifeActionIntegrationTest(unittest.IsolatedAsyncioTestCase):
             day, now=datetime.datetime(2026, 8, 1, 18, 35)
         )
 
-        self.assertEqual(first[0].status, "committed")
-        self.assertEqual(day.state.energy, 65)
-        self.assertEqual(day.state.stress, 25)
-        self.assertTrue(second[0].replayed)
-        self.assertEqual(day.state.energy, 65)
+        self.assertEqual(first[0].status, "expired")
+        self.assertEqual(day.state.energy, 70)
+        self.assertEqual(day.state.stress, 30)
+        self.assertEqual(day.timeline[0].execution_state, "expired")
+        self.assertEqual(second, [])
 
     async def test_persisted_settlement_writes_day_outcome_and_trace(self):
         composer = _ComposerStub()

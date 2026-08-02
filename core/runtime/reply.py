@@ -62,6 +62,7 @@ class SemanticSegmentRuntimeMixin:
         self._semantic_segment_metrics: dict[str, int] = {
             "segmented": 0,
             "fallback_single": 0,
+            "fallback_natural": 0,
             "sent": 0,
             "cancelled": 0,
             "failed": 0,
@@ -522,6 +523,13 @@ class SemanticSegmentRuntimeMixin:
             return False
         if not self._replace_text_result_with_segments(event, natural_segments):
             return False
+        # 这条路径由自然分段接管，不能保留先前单段模型计划；否则
+        # ChatStyleRuntimeMixin 会误以为语义发送器仍负责投递并跳过发送。
+        try:
+            delattr(event, self._SEMANTIC_SEGMENT_PLAN_ATTR)
+        except AttributeError:
+            pass
+        setattr(event, self._SEMANTIC_SEGMENT_PENDING_ATTR, [])
         setattr(event, "_daily_life_natural_fallback_active", True)
         context = self._chat_style_context(event)
         self.log_chat_style_trace(
@@ -569,12 +577,23 @@ class SemanticSegmentRuntimeMixin:
         )
         if not plan.valid:
             if self._semantic_segment_try_natural_fallback(event, source_text):
+                self._semantic_segment_metrics["fallback_natural"] = (
+                    self._semantic_segment_metrics.get("fallback_natural", 0) + 1
+                )
                 return True
             return False
         plan = self._semantic_segment_clean_plan_punctuation(event, plan, source_text)
         self._semantic_segment_log_expression_trace(plan, event=event, scope=scope)
         self._semantic_segment_mark_pending(event, plan, scope)
         if len(plan.segments) <= 1:
+            # 有些模型会返回结构合法但把多句完整表达合并成一个分段。
+            # 仅在通用自然分段器能找到明确停顿时降级，仍保持原文顺序，
+            # 不根据关键词或具体案例打补丁。
+            if self._semantic_segment_try_natural_fallback(event, source_text):
+                self._semantic_segment_metrics["fallback_natural"] = (
+                    self._semantic_segment_metrics.get("fallback_natural", 0) + 1
+                )
+                return True
             if plan.segments and plan.segments[0].text != source_text:
                 chain[:] = [
                     self._semantic_segment_copy(chain[0], plan.segments[0].text)
@@ -673,7 +692,9 @@ class SemanticSegmentRuntimeMixin:
         except Exception as exc:
             self._semantic_segment_metrics["failed"] += 1
             logger.warning(f"{LOG_PREFIX} 模型语义分段发送后处理失败：{exc}")
-            return False
+            # 消息已经由投递服务成功送出；统计或状态回写失败不应让
+            # 上层重复发送同一条回复。
+            return True
 
     async def plan_semantic_segments_for_text(
         self,

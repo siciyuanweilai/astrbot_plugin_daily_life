@@ -293,11 +293,11 @@ class LayerChainMixin:
             episodes=selected["episodes"],
             focus_targets=list(snapshot.get("focus_targets") or [])[:2],
             feedback=selected["feedback"],
-            emotion_arcs=list(snapshot.get("emotion_arcs") or [])[:2],
-            physiological_rhythm_logs=list(
-                snapshot.get("physiological_rhythm_logs") or []
-            ),
-            physiological_rhythm_trend=snapshot.get("physiological_rhythm_trend") or {},
+            # 情绪和生理节律统一由 HiddenState/HiddenCognition 注入，避免同一批
+            # 高频状态在体验上下文中再次重复占用模型上下文。
+            emotion_arcs=[],
+            physiological_rhythm_logs=[],
+            physiological_rhythm_trend={},
             reply_effects=selected["reply_effects"],
             memory_corrections=list(snapshot.get("memory_corrections") or [])[:2],
             expression_profiles=list(snapshot.get("expression_profiles") or [])[:2],

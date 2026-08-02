@@ -35,6 +35,7 @@ class MemorySettings:
     worker_poll_seconds: int = 15
     max_generation_items: int = 8
     max_injection_items: int = 5
+    semantic_ranking_model_enabled: bool = False
 
     @staticmethod
     def from_dict(data: Any) -> "MemorySettings":
@@ -61,6 +62,9 @@ class MemorySettings:
             worker_poll_seconds=as_int(data.get("worker_poll_seconds", 15), 15, 2, 300),
             max_generation_items=as_int(data.get("max_generation_items", 8), 8, 0, 30),
             max_injection_items=as_int(data.get("max_injection_items", 5), 5, 0, 20),
+            semantic_ranking_model_enabled=as_bool(
+                data.get("semantic_ranking_model_enabled", False), False
+            ),
         )
 
 

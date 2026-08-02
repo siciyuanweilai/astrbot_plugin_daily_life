@@ -495,7 +495,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertEqual(config.sight.video_download_max_mb, 500)
         self.assertEqual(config.sight.video_download_timeout_seconds, 240)
         self.assertEqual(config.sight.audio_transcript_mode, "local")
-        self.assertTrue(config.emoji.collect_chat_emojis)
+        self.assertFalse(config.emoji.collect_chat_emojis)
         self.assertEqual(config.emoji.max_ready, 128)
         self.assertTrue(config.emoji.replace_when_full)
         self.assertEqual(config.emoji.max_size_mb, 5.0)
@@ -715,7 +715,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertNotIn("local_asr_auto_prepare", sight_items)
         self.assertNotIn("local_asr_model_dir", sight_items)
         self.assertEqual(sight_items["note_max_transcript_chars"]["default"], 20000)
-        self.assertTrue(sight_items["bili_auto_summary"]["default"])
+        self.assertFalse(sight_items["bili_auto_summary"]["default"])
         self.assertEqual(sight_items["bili_auto_summary"]["type"], "bool")
         self.assertNotIn("timeout_seconds", sight_items)
         self.assertNotIn("audio_timeout_seconds", sight_items)
@@ -1123,7 +1123,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertEqual(
             emoji_items["send_candidate_limit"]["description"], "表情匹配候选数"
         )
-        self.assertTrue(emoji_items["collect_chat_emojis"]["default"])
+        self.assertFalse(emoji_items["collect_chat_emojis"]["default"])
         self.assertEqual(emoji_items["max_ready"]["default"], 128)
         self.assertEqual(emoji_items["max_ready"]["slider"]["max"], 300)
         self.assertTrue(emoji_items["replace_when_full"]["default"])
@@ -1299,7 +1299,8 @@ class LifeSettingsTest(unittest.TestCase):
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertIn("version: 1.0.4", metadata)
-        self.assertIn("version-1.0.4", readme)
+        self.assertIn("version: 1.0.7", metadata)
+        self.assertIn("version-1.0.7", readme)
+        self.assertIn("v1.0.7 · 2026-08-02", changelog)
         self.assertIn("v1.0.4 · 2026-08-01", changelog)
         self.assertLess(changelog.index("v1.0.4"), changelog.index("v1.0.3"))

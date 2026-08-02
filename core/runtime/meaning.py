@@ -245,6 +245,14 @@ JSON 输出要求：
                 return embedded
         except Exception as exc:
             logger.debug(f"{LOG_PREFIX} 向量记忆排序跳过：{type(exc).__name__}: {exc}")
+        if not bool(
+            getattr(
+                getattr(self.config, "memory", None),
+                "semantic_ranking_model_enabled",
+                False,
+            )
+        ):
+            return fallback
         try:
             modeled = await self._meaning_rank_with_model(query, groups, limits)
             return modeled if modeled is not None else fallback

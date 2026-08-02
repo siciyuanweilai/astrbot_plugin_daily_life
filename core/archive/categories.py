@@ -245,7 +245,7 @@ STORAGE_CATEGORIES: dict[str, StorageCategory] = {
         description="时间化事实、反思人格、可恢复任务、决策轨迹、动作结算、分层情绪和有证据日记。",
         tables=COGNITION_TABLES,
         clear_order=COGNITION_CLEAR_ORDER,
-        default_keep_days=0,
+        default_keep_days=30,
         auto_cleanup=True,
         groups=(
             StorageTableGroup(

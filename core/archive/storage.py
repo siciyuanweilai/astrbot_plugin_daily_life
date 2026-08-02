@@ -147,6 +147,36 @@ class StorageArchiveMixin:
         )
         return max(int(cursor.rowcount or 0), 0)
 
+    def _cleanup_cognition_unlocked(self, keep_days: int) -> int:
+        """清理已结束的认知运行记录，同时保留当前有效事实。"""
+        cutoff = self._cutoff_date(keep_days)
+        return self._delete_statements_unlocked(
+            (
+                (
+                    "DELETE FROM fact_evidence_signals WHERE created_at < ? AND fact_id NOT IN (SELECT id FROM temporal_facts WHERE status = 'active')",
+                    (cutoff,),
+                ),
+                (
+                    "DELETE FROM temporal_facts WHERE status <> 'active' AND COALESCE(NULLIF(valid_to, ''), updated_at) < ?",
+                    (cutoff,),
+                ),
+                ("DELETE FROM reflections WHERE updated_at < ?", (cutoff,)),
+                ("DELETE FROM persona_assertions WHERE updated_at < ?", (cutoff,)),
+                (
+                    "DELETE FROM durable_tasks WHERE status IN ('completed', 'failed', 'cancelled', 'expired') AND updated_at < ?",
+                    (cutoff,),
+                ),
+                ("DELETE FROM decision_traces WHERE created_at < ?", (cutoff,)),
+                ("DELETE FROM life_action_receipts WHERE created_at < ?", (cutoff,)),
+                ("DELETE FROM life_action_outcomes WHERE created_at < ?", (cutoff,)),
+                (
+                    "DELETE FROM affective_states WHERE status <> 'active' AND updated_at < ?",
+                    (cutoff,),
+                ),
+                ("DELETE FROM grounded_diary_entries WHERE updated_at < ?", (cutoff,)),
+            )
+        )
+
     def _delete_statements_unlocked(
         self, statements: tuple[tuple[str, tuple[Any, ...]], ...]
     ) -> int:
@@ -484,6 +514,8 @@ class StorageArchiveMixin:
             return self._cleanup_daily_unlocked(keep_days)
         if category.key == "review":
             return self._cleanup_review_unlocked(keep_days)
+        if category.key == "cognition":
+            return self._cleanup_cognition_unlocked(keep_days)
         if category.key == "relationships":
             return self._cleanup_relationships_unlocked(keep_days)
         if category.key == "world":

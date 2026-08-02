@@ -1292,6 +1292,30 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             WEB_SEARCH_TOOL_NAMES,
             umo=str(event.unified_msg_origin or ""),
         )
+        toolset = getattr(req, "func_tool", None)
+        life_config = getattr(self.runtime, "config", None)
+        if toolset is not None and life_config is not None:
+            image_enabled = bool(
+                getattr(getattr(life_config, "image_generation", None), "enabled", False)
+            )
+            video_enabled = bool(
+                getattr(getattr(life_config, "video_generation", None), "enabled", False)
+            )
+            voice_enabled = bool(
+                getattr(getattr(life_config, "voice_generation", None), "enabled", False)
+            )
+            if not image_enabled:
+                for name in (
+                    "life_image_generate",
+                    "life_photo_suite_generate",
+                    "edit_life_image",
+                    "life_image_reverse_prompt",
+                ):
+                    toolset.remove_tool(name)
+            if not video_enabled:
+                toolset.remove_tool("life_video_generate")
+            if not voice_enabled:
+                toolset.remove_tool("life_voice_generate")
         await self.runtime.inject_life_context(req, event)
 
     @filter.on_llm_response()

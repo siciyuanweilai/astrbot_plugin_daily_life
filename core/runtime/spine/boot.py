@@ -32,6 +32,7 @@ _DURABLE_TASK_LABELS = {
     "private_revisit": "私聊回访检查",
     "proactive_idle": "闲时主动检查",
     "media_delivery": "媒体投递恢复",
+    "web_research": "网页研究报告",
 }
 
 
@@ -107,6 +108,12 @@ class SpineBootMixin:
             return
         await self.archive.initialize()
         await self.archive.recover_leased_durable_tasks()
+        search_service = getattr(getattr(self, "runtime_services", None), "search", None)
+        if search_service is None:
+            search_service = getattr(self, "search", None)
+        restore_research = getattr(search_service, "restore_research_tasks", None)
+        if callable(restore_research):
+            await restore_research()
         friend_look_loader = getattr(self, "_load_friend_daily_looks", None)
         if callable(friend_look_loader):
             await friend_look_loader()
@@ -143,7 +150,7 @@ class SpineBootMixin:
             log_prefix=LOG_PREFIX,
         )
         weather_client = WeatherClient(config.weather)
-        search = SearchService(self.context, config.search)
+        search = SearchService(self.context, config.search, task_store=self.archive)
         composer = LifeBackgroundComposer(
             self.context,
             config,
@@ -232,6 +239,7 @@ class SpineBootMixin:
             owner,
             limit=8,
             lease_seconds=1800,
+            exclude_kinds=("web_research",),
         )
         completed = 0
         for task in tasks:

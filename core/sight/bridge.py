@@ -582,6 +582,9 @@ class SightMixin(SightCleanupMixin, SightIdentityMixin):
         clips = self._sight_clips_from_event(event)
         if not clips:
             return False
+        settings = getattr(getattr(self, "config", None), "sight", None)
+        if not bool(getattr(settings, "auto_video_understanding", False)):
+            return False
         scope = self._event_session_id(event)
         if not scope:
             return False

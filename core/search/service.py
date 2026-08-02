@@ -3,13 +3,16 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import inspect
+import ipaddress
 import json
 import time
 import uuid
 from dataclasses import dataclass, field, replace
 from typing import Any
+from urllib.parse import urlparse
 
 import aiohttp
+
 from astrbot.api import logger
 
 from ..clock import now as life_now
@@ -18,15 +21,35 @@ from .cache import SingleFlight, TimedCache
 from .client import GrokClient, SearchRequestTimeout, TavilyClient, TavilyExtractError
 from .evidence import (
     bounded_answer as _bounded_answer,
+)
+from .evidence import (
     compact as _compact,
+)
+from .evidence import (
     evidence_quality as _evidence_quality,
+)
+from .evidence import (
     has_search_evidence as _has_search_evidence,
+)
+from .evidence import (
     has_searched_content as _has_searched_content,
+)
+from .evidence import (
     merge_image_assets as _merge_image_assets,
+)
+from .evidence import (
     merge_sources as _merge_sources,
+)
+from .evidence import (
     missing_aspects as _missing_aspects,
+)
+from .evidence import (
     normalize_image_assets as _normalize_image_assets,
+)
+from .evidence import (
     query_key as _query_key,
+)
+from .evidence import (
     source_key as _source_key,
 )
 from .model import (
@@ -43,10 +66,11 @@ from .query import (
     build_external_evidence_request,
     normalize_domains,
     normalize_topic,
-    normalize_source_scope as _normalize_source_scope,
     resolve_search_dates,
 )
-
+from .query import (
+    normalize_source_scope as _normalize_source_scope,
+)
 
 LOG_PREFIX = "[日常生活]"
 SEARCH_TOOL_NAMES = {
@@ -98,6 +122,7 @@ class ResearchTask:
     task_id: str
     request_id: str
     created_at: float
+    umo: str = ""
     status: str = "pending"
     result: dict[str, Any] = field(default_factory=dict)
     error: str = ""
@@ -105,9 +130,11 @@ class ResearchTask:
 
 
 class SearchService:
-    def __init__(self, context: Any, settings: SearchSettings):
+    def __init__(self, context: Any, settings: SearchSettings, task_store: Any = None):
         self.context = context
         self.settings = settings
+        # 复用生活运行时已有的持久任务队列；没有队列时仍保持独立可测试。
+        self.task_store = task_store
         self._session: aiohttp.ClientSession | None = None
         self._tavily_key_index = 0
         self._tavily_key_lock = asyncio.Lock()
@@ -121,6 +148,91 @@ class SearchService:
         self._fetch_flight = SingleFlight[dict[str, Any]]()
         self._research_tasks: dict[str, ResearchTask] = {}
         self._research_pollers: dict[str, asyncio.Task] = {}
+
+    @staticmethod
+    def _normalize_public_url(value: Any) -> str:
+        """只允许公网 HTTP(S) 入口，避免把本地协议或空地址交给外部抓取服务。"""
+
+        text = str(value or "").strip()
+        try:
+            parsed = urlparse(text)
+            hostname = str(parsed.hostname or "").strip().lower().rstrip(".")
+        except ValueError:
+            return ""
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return ""
+        if parsed.username or parsed.password:
+            return ""
+        if not hostname or hostname == "localhost" or hostname.endswith(".local"):
+            return ""
+        try:
+            address = ipaddress.ip_address(hostname)
+        except ValueError:
+            address = None
+        if address is not None and (
+            address.is_private or address.is_loopback or address.is_link_local
+        ):
+            return ""
+        return text
+
+    @staticmethod
+    def _bounded_positive(value: Any, default: int, upper: int) -> int:
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            number = default
+        return max(1, min(number, upper))
+
+    async def restore_research_tasks(self) -> int:
+        """从持久任务队列恢复未完成的研究任务。"""
+
+        store = self.task_store
+        getter = getattr(store, "get_durable_tasks", None)
+        if not callable(getter):
+            return 0
+        try:
+            records = await getter(kind="web_research", limit=RESEARCH_TASK_MAX_ITEMS)
+        except Exception as exc:
+            logger.warning(f"{LOG_PREFIX} 恢复研究任务失败：{exc}")
+            return 0
+        restored = 0
+        for record in records or []:
+            payload = getattr(record, "payload", {})
+            if not isinstance(payload, dict):
+                continue
+            task_id = str(payload.get("task_id") or "").strip()
+            request_id = str(payload.get("request_id") or "").strip()
+            if not task_id or not request_id:
+                continue
+            status = str(getattr(record, "status", "pending") or "pending").strip().lower()
+            if status == "completed":
+                task_status = "completed"
+            elif status in {"failed", "cancelled", "dead"}:
+                task_status = "failed"
+            else:
+                task_status = "pending"
+            task = ResearchTask(
+                task_id=task_id,
+                request_id=request_id,
+                created_at=time.monotonic(),
+                umo=str(payload.get("umo") or "").strip(),
+                status=task_status,
+                result=(
+                    dict((getattr(record, "result", {}) or {}).get("research") or {})
+                    if isinstance(getattr(record, "result", {}), dict)
+                    else {}
+                ),
+                error=str(getattr(record, "last_error", "") or "").strip(),
+            )
+            self._research_tasks[task_id] = task
+            restored += 1
+            if task_status == "pending":
+                self._research_pollers[task_id] = asyncio.create_task(
+                    self._poll_research_task(task_id, task.umo)
+                )
+        if restored:
+            logger.info(f"{LOG_PREFIX} 已恢复研究任务：{restored} 个")
+        return restored
 
     @property
     def enabled(self) -> bool:
@@ -361,6 +473,18 @@ class SearchService:
     @staticmethod
     def _research_task_finished(task: ResearchTask) -> bool:
         return task.status in {"completed", "failed", "cancelled", "error", "timeout"}
+
+    @staticmethod
+    def _bounded_research_payload(value: Any) -> dict[str, Any]:
+        """限制研究结果落库和回填长度，保留状态与引用字段。"""
+
+        if not isinstance(value, dict):
+            return {}
+        payload = dict(value)
+        for key in ("output", "content", "summary"):
+            if isinstance(payload.get(key), str):
+                payload[key] = payload[key][:RESEARCH_TOOL_MAX_CHARS]
+        return payload
 
     def _prune_research_tasks(self, now: float) -> None:
         stale = [
@@ -1556,28 +1680,29 @@ class SearchService:
             )
 
     async def fetch(self, url: str, *, umo: str = "") -> dict[str, Any]:
-        url = str(url or "").strip()
+        raw_url = str(url or "").strip()
+        url = self._normalize_public_url(raw_url)
         if not url:
             return {
                 "status": "error",
-                "url": "",
+                "url": raw_url,
                 "mode": "page_extract",
                 "provider": "tavily",
                 "providers": ["tavily"],
                 "provider_mode": "tavily",
-                "error": "网页地址不能为空",
+                "error": "网页地址必须是公网 HTTP 或 HTTPS 地址",
             }
         if not self.tavily_available(umo):
             return {
                 "status": "disabled",
-                "url": str(url or ""),
+                "url": url,
                 "mode": "page_extract",
                 "provider": "tavily",
                 "providers": ["tavily"],
                 "provider_mode": "tavily",
                 "error": "网页读取需要启用联网搜索并配置 Tavily",
             }
-        key = hashlib.sha256(f"fetch\n{_source_key(url)}".encode("utf-8")).hexdigest()
+        key = hashlib.sha256(f"fetch\n{_source_key(url)}".encode()).hexdigest()
         namespaced_cache_key = f"page:{key}"
         cached = (
             await self._cache.get(namespaced_cache_key)
@@ -1735,17 +1860,24 @@ class SearchService:
         format: str = "markdown",
         umo: str = "",
     ) -> dict[str, Any]:
-        values = [
-            str(item or "").strip() for item in urls or [] if str(item or "").strip()
-        ]
+        values = []
+        invalid_values = []
+        for item in urls or []:
+            raw_value = str(item or "").strip()
+            normalized = self._normalize_public_url(raw_value)
+            if normalized:
+                if normalized not in values:
+                    values.append(normalized)
+            elif raw_value:
+                invalid_values.append(raw_value)
         if not values:
             return {
                 "status": "error",
-                "urls": [],
+                "urls": invalid_values,
                 "provider": "tavily",
                 "providers": ["tavily"],
                 "provider_mode": "tavily",
-                "error": "网页地址不能为空",
+                "error": "网页地址必须是公网 HTTP 或 HTTPS 地址",
             }
         if not self.tavily_available(umo):
             return {
@@ -1783,6 +1915,10 @@ class SearchService:
                     entry["images"] = list(item["images"] or [])[:20]
                 results.append(entry)
             failed = list(data.get("failed_results") or [])
+            failed.extend(
+                {"url": item, "error": "地址不是公网 HTTP(S)"}
+                for item in invalid_values
+            )
             return {
                 "status": "ok" if results else "error",
                 "urls": values,
@@ -1820,21 +1956,41 @@ class SearchService:
         allow_external: bool = True,
         umo: str = "",
     ) -> dict[str, Any]:
+        normalized_url = self._normalize_public_url(url)
+        if not normalized_url:
+            return {
+                "status": "error",
+                "url": str(url or ""),
+                "provider": "tavily",
+                "providers": ["tavily"],
+                "provider_mode": "tavily",
+                "error": "网站地址必须是公网 HTTP 或 HTTPS 地址",
+            }
         if not self.tavily_available(umo):
             return {
                 "status": "disabled",
-                "url": str(url or ""),
+                "url": normalized_url,
                 "provider": "tavily",
                 "providers": ["tavily"],
                 "provider_mode": "tavily",
                 "error": "站点映射需要启用联网搜索并配置 Tavily",
             }
         try:
-            bounded_depth = max(1, min(int(max_depth), self.settings.map_max_depth))
-            bounded_breadth = max_breadth or self.settings.map_max_breadth
-            bounded_limit = limit or self.settings.map_max_results
+            bounded_depth = self._bounded_positive(
+                max_depth, 1, self.settings.map_max_depth
+            )
+            bounded_breadth = self._bounded_positive(
+                max_breadth,
+                self.settings.map_max_breadth,
+                self.settings.map_max_breadth,
+            )
+            bounded_limit = self._bounded_positive(
+                limit,
+                self.settings.map_max_results,
+                self.settings.map_max_results,
+            )
             values = await (await self._tavily(umo)).map(
-                url,
+                normalized_url,
                 instructions=_compact(instructions, 500),
                 max_depth=bounded_depth,
                 max_breadth=bounded_breadth,
@@ -1846,9 +2002,14 @@ class SearchService:
                 allow_external=allow_external,
                 timeout=self.settings.fetch_timeout_seconds,
             )
+            values = list(
+                dict.fromkeys(
+                    str(item).strip() for item in values if str(item).strip()
+                )
+            )
             return {
                 "status": "ok",
-                "url": url,
+                "url": normalized_url,
                 "results": values,
                 "results_count": len(values),
                 "provider": "tavily",
@@ -1869,7 +2030,7 @@ class SearchService:
             logger.warning(f"{LOG_PREFIX} 站点映射失败：{exc}")
             return {
                 "status": "error",
-                "url": url,
+                "url": normalized_url,
                 "provider": "tavily",
                 "providers": ["tavily"],
                 "provider_mode": "tavily",
@@ -1895,10 +2056,20 @@ class SearchService:
         format: str = "markdown",
         umo: str = "",
     ) -> dict[str, Any]:
+        normalized_url = self._normalize_public_url(url)
+        if not normalized_url:
+            return {
+                "status": "error",
+                "url": str(url or ""),
+                "provider": "tavily",
+                "providers": ["tavily"],
+                "provider_mode": "tavily",
+                "error": "网站地址必须是公网 HTTP 或 HTTPS 地址",
+            }
         if not self.tavily_available(umo):
             return {
                 "status": "disabled",
-                "url": str(url or ""),
+                "url": normalized_url,
                 "provider": "tavily",
                 "providers": ["tavily"],
                 "provider_mode": "tavily",
@@ -1906,11 +2077,21 @@ class SearchService:
             }
         started = time.monotonic()
         try:
-            bounded_depth = max(1, min(int(max_depth), self.settings.crawl_max_depth))
-            bounded_breadth = max_breadth or self.settings.crawl_max_breadth
-            bounded_limit = limit or self.settings.crawl_max_results
+            bounded_depth = self._bounded_positive(
+                max_depth, 1, self.settings.crawl_max_depth
+            )
+            bounded_breadth = self._bounded_positive(
+                max_breadth,
+                self.settings.crawl_max_breadth,
+                self.settings.crawl_max_breadth,
+            )
+            bounded_limit = self._bounded_positive(
+                limit,
+                self.settings.crawl_max_results,
+                self.settings.crawl_max_results,
+            )
             data = await (await self._tavily(umo)).crawl(
-                url,
+                normalized_url,
                 instructions=_compact(instructions, 2000),
                 max_depth=bounded_depth,
                 max_breadth=bounded_breadth,
@@ -1928,12 +2109,17 @@ class SearchService:
             )
             results = data.get("results") or []
             normalized = []
+            seen_urls: set[str] = set()
             for item in results:
                 if not isinstance(item, dict):
                     continue
+                item_url = str(item.get("url") or "").strip()
+                if not item_url or item_url in seen_urls:
+                    continue
+                seen_urls.add(item_url)
                 normalized.append(
                     {
-                        "url": str(item.get("url") or "").strip(),
+                        "url": item_url,
                         "content": str(item.get("raw_content") or "").strip()[
                             : self.settings.max_page_chars
                         ],
@@ -1951,19 +2137,33 @@ class SearchService:
             )
             return {
                 "status": "ok",
-                "url": str(url or ""),
+                "url": normalized_url,
                 "results": normalized,
                 "results_count": len(normalized),
                 "failed_results": list(data.get("failed_results") or []),
                 "provider": "tavily",
                 "providers": ["tavily"],
                 "provider_mode": "tavily",
+                "parameters": {
+                    "max_depth": bounded_depth,
+                    "max_breadth": bounded_breadth,
+                    "limit": bounded_limit,
+                    "select_paths": list(select_paths or []),
+                    "select_domains": list(select_domains or []),
+                    "exclude_paths": list(exclude_paths or []),
+                    "exclude_domains": list(exclude_domains or []),
+                    "allow_external": bool(allow_external),
+                    "include_images": bool(include_images),
+                    "include_favicon": bool(include_favicon),
+                    "extract_depth": str(extract_depth or "advanced"),
+                    "format": str(format or "markdown"),
+                },
             }
         except Exception as exc:
             logger.warning(f"{LOG_PREFIX} 站点抓取失败：{exc}")
             return {
                 "status": "error",
-                "url": str(url or ""),
+                "url": normalized_url,
                 "provider": "tavily",
                 "providers": ["tavily"],
                 "provider_mode": "tavily",
@@ -1982,6 +2182,15 @@ class SearchService:
         output_schema: dict[str, Any] | None = None,
         umo: str = "",
     ) -> dict[str, Any]:
+        normalized_input = _compact(input_text, 4000)
+        if not normalized_input:
+            return {
+                "status": "error",
+                "provider": "tavily",
+                "providers": ["tavily"],
+                "provider_mode": "tavily",
+                "error": "研究问题不能为空",
+            }
         if not self.tavily_available(umo):
             return {
                 "status": "disabled",
@@ -2000,13 +2209,22 @@ class SearchService:
                 "error": "研究任务数量已达到上限，请等待正在执行的任务结束",
             }
         try:
+            requested_model = str(model or "auto").strip().lower()
+            if requested_model not in {"auto", "mini", "pro"}:
+                requested_model = "auto"
+            requested_length = str(output_length or "standard").strip().lower()
+            if requested_length not in {"short", "standard", "long"}:
+                requested_length = "standard"
+            requested_citations = str(citation_format or "numbered").strip().lower()
+            if requested_citations not in {"numbered", "mla", "apa", "chicago"}:
+                requested_citations = "numbered"
             data = await (await self._tavily(umo)).research_create(
-                input_text,
-                model=model,
-                output_length=output_length,
-                citation_format=citation_format,
-                include_domains=include_domains,
-                exclude_domains=exclude_domains,
+                normalized_input,
+                model=requested_model,
+                output_length=requested_length,
+                citation_format=requested_citations,
+                include_domains=normalize_domains(include_domains),
+                exclude_domains=normalize_domains(exclude_domains),
                 output_schema=output_schema,
             )
             request_id = str(data.get("request_id") or "").strip()
@@ -2014,9 +2232,29 @@ class SearchService:
                 raise RuntimeError("Tavily 未返回研究任务编号")
             task_id = uuid.uuid4().hex[:12]
             task = ResearchTask(
-                task_id=task_id, request_id=request_id, created_at=time.monotonic()
+                task_id=task_id,
+                request_id=request_id,
+                created_at=time.monotonic(),
+                umo=str(umo or "").strip(),
             )
             self._research_tasks[task_id] = task
+            enqueue = getattr(self.task_store, "enqueue_durable_task", None)
+            if callable(enqueue):
+                try:
+                    await enqueue(
+                        f"web_research:{task_id}",
+                        "web_research",
+                        {
+                            "task_id": task_id,
+                            "request_id": request_id,
+                            "umo": str(umo or "").strip(),
+                            "input": normalized_input,
+                        },
+                        priority=60,
+                        max_attempts=3,
+                    )
+                except Exception as exc:
+                    logger.warning(f"{LOG_PREFIX} 研究任务持久化失败：{exc}")
             poller = asyncio.create_task(self._poll_research_task(task_id, umo))
             self._research_pollers[task_id] = poller
             return {
@@ -2066,14 +2304,41 @@ class SearchService:
         finally:
             if self._research_task_finished(task):
                 task.finished_at = time.monotonic()
+                result = {
+                    "status": task.status,
+                    "research": self._bounded_research_payload(task.result),
+                    "error": task.error,
+                }
+                complete = getattr(
+                    self.task_store, "complete_durable_task_by_key", None
+                )
+                fail = getattr(self.task_store, "fail_durable_task_by_key", None)
+                if task.status == "completed" and callable(complete):
+                    try:
+                        await complete(f"web_research:{task_id}", result)
+                    except Exception as exc:
+                        logger.warning(f"{LOG_PREFIX} 研究任务结果持久化失败：{exc}")
+                elif task.status != "completed" and callable(fail):
+                    try:
+                        await fail(f"web_research:{task_id}", task.error or task.status, result)
+                    except Exception as exc:
+                        logger.warning(f"{LOG_PREFIX} 研究任务失败状态持久化失败：{exc}")
+                elif callable(complete):
+                    # 兼容旧版测试存储或外部存储实现；实际归档使用上面的失败接口。
+                    try:
+                        await complete(f"web_research:{task_id}", result)
+                    except Exception as exc:
+                        logger.warning(f"{LOG_PREFIX} 研究任务结果持久化失败：{exc}")
             self._research_pollers.pop(task_id, None)
 
     async def research_status(self, task_id: str, *, umo: str = "") -> dict[str, Any]:
-        del umo
         self._prune_research_tasks(time.monotonic())
         task = self._research_tasks.get(str(task_id or "").strip())
         if task is None:
             return {"status": "error", "error": "研究任务不存在或已过期"}
+        requested_umo = str(umo or "").strip()
+        if requested_umo and task.umo and requested_umo != task.umo:
+            return {"status": "error", "error": "无权查看其他会话的研究任务"}
         payload: dict[str, Any] = {
             "status": task.status,
             "task_id": task.task_id,
@@ -2083,7 +2348,7 @@ class SearchService:
             "provider_mode": "tavily",
         }
         if task.result:
-            data = dict(task.result)
+            data = self._bounded_research_payload(task.result)
             if isinstance(data.get("output"), str):
                 data["output"] = str(data["output"] or "")[:RESEARCH_TOOL_MAX_CHARS]
             payload["research"] = data

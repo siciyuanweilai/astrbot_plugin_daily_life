@@ -141,6 +141,7 @@ const CONFIG_SECTION_FIELD_GROUPS = new Map([
         "proactive_config.min_message_length",
         "proactive_config.min_confidence",
         "proactive_config.max_reply_length",
+        "proactive_config.adaptive_feedback_enabled",
       ],
     },
     {
@@ -186,6 +187,7 @@ const CONFIG_SECTION_FIELD_GROUPS = new Map([
       hint: "每日生活、复盘和计划约定的保留周期。",
       fields: [
         "storage_config.daily_keep_days",
+        "storage_config.cognition_keep_days",
         "storage_config.review_keep_days",
         "storage_config.planning_keep_days",
       ],

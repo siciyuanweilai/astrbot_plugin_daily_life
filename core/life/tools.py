@@ -581,9 +581,11 @@ def get_current_timeline_status(
 
 
 TIMELINE_EXECUTION_STATES = frozenset(
-    {"planned", "active", "completed", "skipped", "cancelled"}
+    {"planned", "active", "completed", "expired", "skipped", "cancelled"}
 )
-TIMELINE_TERMINAL_STATES = frozenset({"completed", "skipped", "cancelled"})
+TIMELINE_TERMINAL_STATES = frozenset(
+    {"completed", "expired", "skipped", "cancelled"}
+)
 
 
 def reconcile_timeline_execution(
@@ -620,7 +622,7 @@ def reconcile_timeline_execution(
     for index, (_item_time, item) in enumerate(timed_items):
         previous = _timeline_field(item, "execution_state", "planned").lower()
         previous = previous if previous in TIMELINE_EXECUTION_STATES else "planned"
-        if previous in {"skipped", "cancelled"}:
+        if previous in {"skipped", "cancelled", "expired"}:
             continue
         if date < current_time.date():
             target = "completed"
@@ -634,7 +636,7 @@ def reconcile_timeline_execution(
         else:
             target = "active"
             reason = "已到达计划开始时间"
-        if previous == "completed" and target != "completed":
+        if previous in {"completed", "expired"} and target != previous:
             continue
         if previous == target:
             continue

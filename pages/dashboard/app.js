@@ -138,6 +138,7 @@ const DURABLE_TASK_KIND_LABELS = {
   daily_review: "夜间生活复盘",
   private_revisit: "私聊回访检查",
   proactive_idle: "闲时主动检查",
+  web_research: "网页研究报告",
 };
 const DECISION_STAGE_LABELS = {
   proposed: "提出候选",
@@ -1355,11 +1356,12 @@ function renderWorld(status) {
 
 function renderLifecycle(status) {
   const lifecycle = status.lifecycle || {};
+  const diagnosticsEnabled = Boolean(status.config?.diagnostics_enabled);
   const relationshipText = relationshipTextResolver(status).text;
   const reviews = objectItems(lifecycle.reviews);
-  const reflections = objectItems(lifecycle.reflections);
-  const diaries = objectItems(lifecycle.grounded_diary);
-  const durableTasks = objectItems(lifecycle.durable_tasks);
+  const reflections = diagnosticsEnabled ? objectItems(lifecycle.reflections) : [];
+  const diaries = diagnosticsEnabled ? objectItems(lifecycle.grounded_diary) : [];
+  const durableTasks = diagnosticsEnabled ? objectItems(lifecycle.durable_tasks) : [];
   const preferences = objectItems(lifecycle.preferences);
   const events = objectItems(lifecycle.life_events);
   const total = reviews.length + preferences.length + events.length;
@@ -1477,27 +1479,28 @@ function healthExperienceRecord(health = {}) {
 
 function experienceGroups(status) {
   const experience = status.experience || {};
+  const diagnosticsEnabled = Boolean(status.config?.diagnostics_enabled);
   const episodes = objectItems(experience.episodes);
   const temporalFacts = objectItems(experience.temporal_facts);
-  const personaAssertions = objectItems(experience.persona_assertions);
-  const decisionTraces = objectItems(experience.decision_traces);
-  const actionOutcomes = objectItems(experience.action_outcomes);
+  const personaAssertions = diagnosticsEnabled ? objectItems(experience.persona_assertions) : [];
+  const decisionTraces = diagnosticsEnabled ? objectItems(experience.decision_traces) : [];
+  const actionOutcomes = diagnosticsEnabled ? objectItems(experience.action_outcomes) : [];
   const affectiveStates = objectItems(experience.affective_states);
   const visibleEpisodes = visibleLifeEpisodes(episodes);
   const evidence = objectItems(experience.evidence);
   const visibleEvidence = visibleExperienceEvidence(evidence, episodes);
   const feedback = uniqueExperienceFeedback(experience.feedback);
-  const emotionArcs = objectItems(experience.emotion_arcs);
-  const rhythmLogs = objectItems(experience.physiological_rhythm_logs);
+  const emotionArcs = diagnosticsEnabled ? objectItems(experience.emotion_arcs) : [];
+  const rhythmLogs = diagnosticsEnabled ? objectItems(experience.physiological_rhythm_logs) : [];
   const rhythmTrend = experience.physiological_rhythm_trend && typeof experience.physiological_rhythm_trend === "object"
     ? experience.physiological_rhythm_trend
     : {};
-  const focusTargets = objectItems(experience.focus_targets);
-  const terms = objectItems(experience.terms);
+  const focusTargets = diagnosticsEnabled ? objectItems(experience.focus_targets) : [];
+  const terms = diagnosticsEnabled ? objectItems(experience.terms) : [];
   const longTermMemories = objectItems(experience.long_term_memories);
-  const memoryClusters = objectItems(experience.memory_clusters);
-  const memoryEntities = objectItems(experience.memory_entities);
-  const memoryConflicts = objectItems(experience.memory_conflicts);
+  const memoryClusters = diagnosticsEnabled ? objectItems(experience.memory_clusters) : [];
+  const memoryEntities = diagnosticsEnabled ? objectItems(experience.memory_entities) : [];
+  const memoryConflicts = diagnosticsEnabled ? objectItems(experience.memory_conflicts) : [];
   const health = experience.health && typeof experience.health === "object" ? experience.health : {};
   const relationshipNames = relationshipNameIndex(status);
   const relationshipText = (value) => relationshipReferenceText(value, relationshipNames);

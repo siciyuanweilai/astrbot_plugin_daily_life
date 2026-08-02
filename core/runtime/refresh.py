@@ -36,6 +36,7 @@ class RefreshMixin:
         before = (
             str((data.meta or {}).get("near_term_anchors") or ""),
             str((data.meta or {}).get("life_action_settlements") or ""),
+            str((data.meta or {}).get("life_action_expirations") or ""),
         )
         refine = getattr(self.composer, "refine_upcoming_anchors", None)
         if callable(refine):
@@ -46,6 +47,7 @@ class RefreshMixin:
         after = (
             str((data.meta or {}).get("near_term_anchors") or ""),
             str((data.meta or {}).get("life_action_settlements") or ""),
+            str((data.meta or {}).get("life_action_expirations") or ""),
         )
         return before != after
 

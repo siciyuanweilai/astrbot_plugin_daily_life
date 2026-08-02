@@ -1,10 +1,11 @@
 import datetime
 import time
 import uuid
-from typing import Callable
+from collections.abc import Callable
 
 from astrbot.api import logger
 
+from ..clock import now as life_now
 from ..config.vocab import PERIOD_HOURS
 from ..labels import (
     outfit_decision_label,
@@ -13,13 +14,14 @@ from ..labels import (
     sleep_mode_label,
 )
 from ..prompts import cache_friendly_prompt
-from ..clock import now as life_now
 from .appearance import (
     APPEARANCE_PREFERENCE_CATEGORIES,
     CURRENT_APPEARANCE_GENERATION_RULES,
     format_life_preference_context,
 )
 from .condition import format_physiological_rhythm_prompt
+from .fashion import outfit_style_contamination_reason
+from .future import future_outfit_timing_issue
 from .tools import (
     extract_json_from_text,
     get_current_timeline_status,
@@ -27,8 +29,6 @@ from .tools import (
     parse_time_minutes,
     timeline_item_datetime,
 )
-from .future import future_outfit_timing_issue
-from .fashion import outfit_style_contamination_reason
 from .wardrobe import (
     OUTFIT_CONTINUITY_RULES,
     OUTFIT_SCENE_CATEGORY_ENUM,
@@ -38,7 +38,6 @@ from .wardrobe import (
     outfit_style_pool_label,
     resolve_outfit_style_pool,
 )
-
 
 PERIOD_TIME_RANGES = {
     "dawn": "00:00-06:00",
@@ -468,6 +467,8 @@ reason 使用自然中文，不写内部枚举。
                 f"风格池：{outfit_style_pool_label(style_pool)}",
             )
         )
+        # 保持原穿搭同样是一次已审计的生活决策。记录它能说明为何没有
+        # 换装，也让后续日程重排、回顾和穿搭连续性判断拥有完整证据链。
         await self._save_life_decision_record(
             kind="outfit",
             date=date_str,

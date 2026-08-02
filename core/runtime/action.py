@@ -29,7 +29,7 @@ class RuntimeActionReceiptMixin:
         Args:
             event: 原始消息事件或可提供会话范围的对象。
             action_type: 已确认动作类型。
-            status: confirmed、simulated、failed 或 cancelled。
+            status: confirmed、simulated、failed 或 cancelled。simulated 仅用于兼容旧回执，系统不会自动生成。
             evidence: 可展示的执行证据。
             source: 回执来源类别。
             source_id: 来源的稳定编号。

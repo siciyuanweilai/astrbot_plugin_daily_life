@@ -962,7 +962,8 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
             return True
         except Exception as exc:
             logger.warning(f"{LOG_PREFIX} 自然分段发送后处理失败：{exc}", exc_info=True)
-            return False
+            # 投递已经完成，后处理失败不应让调用方误判为未发送而重试。
+            return True
 
     def apply_chat_style_before_send(self, event: Any) -> bool:
         if not self._chat_style_enabled():

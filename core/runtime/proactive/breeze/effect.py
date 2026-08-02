@@ -84,6 +84,9 @@ class AirEffectMixin:
         }
 
     async def note_regular_reply_effect(self, event: Any) -> bool:
+        proactive = getattr(getattr(self, "config", None), "proactive", None)
+        if not bool(getattr(proactive, "adaptive_feedback_enabled", False)):
+            return False
         if event is None or self._event_has_command_handler(event):
             return False
         key = self._proactive_scope_key(event)

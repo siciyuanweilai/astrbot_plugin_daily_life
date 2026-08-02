@@ -295,6 +295,15 @@ def _download_model(
     if target.exists():
         shutil.rmtree(target, ignore_errors=True)
     shutil.copytree(downloaded, target)
+    # ModelScope 的下载目录只是安装缓存；保留一份运行副本即可，避免同一模型
+    # 在 models/download 和运行目录各占一份近 GB 的空间。
+    try:
+        downloaded_resolved = downloaded.resolve()
+        cache_resolved = cache_dir.resolve()
+        if downloaded_resolved != cache_resolved and cache_resolved in downloaded_resolved.parents:
+            shutil.rmtree(downloaded, ignore_errors=True)
+    except OSError:
+        logger.debug(f"{LOG_PREFIX} 本地语音识别模型下载缓存清理失败：{downloaded}")
     logger.info(f"{LOG_PREFIX} 本地语音识别模型准备完成：{target.name}")
 
 

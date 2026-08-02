@@ -264,6 +264,29 @@ class CognitionArchiveTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 archive.close()
 
+    async def test_external_durable_task_failure_keeps_failed_terminal_state(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(Path(tmpdir) / "daily_life.db")
+            try:
+                await archive.enqueue_durable_task(
+                    "web_research:failed-1",
+                    "web_research",
+                    {"task_id": "failed-1", "request_id": "remote-1"},
+                )
+                self.assertTrue(
+                    await archive.fail_durable_task_by_key(
+                        "web_research:failed-1",
+                        "研究任务超过等待时间",
+                        {"status": "timeout"},
+                    )
+                )
+                task = (await archive.get_durable_tasks(kind="web_research"))[0]
+                self.assertEqual(task.status, "failed")
+                self.assertEqual(task.last_error, "研究任务超过等待时间")
+                self.assertEqual(task.result, {"status": "timeout"})
+            finally:
+                archive.close()
+
     async def test_trace_action_affect_and_grounded_diary_round_trip(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             archive = LifeArchive(Path(tmpdir) / "daily_life.db")

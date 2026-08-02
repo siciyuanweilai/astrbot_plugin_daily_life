@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.0.5-ef6f8f" alt="版本 1.0.5"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.0.7-ef6f8f" alt="版本 1.0.7"></a>
   <img src="https://img.shields.io/badge/AstrBot-%3E%3D4.26.0-4c78a8" alt="AstrBot >= 4.26.0">
   <img src="https://img.shields.io/badge/platform-aiocqhttp%20%7C%20weixin__oc-4f8a66" alt="支持 aiocqhttp 和 weixin_oc">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-555555" alt="MIT License"></a>
@@ -16,7 +16,6 @@
 
 <p align="center">
   <a href="#quick-start">快速开始</a> ·
-  <a href="#upgrade">升级与兼容</a> ·
   <a href="#features">核心能力</a> ·
   <a href="#dashboard">仪表盘</a> ·
   <a href="#search">联网搜索</a> ·
@@ -29,7 +28,7 @@
 [![Yousa Ling](https://count.getloli.com/get/@DailyLife?theme=yousa-ling)](https://github.com/siciyuanweilai/astrbot_plugin_daily_life)
 
 > [!TIP]
-> **v1.0.5 动作闭环更新**：新增真实工具动作回执、统一生活事实结算、失败驱动的局部重排、反思冷却、可恢复媒体投递和生产场景回放。重启插件后数据库会自动从 v3 升级到 v4；旧记录保留、现有配置无需重填，也不会从历史文本猜测或补造动作回执。完整说明见 [CHANGELOG.md](./CHANGELOG.md)。
+> **v1.0.7 生活连续性修复**：补齐穿搭决策证据、节律趋势生命周期聚合和研究任务失败收束；模型语义分段保留，合法但未拆开的多句回复会按通用自然停顿兜底。网站地图、整站抓取、研究报告和 QQ 专属文本转发继续保留。数据库当前为 v4，旧版本会在启动时自动迁移，无需清空历史数据。完整说明见 [CHANGELOG.md](./CHANGELOG.md)。
 
 ---
 
@@ -40,6 +39,8 @@
 清晨会随着今天的主题醒来，看看天气，想想要不要出门；午后可能摸鱼、观察群聊、补一点能量；夜深时会根据疲惫、睡眠债和打扰程度，慢慢进入浅休息、浅睡眠或深度睡眠。
 
 这不是一张固定日程表，而是一套持续演化的生活系统。Ta有自己的心情、穿搭、关系印象、地点记忆、生活事件和一点点主观小心思。聊天发生时，这些会作为隐藏生活背景参与判断，让回应更像从Ta正在经历的日子里自然长出来。
+
+<a id="upgrade"></a>
 
 ## ✨ 能力概览
 
@@ -116,7 +117,7 @@
 
 * **统一开关**：`chat_style_config.enabled` 同时控制短句风格提示、四项参考长度、模型语义分段、自然分段兜底、标点清洗和分段随机间隔。
 * **直接语义分段**：开启后，模型返回可直接发送的完整分段，不使用正则或关键词切分正文。
-* **完整优先**：模型语义分段失败时使用自然分段兜底；兜底只依据显式换行、通用标点和参考长度，不识别特定句型。短反应或短完整句后接较长说明时会优先保留自然停顿，未形成有效多段时仍保留原文单条发送，不改写或截断正文。
+* **完整优先**：模型语义分段失败，或模型返回合法但未拆开的多句回复时，使用自然分段兜底；兜底只依据显式换行、通用标点和参考长度，不识别特定句型。未形成有效多段时仍保留原文单条发送，不改写或截断正文。
 * **可中断发送**：多段发送期间收到新消息，会取消尚未发送的过期尾段。
 * **独立分段模型**：`chat_style_config.semantic_provider` 留空时使用当前第一个聊天模型；可单独配置语义分段模型。
 * **关闭即直发**：关闭“启用聊天表达”后，不再注入聊天表达提示或参考长度，也不做分段、标点清洗和分段间隔处理，模型原文按单条消息发送。
@@ -430,12 +431,13 @@ Tavily 密钥只从 `search_config.tavily_api_keys` 读取，不会读取 AstrBo
 
 ### 8. 🔬 Research 后台任务
 
-Research 采用后台轮询，不阻塞 AstrBot 主事件循环：
+Research 采用后台轮询，不阻塞 AstrBot 主事件循环；任务同时写入生活插件已有的可恢复队列，插件重启后会按原会话恢复未完成任务：
 
 1. `life_web_research` 创建任务并返回 `pending`、`task_id` 和 Tavily `request_id`。
 2. 插件按“研究状态轮询间隔”在后台检查任务状态。
 3. `life_web_research_status` 使用 `task_id` 返回 `pending`、`completed`、`failed`、`cancelled`、`error` 或 `timeout`。
 4. 任务完成前不能声称报告已经生成；完成后再依据研究输出和引用回答。
+5. 研究任务绑定创建它的会话；其他会话即使拿到任务编号也不能读取报告。
 
 Research 支持 `mini`、`pro`、`auto` 模型，`short`、`standard`、`long` 输出长度，`numbered`、`mla`、`apa`、`chicago` 引用格式，域名包含/排除以及可选 JSON Schema 结构化输出。
 

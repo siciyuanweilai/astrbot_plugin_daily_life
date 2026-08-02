@@ -354,6 +354,12 @@
           "step": 1
         },
         "hint": "普通聊天隐藏上下文中最多注入多少条相关聊天记忆摘要"
+      },
+      "semantic_ranking_model_enabled": {
+        "description": "记忆模型语义排序",
+        "type": "bool",
+        "default": false,
+        "hint": "向量不可用时是否再调用模型排序记忆候选。关闭可避免普通聊天因记忆排序超时而增加等待。"
       }
     }
   },
@@ -844,6 +850,12 @@
           "step": 0.05
         },
         "hint": "模型裁定私聊回访置信度低于该值时不发起私聊。"
+      },
+      "adaptive_feedback_enabled": {
+        "description": "普通回复效果学习",
+        "type": "bool",
+        "default": false,
+        "hint": "是否为每次普通聊天额外记录并评估回复效果。关闭可减少后台任务和模型调用；主动回复自身的反馈观察不受影响。"
       }
     }
   },
@@ -900,7 +912,7 @@
       "collect_chat_emojis": {
         "description": "自动收集表情",
         "type": "bool",
-        "default": true,
+        "default": false,
         "hint": "开启后会从聊天里的表情、贴纸和确认可复用的图片中收集素材；关闭后仍可在前台手动导入。"
       },
       "max_ready": {
@@ -1691,8 +1703,14 @@
       "bili_auto_summary": {
         "description": "B站自动总结",
         "type": "bool",
-        "default": true,
+        "default": false,
         "hint": "收到 B 站长链接、短链接或小程序卡片时，后台自动生成专业视频总结。"
+      },
+      "auto_video_understanding": {
+        "description": "自动视频理解",
+        "type": "bool",
+        "default": false,
+        "hint": "是否在收到视频后自动进行后台理解。关闭时仍可通过视频理解工具或明确指令按需处理。"
       }
     }
   },
@@ -1940,6 +1958,17 @@
     "type": "object",
     "hint": "按数据生命周期分类保留。天数设为 0 表示长期保留，手动清空不受此限制。",
     "items": {
+      "cognition_keep_days": {
+        "description": "认知运行保留天数",
+        "type": "int",
+        "default": 30,
+        "slider": {
+          "min": 0,
+          "max": 365,
+          "step": 1
+        },
+        "hint": "清理已结束的时间事实证据、反思、任务、决策轨迹、动作回执和历史情绪日记；当前有效事实不会被清理。0 表示长期保留。"
+      },
       "daily_keep_days": {
         "description": "每日记录保留天数",
         "type": "int",

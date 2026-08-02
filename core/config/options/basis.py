@@ -81,6 +81,7 @@ class ProactiveReplySettings:
     revisit_interval_minutes: int = 30
     revisit_cooldown_minutes: int = 180
     revisit_min_confidence: float = 0.82
+    adaptive_feedback_enabled: bool = False
 
     @staticmethod
     def from_dict(data: Any) -> "ProactiveReplySettings":
@@ -116,6 +117,9 @@ class ProactiveReplySettings:
             ),
             revisit_min_confidence=as_float(
                 data.get("revisit_min_confidence", 0.82), 0.82, 0.0, 1.0
+            ),
+            adaptive_feedback_enabled=as_bool(
+                data.get("adaptive_feedback_enabled", False), False
             ),
         )
 
@@ -285,7 +289,7 @@ class OutfitSettings:
 
 @dataclass(slots=True)
 class EmojiSettings:
-    collect_chat_emojis: bool = True
+    collect_chat_emojis: bool = False
     max_ready: int = 128
     replace_when_full: bool = True
     max_size_mb: float = 5.0
@@ -299,7 +303,7 @@ class EmojiSettings:
         if not isinstance(data, dict):
             return EmojiSettings()
         return EmojiSettings(
-            collect_chat_emojis=as_bool(data.get("collect_chat_emojis", True), True),
+            collect_chat_emojis=as_bool(data.get("collect_chat_emojis", False), False),
             max_ready=as_int(data.get("max_ready", 128), 128, 1, 300),
             replace_when_full=as_bool(data.get("replace_when_full", True), True),
             max_size_mb=as_float(data.get("max_size_mb", 5.0), 5.0, 1.0, 20.0),
@@ -331,7 +335,8 @@ class SightSettings:
     audio_transcript_mode: str = "local"
     local_asr_timeout_seconds: int = 900
     note_max_transcript_chars: int = 20000
-    bili_auto_summary: bool = True
+    auto_video_understanding: bool = False
+    bili_auto_summary: bool = False
 
     @staticmethod
     def from_dict(data: Any) -> "SightSettings":
@@ -371,7 +376,10 @@ class SightSettings:
             note_max_transcript_chars=as_int(
                 data.get("note_max_transcript_chars", 20000), 20000, 2000, 60000
             ),
-            bili_auto_summary=as_bool(data.get("bili_auto_summary", True), True),
+            auto_video_understanding=as_bool(
+                data.get("auto_video_understanding", False), False
+            ),
+            bili_auto_summary=as_bool(data.get("bili_auto_summary", False), False),
         )
 
 
@@ -482,6 +490,7 @@ class LifecycleSettings:
 
 @dataclass(slots=True)
 class StorageSettings:
+    cognition_keep_days: int = 30
     daily_keep_days: int = 30
     relationships_keep_days: int = 0
     world_keep_days: int = 0
@@ -500,6 +509,9 @@ class StorageSettings:
         if not isinstance(data, dict):
             return StorageSettings()
         return StorageSettings(
+            cognition_keep_days=as_int(
+                data.get("cognition_keep_days", 30), 30, 0, 3650
+            ),
             daily_keep_days=as_int(data.get("daily_keep_days", 30), 30, 0, 3650),
             relationships_keep_days=as_int(
                 data.get("relationships_keep_days", 0), 0, 0, 3650

@@ -66,6 +66,11 @@ class SpineAdaptMixin:
         try:
             previous.rhythm.stop()
             self._install_runtime_services(candidate)
+            restore_research = getattr(
+                getattr(candidate, "search", None), "restore_research_tasks", None
+            )
+            if callable(restore_research):
+                await restore_research()
             self._prune_disabled_proactive_candidates()
             for key in list(getattr(self, "_proactive_idle_candidates", {})):
                 self._schedule_proactive_idle_evaluation(key)

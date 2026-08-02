@@ -236,6 +236,7 @@ class PageViewMixin:
             "config": {
                 "schedule_time": self.runtime.config.schedule_time,
                 "state_enabled": self.runtime.config.state.enabled,
+                "diagnostics_enabled": False,
                 "scheduler_running": bool(getattr(rhythm, "healthy", False)),
                 "scheduler_error": str(getattr(rhythm, "last_error", "") or ""),
             },
