@@ -35,6 +35,11 @@ _DURABLE_TASK_LABELS = {
     "web_research": "网页研究报告",
 }
 
+# 平台管理器会先加载插件，再异步建立 IM 适配器连接。首次日程生成依赖
+# 平台历史和联系人接口，因此不能只把“平台实例已创建”当成已就绪。
+_PLATFORM_READY_TIMEOUT_SECONDS = 120.0
+_PLATFORM_READY_POLL_SECONDS = 0.5
+
 
 @dataclass(slots=True)
 class RuntimeServices:
@@ -135,6 +140,141 @@ class SpineBootMixin:
             label="可恢复生活任务队列",
             key="durable_task_worker",
         )
+
+    def _platform_instances(self) -> list[Any]:
+        """返回当前上下文中的平台实例；测试替身或早期启动阶段可为空。"""
+        manager = getattr(getattr(self, "context", None), "platform_manager", None)
+        if manager is None:
+            return []
+        get_insts = getattr(manager, "get_insts", None)
+        if callable(get_insts):
+            try:
+                return list(get_insts() or [])
+            except Exception:
+                return []
+        try:
+            return list(getattr(manager, "platform_insts", []) or [])
+        except Exception:
+            return []
+
+    @staticmethod
+    def _platform_type(instance: Any) -> str:
+        meta = getattr(instance, "meta", None)
+        if callable(meta):
+            try:
+                metadata = meta()
+            except Exception:
+                metadata = None
+            name = str(getattr(metadata, "name", "") or "").strip().lower()
+            if name:
+                return name
+        config = getattr(instance, "config", {}) or {}
+        return str(config.get("type", "") or "").strip().lower()
+
+    @staticmethod
+    def _platform_client(instance: Any) -> Any:
+        get_client = getattr(instance, "get_client", None)
+        if callable(get_client):
+            try:
+                return get_client()
+            except Exception:
+                pass
+        return getattr(instance, "bot", None)
+
+    @classmethod
+    def _is_platform_ready(cls, instance: Any) -> bool:
+        """判断平台是否已经可以执行联系人和历史查询。
+
+        OneBot 的 PlatformStatus 会在任务启动时提前变成 running，不能单独
+        用它判断反向 WebSocket 已建立；其客户端集合出现后才算真正就绪。
+        其他适配器优先使用显式 ready/connected 标志，最后回退到运行状态。
+        """
+        platform_type = cls._platform_type(instance)
+        if platform_type in {"webchat", "web_chat"}:
+            return True
+
+        client = cls._platform_client(instance)
+        if platform_type in {"aiocqhttp", "onebot", "cqhttp"}:
+            event_clients = getattr(client, "_wsr_event_clients", None)
+            api_clients = getattr(client, "_wsr_api_clients", None)
+            if isinstance(event_clients, (set, list, tuple, dict)):
+                return bool(event_clients) or bool(api_clients)
+            if isinstance(api_clients, (set, list, tuple, dict)):
+                return bool(api_clients)
+
+        for attr in ("is_ready", "ready", "is_connected", "connected"):
+            value = getattr(client, attr, None)
+            if isinstance(value, bool):
+                return value
+            value = getattr(instance, attr, None)
+            if isinstance(value, bool):
+                return value
+
+        status = getattr(instance, "status", None)
+        status_value = str(getattr(status, "value", status) or "").lower()
+        return status_value in {"running", "connected", "ready"}
+
+    @staticmethod
+    def _manager_has_configured_platform(manager: Any) -> bool:
+        """判断是否存在已启用的真实平台配置，但实例尚未加载完成。"""
+        configs = getattr(manager, "platforms_config", None)
+        if not isinstance(configs, (list, tuple)):
+            return False
+        return any(
+            bool((config or {}).get("enable", True))
+            and str((config or {}).get("type", "") or "").lower()
+            not in {"webchat", "web_chat"}
+            for config in configs
+            if isinstance(config, dict)
+        )
+
+    async def wait_for_platform_ready(
+        self,
+        *,
+        timeout: float = _PLATFORM_READY_TIMEOUT_SECONDS,
+    ) -> bool:
+        """等待已配置的平台具备联系人和历史查询能力。
+
+        没有可枚举平台时直接放行，保证测试、仅网页聊天和无平台部署仍能
+        生成日程。真实平台在超时后也会继续生成，但会明确记录降级原因。
+        """
+        manager = getattr(getattr(self, "context", None), "platform_manager", None)
+        instances = self._platform_instances()
+        if not instances and not self._manager_has_configured_platform(manager):
+            return True
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0.0, float(timeout))
+        waited = False
+        while True:
+            # 平台管理器可能在插件任务启动后才把已配置实例放入列表。
+            instances = self._platform_instances()
+            if not instances:
+                if not self._manager_has_configured_platform(manager):
+                    return True
+                pending_count = 1
+            else:
+                pending_count = sum(
+                    1
+                    for instance in instances
+                    if not self._is_platform_ready(instance)
+                )
+            if not pending_count:
+                if waited:
+                    logger.info("[日常生活] 平台适配器已连接，继续首次生活初始化")
+                return True
+            if loop.time() >= deadline:
+                logger.warning(
+                    "[日常生活] 等待平台适配器连接超时，先继续生活初始化；"
+                    f"未就绪平台={pending_count}"
+                )
+                return False
+            if not waited:
+                logger.info(
+                    "[日常生活] 首次生活初始化等待平台适配器连接……"
+                )
+                waited = True
+            await asyncio.sleep(_PLATFORM_READY_POLL_SECONDS)
 
     def _runtime_data_path(self) -> Path:
         return runtime_data_path(getattr(self, "data_path", None))

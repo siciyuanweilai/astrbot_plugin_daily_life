@@ -1299,8 +1299,42 @@ class LifeSettingsTest(unittest.TestCase):
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertIn("version: 1.0.7", metadata)
-        self.assertIn("version-1.0.7", readme)
-        self.assertIn("v1.0.7 · 2026-08-02", changelog)
+        self.assertIn("version: 1.0.8", metadata)
+        self.assertIn("version-1.0.8", readme)
+        self.assertIn("v1.0.8 · 2026-08-02", changelog)
         self.assertIn("v1.0.4 · 2026-08-01", changelog)
         self.assertLess(changelog.index("v1.0.4"), changelog.index("v1.0.3"))
+
+    def test_dependent_switches_follow_parent_switches_in_schema(self):
+        schema = json.loads(
+            (PLUGIN_ROOT / "_conf_schema.json").read_text(encoding="utf-8")
+        )
+        ordered_groups = {
+            "memory_config": (
+                "enabled",
+                "semantic_ranking_model_enabled",
+            ),
+            "memos_config": (
+                "enabled",
+                "include_preference",
+                "sync_selected_memory",
+                "sync_corrections",
+            ),
+            "proactive_config": (
+                "private_enabled",
+                "adaptive_feedback_enabled",
+            ),
+            "search_config": (
+                "enabled",
+                "inspiration_enabled",
+            ),
+            "sight_config": (
+                "bili_auto_summary",
+                "auto_video_understanding",
+                "total_timeout_seconds",
+            ),
+        }
+        for group, fields in ordered_groups.items():
+            keys = list(schema[group]["items"])
+            positions = [keys.index(field) for field in fields]
+            self.assertEqual(positions, sorted(positions), group)

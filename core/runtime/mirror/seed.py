@@ -12,6 +12,11 @@ class SnapshotSeedMixin:
         self, now: datetime.datetime | None = None
     ) -> None:
         """插件启动后若没有当前生活日记录，则在后台补充生成。"""
+        # 插件初始化可能早于 OneBot/WebSocket 建连。先等待平台真正可用，
+        # 否则首轮历史和联系人查询会在适配器尚未连接时被错误跳过。
+        wait_for_platform = getattr(self, "wait_for_platform_ready", None)
+        if callable(wait_for_platform):
+            await wait_for_platform()
         now = now or self._runtime_now()
         target_date_str, _ = await self.resolve_injection_target(now)
         if await self.archive.get_day(target_date_str):

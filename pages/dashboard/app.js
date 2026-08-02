@@ -29,6 +29,9 @@ import {
 
 import {
   clean,
+  cognitionPredicateText,
+  cognitionSubjectText,
+  cognitionValueText,
   currentOutfitDisplayText,
   emojiEmotionLabels,
   enumLabel,
@@ -132,6 +135,14 @@ const COGNITION_STATUS_LABELS = {
   invalidated: "已失效",
   superseded: "已被替代",
   promoted: "已晋升",
+  queued: "排队中",
+  running: "执行中",
+  retrying: "待重试",
+  error: "失败",
+  canceled: "已取消",
+  cancelled: "已取消",
+  expired: "已过期",
+  open: "进行中",
 };
 const DURABLE_TASK_KIND_LABELS = {
   daily_refresh: "每日生活刷新",
@@ -1388,7 +1399,7 @@ function renderLifecycle(status) {
     );
     record.append(title, recordLines([
       item.assertion_subject && item.assertion_predicate
-        ? `人格断言：${clean(item.assertion_subject)} · ${clean(item.assertion_predicate)} · ${clean(typeof item.assertion_object === "string" ? item.assertion_object : JSON.stringify(item.assertion_object || ""))}`
+        ? `人格断言：${clean(item.assertion_subject)} · ${cognitionPredicateText(item.assertion_predicate)} · ${cognitionValueText(item.assertion_object)}`
         : "",
       item.evidence_ids?.length ? `依据 ${item.evidence_ids.length} 条` : "",
     ]));
@@ -1509,11 +1520,7 @@ function experienceGroups(status) {
     if (!raw || raw === "global") return "全局生活";
     return relationshipNames.get(raw) || "当前会话";
   };
-  const objectText = (value) => {
-    if (value === null || value === undefined || value === "") return "";
-    if (typeof value === "string") return value;
-    try { return JSON.stringify(value); } catch (_) { return String(value); }
-  };
+  const objectText = cognitionValueText;
   const groups = {
     relationships: [],
     behavior: [],
@@ -1609,9 +1616,9 @@ function experienceGroups(status) {
   temporalFacts.slice(0, 5).forEach((item) => {
     const record = node("div", "record");
     const title = node("div", "record-title");
-    title.append(node("span", "", clean(item.subject || "时间事实")), node("span", "muted", COGNITION_STATUS_LABELS[item.status] || "当前"));
+    title.append(node("span", "", cognitionSubjectText(item.subject, "时间事实")), node("span", "muted", COGNITION_STATUS_LABELS[item.status] || "当前"));
     record.append(title, recordLines([
-      `${clean(item.predicate)}：${objectText(item.object_value)}`,
+      `${cognitionPredicateText(item.predicate)}：${objectText(item.object_value)}`,
       item.valid_from ? `生效：${clean(item.valid_from)}` : "",
       `置信度 ${Math.round(Number(item.confidence || 0) * 100)}%${item.scope ? ` · ${cognitionScopeText(item.scope)}` : ""}`,
     ]));
@@ -1623,7 +1630,7 @@ function experienceGroups(status) {
     const title = node("div", "record-title");
     title.append(node("span", "", "已沉淀人格断言"), node("span", "muted", `置信度 ${Math.round(Number(item.confidence || 0) * 100)}%`));
     record.append(title, recordLines([
-      `${clean(item.subject)} · ${clean(item.predicate)}：${objectText(item.object_value)}`,
+      `${cognitionSubjectText(item.subject)} · ${cognitionPredicateText(item.predicate)}：${objectText(item.object_value)}`,
       item.scope ? `范围：${cognitionScopeText(item.scope)}` : "",
     ]));
     groups.language.push(record);

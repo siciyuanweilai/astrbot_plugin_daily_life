@@ -3,6 +3,9 @@ import {
   ATMOSPHERE_LABELS,
   BOT_WATCH_STATE_LABELS,
   BOUNDARY_POLICY_LABELS,
+  COGNITION_SUBJECT_LABELS,
+  COGNITION_PREDICATE_LABELS,
+  COGNITION_VALUE_KEY_LABELS,
   CURRENT_SLEEP_LABELS,
   EMOJI_EMOTION_CATEGORY_LABELS,
   EPISODE_KIND_LABELS,
@@ -195,6 +198,9 @@ const EMBEDDED_ENUM_DICTIONARIES = [
   LONG_TERM_MEMORY_CATEGORY_LABELS,
   MEMORY_CONFLICT_TYPE_LABELS,
   MEMORY_ENTITY_TYPE_LABELS,
+  COGNITION_PREDICATE_LABELS,
+  COGNITION_SUBJECT_LABELS,
+  COGNITION_VALUE_KEY_LABELS,
 ];
 
 function text(value, fallback = "") {
@@ -389,6 +395,39 @@ function readableReferenceLabel(value, fallback = "") {
   const raw = text(value).trim();
   if (!raw || isOpaqueInternalReference(raw)) return fallback;
   return clean(raw, fallback);
+}
+
+function cognitionSubjectText(value, fallback = "未指明对象") {
+  const raw = text(value).trim();
+  if (!raw) return fallback;
+  return COGNITION_SUBJECT_LABELS[raw.toLowerCase()] || clean(raw, fallback);
+}
+
+function cognitionPredicateText(value, fallback = "未命名事实") {
+  const raw = text(value).trim();
+  if (!raw) return fallback;
+  return COGNITION_PREDICATE_LABELS[raw.toLowerCase()] || clean(raw, fallback);
+}
+
+function cognitionValueText(value, depth = 0) {
+  if (value === null || value === undefined || value === "") return "";
+  if (depth > 3) return clean(value, "");
+  if (typeof value === "string") return clean(value, "");
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) {
+    return value.map((item) => cognitionValueText(item, depth + 1)).filter(Boolean).join("、");
+  }
+  if (typeof value === "object") {
+    return Object.entries(value)
+      .map(([key, item]) => {
+        const label = COGNITION_VALUE_KEY_LABELS[key.toLowerCase()] || humanizeToken(key);
+        const rendered = cognitionValueText(item, depth + 1);
+        return rendered ? `${label}：${rendered}` : "";
+      })
+      .filter(Boolean)
+      .join("；");
+  }
+  return clean(String(value), "");
 }
 
 function translateStructuredText(value, options = {}) {
@@ -812,6 +851,8 @@ function humanizeToken(value) {
     MEMORY_CONFLICT_TYPE_LABELS,
     MEMORY_ENTITY_TYPE_LABELS,
     EMOJI_EMOTION_CATEGORY_LABELS,
+    COGNITION_SUBJECT_LABELS,
+    COGNITION_PREDICATE_LABELS,
   ];
   const direct = raw.toLowerCase();
   for (const dict of dictionaries) {
@@ -852,6 +893,9 @@ function splitTokenParts(value) {
 
 export {
   clean,
+  cognitionSubjectText,
+  cognitionPredicateText,
+  cognitionValueText,
   currentOutfitDisplayText,
   emojiEmotionLabels,
   enumLabel,

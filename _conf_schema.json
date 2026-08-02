@@ -242,6 +242,12 @@
         "default": true,
         "hint": "关闭后停止采集新消息和执行批量提炼，已持久化队列会保留。"
       },
+      "semantic_ranking_model_enabled": {
+        "description": "记忆模型语义排序",
+        "type": "bool",
+        "default": false,
+        "hint": "向量不可用时是否再调用模型排序记忆候选。关闭可避免普通聊天因记忆排序超时而增加等待。"
+      },
       "provider": {
         "description": "记忆提炼",
         "type": "string",
@@ -354,12 +360,6 @@
           "step": 1
         },
         "hint": "普通聊天隐藏上下文中最多注入多少条相关聊天记忆摘要"
-      },
-      "semantic_ranking_model_enabled": {
-        "description": "记忆模型语义排序",
-        "type": "bool",
-        "default": false,
-        "hint": "向量不可用时是否再调用模型排序记忆候选。关闭可避免普通聊天因记忆排序超时而增加等待。"
       }
     }
   },
@@ -373,6 +373,24 @@
         "type": "bool",
         "default": false,
         "hint": "开启后聊天前会短超时检索 MemOS 外部长期记忆，失败不会影响正常回复。"
+      },
+      "include_preference": {
+        "description": "检索偏好",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后同时检索 MemOS 的偏好记忆。"
+      },
+      "sync_selected_memory": {
+        "description": "同步精选记忆",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后，本插件判断值得长期复用的聊天摘要、关系点和偏好会异步同步到 MemOS。不会同步每轮聊天。"
+      },
+      "sync_corrections": {
+        "description": "同步记忆纠错",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后，用户明确纠正并被本插件采纳的记忆纠错会同步给 MemOS。"
       },
       "base_url": {
         "description": "服务地址",
@@ -451,24 +469,6 @@
           "step": 20
         },
         "hint": "限制外部记忆参考总长度，避免提示词变胖。"
-      },
-      "include_preference": {
-        "description": "检索偏好",
-        "type": "bool",
-        "default": true,
-        "hint": "开启后同时检索 MemOS 的偏好记忆。"
-      },
-      "sync_selected_memory": {
-        "description": "同步精选记忆",
-        "type": "bool",
-        "default": false,
-        "hint": "开启后，本插件判断值得长期复用的聊天摘要、关系点和偏好会异步同步到 MemOS。不会同步每轮聊天。"
-      },
-      "sync_corrections": {
-        "description": "同步记忆纠错",
-        "type": "bool",
-        "default": true,
-        "hint": "开启后，用户明确纠正并被本插件采纳的记忆纠错会同步给 MemOS。"
       }
     }
   },
@@ -706,6 +706,12 @@
         "default": false,
         "hint": "允许私聊在沉默一段时间后，由模型判断是否自然续一句；不会拦截正常聊天回复。"
       },
+      "adaptive_feedback_enabled": {
+        "description": "普通回复效果学习",
+        "type": "bool",
+        "default": false,
+        "hint": "是否为每次普通聊天额外记录并评估回复效果。关闭可减少后台任务和模型调用；主动回复自身的反馈观察不受影响。"
+      },
       "provider": {
         "description": "闲时回复",
         "type": "string",
@@ -850,12 +856,6 @@
           "step": 0.05
         },
         "hint": "模型裁定私聊回访置信度低于该值时不发起私聊。"
-      },
-      "adaptive_feedback_enabled": {
-        "description": "普通回复效果学习",
-        "type": "bool",
-        "default": false,
-        "hint": "是否为每次普通聊天额外记录并评估回复效果。关闭可减少后台任务和模型调用；主动回复自身的反馈观察不受影响。"
       }
     }
   },
@@ -1576,6 +1576,18 @@
         "default": "",
         "hint": "指定视频关键画面识别使用的模型；支持时会一次分析多张画面。留空则使用当前默认模型。"
       },
+      "bili_auto_summary": {
+        "description": "B站自动总结",
+        "type": "bool",
+        "default": false,
+        "hint": "收到 B 站长链接、短链接或小程序卡片时，后台自动生成专业视频总结。"
+      },
+      "auto_video_understanding": {
+        "description": "自动视频理解",
+        "type": "bool",
+        "default": false,
+        "hint": "是否在收到视频后自动进行后台理解。关闭时仍可通过视频理解工具或明确指令按需处理。"
+      },
       "total_timeout_seconds": {
         "description": "视频理解总超时（秒）",
         "type": "int",
@@ -1699,18 +1711,6 @@
           "step": 1000
         },
         "hint": "专业长文总结单次交给模型的带时间戳文字容量。超过后按连续时间窗分段处理并合并，不会截掉中间内容；普通视频理解仍使用上面的转写字数上限。"
-      },
-      "bili_auto_summary": {
-        "description": "B站自动总结",
-        "type": "bool",
-        "default": false,
-        "hint": "收到 B 站长链接、短链接或小程序卡片时，后台自动生成专业视频总结。"
-      },
-      "auto_video_understanding": {
-        "description": "自动视频理解",
-        "type": "bool",
-        "default": false,
-        "hint": "是否在收到视频后自动进行后台理解。关闭时仍可通过视频理解工具或明确指令按需处理。"
       }
     }
   },
@@ -1724,6 +1724,12 @@
         "type": "bool",
         "default": false,
         "hint": "开启后，聊天模型使用日常生活搜索工具。网页使用 Tavily，X 平台使用 Grok（需配置对应模型）。"
+      },
+      "inspiration_enabled": {
+        "description": "日程使用联网灵感",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后，今日生活和周计划可以使用可核验搜索结果作为现实参考；弱证据会被忽略，部分证据仅作背景灵感。"
       },
       "tavily_api_keys": {
         "description": "Tavily 接口密钥",
@@ -1938,12 +1944,6 @@
           "step": 10
         },
         "hint": "限制 Crawl 每层最多跟进的链接数量。"
-      },
-      "inspiration_enabled": {
-        "description": "日程使用联网灵感",
-        "type": "bool",
-        "default": false,
-        "hint": "开启后，今日生活和周计划可以使用可核验搜索结果作为现实参考；弱证据会被忽略，部分证据仅作背景灵感。"
       },
       "today_prompt": {
         "description": "日程灵感查询",

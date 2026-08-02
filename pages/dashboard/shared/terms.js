@@ -497,6 +497,45 @@ export const SCOPE_LABELS = {
   other: "其他",
 };
 
+export const COGNITION_SUBJECT_LABELS = {
+  self: "自己",
+  bot: "角色",
+  assistant: "角色",
+  user: "用户",
+  current_user: "当前用户",
+};
+
+export const COGNITION_PREDICATE_LABELS = {
+  current_place: "当前地点",
+  current_outfit: "当前穿搭",
+  favorite_food: "喜欢的食物",
+  meal_preference: "饮食偏好",
+  latest_change: "最近变化",
+  latest_interaction: "最近互动",
+  conversation_style: "聊天风格",
+  uncertain_style: "待确认风格",
+  unknown: "未知事实",
+};
+
+export const COGNITION_VALUE_KEY_LABELS = {
+  dish: "菜品",
+  food: "食物",
+  place: "地点",
+  outfit: "穿搭",
+  style: "风格",
+  summary: "摘要",
+  change: "变化",
+  interaction: "互动",
+  detail: "详情",
+  source: "来源",
+  reason: "原因",
+  status: "状态",
+  value: "数值",
+  intensity: "强度",
+  valence: "正负向",
+  arousal: "唤醒度",
+};
+
 export const HEALTH_CHECK_LABELS = {
   episodes: "生活片段",
   evidence: "证据链",

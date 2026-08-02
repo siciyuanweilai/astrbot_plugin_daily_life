@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.0.7-ef6f8f" alt="版本 1.0.7"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.0.8-ef6f8f" alt="版本 1.0.8"></a>
   <img src="https://img.shields.io/badge/AstrBot-%3E%3D4.26.0-4c78a8" alt="AstrBot >= 4.26.0">
   <img src="https://img.shields.io/badge/platform-aiocqhttp%20%7C%20weixin__oc-4f8a66" alt="支持 aiocqhttp 和 weixin_oc">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-555555" alt="MIT License"></a>
@@ -28,7 +28,7 @@
 [![Yousa Ling](https://count.getloli.com/get/@DailyLife?theme=yousa-ling)](https://github.com/siciyuanweilai/astrbot_plugin_daily_life)
 
 > [!TIP]
-> **v1.0.7 生活连续性修复**：补齐穿搭决策证据、节律趋势生命周期聚合和研究任务失败收束；模型语义分段保留，合法但未拆开的多句回复会按通用自然停顿兜底。网站地图、整站抓取、研究报告和 QQ 专属文本转发继续保留。数据库当前为 v4，旧版本会在启动时自动迁移，无需清空历史数据。完整说明见 [CHANGELOG.md](./CHANGELOG.md)。
+> **v1.0.8 启动连接稳定性修复**：首次生成当天日程前会等待已配置的平台适配器真正连接；OneBot 反向 WebSocket 建立后才查询联系人和历史记录，避免首次启动过早生成导致参考数据为空。模型语义分段、网站地图、整站抓取、研究报告和 QQ 专属文本转发继续保留。数据库当前为 v4，旧版本会在启动时自动迁移，无需清空历史数据。完整说明见 [CHANGELOG.md](./CHANGELOG.md)。
 
 ---
 
@@ -75,7 +75,7 @@
 ### 1. 🕰️ 朝夕流转：自主生活日程
 
 * **每日生活背景**：生成主题、心情色彩、日程类型、日程基调、日程倾向、天气、穿搭、时间轴和当天小事件。
-* **首次启动补全**：首次安装时，插件会在后台补全当前生活日；补全完成前的聊天使用防编造约束，不会假装已经有日程。
+* **首次启动补全**：首次安装时，插件会在后台补全当前生活日；会先等待已配置的平台适配器连接，确保联系人和历史记录可查询。补全完成前的聊天使用防编造约束，不会假装已经有日程。
 * **业务日边界**：以每日生成时间作为新一天边界，凌晨不会硬切到空白状态。
 * **周计划延续**：根据人设、近期生活惯性、记忆、天气和目标自动维护主题、目标、每日提示和建议活动；它只作为每日生活生成的软参考，不是固定执行清单。
 * **邀约打断**：用户提出邀约时，智能判断接受、拒绝、改约或合并进后续日程。

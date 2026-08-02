@@ -630,6 +630,61 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         stored = await runtime.archive.get_day("2026-07-31")
         self.assertEqual(stored.date, "2026-07-31")
 
+    async def test_startup_generation_waits_for_onebot_connection(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.config = LifeSettings.from_dict({"schedule_time": "07:30"})
+        runtime.archive = DataManager()
+        runtime.failed_dates = {}
+        calls = []
+        client = types.SimpleNamespace(
+            _wsr_event_clients=set(),
+            _wsr_api_clients={},
+        )
+        instance = types.SimpleNamespace(
+            config={"type": "aiocqhttp"},
+            bot=client,
+            status=types.SimpleNamespace(value="running"),
+        )
+        instances = []
+        runtime.context = types.SimpleNamespace(
+            platform_manager=types.SimpleNamespace(
+                get_insts=lambda: instances,
+                platforms_config=[{"type": "aiocqhttp", "enable": True}],
+            )
+        )
+
+        async def generate_daily(**kwargs):
+            calls.append(kwargs)
+            day = DayRecord(
+                date=kwargs["date"].strftime("%Y-%m-%d"),
+                timeline=[TimelineItem(time="09:00", activity="慢慢醒来")],
+            )
+            await runtime.archive.save_day(day)
+            return types.SimpleNamespace(day=day)
+
+        runtime.run_daily_generation = generate_daily
+        runtime.resolve_injection_target = lambda now: async_return(
+            (now.strftime("%Y-%m-%d"), False)
+        )
+        now = datetime.datetime(2026, 7, 31, 14, 20)
+
+        with patch(
+            "core.runtime.spine.boot._PLATFORM_READY_POLL_SECONDS", 0.01
+        ):
+            task = asyncio.create_task(runtime.ensure_startup_day_data(now))
+            await asyncio.sleep(0.03)
+            self.assertEqual(calls, [])
+
+            instances.append(instance)
+            await asyncio.sleep(0.03)
+            self.assertEqual(calls, [])
+
+            client._wsr_event_clients.add(object())
+            await asyncio.wait_for(task, timeout=1)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["source"], "startup_seed")
+
     async def test_injection_no_longer_runs_rule_based_period_update(self):
         archive = DataManager()
         await archive.save_day(

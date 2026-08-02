@@ -4151,6 +4151,18 @@ if (mod.evidenceTargetTitle({ target_type: "focus", target_id: "251880291" }) !=
 if (mod.readableReferenceLabel("251880291", "关注目标") !== "关注目标") {
   throw new Error("readableReferenceLabel 没有隐藏内部数字 ID");
 }
+if (
+  mod.cognitionSubjectText("self") !== "自己"
+  || mod.cognitionSubjectText("bot") !== "角色"
+  || mod.cognitionSubjectText("unknown_subject") !== "unknown_subject"
+  || mod.clean("self") !== "自己"
+  || mod.cognitionPredicateText("current_place") !== "当前地点"
+  || mod.cognitionPredicateText("favorite_food") !== "喜欢的食物"
+  || mod.cognitionValueText({ dish: "窝蛋牛肉煲仔饭", place: "家里" }) !== "菜品：窝蛋牛肉煲仔饭；地点：家里"
+  || mod.humanizeToken("meal_preference") !== "饮食偏好"
+) {
+  throw new Error("认知事实主体没有正确中文化");
+}
 if (mod.evidenceText("251880291,929722496,416704502") !== "来自 3 条聊天消息") {
   throw new Error("evidenceText 没有把纯 ID 证据转换为可读来源");
 }
