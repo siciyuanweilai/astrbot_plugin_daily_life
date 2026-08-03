@@ -22,6 +22,12 @@ from .core.runtime import PLUGIN_ID, DailyLifeRuntime
 from .core.runtime.markers import LOG_PREFIX
 
 EXTERNAL_LEASE_SHUTDOWN_TIMEOUT_SECONDS = 10.0
+MAP_LLM_TOOL_NAMES = (
+    "life_place_search",
+    "life_route_plan",
+    "life_place_detail",
+    "life_outing_plan",
+)
 
 
 class DailyLifePlugin(DailyLifeDashboardMixin, Star):
@@ -540,9 +546,116 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         查询天气；查询默认居住地天气时会同步到当前生活日。
 
         Args:
-            city(string): 可选城市名；留空使用配置或人设里的默认居住地。
+            city(string): 可选城市名；留空使用当前地图服务从常住详细地址解析出的城市。
         """
         return await self.commands.query_weather(event, str(city or "").strip())
+
+    @filter.llm_tool(name="life_place_search")
+    @_runtime_guard
+    async def tool_life_place_search(
+        self,
+        event: AstrMessageEvent,
+        query: str,
+        near: str = "",
+        category: str = "",
+        radius_meters: int = 3000,
+        limit: int = 5,
+    ):
+        """
+        用户想寻找餐厅、咖啡店、书店、公园、商场、车站等现实地点时调用。
+        只提交用户真正需要的一次搜索；“附近”必须结合当前生活上下文填写明确的 near，不能猜测用户本人位置。
+
+        Args:
+            query(string): 自然语言地点需求，例如“安静、适合看书的咖啡店”。
+            near(string): 可选搜索中心，例如“祖庙地铁站”；留空时在常住详细地址解析出的城市内搜索。
+            category(string): 可选地点分类或类型编码；不确定时留空。
+            radius_meters(int): near 不为空时的搜索半径，默认 3000，范围 100 到 50000。
+            limit(int): 返回地点数，默认 5，最多 10。
+        """
+        del event
+        return await self.runtime.domains.tool_place_search(
+            str(query or "").strip(),
+            near=str(near or "").strip(),
+            category=str(category or "").strip(),
+            radius_meters=self._tool_int(radius_meters, 3000),
+            limit=self._tool_int(limit, 5),
+        )
+
+    @filter.llm_tool(name="life_route_plan")
+    @_runtime_guard
+    async def tool_life_route_plan(
+        self,
+        event: AstrMessageEvent,
+        origin: str,
+        destination: str,
+        mode: str = "walking",
+    ):
+        """
+        用户询问两个地点之间怎么走、多久能到、哪种方式更快，或日程需要核验出行时间时调用。
+        起终点都必须是明确的自然语言地点，不要传递经纬度。
+
+        Args:
+            origin(string): 出发地，例如“家”或“祖庙地铁站”；上下文不能确认时应先询问用户。
+            destination(string): 目的地名称或地址。
+            mode(string): walking 步行；cycling 骑行；driving 驾车；transit 公交；compare 比较全部方式。
+        """
+        del event
+        return await self.runtime.domains.tool_route_plan(
+            str(origin or "").strip(),
+            str(destination or "").strip(),
+            mode=str(mode or "walking").strip(),
+        )
+
+    @filter.llm_tool(name="life_place_detail")
+    @_runtime_guard
+    async def tool_life_place_detail(
+        self,
+        event: AstrMessageEvent,
+        poi_id: str,
+    ):
+        """
+        用户追问地点搜索结果的地址、电话、营业信息、评分或照片时调用。
+        仅使用前一次 life_place_search 返回的 POI ID，不要自行编造 ID。
+
+        Args:
+            poi_id(string): 地点搜索结果中的 POI ID。
+        """
+        del event
+        return await self.runtime.domains.tool_place_detail(str(poi_id or "").strip())
+
+    @filter.llm_tool(name="life_outing_plan")
+    @_runtime_guard
+    async def tool_life_outing_plan(
+        self,
+        event: AstrMessageEvent,
+        request: str,
+        stops: list[str] | None = None,
+        start: str = "",
+        mode: str = "walking",
+        duration_minutes: int = 120,
+        max_stops: int = 3,
+    ):
+        """
+        用户希望组合多个现实地点形成半日、晚间或周末外出安排时调用。
+        先语义理解用户需求，再把每个停靠目标写入 stops；不要把整句要求重复塞进多个停靠项。
+
+        Args:
+            request(string): 用户完整的自然语言外出需求。
+            stops(list[string]): 按顺序排列的地点搜索目标，例如[“独立书店”, “广式糖水”]。
+            start(string): 明确的出发地点；不能确认时先询问用户。
+            mode(string): walking、cycling、driving 或 transit，默认 walking。
+            duration_minutes(int): 总时间预算，默认 120，范围 30 到 1440。
+            max_stops(int): 最多停靠数，默认 3，范围 1 到 5。
+        """
+        del event
+        return await self.runtime.domains.tool_outing_plan(
+            str(request or "").strip(),
+            list(stops or []),
+            start=str(start or "").strip(),
+            mode=str(mode or "walking").strip(),
+            duration_minutes=self._tool_int(duration_minutes, 120),
+            max_stops=self._tool_int(max_stops, 3),
+        )
 
     @filter.llm_tool(name="life_review")
     @_runtime_guard
@@ -1296,13 +1409,19 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         life_config = getattr(self.runtime, "config", None)
         if toolset is not None and life_config is not None:
             image_enabled = bool(
-                getattr(getattr(life_config, "image_generation", None), "enabled", False)
+                getattr(
+                    getattr(life_config, "image_generation", None), "enabled", False
+                )
             )
             video_enabled = bool(
-                getattr(getattr(life_config, "video_generation", None), "enabled", False)
+                getattr(
+                    getattr(life_config, "video_generation", None), "enabled", False
+                )
             )
             voice_enabled = bool(
-                getattr(getattr(life_config, "voice_generation", None), "enabled", False)
+                getattr(
+                    getattr(life_config, "voice_generation", None), "enabled", False
+                )
             )
             if not image_enabled:
                 for name in (
@@ -1316,6 +1435,11 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
                 toolset.remove_tool("life_video_generate")
             if not voice_enabled:
                 toolset.remove_tool("life_voice_generate")
+            domains = getattr(self.runtime, "domains", None)
+            map_available = getattr(domains, "map_tools_available", None)
+            if not callable(map_available) or not map_available():
+                for name in MAP_LLM_TOOL_NAMES:
+                    toolset.remove_tool(name)
         await self.runtime.inject_life_context(req, event)
 
     @filter.on_llm_response()
@@ -1438,7 +1562,9 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             category="chat",
         )
         if accepted is False:
-            logger.warning(f"{LOG_PREFIX} 聊天记忆提炼进入队列失败：队列已满，turn={turn_id}")
+            logger.warning(
+                f"{LOG_PREFIX} 聊天记忆提炼进入队列失败：队列已满，turn={turn_id}"
+            )
 
     async def _capture_chat_memory_bot_reply(self, event: AstrMessageEvent) -> None:
         hook = self._runtime_hook("capture_chat_memory_bot_reply")
@@ -1456,7 +1582,9 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             category="chat",
         )
         if accepted is False:
-            logger.warning(f"{LOG_PREFIX} 机器人回复记忆采集进入队列失败：队列已满，turn={turn_id}")
+            logger.warning(
+                f"{LOG_PREFIX} 机器人回复记忆采集进入队列失败：队列已满，turn={turn_id}"
+            )
 
     def _send_pipeline_should_stop(self, event: AstrMessageEvent) -> bool:
         return any(

@@ -178,6 +178,22 @@ class CommitmentArchiveMixin:
                 f"UPDATE commitments SET status = ?, {field} = ? WHERE id = ?",
                 (status, self._text(when), int(commitment_id)),
             )
+            action_status = {
+                "active": "open",
+                "scheduled": "pending",
+                "pending": "pending",
+                "done": "done",
+                "cancelled": "cancelled",
+                "expired": "expired",
+            }.get(status, status)
+            self._conn.execute(
+                """
+                UPDATE conversation_action_items
+                SET status = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE commitment_id = ?
+                """,
+                (action_status, int(commitment_id)),
+            )
             self._conn.commit()
             return cursor.rowcount > 0
 
@@ -194,6 +210,17 @@ class CommitmentArchiveMixin:
                 WHERE id = ?
                 """,
                 (self._text(trigger_date), self._text(time_window), int(commitment_id)),
+            )
+            self._conn.execute(
+                """
+                UPDATE conversation_action_items
+                SET due_at = ?, status = 'open', updated_at = CURRENT_TIMESTAMP
+                WHERE commitment_id = ?
+                """,
+                (
+                    self._text(trigger_date) or self._text(time_window),
+                    int(commitment_id),
+                ),
             )
             self._conn.commit()
             return cursor.rowcount > 0
@@ -217,6 +244,14 @@ class CommitmentArchiveMixin:
                 UPDATE commitments
                 SET status = 'scheduled', activated_at = COALESCE(NULLIF(activated_at, ''), CURRENT_TIMESTAMP)
                 WHERE id = ? AND status = 'active'
+                """,
+                [(commitment_id,) for commitment_id in ids],
+            )
+            self._conn.executemany(
+                """
+                UPDATE conversation_action_items
+                SET status = 'pending', updated_at = CURRENT_TIMESTAMP
+                WHERE commitment_id = ? AND status = 'open'
                 """,
                 [(commitment_id,) for commitment_id in ids],
             )

@@ -5,11 +5,13 @@ import json
 import sqlite3
 from collections.abc import Callable, Mapping
 
+from ..decisions import normalize_action_decision_dimensions
 from .tables.cognition import COGNITION_INDEX_SQL, COGNITION_SQL
+from .tables.domains import DOMAIN_INDEX_SQL, DOMAIN_SQL
 
 SCHEMA_VERSION_KEY = "schema_version"
 BASELINE_SCHEMA_VERSION = 1
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 6
 LEGACY_BASELINE_SCHEMA_FINGERPRINT = (
     "9e6243276bf6bd509f6019502e30192310da4197838bd0f7d478f0100f8750a5"
 )
@@ -19,8 +21,14 @@ BASELINE_SCHEMA_FINGERPRINT = (
 PREVIOUS_BASELINE_SCHEMA_FINGERPRINT = (
     "993af376991a7d179ccbc4c22d796d9beb2f18c2238a461e973a8596829749c0"
 )
-CURRENT_SCHEMA_FINGERPRINT = (
+PREVIOUS_CURRENT_SCHEMA_FINGERPRINT = (
     "03d44d9dd88b6c381a60f6c72e41fadfd9dbd0edc3239f05ab9fe1653ff91e03"
+)
+PREVIOUS_V5_SCHEMA_FINGERPRINT = (
+    "909f7660043197c3fa12f66bb0eb58d323945f9eefc2e1f3bc68eb39db6b2cc9"
+)
+CURRENT_SCHEMA_FINGERPRINT = (
+    "d23b0eb16fa2075c6dbf92a6b277e2101dc3e7607cf6ef53073cd61d2e8f653a"
 )
 
 MigrationStep = Callable[[sqlite3.Connection], None]
@@ -95,11 +103,87 @@ def _migrate_action_receipts(conn: sqlite3.Connection) -> None:
             raise ValueError("动作回执迁移脚本存在不完整语句")
 
 
+def _migrate_life_domains(conn: sqlite3.Connection) -> None:
+    """创建生活领域表，并为地点档案补充可选坐标。"""
+
+    place_columns = {
+        str(row[1]) for row in conn.execute("PRAGMA table_info(places)").fetchall()
+    }
+    additions = {
+        "latitude": "REAL",
+        "longitude": "REAL",
+        "coordinate_source": "TEXT NOT NULL DEFAULT ''",
+        "coordinate_updated_at": "TEXT NOT NULL DEFAULT ''",
+    }
+    for name, definition in additions.items():
+        if name not in place_columns:
+            conn.execute(f"ALTER TABLE places ADD COLUMN {name} {definition}")
+
+    for script in (DOMAIN_SQL, DOMAIN_INDEX_SQL):
+        buffer = ""
+        for line in script.splitlines(keepends=True):
+            buffer += line
+            if sqlite3.complete_statement(buffer):
+                statement = buffer.strip()
+                buffer = ""
+                if statement:
+                    conn.execute(statement)
+        if buffer.strip():
+            raise ValueError("生活领域迁移脚本存在不完整语句")
+
+
+def _migrate_action_decision_dimensions(conn: sqlite3.Connection) -> None:
+    """为动作裁定增加稳定的类别、来源、阶段和结果字段。"""
+
+    columns = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(action_decisions)").fetchall()
+    }
+    additions = {
+        "decision_category": "TEXT NOT NULL DEFAULT ''",
+        "decision_source": "TEXT NOT NULL DEFAULT ''",
+        "decision_stage": "TEXT NOT NULL DEFAULT ''",
+        "decision_outcome": "TEXT NOT NULL DEFAULT ''",
+    }
+    for name, definition in additions.items():
+        if name not in columns:
+            conn.execute(
+                f"ALTER TABLE action_decisions ADD COLUMN {name} {definition}"
+            )
+
+    rows = conn.execute(
+        "SELECT id, action, scene_type, decision_category, decision_source, "
+        "decision_stage, decision_outcome FROM action_decisions"
+    ).fetchall()
+    for row in rows:
+        dimensions = normalize_action_decision_dimensions(
+            action=row[1],
+            scene_type=row[2],
+            category=row[3],
+            source=row[4],
+            stage=row[5],
+            outcome=row[6],
+        )
+        conn.execute(
+            "UPDATE action_decisions SET decision_category = ?, decision_source = ?, "
+            "decision_stage = ?, decision_outcome = ? WHERE id = ?",
+            (
+                dimensions["decision_category"],
+                dimensions["decision_source"],
+                dimensions["decision_stage"],
+                dimensions["decision_outcome"],
+                row[0],
+            ),
+        )
+
+
 # 键是迁移完成后的目标版本；每个步骤只负责从前一版本升级一次。
 MIGRATIONS: dict[int, MigrationStep] = {
     2: _migrate_timeline_execution_state,
     3: _migrate_cognition_runtime,
     4: _migrate_action_receipts,
+    5: _migrate_life_domains,
+    6: _migrate_action_decision_dimensions,
 }
 
 
@@ -140,6 +224,8 @@ def is_baseline_schema(conn: sqlite3.Connection) -> bool:
     return schema_fingerprint(conn) in {
         BASELINE_SCHEMA_FINGERPRINT,
         PREVIOUS_BASELINE_SCHEMA_FINGERPRINT,
+        PREVIOUS_CURRENT_SCHEMA_FINGERPRINT,
+        PREVIOUS_V5_SCHEMA_FINGERPRINT,
         LEGACY_BASELINE_SCHEMA_FINGERPRINT,
         CURRENT_SCHEMA_FINGERPRINT,
     }
@@ -230,6 +316,7 @@ __all__ = [
     "BASELINE_SCHEMA_VERSION",
     "MIGRATIONS",
     "PREVIOUS_BASELINE_SCHEMA_FINGERPRINT",
+    "PREVIOUS_V5_SCHEMA_FINGERPRINT",
     "SCHEMA_VERSION",
     "SCHEMA_VERSION_KEY",
     "MigrationStep",

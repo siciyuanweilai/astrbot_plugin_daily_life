@@ -1,11 +1,8 @@
 import json
 import unittest
 
-from support import (
-    LifeSettings,
-    PLUGIN_ROOT,
-)
 from core.prompts import DEFAULT_WEB_TODAY_PROMPT
+from support import PLUGIN_ROOT, LifeSettings
 
 
 class LifeSettingsTest(unittest.TestCase):
@@ -22,7 +19,18 @@ class LifeSettingsTest(unittest.TestCase):
                     "reference_groups": 123456,
                     "reference_users": ["654321", None],
                 },
-                "weather_awareness": {"aware_outfit": "false", "aware_activity": "yes"},
+                "weather_awareness": {
+                    "default_city": "不应继续使用的旧城市",
+                    "aware_outfit": "false",
+                    "aware_activity": "yes",
+                },
+                "life_domain_config": {
+                    "home_address": "测试省测试市测试区测试路1号",
+                    "map_provider": "tencent",
+                    "amap_api_key": "amap-key",
+                    "tencent_map_api_key": "tencent-key",
+                    "baidu_map_api_key": "baidu-key",
+                },
                 "state_config": {
                     "enabled": "false",
                     "provider": "state-model",
@@ -220,6 +228,12 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertEqual(config.llm_provider, "generation-model")
         self.assertFalse(config.weather.aware_outfit)
         self.assertTrue(config.weather.aware_activity)
+        self.assertFalse(hasattr(config.weather, "default_city"))
+        self.assertEqual(config.domains.home_address, "测试省测试市测试区测试路1号")
+        self.assertEqual(config.domains.map_provider, "tencent")
+        self.assertEqual(config.domains.amap_api_key, "amap-key")
+        self.assertEqual(config.domains.tencent_map_api_key, "tencent-key")
+        self.assertEqual(config.domains.baidu_map_api_key, "baidu-key")
         self.assertFalse(config.state.enabled)
         self.assertEqual(config.state.provider, "state-model")
         self.assertEqual(config.state.refresh_minutes, 240)
@@ -569,6 +583,25 @@ class LifeSettingsTest(unittest.TestCase):
 
         self.assertTrue(items["semantic_max_segments"]["hint"].strip())
         self.assertTrue(items["semantic_timeout_seconds"]["hint"].strip())
+
+    def test_map_provider_schema_exposes_supported_services(self):
+        schema = json.loads(
+            (PLUGIN_ROOT / "_conf_schema.json").read_text(encoding="utf-8")
+        )
+        items = schema["life_domain_config"]["items"]
+
+        self.assertEqual(items["home_address"]["description"], "常住详细地址")
+        self.assertEqual(items["map_provider"]["options"], ["amap", "tencent", "baidu"])
+        self.assertEqual(
+            items["map_provider"]["option_labels"],
+            {
+                "amap": "高德地图",
+                "tencent": "腾讯地图",
+                "baidu": "百度地图",
+            },
+        )
+        self.assertIn("tencent_map_api_key", items)
+        self.assertIn("baidu_map_api_key", items)
 
     def test_image_channel_schema_exposes_custom_group_names(self):
         schema = json.loads(
@@ -1299,9 +1332,9 @@ class LifeSettingsTest(unittest.TestCase):
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertIn("version: 1.0.9", metadata)
-        self.assertIn("version-1.0.9", readme)
-        self.assertIn("v1.0.9 · 2026-08-03", changelog)
+        self.assertIn("version: 1.1.0", metadata)
+        self.assertIn("version-1.1.0", readme)
+        self.assertIn("v1.1.0 · 2026-08-04", changelog)
         self.assertIn("v1.0.4 · 2026-08-01", changelog)
         self.assertLess(changelog.index("v1.0.4"), changelog.index("v1.0.3"))
 

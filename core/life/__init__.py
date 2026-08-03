@@ -1,4 +1,5 @@
+from .domains import LifeDomainService
 from .planner import LifeBackgroundComposer
 from .weather import WeatherClient
 
-__all__ = ["LifeBackgroundComposer", "WeatherClient"]
+__all__ = ["LifeBackgroundComposer", "LifeDomainService", "WeatherClient"]

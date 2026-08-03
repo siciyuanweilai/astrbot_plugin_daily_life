@@ -14,7 +14,6 @@ from .cast import (
     normalize_time_window,
 )
 
-
 DEFAULT_CHAT_STYLE_PROMPT = (
     "日常闲聊先接住当下的一句话，不为了显得温柔或有趣而多铺陈。"
     "轻松接话保持短气口，一句只放一个主要意思，能自然停住就停住。"
@@ -28,17 +27,15 @@ DEFAULT_OUTFIT_PREFERENCE_WEIGHT = 0.0
 @dataclass(slots=True)
 class WeatherSettings:
     api_key: str = ""
-    default_city: str = ""
     aware_outfit: bool = True
     aware_activity: bool = True
 
     @staticmethod
-    def from_dict(data: Any) -> "WeatherSettings":
+    def from_dict(data: Any) -> WeatherSettings:
         if not isinstance(data, dict):
             return WeatherSettings()
         return WeatherSettings(
             api_key=as_str(data.get("api_key", "")),
-            default_city=as_str(data.get("default_city", "")),
             aware_outfit=as_bool(data.get("aware_outfit", True), True),
             aware_activity=as_bool(data.get("aware_activity", True), True),
         )
@@ -52,7 +49,7 @@ class StateSettings:
     quiet_hours: str = "00:00-06:30"
 
     @staticmethod
-    def from_dict(data: Any) -> "StateSettings":
+    def from_dict(data: Any) -> StateSettings:
         if not isinstance(data, dict):
             return StateSettings()
         return StateSettings(
@@ -84,7 +81,7 @@ class ProactiveReplySettings:
     adaptive_feedback_enabled: bool = False
 
     @staticmethod
-    def from_dict(data: Any) -> "ProactiveReplySettings":
+    def from_dict(data: Any) -> ProactiveReplySettings:
         if not isinstance(data, dict):
             return ProactiveReplySettings()
         return ProactiveReplySettings(
@@ -141,7 +138,7 @@ class ResponseGateSettings:
     media_only_group_frequency: float = 0.2
 
     @staticmethod
-    def from_dict(data: Any) -> "ResponseGateSettings":
+    def from_dict(data: Any) -> ResponseGateSettings:
         if not isinstance(data, dict):
             return ResponseGateSettings()
         return ResponseGateSettings(
@@ -190,7 +187,7 @@ class ChatStyleSettings:
     segment_max_delay_seconds: float = 3.5
 
     @staticmethod
-    def from_dict(data: Any) -> "ChatStyleSettings":
+    def from_dict(data: Any) -> ChatStyleSettings:
         if not isinstance(data, dict):
             return ChatStyleSettings()
         raw_range = data.get("segment_delay_range")
@@ -251,7 +248,7 @@ class TaskModelSettings:
     provider: str = ""
 
     @staticmethod
-    def from_dict(data: Any) -> "TaskModelSettings":
+    def from_dict(data: Any) -> TaskModelSettings:
         if not isinstance(data, dict):
             return TaskModelSettings()
         return TaskModelSettings(provider=as_str(data.get("provider", "")).strip())
@@ -265,7 +262,7 @@ class OutfitSettings:
     default_preference_weight: float = DEFAULT_OUTFIT_PREFERENCE_WEIGHT
 
     @staticmethod
-    def from_dict(data: Any) -> "OutfitSettings":
+    def from_dict(data: Any) -> OutfitSettings:
         if not isinstance(data, dict):
             return OutfitSettings()
         return OutfitSettings(
@@ -299,7 +296,7 @@ class EmojiSettings:
     orphan_cache_grace_hours: int = 24
 
     @staticmethod
-    def from_dict(data: Any) -> "EmojiSettings":
+    def from_dict(data: Any) -> EmojiSettings:
         if not isinstance(data, dict):
             return EmojiSettings()
         return EmojiSettings(
@@ -339,7 +336,7 @@ class SightSettings:
     bili_auto_summary: bool = False
 
     @staticmethod
-    def from_dict(data: Any) -> "SightSettings":
+    def from_dict(data: Any) -> SightSettings:
         if not isinstance(data, dict):
             return SightSettings()
         return SightSettings(
@@ -417,7 +414,7 @@ class SearchSettings:
     today_prompt: str = DEFAULT_WEB_TODAY_PROMPT
 
     @staticmethod
-    def from_dict(data: Any) -> "SearchSettings":
+    def from_dict(data: Any) -> SearchSettings:
         if not isinstance(data, dict):
             return SearchSettings()
         return SearchSettings(
@@ -478,7 +475,7 @@ class LifecycleSettings:
     max_preferences: int = 16
 
     @staticmethod
-    def from_dict(data: Any) -> "LifecycleSettings":
+    def from_dict(data: Any) -> LifecycleSettings:
         if not isinstance(data, dict):
             return LifecycleSettings()
         return LifecycleSettings(
@@ -490,6 +487,7 @@ class LifecycleSettings:
 
 @dataclass(slots=True)
 class StorageSettings:
+    domains_keep_days: int = 180
     cognition_keep_days: int = 30
     daily_keep_days: int = 30
     relationships_keep_days: int = 0
@@ -505,10 +503,13 @@ class StorageSettings:
     reverse_cache_keep_days: int = 7
 
     @staticmethod
-    def from_dict(data: Any) -> "StorageSettings":
+    def from_dict(data: Any) -> StorageSettings:
         if not isinstance(data, dict):
             return StorageSettings()
         return StorageSettings(
+            domains_keep_days=as_int(
+                data.get("domains_keep_days", 180), 180, 0, 3650
+            ),
             cognition_keep_days=as_int(
                 data.get("cognition_keep_days", 30), 30, 0, 3650
             ),

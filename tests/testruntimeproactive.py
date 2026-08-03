@@ -1824,6 +1824,22 @@ class RuntimeProactiveAsyncTest(
             {item["stage"] for item in trace_records},
             {"proposal", "sending", "commit"},
         )
+        decisions = await runtime.archive.get_action_decision_records(10)
+        self.assertEqual([item.action for item in decisions], [
+            "proactive_reply",
+            "proactive_reply",
+        ])
+        self.assertEqual(
+            [item.decision_stage for item in decisions],
+            ["commit", "proposal"],
+        )
+        self.assertEqual(
+            [item.decision_outcome for item in decisions],
+            ["reply", "reply"],
+        )
+        self.assertTrue(
+            all(item.decision_category == "proactive" for item in decisions)
+        )
         commit_trace = [
             item for item in trace_records if item["stage"] == "commit"
         ][0]

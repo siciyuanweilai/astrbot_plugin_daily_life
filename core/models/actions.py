@@ -7,9 +7,15 @@ LIFE_ACTION_TYPES = frozenset(
     {
         "rest",
         "meal",
+        "cook",
+        "order_food",
+        "purchase",
         "move",
+        "travel",
         "work",
         "study",
+        "chore",
+        "exercise",
         "groom",
         "change_outfit",
         "social",
@@ -157,6 +163,7 @@ class LifeActionIntent:
     duration_minutes: int = 0
     preconditions: list[LifeActionPrecondition] = field(default_factory=list)
     effects: list[LifeActionEffect] = field(default_factory=list)
+    payload: dict[str, Any] = field(default_factory=dict)
     evidence: str = ""
     source: str = ""
 
@@ -201,6 +208,9 @@ class LifeActionIntent:
             duration_minutes=max(0, min(1440, duration_minutes)),
             preconditions=conditions[:12],
             effects=effects[:12],
+            payload=dict(raw.get("payload"))
+            if isinstance(raw.get("payload"), dict)
+            else {},
             evidence=_text(raw.get("evidence"), 240),
             source=_text(raw.get("source"), 60),
         )
@@ -220,6 +230,7 @@ class LifeActionIntent:
             "duration_minutes": self.duration_minutes,
             "preconditions": [item.as_dict() for item in self.preconditions],
             "effects": [item.as_dict() for item in self.effects],
+            "payload": dict(self.payload),
             "evidence": self.evidence,
             "source": self.source,
         }

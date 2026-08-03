@@ -141,8 +141,9 @@ class PageViewMixin:
         places = await self.runtime.archive.get_recent_places(PAGE_WORLD_RECORD_LIMIT)
         events = await self.runtime.archive.get_recent_events(PAGE_WORLD_RECORD_LIMIT)
         summaries = await self.runtime.archive.get_recent_chat_summaries(PAGE_WORLD_RECORD_LIMIT)  # fmt: skip
+        group_environment_records = await self.runtime.archive.get_recent_group_environments(PAGE_WORLD_RECORD_LIMIT)  # fmt: skip
         group_environments = await self._page_group_environments(
-            await self.runtime.archive.get_recent_group_environments(PAGE_WORLD_RECORD_LIMIT)  # fmt: skip
+            group_environment_records
         )
         message_visibility = await self.runtime.archive.get_message_visibility_records(PAGE_WORLD_RECORD_LIMIT)  # fmt: skip
         action_decisions = self._page_action_decisions(
@@ -215,6 +216,11 @@ class PageViewMixin:
             "get_grounded_diary_entries", limit=20
         )
         durable_tasks = await self._page_archive_records("get_durable_tasks", limit=20)
+        domain_service = getattr(self.runtime, "domains", None)
+        domain_snapshot = {}
+        domain_snapshot_getter = getattr(domain_service, "snapshot", None)
+        if callable(domain_snapshot_getter):
+            domain_snapshot = await domain_snapshot_getter(limit=20)
         health = await self.runtime.archive.get_life_health_report(
             self.runtime.config.storage
         )
@@ -249,6 +255,7 @@ class PageViewMixin:
                 "scheduler_error": str(getattr(rhythm, "last_error", "") or ""),
             },
             "background_tasks": background_tasks,
+            "domains": domain_snapshot,
             "day": self._page_day(data, now, extended_night) if data else None,
             "week_plan": self._page_week_plan(week_plan),
             "world": {

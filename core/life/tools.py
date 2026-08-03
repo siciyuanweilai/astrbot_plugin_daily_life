@@ -265,30 +265,6 @@ def _first_integer(text: str) -> int | None:
     return None
 
 
-def extract_city_from_persona(persona):
-    cities = [
-        "北京",
-        "上海",
-        "广州",
-        "深圳",
-        "杭州",
-        "南京",
-        "成都",
-        "武汉",
-        "西安",
-        "长沙",
-        "重庆",
-        "天津",
-        "苏州",
-        "厦门",
-        "青岛",
-    ]
-    for c in cities:
-        if c in persona:
-            return c
-    return ""
-
-
 def analyze_weather(weather_data: Any) -> dict:
     result = {
         "raw": "",

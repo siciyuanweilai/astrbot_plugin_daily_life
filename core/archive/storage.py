@@ -505,6 +505,52 @@ class StorageArchiveMixin:
                 deleted += int(cursor.rowcount)
         return deleted
 
+    def _cleanup_domains_unlocked(self, keep_days: int) -> int:
+        cutoff = self._cutoff_date(keep_days)
+        deleted = 0
+        for sql, params in (
+            (
+                """
+                DELETE FROM activity_sessions
+                WHERE status NOT IN ('active', 'planned')
+                  AND COALESCE(NULLIF(ended_at, ''), NULLIF(started_at, ''), created_at) < ?
+                """,
+                (cutoff,),
+            ),
+            (
+                "DELETE FROM route_cache WHERE expires_at <> '' AND expires_at < ?",
+                (cutoff,),
+            ),
+            (
+                "DELETE FROM pantry_movements WHERE occurred_at <> '' AND occurred_at < ?",
+                (cutoff,),
+            ),
+            (
+                "DELETE FROM meal_records WHERE occurred_at <> '' AND occurred_at < ?",
+                (cutoff,),
+            ),
+            (
+                "DELETE FROM chore_records WHERE occurred_at <> '' AND occurred_at < ?",
+                (cutoff,),
+            ),
+            (
+                "DELETE FROM fitness_records WHERE occurred_at <> '' AND occurred_at < ?",
+                (cutoff,),
+            ),
+            (
+                """
+                DELETE FROM conversation_action_items
+                WHERE status NOT IN ('open', 'pending')
+                  AND updated_at < ?
+                """,
+                (cutoff,),
+            ),
+        ):
+            cursor = self._conn.execute(sql, params)
+            if cursor.rowcount and cursor.rowcount > 0:
+                deleted += int(cursor.rowcount)
+        return deleted
+
     def _cleanup_category_unlocked(
         self, category: StorageCategory, keep_days: int
     ) -> int:
@@ -512,6 +558,8 @@ class StorageArchiveMixin:
             return 0
         if category.key == "daily":
             return self._cleanup_daily_unlocked(keep_days)
+        if category.key == "domains":
+            return self._cleanup_domains_unlocked(keep_days)
         if category.key == "review":
             return self._cleanup_review_unlocked(keep_days)
         if category.key == "cognition":

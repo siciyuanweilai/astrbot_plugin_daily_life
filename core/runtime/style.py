@@ -526,10 +526,27 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
             1 for unit in source.units[:-1] if unit.break_kind == "strong"
         )
         boundary_segments = strong_break_count + 1
+        break_aware_segments = 0
+        group_length = 0
+        group_soft_breaks = 0
+        for unit_index, unit in enumerate(source.units):
+            group_length += len(cls._chat_style_compact_text(unit.text))
+            if unit.break_kind == "soft" and unit_index < len(source.units) - 1:
+                group_soft_breaks += 1
+            if unit.break_kind == "strong" or unit_index == len(source.units) - 1:
+                desired = max(1, (group_length + target - 1) // target)
+                break_aware_segments += min(1 + group_soft_breaks, desired)
+                group_length = 0
+                group_soft_breaks = 0
         max_segments = min(
             cap,
             len(source.units),
-            max(length_segments, explicit_segments, boundary_segments),
+            max(
+                length_segments,
+                explicit_segments,
+                boundary_segments,
+                break_aware_segments,
+            ),
         )
         max_segments = max(2, max_segments)
         if short_strong_lead and text_length - leading_strong_length > target:
@@ -567,6 +584,12 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
             remaining_text = "".join(item.text for item in units[unit_index:])
             remaining_length = len(cls._chat_style_compact_text(remaining_text))
             room_for_another = remaining_length >= min_current
+            remaining_strong_breaks = sum(
+                1 for item in units[unit_index:-1] if item.break_kind == "strong"
+            )
+            soft_split_preserves_strong_breaks = (
+                len(segments) + remaining_strong_breaks + 2 <= max_segments
+            )
             should_split = (
                 bool(current)
                 and len(segments) + 1 < max_segments
@@ -579,6 +602,7 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
                     or (
                         allow_soft_split
                         and current_break == "soft"
+                        and soft_split_preserves_strong_breaks
                         and len(compact_current) >= min_current
                         and len(compact_current)
                         + len(cls._chat_style_compact_text(unit_text))

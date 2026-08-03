@@ -71,7 +71,11 @@ class PlaceArchiveMixin:
                 place_type = place.type
                 hint = place.hint
                 row = self._conn.execute(
-                    "SELECT type, hint, visits, first_seen FROM places WHERE name = ?",
+                    """
+                    SELECT type, hint, latitude, longitude, coordinate_source,
+                           coordinate_updated_at, visits, first_seen
+                    FROM places WHERE name = ?
+                    """,
                     (name,),
                 ).fetchone()
                 if row:
@@ -85,16 +89,43 @@ class PlaceArchiveMixin:
                     hint = hint or stored_hint
                     visits = int(row["visits"] or 0) + 1
                     first_seen = str(row["first_seen"] or date_str)
+                    latitude = (
+                        place.latitude
+                        if place.latitude is not None
+                        else row["latitude"]
+                    )
+                    longitude = (
+                        place.longitude
+                        if place.longitude is not None
+                        else row["longitude"]
+                    )
+                    coordinate_source = place.coordinate_source or str(
+                        row["coordinate_source"] or ""
+                    )
+                    coordinate_updated_at = place.coordinate_updated_at or str(
+                        row["coordinate_updated_at"] or ""
+                    )
                 else:
                     visits = 1
                     first_seen = date_str
+                    latitude = place.latitude
+                    longitude = place.longitude
+                    coordinate_source = place.coordinate_source
+                    coordinate_updated_at = place.coordinate_updated_at
                 self._conn.execute(
                     """
-                    INSERT INTO places(name, type, hint, visits, first_seen, last_seen, source)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO places(
+                        name, type, hint, latitude, longitude, coordinate_source,
+                        coordinate_updated_at, visits, first_seen, last_seen, source
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(name) DO UPDATE SET
                         type = excluded.type,
                         hint = excluded.hint,
+                        latitude = excluded.latitude,
+                        longitude = excluded.longitude,
+                        coordinate_source = excluded.coordinate_source,
+                        coordinate_updated_at = excluded.coordinate_updated_at,
                         visits = excluded.visits,
                         first_seen = excluded.first_seen,
                         last_seen = excluded.last_seen,
@@ -104,6 +135,10 @@ class PlaceArchiveMixin:
                         name,
                         place_type or "place",
                         hint,
+                        latitude,
+                        longitude,
+                        coordinate_source,
+                        coordinate_updated_at,
                         visits,
                         first_seen,
                         date_str,
@@ -127,6 +162,10 @@ class PlaceArchiveMixin:
                     name=row["name"],
                     type=row["type"],
                     hint=row["hint"],
+                    latitude=row["latitude"],
+                    longitude=row["longitude"],
+                    coordinate_source=row["coordinate_source"],
+                    coordinate_updated_at=row["coordinate_updated_at"],
                     visits=int(row["visits"] or 0),
                     first_seen=row["first_seen"],
                     last_seen=row["last_seen"],

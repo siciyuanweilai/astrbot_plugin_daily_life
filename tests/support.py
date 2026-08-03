@@ -3442,6 +3442,11 @@ class WeatherClient:
         return "北京 晴 20°C"
 
 
+class DomainService:
+    async def resolve_weather_city(self):
+        return "测试市"
+
+
 class Event:
     def __init__(
         self,
@@ -3677,7 +3682,11 @@ def make_composer(
             generated=True,
         )
     composer = LifeBackgroundComposer(
-        context, make_config(provider_id, config_overrides), archive, WeatherClient()
+        context,
+        make_config(provider_id, config_overrides),
+        archive,
+        WeatherClient(),
+        domain_service=DomainService(),
     )
     return composer, provider, selected, archive
 

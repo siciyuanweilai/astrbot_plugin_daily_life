@@ -195,6 +195,58 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 archive.close()
 
+    async def test_v5_database_migrates_action_decision_dimensions(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = f"{tmpdir}/daily_life.db"
+            archive = LifeArchive(db_path)
+            await archive.save_action_decision(
+                ActionDecisionRecord(
+                    action="proactive_proposal_observe",
+                    reason="候选阶段决定继续观察",
+                    scene_type="闲时回复/proposal",
+                )
+            )
+            await archive.save_action_decision(
+                ActionDecisionRecord(
+                    action="save_memory",
+                    reason="保存有依据的会话事实",
+                )
+            )
+            await archive.aclose()
+
+            connection = sqlite3.connect(db_path)
+            for column in (
+                "decision_outcome",
+                "decision_stage",
+                "decision_source",
+                "decision_category",
+            ):
+                connection.execute(
+                    f"ALTER TABLE action_decisions DROP COLUMN {column}"
+                )
+            connection.execute(
+                "UPDATE meta SET value = '5' WHERE key = 'schema_version'"
+            )
+            connection.commit()
+            connection.close()
+
+            migrated = LifeArchive(db_path)
+            try:
+                version = migrated._conn.execute(
+                    "SELECT value FROM meta WHERE key = 'schema_version'"
+                ).fetchone()[0]
+                records = await migrated.get_action_decision_records(10)
+                self.assertEqual(version, "6")
+                self.assertEqual(records[0].decision_category, "memory")
+                self.assertEqual(records[0].decision_outcome, "save_memory")
+                self.assertEqual(records[1].decision_category, "proactive")
+                self.assertEqual(records[1].decision_source, "proactive_reply")
+                self.assertEqual(records[1].decision_stage, "proposal")
+                self.assertEqual(records[1].decision_outcome, "observe")
+                self.assertEqual(records[1].reason, "候选阶段决定继续观察")
+            finally:
+                await migrated.aclose()
+
     def test_existing_incomplete_current_schema_is_rejected_without_modification(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = f"{tmpdir}/daily_life.db"
@@ -1718,6 +1770,8 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(visibility[0].reactivated_from_id, 2)
             self.assertIn("重新关注", visibility[0].reactivation_hint)
             self.assertEqual(decisions[0].action, "save_memory")
+            self.assertEqual(decisions[0].decision_category, "memory")
+            self.assertEqual(decisions[0].decision_outcome, "save_memory")
             self.assertIn("Bob 的近况", decisions[0].inner_monologue)
             self.assertIn("继续观察", decisions[0].reply_strategy)
             self.assertEqual(episodes[0].title, "看展话题被记住")

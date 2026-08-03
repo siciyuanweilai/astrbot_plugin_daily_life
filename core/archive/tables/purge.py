@@ -1,5 +1,15 @@
 DROP_SCHEMA_SQL = """
 PRAGMA foreign_keys = OFF;
+        DROP TABLE IF EXISTS conversation_action_items;
+        DROP TABLE IF EXISTS fitness_records;
+        DROP TABLE IF EXISTS chore_records;
+        DROP TABLE IF EXISTS chores;
+        DROP TABLE IF EXISTS meal_records;
+        DROP TABLE IF EXISTS pantry_movements;
+        DROP TABLE IF EXISTS pantry_items;
+        DROP TABLE IF EXISTS recipes;
+        DROP TABLE IF EXISTS route_cache;
+        DROP TABLE IF EXISTS activity_sessions;
         DROP TABLE IF EXISTS grounded_diary_entries;
         DROP TABLE IF EXISTS affective_states;
         DROP TABLE IF EXISTS life_action_receipts;

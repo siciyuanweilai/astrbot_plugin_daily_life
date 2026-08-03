@@ -3,6 +3,8 @@ import {
   ATMOSPHERE_LABELS,
   BOT_WATCH_STATE_LABELS,
   CURRENT_SLEEP_LABELS,
+  DECISION_CATEGORY_LABELS,
+  DECISION_SOURCE_LABELS,
   EMOJI_SOURCE_LABELS,
   EMOJI_STATUS_LABELS,
   EMOJI_TYPE_LABELS,
@@ -202,9 +204,15 @@ const DECISION_REASON_LABELS = {
 const LIFE_ACTION_TYPE_LABELS = {
   rest: "休息",
   meal: "用餐",
+  cook: "做饭",
+  order_food: "点餐",
+  purchase: "采购",
   move: "移动或散步",
+  travel: "出行",
   work: "工作",
   study: "学习",
+  chore: "家务",
+  exercise: "运动",
   groom: "整理仪容",
   change_outfit: "更换穿搭",
   social: "社交活动",
@@ -277,7 +285,9 @@ const state = {
   emojiAnimatedPreviewSeq: 0,
   memoryTab: "world",
   worldTab: "life_decisions",
+  decisionFilter: "all",
   experienceTab: "relationships",
+  domainTab: "timeline",
   noticeTimer: 0,
   busy: false,
   configSchema: {},
@@ -351,7 +361,11 @@ const el = {
   timelineCancelButton: byId("timelineCancelButton"),
   timelineSaveButton: byId("timelineSaveButton"),
   stateLogList: byId("stateLogList"),
+  domainTabs: all("[data-domain-tab]"),
+  domainList: byId("domainList"),
   worldTabs: all("[data-world-tab]"),
+  decisionFilters: byId("decisionFilters"),
+  decisionFilterButtons: all("[data-decision-filter]"),
   experienceTabs: all("[data-experience-tab]"),
   worldList: byId("worldList"),
   lifecycleList: byId("lifecycleList"),
@@ -960,6 +974,151 @@ function renderStateLogs(day = {}) {
   );
 }
 
+const DOMAIN_KIND_LABELS = {
+  activity: "活动",
+  meal: "饮食",
+  chore: "家务",
+  fitness: "运动",
+  conversation_action: "行动项",
+};
+
+const DOMAIN_STATUS_LABELS = {
+  planned: "待进行",
+  active: "进行中",
+  simulated: "模拟完成",
+  completed: "已完成",
+  open: "待处理",
+  pending: "已安排",
+  done: "已完成",
+  failed: "未完成",
+  expired: "已过期",
+  cancelled: "已取消",
+};
+
+const DOMAIN_SOURCE_LABELS = {
+  daily_plan: "日程计划",
+  life_action: "动作回执",
+  life_action_simulation: "生活模拟",
+  timeline_simulation: "时间轴模拟",
+  conversation: "会话行动项",
+  schedule: "日程安排",
+  user: "用户记录",
+};
+
+function domainRecord(title, meta = "", lines = []) {
+  const record = node("div", "record domain-record");
+  const head = node("div", "record-head");
+  head.append(node("strong", "record-title", clean(title, "未命名记录")));
+  if (meta) head.append(node("span", "muted", clean(meta)));
+  record.append(head);
+  const visibleLines = lines.map((line) => clean(line, "")).filter(Boolean);
+  if (visibleLines.length) {
+    const body = node("div", "record-lines");
+    visibleLines.forEach((line) => body.append(node("div", "record-line-value", line)));
+    record.append(body);
+  }
+  return record;
+}
+
+function renderDomainTimeline(domains = {}) {
+  const items = Array.isArray(domains.timeline) ? domains.timeline : [];
+  return items.map((item) => {
+    const kind = DOMAIN_KIND_LABELS[clean(item.kind, "")] || clean(item.kind, "生活");
+    const status = DOMAIN_STATUS_LABELS[clean(item.status, "")] || clean(item.status, "");
+    return domainRecord(
+      clean(item.title, kind),
+      [kind, status].filter(Boolean).join(" · "),
+      [
+        clean(item.occurred_at, ""),
+        DOMAIN_SOURCE_LABELS[clean(item.source, "")] || (item.source ? "其他来源" : ""),
+      ]
+    );
+  });
+}
+
+function renderDomainFood(domains = {}) {
+  const meals = (Array.isArray(domains.meals) ? domains.meals : []).map((item) => (
+    domainRecord(
+      clean(item.name, "用餐"),
+      [clean(item.meal_type, "饮食"), DOMAIN_STATUS_LABELS[clean(item.status, "")] || ""].filter(Boolean).join(" · "),
+      [clean(item.occurred_at || item.date, ""), clean(item.place, "")]
+    )
+  ));
+  const pantry = (Array.isArray(domains.pantry) ? domains.pantry : []).map((item) => (
+    domainRecord(
+      clean(item.name, "库存物品"),
+      "现有库存",
+      [
+        `数量：${Number(item.quantity || 0)}${clean(item.unit, "")}`,
+        item.expires_at ? `到期：${clean(item.expires_at)}` : "",
+      ]
+    )
+  ));
+  return [...meals, ...pantry];
+}
+
+function renderDomainChores(domains = {}) {
+  const definitions = Array.isArray(domains.chores) ? domains.chores : [];
+  const records = Array.isArray(domains.chore_records) ? domains.chore_records : [];
+  return [
+    ...definitions.map((item) => domainRecord(
+      clean(item.name, "家务"),
+      item.enabled ? "轮换中" : "已停用",
+      [
+        item.last_completed_at ? `上次：${clean(item.last_completed_at)}` : "",
+        item.next_due_at ? `下次：${clean(item.next_due_at)}` : "",
+        item.cadence_days ? `周期：${Number(item.cadence_days)} 天` : "",
+      ]
+    )),
+    ...records.map((item) => domainRecord(
+      clean(item.name, "家务"),
+      DOMAIN_STATUS_LABELS[clean(item.status, "")] || clean(item.status, ""),
+      [clean(item.occurred_at, ""), item.duration_minutes ? `${Number(item.duration_minutes)} 分钟` : ""]
+    )),
+  ];
+}
+
+function renderDomainFitness(domains = {}) {
+  const items = Array.isArray(domains.fitness) ? domains.fitness : [];
+  return items.map((item) => domainRecord(
+    clean(item.activity, "运动"),
+    DOMAIN_STATUS_LABELS[clean(item.status, "")] || clean(item.status, ""),
+    [
+      clean(item.occurred_at || item.date, ""),
+      `${Number(item.duration_minutes || 0)} 分钟 · 强度 ${Number(item.intensity || 0)} · 负荷 ${Number(item.load_score || 0)}`,
+    ]
+  ));
+}
+
+function renderDomainActions(domains = {}) {
+  const items = Array.isArray(domains.conversation_actions) ? domains.conversation_actions : [];
+  return items.map((item) => domainRecord(
+    clean(item.title, "行动项"),
+    DOMAIN_STATUS_LABELS[clean(item.status, "")] || clean(item.status, ""),
+    [
+      `负责人：${clean(item.owner, "未定")}`,
+      item.due_at ? `截止：${clean(item.due_at)}` : "",
+      item.source_session ? `来源会话：${clean(item.source_session)}` : "",
+    ]
+  ));
+}
+
+function renderDomains(status = {}) {
+  const domains = status.domains && typeof status.domains === "object" ? status.domains : {};
+  syncTabSelection(el.domainTabs, "domainTab", state.domainTab);
+  let records = [];
+  if (state.domainTab === "food") records = renderDomainFood(domains);
+  else if (state.domainTab === "chores") records = renderDomainChores(domains);
+  else if (state.domainTab === "fitness") records = renderDomainFitness(domains);
+  else if (state.domainTab === "actions") records = renderDomainActions(domains);
+  else records = renderDomainTimeline(domains);
+  if (!records.length) {
+    el.domainList?.replaceChildren(empty(domains.enabled === false ? "生活实况已关闭" : "暂无生活实况记录"));
+    return;
+  }
+  el.domainList?.replaceChildren(...records.slice(0, 20));
+}
+
 function memoDisplayText(status = {}) {
   const items = memoCarouselItems(status);
   if (!items.length) return MEMO_EMPTY_TEXT;
@@ -1280,20 +1439,94 @@ function lifeObservationRecords(status) {
   return records;
 }
 
+function syncDecisionFilters() {
+  const activeFilter = text(state.decisionFilter || "all").trim() || "all";
+  el.decisionFilterButtons.forEach((button) => {
+    const active = button.dataset.decisionFilter === activeFilter;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+}
+
+export function decisionMatchesFilter(item, filter) {
+  if (filter === "all") return true;
+  if (filter === "lifecycle") return Boolean(text(item?.decision_stage).trim());
+  return text(item?.decision_category).trim() === filter;
+}
+
+function decisionEmptyText(filter) {
+  const labels = {
+    conversation: "暂无会话响应裁定",
+    memory: "暂无记忆处理裁定",
+    proactive: "暂无主动互动裁定",
+    expression: "暂无表达方式裁定",
+    lifecycle: "暂无流程状态记录",
+  };
+  return labels[filter] || "暂无裁定记录";
+}
+
+function decisionRecord(item, relationship) {
+  const record = node("div", "record decision-record");
+  const title = node("div", "record-title");
+  const category = enumLabel(item.decision_category, DECISION_CATEGORY_LABELS);
+  const source = enumLabel(item.decision_source, DECISION_SOURCE_LABELS);
+  const stage = enumLabel(item.decision_stage, DECISION_STAGE_LABELS);
+  const outcome = enumLabel(item.decision_outcome || item.action, ACTION_LABELS);
+  const action = enumLabel(item.action, ACTION_LABELS);
+  const titleText = item.decision_category === "proactive"
+    ? source || category || outcome || action
+    : outcome || action || category || "未定";
+  const sender = relationship.scope(item.sender_name || item.sender_profile_id);
+  const scope = item.group_id
+    ? relationship.scope(item.group_name || item.group_id) || "群聊"
+    : "私聊";
+  const confidence = Number(item.confidence);
+  const meta = [
+    category,
+    source && source !== titleText ? source : "",
+    stage,
+    outcome && outcome !== titleText ? outcome : "",
+    scope,
+    sender || clean(item.sender_name, ""),
+    enumLabelOrReadableText(item.scene_type, SCENE_TYPE_LABELS, ""),
+    enumLabel(item.understanding, UNDERSTANDING_LABELS),
+    item.deep_analysis ? "深析" : "",
+    Number.isFinite(confidence) ? `置信度 ${Math.round(confidence * 100)}%` : "",
+  ].filter(Boolean).join(" · ");
+  title.append(node("span", "", titleText), node("span", "muted", meta));
+  record.append(
+    title,
+    recordLines([
+      ["原因", relationship.text(item.reason) || "无裁定说明"],
+      item.topic_owner ? ["话题归属", relationship.text(item.topic_owner)] : "",
+      item.created_at || item.date ? ["时间", clean(item.created_at || item.date)] : "",
+    ])
+  );
+  return record;
+}
+
 function renderWorld(status) {
   const activeTab = text(state.worldTab || "relationships").trim() || "relationships";
   const relationship = relationshipTextResolver(status);
   const relationshipText = relationship.text;
   syncTabSelection(el.worldTabs, "worldTab", activeTab, el.worldList);
+  const showingDecisions = activeTab === "action_decisions";
+  if (el.decisionFilters) el.decisionFilters.hidden = !showingDecisions;
+  if (showingDecisions) syncDecisionFilters();
   if (activeTab === "life_decisions") {
     const records = lifeObservationRecords(status);
     el.worldList.replaceChildren(...(records.length ? records : [empty(worldEmptyText(activeTab))]));
     return;
   }
   const world = status.world || {};
-  const items = Array.isArray(world[activeTab]) ? world[activeTab] : [];
+  const rawItems = Array.isArray(world[activeTab]) ? world[activeTab] : [];
+  const items = showingDecisions
+    ? rawItems.filter((item) => decisionMatchesFilter(item, state.decisionFilter))
+    : rawItems;
   if (!items.length) {
-    el.worldList.replaceChildren(empty(worldEmptyText(activeTab)));
+    el.worldList.replaceChildren(
+      empty(showingDecisions ? decisionEmptyText(state.decisionFilter) : worldEmptyText(activeTab))
+    );
     return;
   }
 
@@ -1349,15 +1582,7 @@ function renderWorld(status) {
         const reactivation = relationshipText(item.reactivation_hint);
         record.append(title, node("div", "record-body", `${relationshipText(item.reason) || "无留意说明"}${reactivation ? ` · 再激活：${reactivation}` : ""}`));
       } else if (activeTab === "action_decisions") {
-        const sender = relationship.scope(item.sender_name || item.sender_profile_id);
-        const meta = [
-          sender || clean(item.sender_name, ""),
-          enumLabel(item.scene_type, SCENE_TYPE_LABELS),
-          enumLabel(item.understanding, UNDERSTANDING_LABELS),
-          item.deep_analysis ? "深析" : "",
-        ].filter(Boolean).join(" · ");
-        title.append(node("span", "", enumLabel(item.action, ACTION_LABELS) || "未定"), node("span", "muted", meta || `${Math.round(Number(item.confidence || 0) * 100)}%`));
-        record.append(title, node("div", "record-body", relationshipText(item.reason) || "无裁定说明"));
+        return decisionRecord(item, relationship);
       } else if (activeTab === "places") {
         title.append(node("span", "", clean(item.name)), node("span", "muted", `${item.visits || 0} 次`));
         record.append(title, node("div", "record-body", relationshipText(item.hint) || enumLabelOrReadableText(item.type, PLACE_TYPE_LABELS, "其他地点")));
@@ -2521,6 +2746,7 @@ async function deleteEmojiAssets(ids) {
 function renderDashboard() {
   const status = state.status || {};
   renderDay(status);
+  renderDomains(status);
   renderWorld(status);
   renderLifecycle(status);
   renderExperience(status);
@@ -2598,7 +2824,10 @@ async function runAction(
     const result = await action();
     const rendered = applyActionStatus(result);
     if (!rendered) await loadStatus({ quiet: true });
-    setNotice(successMessage, "success");
+    const resolvedSuccessMessage = typeof successMessage === "function"
+      ? successMessage(result)
+      : successMessage;
+    setNotice(resolvedSuccessMessage, "success");
     return result;
   } catch (error) {
     setNotice(userErrorMessage(error, "操作失败"), "error");
@@ -2659,9 +2888,14 @@ async function refreshState() {
     () => apiPost(
       "page/action/refresh-state",
       {},
-      { timeoutMs: GENERATION_TIMEOUT_MS, timeoutMessage: "状态刷新耗时较久，请稍后查看面板" }
+      { timeoutMs: GENERATION_TIMEOUT_MS, timeoutMessage: "今日刷新耗时较久，请稍后查看面板" }
     ),
-    "实时状态已刷新"
+    (result) => result?.weather_refreshed
+      ? "天气与实时状态已刷新"
+      : result?.status?.day?.weather
+        ? "实时状态已刷新，天气保持当前数据"
+        : "实时状态已刷新，天气暂不可用",
+    { pendingMessage: "正在刷新天气与实时状态，请稍等" }
   );
 }
 
@@ -2721,6 +2955,10 @@ function bindEvents() {
     state.memoryTab = tab.dataset.memoryTab || "world";
     renderMemoryPanel();
   });
+  bindRovingTabs(el.domainTabs, (tab) => {
+    state.domainTab = tab.dataset.domainTab || "timeline";
+    renderDomains(state.status || {});
+  });
   el.emojiFilter?.addEventListener("change", () => {
     state.emojiFilter = el.emojiFilter.value || "all";
     state.emojiPage = 1;
@@ -2776,6 +3014,12 @@ function bindEvents() {
   bindRovingTabs(el.worldTabs, (tab) => {
     state.worldTab = tab.dataset.worldTab;
     renderWorld(state.status || {});
+  });
+  el.decisionFilterButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      state.decisionFilter = button.dataset.decisionFilter || "all";
+      renderWorld(state.status || {});
+    });
   });
   bindRovingTabs(el.experienceTabs, (tab) => {
     state.experienceTab = tab.dataset.experienceTab;

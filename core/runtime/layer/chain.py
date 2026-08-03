@@ -66,7 +66,9 @@ class LayerChainMixin:
             else:
                 parts.append(str(value or ""))
         for field in ("cues", "habits", "examples", "related_people"):
-            parts.extend(str(entry or "") for entry in list(getattr(item, field, []) or []))
+            parts.extend(
+                str(entry or "") for entry in list(getattr(item, field, []) or [])
+            )
         return " ".join(parts)
 
     @staticmethod
@@ -88,6 +90,7 @@ class LayerChainMixin:
             )
             for index, item in enumerate(items)
         ]
+
     def _request_has_visual_input(self, req: ProviderRequest) -> bool:
         if list(getattr(req, "image_urls", []) or []):
             return True
@@ -421,8 +424,26 @@ class LayerChainMixin:
             if event is not None
             else asyncio.sleep(0, result="")
         )
-        snapshot, recent_video, heuristic_memory, memos_context = await asyncio.gather(
-            snapshot_task, recent_video_task, heuristic_task, memos_task
+        domain_context_builder = getattr(
+            getattr(self, "domains", None), "format_context", None
+        )
+        domain_task = (
+            domain_context_builder()
+            if callable(domain_context_builder)
+            else asyncio.sleep(0, result="")
+        )
+        (
+            snapshot,
+            recent_video,
+            heuristic_memory,
+            memos_context,
+            domain_context,
+        ) = await asyncio.gather(
+            snapshot_task,
+            recent_video_task,
+            heuristic_task,
+            memos_task,
+            domain_task,
         )
         environments, decisions, visibility = self._scope_snapshot_items(
             snapshot, event
@@ -457,6 +478,7 @@ class LayerChainMixin:
             + heuristic_memory
             + person_facts
             + cognition_context
+            + (f"\n\n[HiddenLifeDomains]\n{domain_context}" if domain_context else "")
         )
 
     async def inject_life_context(

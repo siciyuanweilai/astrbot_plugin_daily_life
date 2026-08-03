@@ -8,6 +8,7 @@ from typing import Any, TypeVar
 from .categories import STORAGE_CATEGORIES
 from .cognition import CognitionArchiveMixin
 from .common import CommonArchiveMixin
+from .domains import DomainArchiveMixin
 from .experience import ExperienceArchiveMixin
 from .gallery import MediaArchiveMixin
 from .journal import DayArchiveMixin
@@ -60,6 +61,7 @@ _CONTEXT_SNAPSHOT_KEYS = (
 
 
 class LifeArchive(
+    DomainArchiveMixin,
     CognitionArchiveMixin,
     MemoryVectorArchiveMixin,
     ChatMemoryQueueArchiveMixin,

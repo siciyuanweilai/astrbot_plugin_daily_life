@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..decisions import normalize_action_decision_dimensions
 from .primitive import optional_bool, optional_float, optional_int
 
 
@@ -11,13 +12,17 @@ class PlaceRecord:
     name: str
     type: str = "place"
     hint: str = ""
+    latitude: float | None = None
+    longitude: float | None = None
+    coordinate_source: str = ""
+    coordinate_updated_at: str = ""
     visits: int = 0
     first_seen: str = ""
     last_seen: str = ""
     source: str = "daily"
 
     @staticmethod
-    def from_value(value: Any) -> "PlaceRecord | None":
+    def from_value(value: Any) -> PlaceRecord | None:
         if isinstance(value, PlaceRecord):
             return value
         if not isinstance(value, dict):
@@ -29,6 +34,10 @@ class PlaceRecord:
             name=name,
             type=str(value.get("type") or "place").strip(),
             hint=str(value.get("hint") or "").strip(),
+            latitude=optional_float(value.get("latitude")),
+            longitude=optional_float(value.get("longitude")),
+            coordinate_source=str(value.get("coordinate_source") or "").strip(),
+            coordinate_updated_at=str(value.get("coordinate_updated_at") or "").strip(),
             visits=int(value.get("visits") or 0),
             first_seen=str(value.get("first_seen") or "").strip(),
             last_seen=str(value.get("last_seen") or "").strip(),
@@ -40,6 +49,10 @@ class PlaceRecord:
             "name": self.name,
             "type": self.type,
             "hint": self.hint,
+            "latitude": self.latitude,
+            "longitude": self.longitude,
+            "coordinate_source": self.coordinate_source,
+            "coordinate_updated_at": self.coordinate_updated_at,
             "visits": self.visits,
             "first_seen": self.first_seen,
             "last_seen": self.last_seen,
@@ -59,7 +72,7 @@ class EventRecord:
     @staticmethod
     def from_value(
         value: Any, date: str = "", source: str = "event"
-    ) -> "EventRecord | None":
+    ) -> EventRecord | None:
         if isinstance(value, EventRecord):
             return value
         if not isinstance(value, dict):
@@ -103,7 +116,7 @@ class RelationshipNote:
     source: str = "chat"
 
     @staticmethod
-    def from_value(value: Any) -> "RelationshipNote":
+    def from_value(value: Any) -> RelationshipNote:
         raw = value if isinstance(value, dict) else {}
         content = str(raw.get("content") or "").strip()
         return RelationshipNote(
@@ -124,7 +137,7 @@ class RelationshipPoint:
     weight: float = 1.0
 
     @staticmethod
-    def from_value(value: Any) -> "RelationshipPoint":
+    def from_value(value: Any) -> RelationshipPoint:
         raw = value if isinstance(value, dict) else {}
         weight = optional_float(raw.get("weight"))
         content = str(raw.get("content") or "").strip()
@@ -160,7 +173,7 @@ class RelationshipContactRecord:
     source: str = "chat"
 
     @staticmethod
-    def from_value(value: Any) -> "RelationshipContactRecord | None":
+    def from_value(value: Any) -> RelationshipContactRecord | None:
         raw = value if isinstance(value, dict) else {}
         profile_id = str(raw.get("profile_id") or "").strip()
         platform = str(raw.get("platform") or "").strip()
@@ -221,7 +234,7 @@ class RelationshipRecord:
     contacts: list[RelationshipContactRecord] = field(default_factory=list)
 
     @staticmethod
-    def from_value(value: Any) -> "RelationshipRecord | None":
+    def from_value(value: Any) -> RelationshipRecord | None:
         raw = value if isinstance(value, dict) else {}
         profile_id = str(raw.get("id") or "").strip()
         name = str(raw.get("name") or profile_id).strip()
@@ -299,7 +312,7 @@ class ChatSummaryRecord:
     created_at: str = ""
 
     @staticmethod
-    def from_value(value: Any) -> "ChatSummaryRecord | None":
+    def from_value(value: Any) -> ChatSummaryRecord | None:
         if isinstance(value, ChatSummaryRecord):
             return value
         raw = value if isinstance(value, dict) else {}
@@ -361,7 +374,7 @@ class GroupEnvironmentRecord:
     created_at: str = ""
 
     @staticmethod
-    def from_value(value: Any) -> "GroupEnvironmentRecord | None":
+    def from_value(value: Any) -> GroupEnvironmentRecord | None:
         if isinstance(value, GroupEnvironmentRecord):
             return value
         raw = value if isinstance(value, dict) else {}
@@ -445,7 +458,7 @@ class MessageVisibilityRecord:
     created_at: str = ""
 
     @staticmethod
-    def from_value(value: Any) -> "MessageVisibilityRecord | None":
+    def from_value(value: Any) -> MessageVisibilityRecord | None:
         if isinstance(value, MessageVisibilityRecord):
             return value
         raw = value if isinstance(value, dict) else {}
@@ -518,10 +531,14 @@ class ActionDecisionRecord:
     deep_analysis: bool = False
     inner_monologue: str = ""
     reply_strategy: str = ""
+    decision_category: str = ""
+    decision_source: str = ""
+    decision_stage: str = ""
+    decision_outcome: str = ""
     created_at: str = ""
 
     @staticmethod
-    def from_value(value: Any) -> "ActionDecisionRecord | None":
+    def from_value(value: Any) -> ActionDecisionRecord | None:
         if isinstance(value, ActionDecisionRecord):
             return value
         raw = value if isinstance(value, dict) else {}
@@ -530,6 +547,14 @@ class ActionDecisionRecord:
         if not (action or reason):
             return None
         confidence = optional_float(raw.get("confidence"))
+        dimensions = normalize_action_decision_dimensions(
+            action=action,
+            scene_type=raw.get("scene_type"),
+            category=raw.get("decision_category"),
+            source=raw.get("decision_source"),
+            stage=raw.get("decision_stage"),
+            outcome=raw.get("decision_outcome"),
+        )
         return ActionDecisionRecord(
             id=optional_int(raw.get("id")) or 0,
             session_id=str(raw.get("session_id") or "").strip(),
@@ -548,10 +573,22 @@ class ActionDecisionRecord:
             deep_analysis=optional_bool(raw.get("deep_analysis")) or False,
             inner_monologue=str(raw.get("inner_monologue") or "").strip(),
             reply_strategy=str(raw.get("reply_strategy") or "").strip(),
+            decision_category=dimensions["decision_category"],
+            decision_source=dimensions["decision_source"],
+            decision_stage=dimensions["decision_stage"],
+            decision_outcome=dimensions["decision_outcome"],
             created_at=str(raw.get("created_at") or "").strip(),
         )
 
     def as_dict(self) -> dict[str, Any]:
+        dimensions = normalize_action_decision_dimensions(
+            action=self.action,
+            scene_type=self.scene_type,
+            category=self.decision_category,
+            source=self.decision_source,
+            stage=self.decision_stage,
+            outcome=self.decision_outcome,
+        )
         return {
             "id": self.id,
             "session_id": self.session_id,
@@ -570,5 +607,6 @@ class ActionDecisionRecord:
             "deep_analysis": self.deep_analysis,
             "inner_monologue": self.inner_monologue,
             "reply_strategy": self.reply_strategy,
+            **dimensions,
             "created_at": self.created_at,
         }

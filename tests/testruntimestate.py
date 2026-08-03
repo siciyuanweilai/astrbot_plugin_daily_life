@@ -344,6 +344,68 @@ class RuntimeStateTest(unittest.TestCase):
 
 
 class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTestCase):
+    async def test_manual_weather_refresh_bypasses_hour_cache_and_debounces(self):
+        class WeatherClient:
+            def __init__(self):
+                self.calls = []
+
+            async def get_weather(self, city):
+                self.calls.append(city)
+                return {
+                    "code": 200,
+                    "data": {
+                        "location": {"city": city},
+                        "weather": {"condition": "晴", "temperature": 29},
+                        "life_indices": [],
+                        "air_quality": {"aqi": 22, "quality": "优"},
+                    },
+                }
+
+        class Domains:
+            async def resolve_weather_city(self):
+                return "测试市"
+
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.config = LifeSettings.from_dict(
+            {"weather_awareness": {"api_key": "weather-key"}}
+        )
+        runtime.archive = DataManager()
+        runtime.weather_client = WeatherClient()
+        runtime.domains = Domains()
+        changed_reasons = []
+        runtime.mark_page_status_changed = lambda reason="": (
+            changed_reasons.append(reason) or async_return(1)
+        )
+        await runtime.archive.save_day(
+            DayRecord(
+                date="2026-08-03",
+                weather="测试市 多云 27°C",
+                weather_info=WeatherInfo(condition="多云", temp=27),
+                weather_last_update=1000,
+            )
+        )
+
+        with patch("core.runtime.spine.sky.life_timestamp", return_value=1100):
+            auto_updated = await runtime.try_update_weather("2026-08-03")
+            manual_updated = await runtime.try_update_weather(
+                "2026-08-03",
+                force=True,
+            )
+        with patch("core.runtime.spine.sky.life_timestamp", return_value=1110):
+            repeated_manual_update = await runtime.try_update_weather(
+                "2026-08-03",
+                force=True,
+            )
+
+        self.assertFalse(auto_updated)
+        self.assertTrue(manual_updated)
+        self.assertFalse(repeated_manual_update)
+        self.assertEqual(runtime.weather_client.calls, ["测试市"])
+        self.assertEqual(changed_reasons, ["weather"])
+        day = await runtime.archive.get_day("2026-08-03")
+        self.assertEqual(day.weather, "测试市 晴 29°C (AQI: 22 优)")
+        self.assertEqual(day.weather_last_update, 1100)
+
     async def test_resolve_injection_target_uses_today_log_when_extended_night_has_no_yesterday(
         self,
     ):
@@ -1187,7 +1249,9 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
                 "rhythm_config": {
                     "schedule_time": "08:25",
                 },
-                "weather_awareness": {"default_city": "上海"},
+                "life_domain_config": {
+                    "home_address": "测试省测试市测试区测试路1号"
+                },
                 "state_config": {"enabled": False, "refresh_minutes": 45},
             }
         )
@@ -1195,7 +1259,11 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(runtime.raw_config.saved, 1)
         self.assertEqual(runtime.raw_config["rhythm_config"]["schedule_time"], "08:25")
         self.assertEqual(runtime.config.schedule_time, "08:25")
-        self.assertEqual(runtime.config.weather.default_city, "上海")
+        self.assertEqual(
+            runtime.config.domains.home_address,
+            "测试省测试市测试区测试路1号",
+        )
+        self.assertFalse(hasattr(runtime.config.weather, "default_city"))
         self.assertFalse(runtime.config.state.enabled)
         self.assertTrue(runtime.weather_client is not None)
         self.assertTrue(runtime.rhythm.scheduler.running)

@@ -5,9 +5,9 @@ from typing import Any
 from astrbot.api import logger
 
 from ...clock import now as life_now
-from ...models import CommitmentRecord
 from ...facts import PersonFact, PersonFactContext
 from ...life.people import COMMITMENT_PERSON_TEXT_PATHS
+from ...models import CommitmentRecord
 from ...prompts import (
     CORE_JSON_OUTPUT_RULES,
     CORE_PERSONA_PRONOUN_RULES,
@@ -72,6 +72,7 @@ JSON 输出要求：
   "trigger_date": "YYYY-MM-DD 或空字符串",
   "trigger_time": "HH:MM 或空字符串",
   "time_window": "morning|daytime|night|weekend|next_chat|next_time 或空字符串",
+  "owner": "当前角色|说话人|共同|未定",
   "people": ["相关人物名"],
   "place": "相关地点或空",
   "confidence": 0.0
@@ -165,7 +166,9 @@ JSON 输出要求：
                 )
                 if sender_name and persona_hint
                 else (),
-                unverified_people=(sender_name,) if sender_name and not persona_hint else (),
+                unverified_people=(sender_name,)
+                if sender_name and not persona_hint
+                else (),
             )
             auditor = getattr(
                 getattr(self, "composer", None), "_audit_person_payload", None
@@ -205,6 +208,34 @@ JSON 输出要求：
             if self.event_was_recalled(event, log_skip=True):
                 return None
             saved = await self.archive.save_commitment(commitment)
+            domain_settings = getattr(self.config, "domains", None)
+            save_action_item = getattr(
+                self.archive, "save_conversation_action_item", None
+            )
+            if (
+                bool(getattr(domain_settings, "enabled", False))
+                and bool(
+                    getattr(domain_settings, "conversation_actions_enabled", False)
+                )
+                and callable(save_action_item)
+            ):
+                due_at = " ".join(
+                    part for part in (saved.trigger_date, saved.trigger_time) if part
+                )
+                if not due_at:
+                    due_at = saved.time_window
+                await save_action_item(
+                    {
+                        "commitment_id": saved.id,
+                        "title": saved.content,
+                        "owner": str(payload.get("owner") or "未定").strip(),
+                        "due_at": due_at,
+                        "status": "open",
+                        "source_session": saved.source_session,
+                        "source_message": saved.source_message,
+                        "evidence": [message],
+                    }
+                )
             context_meta = await self._event_context_meta(event, sender_name, now)
             details = [
                 f"约定追踪：{saved.content}",

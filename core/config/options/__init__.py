@@ -4,13 +4,14 @@ from .basis import (
     LifecycleSettings,
     OutfitSettings,
     ProactiveReplySettings,
+    SearchSettings,
     SightSettings,
     StateSettings,
     StorageSettings,
     TaskModelSettings,
     WeatherSettings,
-    SearchSettings,
 )
+from .domains import LifeDomainSettings
 from .generate import (
     DEFAULT_VOICE_FORMAT,
     DEFAULT_VOICE_MODEL,
@@ -36,6 +37,7 @@ __all__ = [
     "ImageGenerationSettings",
     "LifecycleSettings",
     "LifeSettings",
+    "LifeDomainSettings",
     "MemOSSettings",
     "MemorySettings",
     "OutfitSettings",

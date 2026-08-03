@@ -41,9 +41,16 @@ class RefreshMixin:
         refine = getattr(self.composer, "refine_upcoming_anchors", None)
         if callable(refine):
             refine(data, now=now)
+        sync_sessions = getattr(
+            getattr(self, "domains", None), "sync_activity_sessions", None
+        )
+        if callable(sync_sessions):
+            await sync_sessions(data, now=now)
         settle = getattr(self.composer, "settle_completed_planned_actions", None)
         if callable(settle):
             await settle(data, now=now)
+        if callable(sync_sessions):
+            await sync_sessions(data, now=now)
         after = (
             str((data.meta or {}).get("near_term_anchors") or ""),
             str((data.meta or {}).get("life_action_settlements") or ""),

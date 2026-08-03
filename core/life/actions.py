@@ -51,10 +51,30 @@ _ACTION_RULES: dict[str, dict[str, Any]] = {
         "effects": (("energy", 8), ("stress", -2), ("mood_score", 3)),
         "allowed": {"energy", "stress", "mood_score"},
     },
+    "cook": {
+        "effects": (("energy", 5), ("stress", -3), ("mood_score", 4)),
+        "allowed": {"energy", "stress", "mood_score"},
+        "minimum": ("energy", 8),
+    },
+    "order_food": {
+        "effects": (("energy", 7), ("stress", -2), ("mood_score", 2)),
+        "allowed": {"energy", "stress", "mood_score"},
+    },
+    "purchase": {
+        "effects": (("energy", -3), ("busyness", 2)),
+        "allowed": {"energy", "busyness", "stress", "mood_score"},
+        "minimum": ("energy", 5),
+    },
     "move": {
         "effects": (("energy", -5), ("stress", -5), ("mood_score", 4)),
         "allowed": {"energy", "stress", "mood_score", "sleepiness"},
         "minimum": ("energy", 10),
+    },
+    "travel": {
+        "effects": (("energy", -6), ("stress", -2), ("mood_score", 2)),
+        "allowed": {"energy", "stress", "mood_score", "sleepiness"},
+        "minimum": ("energy", 10),
+        "requires_target": True,
     },
     "work": {
         "effects": (("energy", -10), ("stress", 4), ("focus", -8)),
@@ -65,6 +85,18 @@ _ACTION_RULES: dict[str, dict[str, Any]] = {
         "effects": (("energy", -8), ("stress", 3), ("focus", -6)),
         "allowed": {"energy", "stress", "focus", "mood_score"},
         "minimum": ("energy", 10),
+    },
+    "chore": {
+        "effects": (("energy", -6), ("stress", -4), ("mood_score", 3)),
+        "allowed": {"energy", "stress", "mood_score", "busyness"},
+        "minimum": ("energy", 8),
+        "requires_target": True,
+    },
+    "exercise": {
+        "effects": (("energy", -10), ("stress", -7), ("mood_score", 5)),
+        "allowed": {"energy", "stress", "mood_score", "sleepiness"},
+        "minimum": ("energy", 15),
+        "requires_target": True,
     },
     "groom": {
         "effects": (("mood_score", 4), ("stress", -2)),
@@ -305,7 +337,12 @@ class LifeActionMixin:
                 day.outfit = action.target
                 day.outfit_history[committed_at] = action.target
                 day.meta["outfit_decision"] = "life_action"
-            if action.action_type == "move" and action.target:
+            if action.action_type in {"move", "travel"} and action.target:
+                previous_place = str(
+                    (day.meta or {}).get("current_place") or ""
+                ).strip()
+                if previous_place:
+                    day.meta["previous_place"] = previous_place
                 day.meta["current_place"] = action.target
                 if not any(place.name == action.target for place in day.places):
                     day.places.append(
@@ -356,9 +393,7 @@ class LifeActionMixin:
         writer = getattr(self.archive, "upsert_current_temporal_fact", None)
         if not callable(writer):
             return []
-        timestamp = observed_at or datetime.datetime.now().strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
+        timestamp = observed_at or datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         facts: list[tuple[str, Any]] = []
         if day.outfit:
             facts.append(("current_outfit", day.outfit))
@@ -463,6 +498,17 @@ class LifeActionMixin:
         status = str(receipt.get("status") or "confirmed").strip().lower()
         if status not in {"confirmed", "simulated", "failed", "cancelled"}:
             return None
+        domain_service = getattr(self, "domains", None)
+        validator = getattr(domain_service, "validate_action", None)
+        if status in {"confirmed", "simulated"} and callable(validator):
+            valid, validation_reason = await validator(action)
+            if not valid:
+                status = "failed"
+                receipt = {
+                    **receipt,
+                    "source": "life_domain_validation",
+                    "evidence": [validation_reason],
+                }
         evidence = self._receipt_evidence_text(receipt, action.evidence)
         receipt = {
             **receipt,
@@ -486,7 +532,9 @@ class LifeActionMixin:
             ):
                 item = day.timeline[action.timeline_index]
                 # 时间轴不存储 failed；失败的动作视为已跳过，其结果仍完整保留在回执与动作结果中。
-                item.execution_state = "cancelled" if status == "cancelled" else "skipped"
+                item.execution_state = (
+                    "cancelled" if status == "cancelled" else "skipped"
+                )
                 item.execution_reason = outcome.reason
                 item.execution_evidence = evidence
                 item.execution_updated_at = outcome.committed_at
@@ -511,8 +559,12 @@ class LifeActionMixin:
                         "date": day.date,
                         "action_type": action.action_type,
                         "target": action.target,
-                        "preconditions": {"all": [item.as_dict() for item in action.preconditions]},
-                        "effects": {"requested": [item.as_dict() for item in action.effects]},
+                        "preconditions": {
+                            "all": [item.as_dict() for item in action.preconditions]
+                        },
+                        "effects": {
+                            "requested": [item.as_dict() for item in action.effects]
+                        },
                         "status": status,
                         "reason": outcome.reason,
                         "evidence": [evidence] if evidence else [],
@@ -551,6 +603,7 @@ class LifeActionMixin:
             now=current_time,
             fact_source="life_action_receipt",
             fact_evidence=evidence,
+            receipt_status=status,
         )
         if outcome.status == "committed":
             if action.action_type in {"chat", "social"} and action.target:
@@ -641,6 +694,7 @@ class LifeActionMixin:
         now: datetime.datetime | None = None,
         fact_source: str = "life_action",
         fact_evidence: str = "",
+        receipt_status: str = "confirmed",
     ) -> LifeActionOutcome:
         """结算动作并同步保存日状态、动作结果和决策轨迹。
 
@@ -650,6 +704,7 @@ class LifeActionMixin:
             now: 结算时间，缺省时使用插件时钟。
             fact_source: 结算后的世界事实来源。
             fact_evidence: 覆盖动作默认说明的事实证据。
+            receipt_status: 触发结算的回执状态。
 
         Returns:
             已持久化的幂等动作结果。
@@ -695,6 +750,16 @@ class LifeActionMixin:
                 }
             )
         if outcome.status == "committed":
+            domain_service = getattr(self, "domains", None)
+            apply_domain = getattr(domain_service, "apply_action", None)
+            if callable(apply_domain) and not outcome.replayed:
+                await apply_domain(
+                    day,
+                    action,
+                    outcome,
+                    receipt_status=receipt_status,
+                )
+                await self.archive.save_day(day)
             await self.sync_day_world_facts(
                 day,
                 observed_at=outcome.committed_at,
@@ -745,6 +810,31 @@ class LifeActionMixin:
                 continue
             timeline_item = day.timeline[action.timeline_index]
             if timeline_item.execution_state != "completed":
+                continue
+            domain_service = getattr(self, "domains", None)
+            should_simulate = getattr(domain_service, "should_simulate", None)
+            if callable(should_simulate) and should_simulate(action):
+                simulated = await self.record_life_action_receipt(
+                    day,
+                    action.action_id,
+                    {
+                        "receipt_id": f"simulation:{action.action_id}",
+                        "status": "simulated",
+                        "source": "timeline_simulation",
+                        "source_id": action.action_id,
+                        "occurred_at": (now or life_now()).strftime(
+                            "%Y-%m-%d %H:%M:%S"
+                        ),
+                        "evidence": [
+                            timeline_item.execution_evidence
+                            or action.evidence
+                            or "虚拟生活时间轴已完成该内部动作"
+                        ],
+                    },
+                    now=now,
+                )
+                if simulated is not None:
+                    outcomes.append(simulated)
                 continue
             expired_at = (now or life_now()).strftime("%Y-%m-%d %H:%M:%S")
             outcome = LifeActionOutcome(

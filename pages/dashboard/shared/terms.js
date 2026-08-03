@@ -681,7 +681,28 @@ export const ACTION_LABELS = {
   proactive_observe: "随心观察",
   proactive_wait: "随心等待",
   proactive_skip: "随心略过",
+  wait: "等待",
+  cooldown: "进入冷却",
+  air_delay: "延后观察",
+  skip: "跳过",
+  reject: "拒绝",
+  accepted: "已接受",
+  committed: "已提交",
   none: "无动作",
+};
+
+export const DECISION_CATEGORY_LABELS = {
+  conversation: "会话响应",
+  memory: "记忆处理",
+  proactive: "主动互动",
+  expression: "表达方式",
+  other: "其他裁定",
+};
+
+export const DECISION_SOURCE_LABELS = {
+  chat_memory: "会话感知",
+  proactive_reply: "闲时回复",
+  private_revisit: "私聊回访",
 };
 
 export const UNDERSTANDING_LABELS = {

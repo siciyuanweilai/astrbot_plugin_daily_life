@@ -20,6 +20,7 @@ const MODEL_SECTION_SPEC = {
 };
 const CONFIG_SECTION_ORDER = [
   "rhythm_config",
+  "life_domain_config",
   "weather_awareness",
   "state_config",
   "memory_config",
@@ -75,6 +76,53 @@ const CONFIG_SECTION_DISPLAY_SECTIONS = new Map([
   ["sight_config", "video_generation_config"],
 ]);
 const CONFIG_SECTION_FIELD_GROUPS = new Map([
+  ["life_domain_config", [
+    {
+      key: "settlement",
+      label: "基础与结算",
+      hint: "控制生活实况总开关、活动会话记录和纯虚拟生活动作结算。",
+      fields: [
+        "life_domain_config.enabled",
+        "life_domain_config.activity_tracking_enabled",
+        "life_domain_config.simulate_internal_actions",
+      ],
+    },
+    {
+      key: "location",
+      label: "地点与出行",
+      hint: "控制地图服务商、地点解析、路线查询和接口不可用时的时间估算。",
+      fields: [
+        "life_domain_config.location_enabled",
+        "life_domain_config.home_address",
+        "life_domain_config.map_provider",
+        "life_domain_config.amap_api_key",
+        "life_domain_config.tencent_map_api_key",
+        "life_domain_config.baidu_map_api_key",
+        "life_domain_config.default_travel_minutes",
+      ],
+    },
+    {
+      key: "daily_records",
+      label: "生活记录",
+      hint: "控制饮食、食材库存、家务轮换和运动恢复记录。",
+      fields: [
+        "life_domain_config.meals_enabled",
+        "life_domain_config.pantry_enabled",
+        "life_domain_config.chores_enabled",
+        "life_domain_config.fitness_enabled",
+      ],
+    },
+    {
+      key: "context",
+      label: "行动项与上下文",
+      hint: "控制会话行动项沉淀和注入模型的生活实况上下文预算。",
+      fields: [
+        "life_domain_config.conversation_actions_enabled",
+        "life_domain_config.context_budget_enabled",
+        "life_domain_config.context_budget_chars",
+      ],
+    },
+  ]],
   ["chat_style_config", [
     {
       key: "rhythm",
@@ -239,7 +287,7 @@ const CONFIG_GROUP_LABELS = new Map([
   }],
   ["weather_awareness", {
     description: "天气环境",
-    hint: "配置天气接口、默认城市，以及天气是否影响穿搭和活动。",
+    hint: "配置天气接口，以及天气是否影响穿搭和活动；天气城市由常住详细地址自动解析。",
   }],
   ["state_config", {
     description: "实时状态",

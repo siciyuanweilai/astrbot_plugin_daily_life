@@ -4,16 +4,15 @@ import uuid
 from astrbot.api import logger
 
 from ..clock import now as life_now
+from .people import DAILY_PERSON_TEXT_PATHS
 from .tools import (
     analyze_weather,
-    extract_city_from_persona,
     extract_pure_json_object,
     get_time_period_cn,
     parse_schedule_time,
     resolve_daily_hint,
     resolve_daily_suggested,
 )
-from .people import DAILY_PERSON_TEXT_PATHS
 
 
 class DailyEngineMixin:
@@ -52,12 +51,13 @@ class DailyEngineMixin:
         period_cn = get_time_period_cn(period)
 
         persona = await self._get_persona()
-        city = (
-            self.config.weather.default_city
-            or extract_city_from_persona(persona)
-            or "北京"
+        city_resolver = getattr(self.domains, "resolve_weather_city", None)
+        city = await city_resolver() if callable(city_resolver) else ""
+        weather_data = (
+            await self.weather_client.get_weather(city)
+            if city
+            else "未配置可由当前地图服务解析的常住详细地址，当前天气不可用"
         )
-        weather_data = await self.weather_client.get_weather(city)
         weather_info = analyze_weather(weather_data)
         weather_section, constraint_section = self._build_weather_sections(weather_info)
         week_plan = await self._ensure_week_plan()
@@ -90,6 +90,13 @@ class DailyEngineMixin:
             weather_info,
             [today_hint, today_suggested, memo_str, recent_chats],
         )
+        domain_context_builder = getattr(
+            getattr(self, "domains", None), "format_context", None
+        )
+        if callable(domain_context_builder):
+            domain_context = await domain_context_builder()
+            if domain_context:
+                world_context = f"{world_context}\n\n{domain_context}".strip()
         prompt = self._build_timeline_prompt(
             date_str,
             period_cn,
@@ -304,8 +311,7 @@ class DailyEngineMixin:
                             context["web_inspiration"],
                             expected_coverage=context["expected_coverage"],
                             issue_code=str(
-                                getattr(self, "_last_validation_issue_code", "")
-                                or ""
+                                getattr(self, "_last_validation_issue_code", "") or ""
                             ),
                             person_fact_context=context[
                                 "person_facts"

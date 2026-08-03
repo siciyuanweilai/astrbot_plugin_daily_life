@@ -98,12 +98,6 @@
         "default": "",
         "hint": "从 https://api.nycnm.cn 获取接口密钥。"
       },
-      "default_city": {
-        "description": "默认城市",
-        "type": "string",
-        "default": "",
-        "hint": "如果无法从人设提取城市，则使用此城市"
-      },
       "aware_outfit": {
         "description": "影响穿搭",
         "type": "bool",
@@ -1953,11 +1947,151 @@
       }
     }
   },
+  "life_domain_config": {
+    "description": "生活实况",
+    "type": "object",
+    "hint": "把日程中的显式动作结算为活动、饮食、库存、家务、运动和出行记录；不会从活动文案猜测动作。",
+    "items": {
+      "enabled": {
+        "description": "启用生活实况",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后保留已有数据，但不再写入新的领域记录。"
+      },
+      "activity_tracking_enabled": {
+        "description": "记录活动会话",
+        "type": "bool",
+        "default": true,
+        "hint": "将日程明确给出的计划动作记录为计划中、进行中、完成或失败的活动会话。"
+      },
+      "simulate_internal_actions": {
+        "description": "结算虚拟生活动作",
+        "type": "bool",
+        "default": true,
+        "hint": "允许纯虚拟的休息、用餐、家务、运动和出行在日程完成后生成模拟回执；聊天、发图、拍照和视频仍必须有真实回执。"
+      },
+      "location_enabled": {
+        "description": "启用地点与出行",
+        "type": "bool",
+        "default": true,
+        "hint": "使用选定的地图服务自动解析地点，并保存自动坐标缓存、路线缓存和预计出行时间。"
+      },
+      "home_address": {
+        "description": "常住详细地址",
+        "type": "string",
+        "default": "",
+        "hint": "填写省、市、区、道路和门牌等常住详细地址。天气城市、地点搜索范围和“家”的出行坐标均以所选地图服务的解析结果为准。"
+      },
+      "map_provider": {
+        "description": "地图服务商",
+        "type": "string",
+        "default": "amap",
+        "options": [
+          "amap",
+          "tencent",
+          "baidu"
+        ],
+        "option_labels": {
+          "amap": "高德地图",
+          "tencent": "腾讯地图",
+          "baidu": "百度地图"
+        },
+        "hint": "地点解析、搜索、详情和路线统一使用当前服务商；切换后不会自动回退到其他地图。"
+      },
+      "amap_api_key": {
+        "description": "高德地图 Web 服务 Key",
+        "type": "string",
+        "default": "",
+        "hint": "选择高德地图时使用。在高德开放平台创建 Web 服务类型的 Key。"
+      },
+      "tencent_map_api_key": {
+        "description": "腾讯地图 Web 服务 Key",
+        "type": "string",
+        "default": "",
+        "hint": "选择腾讯地图时使用。在腾讯地图开放平台创建 Web 服务类型的 Key。"
+      },
+      "baidu_map_api_key": {
+        "description": "百度地图 Web 服务 Key",
+        "type": "string",
+        "default": "",
+        "hint": "选择百度地图时使用。在百度地图开放平台创建 Web 服务类型的 Key。"
+      },
+      "default_travel_minutes": {
+        "description": "默认出行分钟数",
+        "type": "int",
+        "default": 15,
+        "slider": {
+          "min": 1,
+          "max": 240,
+          "step": 1
+        },
+        "hint": "所选地图服务不可用时采用的低置信度出行估算。"
+      },
+      "meals_enabled": {
+        "description": "记录饮食",
+        "type": "bool",
+        "default": true,
+        "hint": "保存用餐、做饭和外卖记录。"
+      },
+      "pantry_enabled": {
+        "description": "启用食材库存",
+        "type": "bool",
+        "default": true,
+        "hint": "采购动作增加库存，做饭动作按结构化食材清单扣减库存；库存不足时拒绝结算。"
+      },
+      "chores_enabled": {
+        "description": "记录家务轮换",
+        "type": "bool",
+        "default": true,
+        "hint": "保存家务完成记录、周期和下次应做时间。"
+      },
+      "fitness_enabled": {
+        "description": "记录运动恢复",
+        "type": "bool",
+        "default": true,
+        "hint": "保存运动时长、强度和负荷分数，供后续日程参考。"
+      },
+      "conversation_actions_enabled": {
+        "description": "沉淀会话行动项",
+        "type": "bool",
+        "default": true,
+        "hint": "将已确认的未来承诺同步成可跟踪的行动项，不额外做关键词识别。"
+      },
+      "context_budget_enabled": {
+        "description": "限制生活上下文字数",
+        "type": "bool",
+        "default": true,
+        "hint": "按固定重要性和时间顺序裁剪领域上下文，不使用正则或关键词触发。"
+      },
+      "context_budget_chars": {
+        "description": "生活上下文字数",
+        "type": "int",
+        "default": 2400,
+        "slider": {
+          "min": 600,
+          "max": 12000,
+          "step": 200
+        },
+        "hint": "注入日程模型的活动、饮食、家务、运动和行动项总字符上限。"
+      }
+    }
+  },
   "storage_config": {
     "description": "数据管理",
     "type": "object",
     "hint": "按数据生命周期分类保留。天数设为 0 表示长期保留，手动清空不受此限制。",
     "items": {
+      "domains_keep_days": {
+        "description": "生活实况保留天数",
+        "type": "int",
+        "default": 180,
+        "slider": {
+          "min": 0,
+          "max": 365,
+          "step": 1
+        },
+        "hint": "清理过旧活动会话、路线缓存、饮食、库存流水、家务、运动和已结束行动项；当前库存和家务定义保留。0 表示长期保留。"
+      },
       "cognition_keep_days": {
         "description": "认知运行保留天数",
         "type": "int",

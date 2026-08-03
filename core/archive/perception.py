@@ -239,6 +239,10 @@ class PerceptionArchiveMixin:
             deep_analysis=bool(row["deep_analysis"]),
             inner_monologue=self._text(row["inner_monologue"]),
             reply_strategy=self._text(row["reply_strategy"]),
+            decision_category=self._text(row["decision_category"]),
+            decision_source=self._text(row["decision_source"]),
+            decision_stage=self._text(row["decision_stage"]),
+            decision_outcome=self._text(row["decision_outcome"]),
             created_at=row["created_at"],
         )
 
@@ -259,9 +263,10 @@ class PerceptionArchiveMixin:
                 INSERT INTO action_decisions(
                     session_id, message_id, sender_profile_id, sender_name, group_id, group_name,
                     date, action, reason, confidence, scene_type, topic_owner, understanding,
-                    deep_analysis, inner_monologue, reply_strategy
+                    deep_analysis, inner_monologue, reply_strategy, decision_category,
+                    decision_source, decision_stage, decision_outcome
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     self._text(item.session_id),
@@ -280,6 +285,10 @@ class PerceptionArchiveMixin:
                     self._flag(item.deep_analysis),
                     self._text(item.inner_monologue),
                     self._text(item.reply_strategy),
+                    self._text(item.decision_category),
+                    self._text(item.decision_source),
+                    self._text(item.decision_stage),
+                    self._text(item.decision_outcome),
                 ),
             )
             self._conn.commit()

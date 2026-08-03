@@ -9,14 +9,21 @@ class PortalActionMixin:
         async def handler():
             now = life_now()
             target_date, _ = await self.runtime.resolve_injection_target(now)
+            weather_refreshed = await self.runtime.try_update_weather(
+                target_date,
+                force=True,
+            )
             await self.runtime.refresh_state_for_day(
                 target_date,
                 now=now,
                 source="dashboard",
-                detail="面板手动刷新",
+                detail="面板手动刷新天气和实时状态",
                 force=True,
             )
-            return {"status": await self._build_page_status()}
+            return {
+                "weather_refreshed": weather_refreshed,
+                "status": await self._build_page_status(),
+            }
 
         return await self._page_json(handler)
 

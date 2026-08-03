@@ -6,6 +6,8 @@ from .tables import (
     CONVERSATION_SQL,
     CORE_SQL,
     DAILY_SQL,
+    DOMAIN_INDEX_SQL,
+    DOMAIN_SQL,
     DROP_SCHEMA_SQL,
     EXPERIENCE_SQL,
     INDEX_SQL,
@@ -23,6 +25,8 @@ def iter_schema_sql() -> tuple[str, ...]:
 __all__ = [
     "CORE_SQL",
     "DAILY_SQL",
+    "DOMAIN_SQL",
+    "DOMAIN_INDEX_SQL",
     "WEEKLY_SQL",
     "COMMITMENT_SQL",
     "COGNITION_SQL",

@@ -127,12 +127,13 @@ class DailyDraftMixin:
   "planned_actions": [
     {{
       "action_id": "包含目标日期的唯一动作编号",
-      "action_type": "rest | meal | move | work | study | groom | change_outfit | social | chat | photo | video",
-      "target": "动作目标；change_outfit 必须填写明确穿搭，其余可为空",
+      "action_type": "rest | meal | cook | order_food | purchase | move | travel | work | study | chore | exercise | groom | change_outfit | social | chat | photo | video",
+      "target": "动作目标；change_outfit、travel、chore、exercise 必须填写明确目标，其余动作按实际需要填写",
       "timeline_index": 0,
       "duration_minutes": 30,
       "preconditions": [{{"field": "state.energy", "operator": "gte", "expected": 20}}],
       "effects": [{{"field": "energy", "operation": "add", "value": -5}}],
+      "payload": {{"结构化领域参数": "只填写该动作实际需要的数据"}},
       "evidence": "对应的日程节点和生活决策依据",
       "source": "daily_plan"
     }}
@@ -191,6 +192,8 @@ class DailyDraftMixin:
 - 只为确实需要状态结算的 timeline 节点输出，可为空数组，不要为了填满而制造动作。
 - action_type、timeline_index、前置条件和影响必须显式填写；不得要求系统从 activity 文案猜动作。
 - action_id 在不同日期和节点间必须唯一；effects 只写该动作真实会改变的数值状态。
+- payload 只用于明确的领域数据：meal/cook 可填 meal_type、ingredients；purchase 可填 items；move/travel 可填 origin、destination、travel_mode；chore 可填 chore_id、cadence_days、effort；exercise 可填 intensity。
+- 不要从 activity 文案隐含领域参数；没有可靠参数就保留空 payload。
 5. 地点与事件要求：
 {self.config.world_prompt}
 """

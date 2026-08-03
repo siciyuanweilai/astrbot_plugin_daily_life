@@ -662,6 +662,46 @@ class SemanticSegmentTest(unittest.TestCase):
             ],
         )
 
+    def test_natural_fallback_preserves_late_strong_breaks_with_five_segment_cap(
+        self,
+    ):
+        runtime = self._runtime("{}")
+        runtime.config.chat_style.semantic_max_segments = 5
+        runtime.context = Context(
+            Provider([]), config={"t2i": False, "t2i_word_threshold": 120}
+        )
+        runtime.note_structured_sent_result = lambda event: None
+        runtime.note_media_source_event = lambda event: None
+        runtime.note_proactive_bot_reply = lambda event: None
+        runtime.note_voice_switch_text_result = lambda event: None
+        event = Event(
+            unified_msg_origin="aiocqhttp:GroupMessage:10001",
+            group_id="10001",
+        )
+        source = (
+            "啊对！测试街道那边的测试农贸市场确实近多了，"
+            "走过去也就一公里多，十几分钟就能到。\n\n"
+            "我刚才懵了一下没反应过来。"
+            "不过大半夜的你研究测试路线干嘛呀，明天打算去买菜下厨啦？"
+        )
+        event.set_result(event.chain_result([types.SimpleNamespace(text=source)]))
+
+        changed = asyncio.run(runtime.apply_semantic_segment_before_send(event))
+        natural_sent = asyncio.run(runtime.send_chat_style_segments_if_needed(event))
+
+        self.assertTrue(changed)
+        self.assertTrue(natural_sent)
+        self.assertEqual(
+            [message.chain[0].text for message in event.sent_messages],
+            [
+                "啊对",
+                "测试街道那边的测试农贸市场确实近多了",
+                "走过去也就一公里多 十几分钟就能到",
+                "我刚才懵了一下没反应过来",
+                "不过大半夜的你研究测试路线干嘛呀 明天打算去买菜下厨啦",
+            ],
+        )
+
     def test_send_uses_saved_plan_when_text_result_components_are_recombined(self):
         runtime = self._runtime(
             json.dumps(

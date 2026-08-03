@@ -237,8 +237,57 @@ COGNITION_CLEAR_ORDER = (
     "grounded_diary_entries",
 )
 
+DOMAIN_TABLES = (
+    "activity_sessions",
+    "route_cache",
+    "recipes",
+    "pantry_items",
+    "pantry_movements",
+    "meal_records",
+    "chores",
+    "chore_records",
+    "fitness_records",
+    "conversation_action_items",
+)
+DOMAIN_CLEAR_ORDER = (
+    "conversation_action_items",
+    "fitness_records",
+    "chore_records",
+    "chores",
+    "meal_records",
+    "pantry_movements",
+    "pantry_items",
+    "recipes",
+    "route_cache",
+    "activity_sessions",
+)
+
 
 STORAGE_CATEGORIES: dict[str, StorageCategory] = {
+    "domains": StorageCategory(
+        key="domains",
+        label="生活实况",
+        description="活动会话、出行估算、饮食库存、家务、运动和会话行动项。",
+        tables=DOMAIN_TABLES,
+        clear_order=DOMAIN_CLEAR_ORDER,
+        default_keep_days=180,
+        auto_cleanup=True,
+        groups=(
+            StorageTableGroup(
+                "activity", "活动与出行", ("activity_sessions", "route_cache")
+            ),
+            StorageTableGroup(
+                "food",
+                "饮食库存",
+                ("recipes", "pantry_items", "pantry_movements", "meal_records"),
+            ),
+            StorageTableGroup("chores", "家务", ("chores", "chore_records")),
+            StorageTableGroup("fitness", "运动恢复", ("fitness_records",)),
+            StorageTableGroup(
+                "conversation_actions", "会话行动项", ("conversation_action_items",)
+            ),
+        ),
+    ),
     "cognition": StorageCategory(
         key="cognition",
         label="认知运行",

@@ -1,16 +1,16 @@
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
 from astrbot.api import logger
 
+from ..clock import timestamp as life_timestamp
 from ..config.vocab import CN_PERIOD_MAP, PERIOD_HOURS
 from ..life.tools import (
     analyze_weather,
-    extract_city_from_persona,
     format_timeline_to_text,
     get_time_period_cn,
 )
 from ..models import DayRecord, WeatherInfo
-from ..clock import timestamp as life_timestamp
 from ..runtime.generation import DailyGenerationBusy
 from ..runtime.locks import operation_lock
 from .request import CommandRequest, DailyResetPlan
@@ -124,9 +124,7 @@ class OperateCommandMixin:
     ) -> DayRecord | None:
         has_day = await self.runtime.archive.get_day(req.target_date_str)
         if plan.keep_schedule and has_day and not plan.extra_instruction:
-            async with operation_lock(
-                self.runtime, f"outfit:{req.target_date_str}"
-            ):
+            async with operation_lock(self.runtime, f"outfit:{req.target_date_str}"):
                 target_time = self.runtime._target_datetime_for_command(
                     req.target_date_str, req.now
                 )
@@ -151,14 +149,17 @@ class OperateCommandMixin:
         return result.day
 
     async def _weather(self, event: Any, req: CommandRequest) -> AsyncIterator[Any]:
-        home_city = self.runtime.config.weather.default_city
-        if not home_city:
-            persona = await self.runtime.get_persona_text()
-            home_city = extract_city_from_persona(persona)
+        city_resolver = getattr(
+            getattr(self.runtime, "domains", None), "resolve_weather_city", None
+        )
+        home_city = await city_resolver() if callable(city_resolver) else ""
 
         query_city = req.param1.strip() if req.param1 else home_city
         if not query_city:
-            yield event.plain_result("请告诉我要查询哪个城市的天气。")
+            yield event.plain_result(
+                "请先在生活实况中配置常住详细地址、地图服务商和对应的服务端 Key，"
+                "或直接告诉我要查询哪个城市的天气。"
+            )
             return
 
         weather_raw = await self.runtime.weather_client.get_weather(query_city)

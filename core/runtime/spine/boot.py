@@ -14,7 +14,7 @@ from astrbot.core.star.context import Context
 
 from ...archive import LifeArchive
 from ...config.options import LifeSettings
-from ...life import LifeBackgroundComposer, WeatherClient
+from ...life import LifeBackgroundComposer, LifeDomainService, WeatherClient
 from ...media import LifeMediaService
 from ...paths import runtime_data_path
 from ...search import SearchService
@@ -49,6 +49,7 @@ class RuntimeServices:
     contact_resolver: Any
     weather_client: Any
     search: Any
+    domains: Any
     composer: Any
     model_gateway: Any
     rhythm: LifeRhythmClock
@@ -112,8 +113,13 @@ class SpineBootMixin:
         if self._runtime_initialized:
             return
         await self.archive.initialize()
+        domain_initializer = getattr(getattr(self, "domains", None), "initialize", None)
+        if callable(domain_initializer):
+            await domain_initializer()
         await self.archive.recover_leased_durable_tasks()
-        search_service = getattr(getattr(self, "runtime_services", None), "search", None)
+        search_service = getattr(
+            getattr(self, "runtime_services", None), "search", None
+        )
         if search_service is None:
             search_service = getattr(self, "search", None)
         restore_research = getattr(search_service, "restore_research_tasks", None)
@@ -255,9 +261,7 @@ class SpineBootMixin:
                 pending_count = 1
             else:
                 pending_count = sum(
-                    1
-                    for instance in instances
-                    if not self._is_platform_ready(instance)
+                    1 for instance in instances if not self._is_platform_ready(instance)
                 )
             if not pending_count:
                 return True
@@ -268,9 +272,7 @@ class SpineBootMixin:
                 )
                 return False
             if not waited:
-                logger.info(
-                    "[日常生活] 首次生活初始化等待平台适配器连接……"
-                )
+                logger.info("[日常生活] 首次生活初始化等待平台适配器连接……")
                 waited = True
             await asyncio.sleep(_PLATFORM_READY_POLL_SECONDS)
 
@@ -289,6 +291,10 @@ class SpineBootMixin:
         )
         weather_client = WeatherClient(config.weather)
         search = SearchService(self.context, config.search, task_store=self.archive)
+        domains = LifeDomainService(
+            config.domains,
+            self.archive,
+        )
         composer = LifeBackgroundComposer(
             self.context,
             config,
@@ -296,6 +302,7 @@ class SpineBootMixin:
             weather_client,
             contact_resolver,
             search,
+            domains,
         )
         return RuntimeServices(
             config=config,
@@ -304,6 +311,7 @@ class SpineBootMixin:
             contact_resolver=contact_resolver,
             weather_client=weather_client,
             search=search,
+            domains=domains,
             composer=composer,
             model_gateway=ModelGateway(composer),
             rhythm=self._build_rhythm(config),
@@ -316,6 +324,7 @@ class SpineBootMixin:
         self.contact_resolver = services.contact_resolver
         self.weather_client = services.weather_client
         self.search = services.search
+        self.domains = getattr(services, "domains", None)
         self.composer = services.composer
         self.model_gateway = services.model_gateway
         self.rhythm = services.rhythm
@@ -329,6 +338,7 @@ class SpineBootMixin:
             contact_resolver=getattr(self, "contact_resolver", None),
             weather_client=getattr(self, "weather_client", None),
             search=getattr(self, "search", None),
+            domains=getattr(self, "domains", None),
             composer=getattr(self, "composer", None),
             model_gateway=getattr(self, "model_gateway", None),
             rhythm=self.rhythm,
@@ -393,7 +403,11 @@ class SpineBootMixin:
                 )
                 continue
             try:
-                result = await handler(task) if task.kind == "media_delivery" else await handler()
+                result = (
+                    await handler(task)
+                    if task.kind == "media_delivery"
+                    else await handler()
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -407,7 +421,9 @@ class SpineBootMixin:
             else:
                 await self.archive.complete_durable_task(
                     task.id,
-                    result if isinstance(result, dict) else {
+                    result
+                    if isinstance(result, dict)
+                    else {
                         "kind": task.kind,
                         "completed_at": datetime.datetime.now().isoformat(),
                     },
@@ -599,6 +615,7 @@ class SpineBootMixin:
                 contact_resolver=getattr(self, "contact_resolver", None),
                 weather_client=getattr(self, "weather_client", None),
                 search=getattr(self, "search", None),
+                domains=getattr(self, "domains", None),
                 composer=getattr(self, "composer", None),
                 model_gateway=getattr(self, "model_gateway", None),
                 rhythm=getattr(self, "rhythm", None),

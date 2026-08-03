@@ -1,5 +1,6 @@
 import json
 
+from ..clock import now as life_now
 from ..labels import (
     plan_outfit_decision_label,
     schedule_intent_label,
@@ -67,6 +68,17 @@ class DailyRecordMixin:
             action = LifeActionIntent.from_value(raw_action)
             if not action.action_id or action.action_type not in LIFE_ACTION_TYPES:
                 continue
+            should_simulate = getattr(
+                getattr(self, "domains", None), "should_simulate", None
+            )
+            waits_for_simulation = bool(
+                callable(should_simulate) and should_simulate(action)
+            )
+            waiting_reason = (
+                "由当日分层日程提出，等待时间轴模拟回执结算"
+                if waits_for_simulation
+                else "由当日分层日程提出，等待真实执行证据结算"
+            )
             if callable(save_outcome):
                 await save_outcome(
                     {
@@ -81,7 +93,7 @@ class DailyRecordMixin:
                             "requested": [item.as_dict() for item in action.effects]
                         },
                         "status": "proposed",
-                        "reason": "由当日分层日程提出，等待真实执行证据结算",
+                        "reason": waiting_reason,
                         "evidence": [action.evidence] if action.evidence else [],
                         "started_at": action.requested_at,
                     }
@@ -95,9 +107,18 @@ class DailyRecordMixin:
                         "reason_code": "action_planned",
                         "decision": "proposed",
                         "evidence": [action.evidence] if action.evidence else [],
-                        "outcome": "等待真实执行证据",
+                        "outcome": (
+                            "等待时间轴模拟回执"
+                            if waits_for_simulation
+                            else "等待真实执行证据"
+                        ),
                     }
                 )
+        sync_sessions = getattr(
+            getattr(self, "domains", None), "sync_activity_sessions", None
+        )
+        if callable(sync_sessions):
+            await sync_sessions(day, now=life_now())
         await self._persist_physiological_rhythm_log(
             date_str, day, source="daily_generation"
         )

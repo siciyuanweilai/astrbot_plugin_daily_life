@@ -61,6 +61,10 @@ CREATE TABLE IF NOT EXISTS action_decisions (
             deep_analysis INTEGER NOT NULL DEFAULT 0,
             inner_monologue TEXT NOT NULL DEFAULT '',
             reply_strategy TEXT NOT NULL DEFAULT '',
+            decision_category TEXT NOT NULL DEFAULT '',
+            decision_source TEXT NOT NULL DEFAULT '',
+            decision_stage TEXT NOT NULL DEFAULT '',
+            decision_outcome TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
 """

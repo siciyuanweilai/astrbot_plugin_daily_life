@@ -1396,6 +1396,125 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_map_natural_language_tools_delegate_structured_arguments(self):
+        calls = []
+
+        async def place_search(query, **kwargs):
+            calls.append(("search", query, kwargs))
+            return {"ok": True, "kind": "search"}
+
+        async def route_plan(origin, destination, **kwargs):
+            calls.append(("route", origin, destination, kwargs))
+            return {"ok": True, "kind": "route"}
+
+        async def place_detail(poi_id):
+            calls.append(("detail", poi_id))
+            return {"ok": True, "kind": "detail"}
+
+        async def outing_plan(request, stops, **kwargs):
+            calls.append(("outing", request, stops, kwargs))
+            return {"ok": True, "kind": "outing"}
+
+        plugin = DailyLifePlugin.__new__(DailyLifePlugin)
+        plugin.runtime = types.SimpleNamespace(
+            domains=types.SimpleNamespace(
+                tool_place_search=place_search,
+                tool_route_plan=route_plan,
+                tool_place_detail=place_detail,
+                tool_outing_plan=outing_plan,
+            )
+        )
+        event = Event()
+
+        search = await plugin.tool_life_place_search(
+            event,
+            "安静咖啡店",
+            near="测试中心",
+            category="咖啡厅",
+            radius_meters="2000",
+            limit="4",
+        )
+        route = await plugin.tool_life_route_plan(
+            event, "测试起点", "测试终点", mode="compare"
+        )
+        detail = await plugin.tool_life_place_detail(event, "poi-1")
+        outing = await plugin.tool_life_outing_plan(
+            event,
+            "逛书店再吃糖水",
+            ["独立书店", "广式糖水"],
+            start="测试起点",
+            mode="walking",
+            duration_minutes="180",
+            max_stops="2",
+        )
+
+        self.assertEqual(search["kind"], "search")
+        self.assertEqual(route["kind"], "route")
+        self.assertEqual(detail["kind"], "detail")
+        self.assertEqual(outing["kind"], "outing")
+        self.assertEqual(
+            calls,
+            [
+                (
+                    "search",
+                    "安静咖啡店",
+                    {
+                        "near": "测试中心",
+                        "category": "咖啡厅",
+                        "radius_meters": 2000,
+                        "limit": 4,
+                    },
+                ),
+                ("route", "测试起点", "测试终点", {"mode": "compare"}),
+                ("detail", "poi-1"),
+                (
+                    "outing",
+                    "逛书店再吃糖水",
+                    ["独立书店", "广式糖水"],
+                    {
+                        "start": "测试起点",
+                        "mode": "walking",
+                        "duration_minutes": 180,
+                        "max_stops": 2,
+                    },
+                ),
+            ],
+        )
+
+    async def test_map_tools_are_hidden_when_map_service_is_unavailable(self):
+        class Toolset:
+            def __init__(self):
+                self.names = [
+                    "life_place_search",
+                    "life_route_plan",
+                    "life_place_detail",
+                    "life_outing_plan",
+                    "life_weather",
+                ]
+
+            def remove_tool(self, name):
+                self.names = [item for item in self.names if item != name]
+
+        async def inject_life_context(_req, _event):
+            return None
+
+        plugin = DailyLifePlugin.__new__(DailyLifePlugin)
+        plugin.runtime = types.SimpleNamespace(
+            search=types.SimpleNamespace(prepare_tools=lambda *_args, **_kwargs: None),
+            config=types.SimpleNamespace(
+                image_generation=types.SimpleNamespace(enabled=True),
+                video_generation=types.SimpleNamespace(enabled=True),
+                voice_generation=types.SimpleNamespace(enabled=True),
+            ),
+            domains=types.SimpleNamespace(map_tools_available=lambda: False),
+            inject_life_context=inject_life_context,
+        )
+        request = types.SimpleNamespace(func_tool=Toolset())
+
+        await plugin.on_llm_request(Event(), request)
+
+        self.assertEqual(request.func_tool.names, ["life_weather"])
+
     async def test_web_search_tool_forwards_structured_source_and_dates(self):
         calls = []
 
@@ -1773,6 +1892,10 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         adjust_doc = DailyLifePlugin.tool_life_adjust.__doc__ or ""
         commitment_doc = DailyLifePlugin.tool_life_commitment.__doc__ or ""
         weather_doc = DailyLifePlugin.tool_life_weather.__doc__ or ""
+        place_search_doc = DailyLifePlugin.tool_life_place_search.__doc__ or ""
+        route_plan_doc = DailyLifePlugin.tool_life_route_plan.__doc__ or ""
+        place_detail_doc = DailyLifePlugin.tool_life_place_detail.__doc__ or ""
+        outing_plan_doc = DailyLifePlugin.tool_life_outing_plan.__doc__ or ""
         review_doc = DailyLifePlugin.tool_life_review.__doc__ or ""
         image_doc = DailyLifePlugin.tool_life_image_generate.__doc__ or ""
         suite_doc = DailyLifePlugin.tool_life_photo_suite_generate.__doc__ or ""
@@ -1798,6 +1921,10 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("action(string)", adjust_doc)
         self.assertIn("action(string)", commitment_doc)
         self.assertIn("city(string)", weather_doc)
+        self.assertIn("query(string)", place_search_doc)
+        self.assertIn("origin(string)", route_plan_doc)
+        self.assertIn("poi_id(string)", place_detail_doc)
+        self.assertIn("stops(list[string])", outing_plan_doc)
         self.assertIn("action(string)", review_doc)
         self.assertIn("prompt(string)", image_doc)
         self.assertIn("简短、自然的行动确认", image_doc)

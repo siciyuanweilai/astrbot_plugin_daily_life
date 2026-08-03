@@ -11,32 +11,32 @@ import zipfile
 from io import BytesIO
 from pathlib import Path
 
+from core.models import ActionDecisionRecord, EmojiAssetRecord, MessageVisibilityRecord
+from core.runtime.generation import DailyGenerationMixin
 from support import (
     BehaviorFeedbackRecord,
     DailyLifeDashboardMixin,
     DataManager,
+    DayRecord,
     EmotionArcRecord,
+    EventRecord,
     FocusSlotRecord,
     FocusTargetRecord,
     GroupEnvironmentRecord,
     LifeDecisionRecord,
     LifeEpisodeRecord,
     LifeSettings,
+    LifeState,
     LifeTermRecord,
     LongTermMemoryRecord,
     MemoryBoundaryRecord,
     MemoryCorrectionRecord,
     MemoryEvidenceRecord,
-    DayRecord,
-    EventRecord,
-    LifeState,
     PhysiologicalRhythmLogRecord,
     PlaceRecord,
     TimelineItem,
     WeekPlanRecord,
 )
-from core.models import ActionDecisionRecord, EmojiAssetRecord, MessageVisibilityRecord
-from core.runtime.generation import DailyGenerationMixin
 
 
 class PageContext:
@@ -108,6 +108,8 @@ class PageRuntime(DailyGenerationMixin):
         self.generation_lock = asyncio.Lock()
         self._init_daily_generation_state()
         self.refresh_calls = []
+        self.weather_refresh_calls = []
+        self.refresh_order = []
         self.apply_calls = []
         self.data_dir = Path(tempfile.mkdtemp(prefix="daily_life_page_"))
         self.data_path = self.data_dir / "daily_life.db"
@@ -128,6 +130,7 @@ class PageRuntime(DailyGenerationMixin):
     async def refresh_state_for_day(
         self, date_str, now=None, source="", detail="", force=False
     ):
+        self.refresh_order.append("state")
         self.refresh_calls.append((date_str, source, detail, force))
         data = await self.archive.get_day(date_str)
         if data:
@@ -144,6 +147,17 @@ class PageRuntime(DailyGenerationMixin):
             )
             await self.archive.save_day(data)
         return data
+
+    async def try_update_weather(self, date_str, *, force=False):
+        self.refresh_order.append("weather")
+        self.weather_refresh_calls.append((date_str, force))
+        data = await self.archive.get_day(date_str)
+        if data:
+            data.weather = "测试市 晴 28°C"
+            data.weather_info.temp = 28
+            data.weather_info.condition = "晴"
+            await self.archive.save_day(data)
+        return True
 
     async def apply_config(self, config):
         self.apply_calls.append(config)
@@ -1577,6 +1591,14 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
             status["world"]["action_decisions"][1]["reason"], "先观察，不急着接话"
         )
         self.assertEqual(status["world"]["action_decisions"][0]["sender_name"], "小林")
+        self.assertEqual(
+            status["world"]["action_decisions"][0]["decision_category"],
+            "conversation",
+        )
+        self.assertEqual(
+            status["world"]["action_decisions"][0]["decision_outcome"],
+            "reply",
+        )
 
     async def test_page_status_keeps_group_environment_history(self):
         await self.plugin.runtime.archive.save_group_environment(
@@ -1643,9 +1665,21 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(
             self.plugin.runtime.refresh_calls[-1],
-            ("2026-06-11", "dashboard", "面板手动刷新", True),
+            (
+                "2026-06-11",
+                "dashboard",
+                "面板手动刷新天气和实时状态",
+                True,
+            ),
         )
+        self.assertEqual(
+            self.plugin.runtime.weather_refresh_calls[-1],
+            ("2026-06-11", True),
+        )
+        self.assertEqual(self.plugin.runtime.refresh_order[-2:], ["weather", "state"])
+        self.assertTrue(result["data"]["weather_refreshed"])
         self.assertIn("status", result["data"])
+        self.assertEqual(result["data"]["status"]["day"]["weather"], "测试市 晴 28°C")
         self.assertEqual(
             result["data"]["status"]["day"]["state"]["source"], "dashboard"
         )
@@ -2023,12 +2057,16 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         style = self._dashboard_style(root)
 
         self.assertIn('id="refreshStateButton"', html)
-        self.assertIn('aria-label="刷新实时状态"', html)
+        self.assertIn('aria-label="刷新今日天气与实时状态"', html)
+        self.assertIn('title="刷新今日天气与实时状态"', html)
         self.assertLess(
             html.index('id="refreshStateButton"'), html.index('id="targetDate"')
         )
         self.assertIn('refreshStateButton: byId("refreshStateButton")', app)
         self.assertIn('apiPost(\n      "page/action/refresh-state"', app)
+        self.assertIn('"天气与实时状态已刷新"', app)
+        self.assertIn('"实时状态已刷新，天气保持当前数据"', app)
+        self.assertIn('"实时状态已刷新，天气暂不可用"', app)
         self.assertIn("page/status/wait", app)
         self.assertIn(".today-head-actions", style)
         self.assertIn(".refresh-state-button", style)
@@ -2080,6 +2118,7 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertIn('class="panel state-log-panel"', html)
         self.assertIn('class="life-column life-column-side"', html)
         self.assertIn('class="panel memory-panel"', html)
+        self.assertIn('class="panel domain-panel"', html)
         self.assertIn('class="tabs memory-tabs"', html)
         self.assertIn('class="memory-page world-panel"', html)
         self.assertIn('class="memory-page experience-panel"', html)
@@ -2093,6 +2132,13 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertLess(
             html.index('class="panel timeline-panel"'),
             html.index('class="life-column life-column-side"'),
+        )
+        side_start = html.index('class="life-column life-column-side"')
+        side_end = html.index("</aside>", side_start)
+        side_markup = html[side_start:side_end]
+        self.assertLess(
+            side_markup.index('class="panel memory-panel"'),
+            side_markup.index('class="panel domain-panel"'),
         )
         self.assertNotIn('id="contextDrawerToggle"', html)
         self.assertNotIn('id="contextDrawerScrim"', html)
@@ -2172,6 +2218,8 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertIn(".life-layout", style)
         self.assertIn(".memory-panel", style)
         self.assertIn(".memory-tabs", style)
+        self.assertIn(".domain-head", style)
+        self.assertIn("flex-wrap: wrap;", style)
         self.assertNotIn("font-size: clamp(18px, 1.8vw", style)
         self.assertIn(".memory-page", style)
         self.assertIn(".memory-subtabs", style)
@@ -2611,6 +2659,7 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
 
         expected_order = [
             '"rhythm_config"',
+            '"life_domain_config"',
             '"weather_awareness"',
             '"state_config"',
             '"memory_config"',
@@ -2646,6 +2695,8 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertEqual(schema["memory_config"]["description"], "关系与记忆")
         self.assertEqual(schema["chat_style_config"]["description"], "聊天表达")
         self.assertEqual(schema["video_generation_config"]["description"], "视频")
+        self.assertNotIn("default_city", schema["weather_awareness"]["items"])
+        self.assertIn("home_address", schema["life_domain_config"]["items"])
         self.assertIn("天气环境", schema["rhythm_config"]["hint"])
         self.assertIn("实时状态", schema["rhythm_config"]["hint"])
         self.assertIn("天气环境", schema["state_config"]["hint"])
@@ -2806,6 +2857,44 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertIn('const group = node("div", "config-field-group");', config)
         self.assertNotIn("config-field-subsection", config)
         self.assertNotIn(".config-field-subsection", style)
+
+    def test_dashboard_groups_life_domain_settings_by_workflow(self):
+        import json
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        schema = json.loads(
+            (root / "_conf_schema.json").read_text(encoding="utf-8-sig")
+        )
+        config = (root / "pages" / "dashboard" / "ui" / "settings.js").read_text(
+            encoding="utf-8"
+        )
+        life_groups = config.split('["life_domain_config", [', 1)[1].split(
+            '["chat_style_config", [', 1
+        )[0]
+
+        expected_groups = [
+            "基础与结算",
+            "地点与出行",
+            "生活记录",
+            "行动项与上下文",
+        ]
+        group_positions = [
+            life_groups.index(f'label: "{label}"') for label in expected_groups
+        ]
+        self.assertEqual(group_positions, sorted(group_positions))
+
+        expected_fields = [
+            f"life_domain_config.{field_key}"
+            for field_key in schema["life_domain_config"]["items"]
+        ]
+        field_positions = [
+            life_groups.index(f'"{path}"') for path in expected_fields
+        ]
+        self.assertEqual(field_positions, sorted(field_positions))
+
+        for path in expected_fields:
+            self.assertEqual(life_groups.count(f'"{path}"'), 1)
 
     def test_dashboard_groups_reply_settings_by_workflow(self):
         import json
@@ -3439,6 +3528,36 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         )
         self.assertIn('worldTab: "life_decisions"', app)
 
+    def test_dashboard_action_decisions_have_structured_filters(self):
+        root = Path(__file__).resolve().parents[1] / "pages" / "dashboard"
+        html = (root / "index.html").read_text(encoding="utf-8")
+        app = (root / "app.js").read_text(encoding="utf-8")
+        terms = (root / "shared" / "terms.js").read_text(encoding="utf-8")
+        style = self._dashboard_style(root)
+
+        for key in (
+            "all",
+            "conversation",
+            "memory",
+            "proactive",
+            "expression",
+            "lifecycle",
+        ):
+            self.assertIn(f'data-decision-filter="{key}"', html)
+        self.assertIn('decisionFilter: "all"', app)
+        self.assertIn("function syncDecisionFilters()", app)
+        self.assertIn("export function decisionMatchesFilter", app)
+        self.assertIn("function decisionRecord", app)
+        self.assertIn("item.decision_category", app)
+        self.assertIn("item.decision_source", app)
+        self.assertIn("item.decision_stage", app)
+        self.assertIn("item.decision_outcome", app)
+        self.assertIn("DECISION_CATEGORY_LABELS", terms)
+        self.assertIn("DECISION_SOURCE_LABELS", terms)
+        self.assertIn('skip: "跳过"', terms)
+        self.assertIn(".memory-panel .decision-filter-tabs", style)
+        self.assertIn("flex-wrap: wrap;", style)
+
     def test_dashboard_experience_tabs_group_long_records(self):
         import re
         from pathlib import Path
@@ -3527,7 +3646,9 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
             'readableReferenceLabel(sender, "未知发送者")',
             app,
         )
-        self.assertIn('relationshipText(item.reason) || "无裁定说明"', app)
+        self.assertIn(
+            '["原因", relationship.text(item.reason) || "无裁定说明"]', app
+        )
         self.assertIn("今日决策摘要", app)
         self.assertIn("memory_clusters", app)
         self.assertIn("memory_entities", app)
@@ -4389,6 +4510,33 @@ globalThis.window = {
             self._dashboard_dom_mock_script()
             + """
 await import("./pages/dashboard/app.js");
+"""
+        )
+        result = subprocess.run(
+            ["node", "--input-type=module"],
+            cwd=root,
+            input=script,
+            text=True,
+            encoding="utf-8",
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+
+    def test_dashboard_action_decision_filter_uses_structured_dimensions(self):
+        root = Path(__file__).resolve().parents[1]
+        script = (
+            self._dashboard_dom_mock_script()
+            + """
+const mod = await import("./pages/dashboard/app.js");
+const conversation = { decision_category: "conversation", decision_stage: "" };
+const proactive = { decision_category: "proactive", decision_stage: "proposal" };
+if (!mod.decisionMatchesFilter(conversation, "all")) throw new Error("全部筛选失效");
+if (!mod.decisionMatchesFilter(conversation, "conversation")) throw new Error("会话响应筛选失效");
+if (mod.decisionMatchesFilter(conversation, "memory")) throw new Error("会话裁定误入记忆处理");
+if (!mod.decisionMatchesFilter(proactive, "proactive")) throw new Error("主动互动筛选失效");
+if (!mod.decisionMatchesFilter(proactive, "lifecycle")) throw new Error("流程状态筛选失效");
+if (mod.decisionMatchesFilter(conversation, "lifecycle")) throw new Error("普通会话误入流程状态");
 """
         )
         result = subprocess.run(

@@ -42,6 +42,7 @@ class LifeBackgroundComposer(
         weather_client: WeatherClient,
         contact_resolver=None,
         search_service: SearchService | None = None,
+        domain_service=None,
     ):
         self.context = context
         self.config = config
@@ -50,6 +51,7 @@ class LifeBackgroundComposer(
         self.contact_resolver = contact_resolver
         self.saved_history = SavedHistoryReader(context)
         self.search = search_service or SearchService(context, config.search)
+        self.domains = domain_service
         self._reference_name_cache = {}
         self._gen_lock = asyncio.Lock()
 

@@ -16,20 +16,21 @@ from .basis import (
     OutfitSettings,
     ProactiveReplySettings,
     ResponseGateSettings,
+    SearchSettings,
     SightSettings,
     StateSettings,
     StorageSettings,
     TaskModelSettings,
     WeatherSettings,
-    SearchSettings,
 )
+from .cast import as_int, as_str, as_str_list, dict_section, normalize_time
+from .domains import LifeDomainSettings
 from .generate import (
     ImageGenerationSettings,
     VideoGenerationSettings,
     VoiceGenerationSettings,
 )
 from .retention import CommitmentSettings, MemorySettings, MemOSSettings
-from .cast import as_int, as_str, as_str_list, dict_section, normalize_time
 
 
 @dataclass(slots=True)
@@ -65,9 +66,8 @@ class LifeSettings:
     voice_generation: VoiceGenerationSettings = field(
         default_factory=VoiceGenerationSettings
     )
-    search: SearchSettings = field(
-        default_factory=SearchSettings
-    )
+    search: SearchSettings = field(default_factory=SearchSettings)
+    domains: LifeDomainSettings = field(default_factory=LifeDomainSettings)
     storage: StorageSettings = field(default_factory=StorageSettings)
     state_prompt: str = DEFAULT_STATE_PROMPT
     timeline_prompt: str = DEFAULT_TIMELINE_PROMPT
@@ -75,7 +75,7 @@ class LifeSettings:
     chat_prompt: str = DEFAULT_CHAT_PROMPT
 
     @staticmethod
-    def from_dict(data: Any) -> "LifeSettings":
+    def from_dict(data: Any) -> LifeSettings:
         config = LifeSettings()
         if not isinstance(data, dict):
             return config
@@ -99,6 +99,7 @@ class LifeSettings:
         video_generation_conf = dict_section(data, "video_generation_config")
         voice_generation_conf = dict_section(data, "voice_generation_config")
         search_conf = dict_section(data, "search_config")
+        domains_conf = dict_section(data, "life_domain_config")
         storage_conf = dict_section(data, "storage_config")
         prompt_conf = dict_section(data, "story_engine_config")
 
@@ -144,6 +145,7 @@ class LifeSettings:
             voice_generation_conf
         )
         config.search = SearchSettings.from_dict(search_conf)
+        config.domains = LifeDomainSettings.from_dict(domains_conf)
         config.storage = StorageSettings.from_dict(storage_conf)
 
         config.state_prompt = (
