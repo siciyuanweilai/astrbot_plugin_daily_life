@@ -15,6 +15,7 @@ import aiohttp
 from astrbot.api import logger
 
 from ..runtime.markers import LOG_PREFIX
+from ..security import is_public_http_url_async
 from .auth import browser_headers
 from .bili import fetch_bili_metadata, resolve_bili_target, target_from_text
 from .cookie import BiliCookieJar
@@ -36,6 +37,7 @@ PAGE_CONTENT_TYPES = (
     "application/xml",
     "application/xhtml",
 )
+_REMOTE_DOWNLOAD_LOCKS: dict[str, asyncio.Lock] = {}
 
 
 @dataclass(slots=True)
@@ -145,6 +147,30 @@ async def _download_remote_video_with_reason(
     source = clean_source(source)
     if not source.startswith(("http://", "https://")):
         return None, "不是远程视频地址"
+    if not await is_public_http_url_async(source):
+        return None, "远程视频地址不是公网 HTTP(S) 地址"
+    lock_key = source_fingerprint(cache_identity or source)
+    lock = _REMOTE_DOWNLOAD_LOCKS.setdefault(lock_key, asyncio.Lock())
+    async with lock:
+        return await _download_remote_video_with_reason_once(
+            source,
+            cache_dir,
+            headers=headers,
+            cache_identity=cache_identity,
+            max_bytes=max_bytes,
+            timeout_seconds=timeout_seconds,
+        )
+
+
+async def _download_remote_video_with_reason_once(
+    source: str,
+    cache_dir: Path,
+    *,
+    headers: dict[str, str] | None = None,
+    cache_identity: str = "",
+    max_bytes: int = MAX_REMOTE_VIDEO_BYTES,
+    timeout_seconds: int = 240,
+) -> tuple[Path | None, str]:
     media_dir = cache_dir / "media"
     await asyncio.to_thread(media_dir.mkdir, parents=True, exist_ok=True)
     has_video_suffix = _remote_has_video_suffix(source)
@@ -161,6 +187,8 @@ async def _download_remote_video_with_reason(
     if cached_ready:
         return target, ""
 
+    temp_target = target.with_name(f".{target.name}.part")
+    await asyncio.to_thread(temp_target.unlink, missing_ok=True)
     timeout = aiohttp.ClientTimeout(
         total=max(30, min(int(timeout_seconds or 240), 600))
     )
@@ -195,7 +223,7 @@ async def _download_remote_video_with_reason(
                         f"视频文件超过大小上限（{_bytes_text(content_length)} > {_bytes_text(max_bytes)}）",
                     )
                 too_large = False
-                handle = await asyncio.to_thread(target.open, "wb")
+                handle = await asyncio.to_thread(temp_target.open, "wb")
                 try:
                     async for chunk in response.content.iter_chunked(256 * 1024):
                         if not chunk:
@@ -208,10 +236,11 @@ async def _download_remote_video_with_reason(
                 finally:
                     await asyncio.to_thread(handle.close)
                 if too_large:
-                    await asyncio.to_thread(target.unlink, missing_ok=True)
+                    await asyncio.to_thread(temp_target.unlink, missing_ok=True)
                     return None, f"视频文件超过大小上限（>{_bytes_text(max_bytes)}）"
+                await asyncio.to_thread(temp_target.replace, target)
     except Exception as exc:
-        await asyncio.to_thread(target.unlink, missing_ok=True)
+        await asyncio.to_thread(temp_target.unlink, missing_ok=True)
         return None, f"下载异常：{type(exc).__name__}"
     if await asyncio.to_thread(lambda: target.is_file() and target.stat().st_size > 0):
         return target, ""

@@ -4,10 +4,12 @@ import asyncio
 import json
 import re
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from astrbot.api import logger
+
 from ...config.options import IMAGE_ASPECT_RATIOS
 from ...life.appearance import format_current_appearance_context
 from ...life.wardrobe import (
@@ -18,11 +20,11 @@ from ...life.wardrobe import (
     outfit_style_pool_label,
     style_pool_for_scene_category,
 )
+from ...media.base import GROUP_IDENTITY_CONTINUITY_RULE
 from ...media.picture.routes import (
     image_provider_label,
     requested_image_provider,
 )
-from ...media.base import GROUP_IDENTITY_CONTINUITY_RULE
 from ...paths import runtime_data_root
 from ..locks import operation_lock
 from ..markers import LOG_PREFIX
@@ -1192,22 +1194,19 @@ class RuntimeImageMediaMixin:
                 )
             if updated_day is None:
                 logger.warning(
-                    f"{LOG_PREFIX} Current-character outfit update failed; "
-                    "image generation canceled"
+                    f"{LOG_PREFIX} 当前角色穿搭更新失败，已取消图片生成。"
                 )
                 return "这次换装状态没有更新成功，已取消图片生成。"
 
             current_appearance = format_current_appearance_context(updated_day)
             if not current_appearance:
                 logger.warning(
-                    f"{LOG_PREFIX} Updated current-character outfit has no usable "
-                    "appearance; image generation canceled"
+                    f"{LOG_PREFIX} 当前角色穿搭更新后没有可用造型，已取消图片生成。"
                 )
                 return "这次换装没有生成可用造型，已取消图片生成。"
             if previous_appearance and current_appearance == previous_appearance:
                 logger.warning(
-                    f"{LOG_PREFIX} Explicit outfit request produced no state change; "
-                    "image generation canceled"
+                    f"{LOG_PREFIX} 明确换装请求没有产生状态变化，已取消图片生成。"
                 )
                 return "这次没有产生新的穿搭变化，已取消图片生成。"
             visual_prompt = str(prompt or "").strip()

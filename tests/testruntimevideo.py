@@ -2110,7 +2110,10 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             vision_provider, providers={"vision-model": vision_provider}
         )
         runtime.config = LifeSettings.from_dict(
-            {"vision_config": {"provider": "vision-model"}}
+            {
+                "vision_config": {"provider": "vision-model"},
+                "sight_config": {"auto_video_understanding": True},
+            }
         )
         runtime.archive = DataManager()
         runtime._sight_vault = SightVault(runtime.archive)

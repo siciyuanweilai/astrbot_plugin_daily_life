@@ -36,6 +36,7 @@ from .embed import embed_local_markdown_images
 from .flight import (
     SightFlight,
     sight_flight_key,
+    sight_prepare_key,
     sight_resource_keys,
     sight_resource_matches,
 )
@@ -111,6 +112,8 @@ class SightMixin(SightCleanupMixin, SightIdentityMixin):
         self._sight_reader = SightReader(self)
         self._sight_brief = SightBrief(self)
         self._sight_flight = SightFlight()
+        # 聊天理解和专业总结共享素材准备；最终总结仍按用途分别生成。
+        self._sight_prepare_flight = SightFlight()
         self._sight_note = SightNote(self)
         self._init_sight_identity()
 
@@ -184,6 +187,14 @@ class SightMixin(SightCleanupMixin, SightIdentityMixin):
             return flight
         flight = SightFlight()
         self._sight_flight = flight
+        return flight
+
+    def _sight_prepare_flight_for_runtime(self) -> SightFlight:
+        flight = getattr(self, "_sight_prepare_flight", None)
+        if isinstance(flight, SightFlight):
+            return flight
+        flight = SightFlight()
+        self._sight_prepare_flight = flight
         return flight
 
     def _sight_note_for_runtime(self) -> SightNote:
@@ -1120,7 +1131,13 @@ class SightMixin(SightCleanupMixin, SightIdentityMixin):
     async def _understand_sight_clip_once(
         self, event: Any, clip: SightClip, *, purpose: str = "chat"
     ) -> SightInsight:
-        prepared = await self._prepare_sight_clip_material(event, clip)
+        prepared = await self._sight_prepare_flight_for_runtime().run(
+            f"prepare:{sight_prepare_key(clip)}",
+            lambda: self._prepare_sight_clip_material(event, clip),
+        )
+        prepared = dict(prepared)
+        prepared["metadata"] = dict(prepared.get("metadata") or {})
+        prepared["frame_notes"] = list(prepared.get("frame_notes") or [])
         timeout = self._sight_finalize_timeout_seconds()
         return await asyncio.wait_for(
             self._finalize_prepared_sight_clip(

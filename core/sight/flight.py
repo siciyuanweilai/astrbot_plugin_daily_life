@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from collections.abc import Awaitable, Callable
+from typing import Any, TypeVar
 
-from .clip import SightClip, SightInsight
+from .clip import SightClip
 from .probe import clean_source
 
 
@@ -35,6 +36,21 @@ def sight_flight_key(clip: SightClip) -> str:
     return keys[0] if keys else clip.key
 
 
+def sight_prepare_key(clip: SightClip) -> str:
+    """生成与会话范围无关的物理媒体准备键。"""
+
+    metadata = clip.metadata if isinstance(clip.metadata, dict) else {}
+    identity = str(
+        metadata.get("content_fingerprint")
+        or metadata.get("platform_id")
+        or clip.source
+        or clip.file_id
+        or clip.name
+        or clip.key
+    ).strip()
+    return hashlib.sha256(f"prepare|{identity}".encode("utf-8", errors="ignore")).hexdigest()
+
+
 def sight_resource_matches(first: SightClip, second: SightClip) -> bool:
     first_fingerprint = str(
         (first.metadata or {}).get("content_fingerprint") or ""
@@ -49,13 +65,16 @@ def sight_resource_matches(first: SightClip, second: SightClip) -> bool:
     )
 
 
+_FlightValue = TypeVar("_FlightValue")
+
+
 class SightFlight:
     def __init__(self) -> None:
-        self._tasks: dict[str, asyncio.Task[SightInsight]] = {}
+        self._tasks: dict[str, asyncio.Task[Any]] = {}
 
     async def run(
-        self, key: str, factory: Callable[[], Awaitable[SightInsight]]
-    ) -> SightInsight:
+        self, key: str, factory: Callable[[], Awaitable[_FlightValue]]
+    ) -> _FlightValue:
         task_key = str(key or "").strip()
         if not task_key:
             return await factory()
@@ -78,6 +97,6 @@ class SightFlight:
     async def close(self) -> None:
         await self.cancel_all()
 
-    def _forget(self, key: str, task: asyncio.Task[SightInsight]) -> None:
+    def _forget(self, key: str, task: asyncio.Task[Any]) -> None:
         if self._tasks.get(key) is task:
             self._tasks.pop(key, None)

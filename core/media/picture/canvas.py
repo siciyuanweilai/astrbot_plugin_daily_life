@@ -3,13 +3,15 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
-from math import gcd
-import time
-from pathlib import Path
 import inspect
-from typing import Any, Callable
+import time
+from collections.abc import Callable
+from math import gcd
+from pathlib import Path
+from typing import Any
 
 import aiohttp
+
 from astrbot.api import logger
 
 from ...config.options import (
@@ -18,6 +20,7 @@ from ...config.options import (
     ImageGenerationSettings,
 )
 from ...paths import expand_path, path_is_file, path_size
+from ...security import is_public_http_url_async
 from ..base import (
     GROUP_IDENTITY_CONTINUITY_RULE,
     LOG_PREFIX,
@@ -29,7 +32,6 @@ from ..base import (
 )
 from . import gemini, openai, routes
 from .pipe import ImageRoute
-
 
 _SUPPORTED_ASPECT_RATIO_VALUES = {
     ratio: int(ratio.split(":", 1)[0]) / int(ratio.split(":", 1)[1])
@@ -683,6 +685,8 @@ class GeminiImageService:
         return _best_supported_aspect_ratio(width, height)
 
     async def _download_reference_image(self, url: str) -> tuple[bytes, str]:
+        if not await is_public_http_url_async(url):
+            raise ValueError("参考图片地址不是公网 HTTP(S) 地址")
         session = await self._get_session()
         async with session.get(url) as response:
             if response.status != 200:

@@ -9,6 +9,7 @@ from urllib.parse import unquote, urlparse
 from astrbot.api import logger
 
 from ....clock import now as life_now
+from ....security import is_public_http_url_async
 from ...markers import LOG_PREFIX
 
 
@@ -201,6 +202,10 @@ class EmojiCacheMixin:
         try:
             import aiohttp
 
+            if not await is_public_http_url_async(url):
+                if log_failure:
+                    logger.debug(f"{LOG_PREFIX} 表情素材联网缓存跳过：地址不是公网 HTTP(S)")
+                return None
             timeout = aiohttp.ClientTimeout(total=8)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get(url) as response:

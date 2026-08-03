@@ -260,8 +260,6 @@ class SpineBootMixin:
                     if not self._is_platform_ready(instance)
                 )
             if not pending_count:
-                if waited:
-                    logger.info("[日常生活] 平台适配器已连接，继续首次生活初始化")
                 return True
             if loop.time() >= deadline:
                 logger.warning(
@@ -591,6 +589,8 @@ class SpineBootMixin:
             operation_locks.clear()
         flight = getattr(self, "_sight_flight", None)
         await self._close_runtime_component(flight, "视频任务")
+        prepare_flight = getattr(self, "_sight_prepare_flight", None)
+        await self._close_runtime_component(prepare_flight, "视频素材准备任务")
         await self._close_runtime_services(
             RuntimeServices(
                 config=getattr(self, "config", None),

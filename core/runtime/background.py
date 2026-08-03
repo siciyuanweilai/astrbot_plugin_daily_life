@@ -58,6 +58,9 @@ class BackgroundTaskScheduler:
             "vision": max(0, int(vision_backlog_limit)),
         }
         self._scheduled_counts = dict.fromkeys(self._concurrency_limits, 0)
+        self._dropped_counts = dict.fromkeys(self._concurrency_limits, 0)
+        self._completed_counts = dict.fromkeys(self._concurrency_limits, 0)
+        self._failed_counts = dict.fromkeys(self._concurrency_limits, 0)
         self._overflow_logged_at: dict[str, float] = {}
         self.chat_label = chat_label
         self.slow_task_seconds = max(0.0, float(slow_task_seconds or 0.0))
@@ -71,6 +74,9 @@ class BackgroundTaskScheduler:
         self.tasks.clear()
         self.keys.clear()
         self._scheduled_counts = dict.fromkeys(self._concurrency_limits, 0)
+        self._dropped_counts = dict.fromkeys(self._concurrency_limits, 0)
+        self._completed_counts = dict.fromkeys(self._concurrency_limits, 0)
+        self._failed_counts = dict.fromkeys(self._concurrency_limits, 0)
         self._overflow_logged_at.clear()
 
     def schedule(
@@ -133,6 +139,7 @@ class BackgroundTaskScheduler:
             return False
         if self._reserve(category):
             return True
+        self._dropped_counts[category] = int(self._dropped_counts.get(category, 0)) + 1
         self._close_coro(coro)
         self._log_overflow(category, task_name)
         return False
@@ -192,6 +199,9 @@ class BackgroundTaskScheduler:
                 "running_limit": self._concurrency_limits[category],
                 "backlog_limit": self._backlog_limits[category],
                 "capacity": self._capacity(category),
+                "dropped": int(self._dropped_counts.get(category, 0)),
+                "completed": int(self._completed_counts.get(category, 0)),
+                "failed": int(self._failed_counts.get(category, 0)),
             }
             for category in self._concurrency_limits
         }
@@ -257,8 +267,12 @@ class BackgroundTaskScheduler:
                 if source_coro is not None:
                     self._close_coro(source_coro)
         except Exception as exc:
+            self._failed_counts[category] = int(self._failed_counts.get(category, 0)) + 1
             logger.warning(f"{LOG_PREFIX} 后台任务失败（{task_name}）：{exc}")
         else:
+            self._completed_counts[category] = int(
+                self._completed_counts.get(category, 0)
+            ) + 1
             run_seconds = float(getattr(done_task, _TASK_RUN_SECONDS_ATTR, 0.0) or 0.0)
             total_seconds = float(
                 getattr(done_task, _TASK_TOTAL_SECONDS_ATTR, run_seconds) or run_seconds

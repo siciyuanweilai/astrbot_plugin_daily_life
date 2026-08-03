@@ -9,21 +9,22 @@ from pathlib import Path
 from typing import Any
 
 import aiohttp
+
 from astrbot.api import logger
 
-from .ffmpeg import ffmpeg_executable, ytdlp_ffmpeg_location
+from ..runtime.markers import LOG_PREFIX
 from .cookie import BiliCookieJar
+from .ffmpeg import ffmpeg_executable, ytdlp_ffmpeg_location
 from .probe import clean_source
 from .sample import resolve_sample_source, source_fingerprint
-from .transcript import TranscriptResult, TranscriptSegment
 from .stash import write_transcript_cache
-from ..runtime.markers import LOG_PREFIX
-
+from .transcript import TranscriptResult, TranscriptSegment
 
 API_BASE = "https://member.bilibili.com/x/bcut/rubick-interface"
 MAX_AUDIO_BYTES = 50 * 1024 * 1024
 POLL_INTERVAL_SECONDS = 1.2
 AUDIO_SUFFIXES = {".mp3", ".m4a", ".aac", ".wav", ".ogg", ".opus", ".webm"}
+_AUDIO_EXTRACTION_LOCKS: dict[str, asyncio.Lock] = {}
 
 
 class AudioTranscriptError(RuntimeError):
@@ -102,17 +103,22 @@ async def extract_audio(source: Path, cache_dir: Path) -> Path | None:
     target_dir = cache_dir / "audio"
     await asyncio.to_thread(target_dir.mkdir, parents=True, exist_ok=True)
     target = target_dir / f"{source_fingerprint(str(source))}.mp3"
-    if await asyncio.to_thread(lambda: target.is_file() and target.stat().st_size > 0):
-        return target
-    ok = await asyncio.to_thread(_extract_audio_sync, source, target)
-    return target if ok else None
+    lock = _AUDIO_EXTRACTION_LOCKS.setdefault(str(target), asyncio.Lock())
+    async with lock:
+        if await asyncio.to_thread(
+            lambda: target.is_file() and target.stat().st_size > 0
+        ):
+            return target
+        ok = await asyncio.to_thread(_extract_audio_sync, source, target)
+        return target if ok else None
 
 
 def _extract_audio_sync(source: Path, target: Path) -> bool:
     ffmpeg = ffmpeg_executable()
     if not ffmpeg:
         return False
-    target.unlink(missing_ok=True)
+    temp_target = target.with_name(f".{target.name}.part")
+    temp_target.unlink(missing_ok=True)
     command = [
         ffmpeg,
         "-hide_banner",
@@ -128,7 +134,7 @@ def _extract_audio_sync(source: Path, target: Path) -> bool:
         "16000",
         "-b:a",
         "64k",
-        str(target),
+        str(temp_target),
     ]
     try:
         result = subprocess.run(
@@ -140,7 +146,11 @@ def _extract_audio_sync(source: Path, target: Path) -> bool:
         )
     except Exception:
         return False
-    return result.returncode == 0 and target.is_file() and target.stat().st_size > 0
+    if result.returncode != 0 or not temp_target.is_file() or temp_target.stat().st_size <= 0:
+        temp_target.unlink(missing_ok=True)
+        return False
+    temp_target.replace(target)
+    return True
 
 
 def _yt_dlp_module() -> Any:

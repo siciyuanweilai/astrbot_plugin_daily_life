@@ -1219,7 +1219,7 @@ function scheduleTodayFactsLayout() {
 
 function worldEmptyText(tab) {
   const labels = {
-    relationships: "暂无关系记录",
+    relationships: "暂无独立关系记忆；会话摘要会保留来源标注",
     summaries: "暂无会话记录",
     group_environments: "暂无群聊环境记录",
     message_visibility: "暂无留意记录",
@@ -1349,7 +1349,13 @@ function renderWorld(status) {
         const reactivation = relationshipText(item.reactivation_hint);
         record.append(title, node("div", "record-body", `${relationshipText(item.reason) || "无留意说明"}${reactivation ? ` · 再激活：${reactivation}` : ""}`));
       } else if (activeTab === "action_decisions") {
-        const meta = [enumLabel(item.scene_type, SCENE_TYPE_LABELS), enumLabel(item.understanding, UNDERSTANDING_LABELS), item.deep_analysis ? "深析" : ""].filter(Boolean).join(" · ");
+        const sender = relationship.scope(item.sender_name || item.sender_profile_id);
+        const meta = [
+          sender || clean(item.sender_name, ""),
+          enumLabel(item.scene_type, SCENE_TYPE_LABELS),
+          enumLabel(item.understanding, UNDERSTANDING_LABELS),
+          item.deep_analysis ? "深析" : "",
+        ].filter(Boolean).join(" · ");
         title.append(node("span", "", enumLabel(item.action, ACTION_LABELS) || "未定"), node("span", "muted", meta || `${Math.round(Number(item.confidence || 0) * 100)}%`));
         record.append(title, node("div", "record-body", relationshipText(item.reason) || "无裁定说明"));
       } else if (activeTab === "places") {
@@ -1508,6 +1514,8 @@ function experienceGroups(status) {
     : {};
   const focusTargets = diagnosticsEnabled ? objectItems(experience.focus_targets) : [];
   const terms = diagnosticsEnabled ? objectItems(experience.terms) : [];
+  // 长期记忆与“世界·会话”可能来自同一份会话摘要。
+  // 两处都保留，关系视图明确标出来源，方便追溯而不是把证据静默隐藏。
   const longTermMemories = objectItems(experience.long_term_memories);
   const memoryClusters = diagnosticsEnabled ? objectItems(experience.memory_clusters) : [];
   const memoryEntities = diagnosticsEnabled ? objectItems(experience.memory_entities) : [];
@@ -1713,6 +1721,9 @@ function experienceGroups(status) {
     const record = node("div", "record");
     const title = node("div", "record-title");
     const scope = relationshipScopeLabel(item.scope, relationshipNames);
+    const sourceTable = text(item.source_table).trim().toLowerCase();
+    const category = text(item.category).trim().toLowerCase();
+    const fromChatSummary = sourceTable === "chat_summaries" || category === "chat_summary";
     const titleText = relationshipScopeLabel(item.title || item.scope, relationshipNames)
       || clean(item.title, "")
       || longTermMemoryCategoryLabel(item.category);
@@ -1723,6 +1734,7 @@ function experienceGroups(status) {
     record.append(title, recordLines([
       relationshipText(item.content),
       scope ? ["范围", scope] : "",
+      fromChatSummary ? "来源：会话摘要" : "",
       item.expires_at ? `有效期：${item.expires_at}` : "",
     ]));
     groups.relationships.push(record);

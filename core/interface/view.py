@@ -226,6 +226,14 @@ class PageViewMixin:
         if callable(generation_status_getter):
             generation_status = generation_status_getter(target_date)
         rhythm = getattr(self.runtime, "rhythm", None)
+        background_scheduler = getattr(self.runtime, "_background_scheduler", None)
+        background_tasks = {}
+        snapshot = getattr(background_scheduler, "snapshot", None)
+        if callable(snapshot):
+            try:
+                background_tasks = snapshot()
+            except Exception:
+                background_tasks = {}
         return {
             "now": now.strftime("%Y-%m-%d %H:%M:%S"),
             "status_version": getattr(self.runtime, "page_status_version", 0),
@@ -240,6 +248,7 @@ class PageViewMixin:
                 "scheduler_running": bool(getattr(rhythm, "healthy", False)),
                 "scheduler_error": str(getattr(rhythm, "last_error", "") or ""),
             },
+            "background_tasks": background_tasks,
             "day": self._page_day(data, now, extended_night) if data else None,
             "week_plan": self._page_week_plan(week_plan),
             "world": {

@@ -560,6 +560,11 @@ class SemanticSegmentRuntimeMixin:
                 f"{LOG_PREFIX} 模型语义分段跳过：保留列表、代码块或其他结构化排版。"
             )
             return False
+        # 过短的回应不可能包含多个完整表达动作。正式回复仍使用语义分段，
+        # 但像“煲仔饭！”这类单句不再在前台额外等待一次模型调用。
+        if len("".join(source_text.split())) <= 5 and "\n" not in source_text:
+            logger.debug(f"{LOG_PREFIX} 模型语义分段跳过：回复过短，保留单条发送。")
+            return False
         if self._chat_style_should_keep_default_send(event, source_text):
             return False
         setattr(event, self._SEMANTIC_SEGMENT_ATTEMPTED_ATTR, True)

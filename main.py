@@ -6,9 +6,9 @@ from functools import wraps
 from pathlib import Path
 
 from astrbot.api import logger
-from astrbot.api.star import Context, Star
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.event.filter import EventMessageType
+from astrbot.api.star import Context, Star
 from astrbot.core.provider.entities import ProviderRequest
 from astrbot.core.star.star_tools import StarTools
 
@@ -1431,12 +1431,14 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             await result
             return
         turn_id = self._event_turn_id(event) or f"event:{id(event)}"
-        scheduler(
+        accepted = scheduler(
             result,
             label="聊天记忆提炼",
             key=f"chat_capture:{turn_id}",
             category="chat",
         )
+        if accepted is False:
+            logger.warning(f"{LOG_PREFIX} 聊天记忆提炼进入队列失败：队列已满，turn={turn_id}")
 
     async def _capture_chat_memory_bot_reply(self, event: AstrMessageEvent) -> None:
         hook = self._runtime_hook("capture_chat_memory_bot_reply")
@@ -1447,12 +1449,14 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         if not inspect.isawaitable(result):
             return
         turn_id = self._event_turn_id(event) or f"event:{id(event)}"
-        scheduler(
+        accepted = scheduler(
             result,
             label="Bot回复记忆采集",
             key=f"chat_capture_bot:{turn_id}",
             category="chat",
         )
+        if accepted is False:
+            logger.warning(f"{LOG_PREFIX} 机器人回复记忆采集进入队列失败：队列已满，turn={turn_id}")
 
     def _send_pipeline_should_stop(self, event: AstrMessageEvent) -> bool:
         return any(

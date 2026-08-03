@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.0.8-ef6f8f" alt="版本 1.0.8"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.0.9-ef6f8f" alt="版本 1.0.9"></a>
   <img src="https://img.shields.io/badge/AstrBot-%3E%3D4.26.0-4c78a8" alt="AstrBot >= 4.26.0">
   <img src="https://img.shields.io/badge/platform-aiocqhttp%20%7C%20weixin__oc-4f8a66" alt="支持 aiocqhttp 和 weixin_oc">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-555555" alt="MIT License"></a>
@@ -28,7 +28,7 @@
 [![Yousa Ling](https://count.getloli.com/get/@DailyLife?theme=yousa-ling)](https://github.com/siciyuanweilai/astrbot_plugin_daily_life)
 
 > [!TIP]
-> **v1.0.8 启动连接稳定性修复**：首次生成当天日程前会等待已配置的平台适配器真正连接；OneBot 反向 WebSocket 建立后才查询联系人和历史记录，避免首次启动过早生成导致参考数据为空。模型语义分段、网站地图、整站抓取、研究报告和 QQ 专属文本转发继续保留。数据库当前为 v4，旧版本会在启动时自动迁移，无需清空历史数据。完整说明见 [CHANGELOG.md](./CHANGELOG.md)。
+> **v1.0.9 媒体准备与运行稳定性优化**：同一视频的聊天理解和专业总结共享素材准备，避免重复下载；远程媒体使用安全地址校验和原子缓存写入，后台任务增加丢弃/完成/失败统计。数据库当前为 v4，旧版本会在启动时自动迁移，无需清空历史数据。完整说明见 [CHANGELOG.md](./CHANGELOG.md)。
 
 ---
 

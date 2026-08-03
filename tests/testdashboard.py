@@ -1576,6 +1576,7 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             status["world"]["action_decisions"][1]["reason"], "先观察，不急着接话"
         )
+        self.assertEqual(status["world"]["action_decisions"][0]["sender_name"], "小林")
 
     async def test_page_status_keeps_group_environment_history(self):
         await self.plugin.runtime.archive.save_group_environment(
@@ -3461,6 +3462,10 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertIn("renderExperience(state.status || {});", app)
         self.assertIn('experienceTab: "relationships"', app)
         self.assertIn("function experienceGroups(status)", app)
+        self.assertIn("const longTermMemories = objectItems(experience.long_term_memories);", app)
+        self.assertIn('sourceTable === "chat_summaries"', app)
+        self.assertIn('category === "chat_summary"', app)
+        self.assertIn('fromChatSummary ? "来源：会话摘要" : ""', app)
         self.assertIn("relationships: []", app)
         self.assertIn("behavior: []", app)
         self.assertIn("language: []", app)
@@ -3473,6 +3478,7 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertIn("groups.evidence.push(record)", app)
         self.assertIn("groups.feedback.push(record)", app)
         self.assertIn("experienceEmptyText(activeTab)", app)
+        self.assertIn("暂无独立关系记忆；会话摘要会保留来源标注", app)
         self.assertIn("function relationshipNameIndex(status = {})", relationships)
         self.assertIn(
             "function relationshipScopeLabel(value, relationshipNames = new Map())",

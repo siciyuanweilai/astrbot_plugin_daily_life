@@ -799,6 +799,9 @@ class RuntimeProactiveAsyncTest(
     async def test_regular_reply_effect_registers_watch_before_background_save(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.archive = DataManager()
+        runtime.config = LifeSettings.from_dict(
+            {"proactive_config": {"adaptive_feedback_enabled": True}}
+        )
         runtime._proactive_feedback_watch = {}
         runtime._event_has_command_handler = lambda event: False
         runtime._structured_result_text = lambda event: ("刚刚回复的内容", [])

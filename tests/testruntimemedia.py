@@ -612,7 +612,9 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
     async def test_edit_life_image_group_keeps_scene_reference_separate(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.context = Context(Provider([]))
-        runtime.config = LifeSettings.from_dict({})
+        runtime.config = LifeSettings.from_dict(
+            {"emoji_config": {"collect_chat_emojis": True}}
+        )
         runtime.archive = DataManager()
         group_calls = []
 
@@ -2348,6 +2350,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             {
                 "memory_config": {"provider": "memory-model"},
                 "vision_config": {"provider": "vision-model"},
+                "emoji_config": {"collect_chat_emojis": True},
             }
         )
         runtime.archive = DataManager()
@@ -2466,7 +2469,10 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             vision_provider, providers={"vision-model": vision_provider}
         )
         runtime.config = LifeSettings.from_dict(
-            {"vision_config": {"provider": "vision-model"}}
+            {
+                "vision_config": {"provider": "vision-model"},
+                "emoji_config": {"collect_chat_emojis": True},
+            }
         )
         runtime.archive = DataManager()
         runtime.contact_resolver = type(
@@ -2536,6 +2542,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             {
                 "memory_config": {"provider": "memory-model"},
                 "vision_config": {"provider": "vision-model"},
+                "emoji_config": {"collect_chat_emojis": True},
             }
         )
         runtime.archive = DataManager()
@@ -2653,7 +2660,10 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             vision_provider, providers={"vision-model": vision_provider}
         )
         runtime.config = LifeSettings.from_dict(
-            {"vision_config": {"provider": "vision-model"}}
+            {
+                "vision_config": {"provider": "vision-model"},
+                "emoji_config": {"collect_chat_emojis": True},
+            }
         )
         runtime.archive = DataManager()
         runtime.contact_resolver = type(
@@ -2743,7 +2753,10 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             vision_provider, providers={"vision-model": vision_provider}
         )
         runtime.config = LifeSettings.from_dict(
-            {"vision_config": {"provider": "vision-model"}}
+            {
+                "vision_config": {"provider": "vision-model"},
+                "emoji_config": {"collect_chat_emojis": True},
+            }
         )
         runtime.archive = DataManager()
         runtime.contact_resolver = type(
@@ -2874,7 +2887,10 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             vision_provider, providers={"vision-model": vision_provider}
         )
         runtime.config = LifeSettings.from_dict(
-            {"vision_config": {"provider": "vision-model"}}
+            {
+                "vision_config": {"provider": "vision-model"},
+                "emoji_config": {"collect_chat_emojis": True},
+            }
         )
         runtime.archive = DataManager()
         runtime.contact_resolver = type(
@@ -3043,7 +3059,10 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             vision_provider, providers={"vision-model": vision_provider}
         )
         runtime.config = LifeSettings.from_dict(
-            {"vision_config": {"provider": "vision-model"}}
+            {
+                "vision_config": {"provider": "vision-model"},
+                "emoji_config": {"collect_chat_emojis": True},
+            }
         )
         runtime.archive = DataManager()
 
@@ -3101,6 +3120,9 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
     async def test_plain_image_emoji_cache_tries_alternate_media_sources(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.archive = DataManager()
+        runtime.config = LifeSettings.from_dict(
+            {"emoji_config": {"collect_chat_emojis": True}}
+        )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_root = Path(tmpdir)
@@ -3168,7 +3190,10 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             vision_provider, providers={"vision-model": vision_provider}
         )
         runtime.config = LifeSettings.from_dict(
-            {"vision_config": {"provider": "vision-model"}}
+            {
+                "vision_config": {"provider": "vision-model"},
+                "emoji_config": {"collect_chat_emojis": True},
+            }
         )
         runtime.archive = DataManager()
 
@@ -3259,7 +3284,10 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             vision_provider, providers={"vision-model": vision_provider}
         )
         runtime.config = LifeSettings.from_dict(
-            {"vision_config": {"provider": "vision-model"}}
+            {
+                "vision_config": {"provider": "vision-model"},
+                "emoji_config": {"collect_chat_emojis": True},
+            }
         )
         runtime.archive = DataManager()
 
@@ -3344,7 +3372,10 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             vision_provider, providers={"vision-model": vision_provider}
         )
         runtime.config = LifeSettings.from_dict(
-            {"vision_config": {"provider": "vision-model"}}
+            {
+                "vision_config": {"provider": "vision-model"},
+                "emoji_config": {"collect_chat_emojis": True},
+            }
         )
         runtime.archive = DataManager()
 
@@ -3449,7 +3480,10 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             vision_provider, providers={"vision-model": vision_provider}
         )
         runtime.config = LifeSettings.from_dict(
-            {"vision_config": {"provider": "vision-model"}}
+            {
+                "vision_config": {"provider": "vision-model"},
+                "emoji_config": {"collect_chat_emojis": True},
+            }
         )
         runtime.archive = DataManager()
 
@@ -3696,7 +3730,10 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             vision_provider, providers={"vision-model": vision_provider}
         )
         runtime.config = LifeSettings.from_dict(
-            {"vision_config": {"provider": "vision-model"}}
+            {
+                "vision_config": {"provider": "vision-model"},
+                "emoji_config": {"collect_chat_emojis": True},
+            }
         )
         runtime.archive = DataManager()
         runtime.contact_resolver = type(
@@ -3848,7 +3885,9 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
     async def test_emoji_asset_records_message_id_and_source_url_separately(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.archive = DataManager()
-        runtime.config = LifeSettings.from_dict({})
+        runtime.config = LifeSettings.from_dict(
+            {"emoji_config": {"collect_chat_emojis": True}}
+        )
         runtime.contact_resolver = type(
             "Resolver",
             (),
@@ -4250,6 +4289,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             {
                 "memory_config": {"provider": "memory-model"},
                 "vision_config": {"provider": ""},
+                "emoji_config": {"collect_chat_emojis": True},
             }
         )
         runtime.archive = DataManager()

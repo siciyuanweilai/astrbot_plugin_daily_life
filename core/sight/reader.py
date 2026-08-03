@@ -84,8 +84,12 @@ class SightReader:
     ) -> Path | None:
         if not self.transcript_enabled:
             return None
-        if prepared_video is not None and self._transcript_routes()[0] == "local":
-            return prepared_video
+        if prepared_video is not None:
+            if self._transcript_routes()[0] == "local":
+                return prepared_video
+            # 必剪需要音频文件，但视频已经由共享准备任务下载；直接本地提取，
+            # 不再为同一个来源再次调用 yt-dlp。
+            return await extract_audio(prepared_video, self._cache_dir())
         source = clean_source(source)
         if not source:
             return None
