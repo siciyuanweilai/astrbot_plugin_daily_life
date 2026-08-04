@@ -240,6 +240,12 @@ class PageViewMixin:
                 background_tasks = snapshot()
             except Exception:
                 background_tasks = {}
+        semantic_segments = {}
+        semantic_status_getter = getattr(
+            self.runtime, "semantic_segment_status", None
+        )
+        if callable(semantic_status_getter):
+            semantic_segments = semantic_status_getter()
         return {
             "now": now.strftime("%Y-%m-%d %H:%M:%S"),
             "status_version": getattr(self.runtime, "page_status_version", 0),
@@ -255,6 +261,7 @@ class PageViewMixin:
                 "scheduler_error": str(getattr(rhythm, "last_error", "") or ""),
             },
             "background_tasks": background_tasks,
+            "semantic_segments": semantic_segments,
             "domains": domain_snapshot,
             "day": self._page_day(data, now, extended_night) if data else None,
             "week_plan": self._page_week_plan(week_plan),

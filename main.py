@@ -14,7 +14,7 @@ from astrbot.core.star.star_tools import StarTools
 
 try:
     from astrbot.core.tools.web_search_tools import WEB_SEARCH_TOOL_NAMES
-except ImportError:  # AstrBot 精简运行时可能未加载网页搜索工具模块
+except (AttributeError, ImportError):  # AstrBot 精简运行时可能没有完整工具包
     WEB_SEARCH_TOOL_NAMES: tuple[str, ...] = ()
 
 from .core.interface import DailyLifeCommandCenter, DailyLifeDashboardMixin
@@ -546,7 +546,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         查询天气；查询默认居住地天气时会同步到当前生活日。
 
         Args:
-            city(string): 可选城市名；留空使用当前地图服务从常住详细地址解析出的城市。
+            city(string): 可选城市名；留空使用当前地图服务从居住地解析出的城市。
         """
         return await self.commands.query_weather(event, str(city or "").strip())
 
@@ -567,7 +567,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
 
         Args:
             query(string): 自然语言地点需求，例如“安静、适合看书的咖啡店”。
-            near(string): 可选搜索中心，例如“祖庙地铁站”；留空时在常住详细地址解析出的城市内搜索。
+            near(string): 可选搜索中心，例如“祖庙地铁站”；留空时在居住地解析出的城市内搜索。
             category(string): 可选地点分类或类型编码；不确定时留空。
             radius_meters(int): near 不为空时的搜索半径，默认 3000，范围 100 到 50000。
             limit(int): 返回地点数，默认 5，最多 10。

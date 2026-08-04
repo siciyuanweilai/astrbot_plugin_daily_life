@@ -202,7 +202,7 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(result["ok"])
         self.assertIn("高德地图", result["reason"])
-        self.assertIn("常住详细地址", result["reason"])
+        self.assertIn("居住地", result["reason"])
 
     async def test_amap_geocode_and_route_response_are_normalized(self):
         client = AmapWebServiceClient("test-key", city="佛山")

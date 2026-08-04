@@ -73,7 +73,7 @@ class SettingsCommandMixin:
         yield event.plain_result(
             f"""⚙️ 配置状态
 🌤️ 天气API: {weather_status}
-🏠 常住地址: {home_address_status}
+🏠 居住地: {home_address_status}
 📍 天气城市: {weather_city or "尚未解析"}
 👔 穿搭感知: {outfit_aware}
 🏃 活动感知: {activity_aware}

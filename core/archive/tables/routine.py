@@ -2,6 +2,7 @@ DAILY_SQL = """
 -- 每日生活状态
 CREATE TABLE IF NOT EXISTS days (
             date TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL DEFAULT 1,
             outfit TEXT NOT NULL DEFAULT '',
             weather TEXT NOT NULL DEFAULT '',
             time_period TEXT NOT NULL DEFAULT '',

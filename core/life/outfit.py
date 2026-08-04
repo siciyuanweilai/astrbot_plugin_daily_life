@@ -5,6 +5,7 @@ from collections.abc import Callable
 
 from astrbot.api import logger
 
+from ..archive import DayRevisionConflict
 from ..clock import now as life_now
 from ..config.vocab import PERIOD_HOURS
 from ..labels import (
@@ -574,6 +575,8 @@ reason 使用自然中文，不写内部枚举。
                             f"耗时={time.monotonic() - started_at:.2f} 秒"
                         )
                     return updated
+            except DayRevisionConflict as exc:
+                logger.debug(f"[穿搭更新] 模型结果已过期，保留较新的穿搭：{exc}")
             except Exception as e:
                 logger.error(f"[穿搭更新] 更新失败：{e}")
             finally:

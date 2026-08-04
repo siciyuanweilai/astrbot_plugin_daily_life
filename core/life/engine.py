@@ -56,7 +56,7 @@ class DailyEngineMixin:
         weather_data = (
             await self.weather_client.get_weather(city)
             if city
-            else "未配置可由当前地图服务解析的常住详细地址，当前天气不可用"
+            else "未配置可由当前地图服务解析的居住地，当前天气不可用"
         )
         weather_info = analyze_weather(weather_data)
         weather_section, constraint_section = self._build_weather_sections(weather_info)

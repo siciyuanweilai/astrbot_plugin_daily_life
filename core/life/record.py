@@ -47,7 +47,7 @@ class DailyRecordMixin:
         await self.archive.link_commitments_to_day(
             date_str, [item.id for item in due_commitments]
         )
-        await self.archive.save_day(day)
+        await self.archive.save_day(day, replace=True)
         sync_world_facts = getattr(self, "sync_day_world_facts", None)
         if callable(sync_world_facts):
             await sync_world_facts(

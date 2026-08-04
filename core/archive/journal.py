@@ -1,5 +1,8 @@
 import json
 import sqlite3
+from collections.abc import Callable
+from typing import Any
+
 from ..models import (
     DayRecord,
     EventRecord,
@@ -8,6 +11,7 @@ from ..models import (
     TimelineItem,
     WeatherInfo,
 )
+from .day_revision import merge_day_records
 
 
 class DayArchiveMixin:
@@ -101,7 +105,7 @@ class DayArchiveMixin:
 
         events = self._get_day_events_unlocked(date_str)
 
-        return DayRecord(
+        day = DayRecord(
             date=date_str,
             outfit=row["outfit"],
             timeline=timeline,
@@ -116,7 +120,10 @@ class DayArchiveMixin:
             memo=row["memo"],
             state=state,
             state_log=state_log,
+            revision=int(row["revision"] or 0),
         )
+        day.mark_persisted(day.revision)
+        return day
 
     def _compose_weather_info(self, row: sqlite3.Row) -> WeatherInfo:
         keys = (
@@ -211,20 +218,21 @@ class DayArchiveMixin:
             source=row["source"],
         )
 
-    def _set_day_unlocked(self, day: DayRecord) -> None:
+    def _set_day_unlocked(self, day: DayRecord) -> int:
         weather_info = day.weather_info
         meta = day.meta
         self._conn.execute(
             """
             INSERT INTO days(
-                date, outfit, weather, time_period, memo, weather_last_update,
+                date, revision, outfit, weather, time_period, memo, weather_last_update,
                 weather_temp, weather_condition, weather_temp_desc, weather_outfit_hint, weather_activity_hint,
                 weather_is_hot, weather_is_warm, weather_is_cool, weather_is_cold,
                 weather_is_rainy, weather_is_sunny, weather_is_cloudy, weather_is_foggy,
                 meta_theme, meta_mood, meta_style, meta_hair
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(date) DO UPDATE SET
+                revision = days.revision + 1,
                 outfit = excluded.outfit,
                 weather = excluded.weather,
                 time_period = excluded.time_period,
@@ -281,6 +289,25 @@ class DayArchiveMixin:
         self._replace_state_log_unlocked(day.date, day.state_log)
         self._replace_day_places_unlocked(day.date, day.places)
         self._replace_day_events_unlocked(day.date, day.new_events)
+        row = self._conn.execute(
+            "SELECT revision FROM days WHERE date = ?", (day.date,)
+        ).fetchone()
+        return int(row["revision"] if row else 0)
+
+    def _save_day_unlocked(self, day: DayRecord, *, replace: bool) -> DayRecord:
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            current = self._get_day_unlocked(day.date)
+            target = day if replace or current is None else merge_day_records(day, current)
+            revision = self._set_day_unlocked(target)
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        target.mark_persisted(revision)
+        if target is not day:
+            day.apply_persisted(target)
+        return day
 
     def _replace_timeline_unlocked(
         self, date_str: str, timeline: list[TimelineItem]
@@ -466,24 +493,60 @@ class DayArchiveMixin:
 
         return await self._run_db(read)
 
-    async def save_day(self, day: DayRecord):
-        def write() -> None:
-            self._set_day_unlocked(day)
-            self._conn.commit()
+    async def save_day(self, day: DayRecord, *, replace: bool = False) -> DayRecord:
+        """保存每日生活记录，并合并基于旧版本产生的非冲突改动。"""
 
-        await self._run_db(write)
+        def write() -> DayRecord:
+            return self._save_day_unlocked(day, replace=replace)
+
+        return await self._run_db(write)
+
+    async def mutate_day(
+        self,
+        date_str: str,
+        mutator: Callable[[DayRecord], Any],
+    ) -> DayRecord | None:
+        """在单次数据库事务中读取并修改每日生活记录。"""
+
+        def write() -> DayRecord | None:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                day = self._get_day_unlocked(date_str)
+                if day is None:
+                    self._conn.rollback()
+                    return None
+                changed = mutator(day)
+                if changed is False:
+                    self._conn.rollback()
+                    return day
+                revision = self._set_day_unlocked(day)
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+            day.mark_persisted(revision)
+            return day
+
+        return await self._run_db(write)
 
     async def replace_day_timeline(
         self, date_str: str, timeline: list[TimelineItem]
     ) -> DayRecord | None:
         def write() -> DayRecord | None:
-            day = self._get_day_unlocked(date_str)
-            if not day:
-                return None
-            day.timeline = [TimelineItem.from_value(item) for item in timeline]
-            self._set_day_unlocked(day)
-            self._conn.commit()
-            return self._get_day_unlocked(date_str)
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                day = self._get_day_unlocked(date_str)
+                if not day:
+                    self._conn.rollback()
+                    return None
+                day.timeline = [TimelineItem.from_value(item) for item in timeline]
+                revision = self._set_day_unlocked(day)
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+            day.mark_persisted(revision)
+            return day
 
         return await self._run_db(write)
 
@@ -499,17 +562,22 @@ class DayArchiveMixin:
             text = self._text(memo_text)
             if not text:
                 return
-            day = self._get_day_unlocked(date_str) or DayRecord(date=date_str)
-            lines = [
-                line.strip()
-                for line in str(day.memo or "").splitlines()
-                if line.strip()
-            ]
-            new_line = f"- {text}"
-            if new_line not in lines and text not in lines:
-                lines.append(new_line)
-            day.memo = "\n".join(lines)
-            self._set_day_unlocked(day)
-            self._conn.commit()
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                day = self._get_day_unlocked(date_str) or DayRecord(date=date_str)
+                lines = [
+                    line.strip()
+                    for line in str(day.memo or "").splitlines()
+                    if line.strip()
+                ]
+                new_line = f"- {text}"
+                if new_line not in lines and text not in lines:
+                    lines.append(new_line)
+                day.memo = "\n".join(lines)
+                self._set_day_unlocked(day)
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
 
         await self._run_db(write)

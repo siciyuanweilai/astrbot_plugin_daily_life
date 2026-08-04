@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Literal
 
+DEFAULT_MAX_TOTAL_DELAY_SECONDS = 8.0
+
 
 class BackgroundTextMode(str, Enum):
     DIRECT = "direct"
@@ -30,6 +32,7 @@ class EventDeliveryRequest:
     sleep: Callable[[float], Awaitable[None]]
     is_current: Callable[[], bool]
     source: str = "chat"
+    max_total_delay_seconds: float = DEFAULT_MAX_TOTAL_DELAY_SECONDS
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +49,7 @@ class ScopeDeliveryRequest:
     source_message_id: str = ""
     source: str = "background"
     decorate_addressing: bool = True
+    max_total_delay_seconds: float = DEFAULT_MAX_TOTAL_DELAY_SECONDS
 
 
 class ReplyDeliveryService:
@@ -101,15 +105,24 @@ class ReplyDeliveryService:
             return DeliveryResult("skipped")
 
         sent_count = 0
+        total_delay = 0.0
         try:
             for index, _text in enumerate(request.texts):
                 if index > 0:
                     if not request.is_current():
                         self._clear_result(event)
                         return DeliveryResult("cancelled", sent_count)
-                    delay = max(float(request.delay_seconds(index) or 0.0), 0.0)
+                    remaining = max(
+                        float(request.max_total_delay_seconds or 0.0) - total_delay,
+                        0.0,
+                    )
+                    delay = min(
+                        max(float(request.delay_seconds(index) or 0.0), 0.0),
+                        remaining,
+                    )
                     if delay > 0:
                         await request.sleep(delay)
+                        total_delay += delay
                 if not request.is_current():
                     self._clear_result(event)
                     return DeliveryResult("cancelled", sent_count)
@@ -125,14 +138,23 @@ class ReplyDeliveryService:
 
     async def send_scope(self, request: ScopeDeliveryRequest) -> DeliveryResult:
         sent_count = 0
+        total_delay = 0.0
         try:
             for index, text in enumerate(request.texts):
                 if index > 0:
                     if not request.is_current():
                         return DeliveryResult("cancelled", sent_count)
-                    delay = max(float(request.delay_seconds(index) or 0.0), 0.0)
+                    remaining = max(
+                        float(request.max_total_delay_seconds or 0.0) - total_delay,
+                        0.0,
+                    )
+                    delay = min(
+                        max(float(request.delay_seconds(index) or 0.0), 0.0),
+                        remaining,
+                    )
                     if delay > 0:
                         await request.sleep(delay)
+                        total_delay += delay
                 if not request.is_current():
                     return DeliveryResult("cancelled", sent_count)
                 message = request.build_message(index)

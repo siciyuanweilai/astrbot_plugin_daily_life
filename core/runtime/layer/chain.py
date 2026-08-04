@@ -206,10 +206,26 @@ class LayerChainMixin:
             key=f"chat_state:{target_date_str}",
         )
 
-    async def _select_world_context(
+    async def _select_life_memory_contexts(
         self, snapshot: dict[str, Any], data: Any, event_message: str
-    ) -> str:
+    ) -> tuple[str, str]:
         meta = data.meta or {}
+        world_limits = {
+            "relationships": 5,
+            "places": 8,
+            "events": 8,
+            "summaries": self.config.memory.max_injection_items,
+        }
+        experience_limits = {
+            "episodes": 2,
+            "feedback": 2,
+            "reply_effects": 2,
+            "expression_reviews": 1,
+            "behavior_patterns": 2,
+            "behavior_scenes": 2,
+            "mid_summaries": 2,
+            "terms": 3,
+        }
         groups = {
             kind: self._semantic_snapshot_group(kind, list(snapshot.get(key) or []))
             for kind, key in (
@@ -219,6 +235,12 @@ class LayerChainMixin:
                 ("summaries", "summaries"),
             )
         }
+        groups.update(
+            {
+                key: self._semantic_snapshot_group(key, list(snapshot.get(key) or []))
+                for key in experience_limits
+            }
+        )
         query = "\n".join(
             str(value or "").strip()
             for value in (
@@ -234,19 +256,18 @@ class LayerChainMixin:
         selected = await self.rank_semantic_groups(
             query,
             groups,
-            {
-                "relationships": 5,
-                "places": 8,
-                "events": 8,
-                "summaries": self.config.memory.max_injection_items,
-            },
+            {**world_limits, **experience_limits},
         )
-        return format_hidden_world_context(
+        world_context = format_hidden_world_context(
             selected["relationships"],
             selected["places"],
             selected["events"],
             selected["summaries"],
         )
+        experience_context = self._format_selected_experience_context(
+            snapshot, selected
+        )
+        return world_context, experience_context
 
     def _scope_snapshot_items(
         self, snapshot: dict[str, Any], event: Any = None
@@ -273,25 +294,11 @@ class LayerChainMixin:
         scoped_visibility = [item for item in visibility if in_current_scope(item)]
         return scoped_environments, scoped_decisions, scoped_visibility
 
-    async def _format_snapshot_experience_context(
-        self, snapshot: dict[str, Any], event_message: str = ""
+    def _format_selected_experience_context(
+        self,
+        snapshot: dict[str, Any],
+        selected: dict[str, list[Any]],
     ) -> str:
-        limits = {
-            "episodes": 2,
-            "feedback": 2,
-            "reply_effects": 2,
-            "expression_reviews": 1,
-            "behavior_patterns": 2,
-            "behavior_scenes": 2,
-            "mid_summaries": 2,
-            "terms": 3,
-        }
-        groups = {
-            key: self._semantic_snapshot_group(key, list(snapshot.get(key) or []))
-            for key in limits
-        }
-        selected = await self.rank_semantic_groups(event_message, groups, limits)
-
         return self._format_hidden_experience_context(
             episodes=selected["episodes"],
             focus_targets=list(snapshot.get("focus_targets") or [])[:2],
@@ -448,14 +455,14 @@ class LayerChainMixin:
         environments, decisions, visibility = self._scope_snapshot_items(
             snapshot, event
         )
-        person_facts, world_context, experience_context = await asyncio.gather(
+        person_facts, memory_contexts = await asyncio.gather(
             self._build_person_fact_injection_context(
                 event,
                 relationships=list(snapshot.get("relationships") or []),
             ),
-            self._select_world_context(snapshot, data, event_message),
-            self._format_snapshot_experience_context(snapshot, event_message),
+            self._select_life_memory_contexts(snapshot, data, event_message),
         )
+        world_context, experience_context = memory_contexts
         cognition_context = self._format_cognition_context(snapshot)
         return (
             self.build_hidden_life_context(

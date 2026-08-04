@@ -212,6 +212,12 @@ class SemanticSegmentTest(unittest.TestCase):
             )
 
         self.assertFalse(plan.valid)
+        self.assertEqual(
+            runtime.semantic_segment_status()["metrics"]["planning_failed"], 1
+        )
+        self.assertEqual(
+            runtime.semantic_segment_status()["metrics"]["fallback_single"], 0
+        )
         debug.assert_any_call("[日常生活] 模型语义分段返回无效，已改用自然分段")
 
     def test_semantic_timeout_uses_concise_warning(self):

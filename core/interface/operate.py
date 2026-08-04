@@ -143,7 +143,7 @@ class OperateCommandMixin:
             force=True,
             extra=plan.extra_instruction or "",
             target_hour=plan.target_hour,
-            delete_existing=True,
+            delete_existing=False,
             reject_if_busy=True,
         )
         return result.day
@@ -157,7 +157,7 @@ class OperateCommandMixin:
         query_city = req.param1.strip() if req.param1 else home_city
         if not query_city:
             yield event.plain_result(
-                "请先在生活实况中配置常住详细地址、地图服务商和对应的服务端 Key，"
+                "请先在生活实况中配置居住地、地图服务商和对应的服务端 Key，"
                 "或直接告诉我要查询哪个城市的天气。"
             )
             return
@@ -183,8 +183,12 @@ class OperateCommandMixin:
             data = await self.runtime.archive.get_day(sync_date_str)
         if not data:
             return
-        data.weather = analyzed["raw"]
-        data.weather_info = WeatherInfo.from_value(analyzed)
-        data.weather_last_update = life_timestamp()
-        await self.runtime.archive.save_day(data)
+        updated_at = life_timestamp()
+
+        def apply_weather(latest: DayRecord) -> None:
+            latest.weather = analyzed["raw"]
+            latest.weather_info = WeatherInfo.from_value(analyzed)
+            latest.weather_last_update = updated_at
+
+        await self.runtime.archive.mutate_day(sync_date_str, apply_weather)
         logger.debug("[手动天气] 已更新居住地天气数据")

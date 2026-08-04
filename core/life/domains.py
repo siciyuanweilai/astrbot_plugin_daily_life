@@ -73,7 +73,7 @@ class LifeDomainService:
         self._map = create_map_client(settings)
 
     async def resolve_home_location(self) -> dict[str, Any] | None:
-        """使用常住详细地址解析唯一的居住城市和“家”坐标。"""
+        """使用居住地解析唯一的居住城市和“家”坐标。"""
 
         if self._home_location is not None:
             return self._home_location
@@ -102,7 +102,7 @@ class LifeDomainService:
             if not city or coordinate is None:
                 self._home_location_retry_after = loop.time() + 300.0
                 logger.debug(
-                    f"[日常生活] {self.map_provider_label}未能解析常住详细地址，"
+                    f"[日常生活] {self.map_provider_label}未能解析居住地，"
                     "天气和地点城市暂不可用。"
                 )
                 return None
@@ -143,11 +143,11 @@ class LifeDomainService:
                     (geocoded or {}).get("formatted_address") or home_address
                 ).strip(),
             }
-            logger.debug(f"[日常生活] 已从常住详细地址解析天气城市：{city}")
+            logger.debug(f"[日常生活] 已从居住地解析天气城市：{city}")
             return self._home_location
 
     async def resolve_weather_city(self) -> str:
-        """返回常住详细地址解析出的天气城市，不使用其他来源回退。"""
+        """返回居住地解析出的天气城市，不使用其他来源回退。"""
 
         location = await self.resolve_home_location()
         return str((location or {}).get("city") or "").strip()
@@ -685,7 +685,7 @@ class LifeDomainService:
         if home_location is None:
             return {
                 "ok": False,
-                "reason": "常住详细地址无法解析，暂时不能确定地点搜索城市。",
+                "reason": "居住地无法解析，暂时不能确定地点搜索城市。",
             }
         near = str(near or "").strip()
         center = None
@@ -743,7 +743,7 @@ class LifeDomainService:
         if await self.resolve_home_location() is None:
             return {
                 "ok": False,
-                "reason": "常住详细地址无法解析，暂时不能规划路线。",
+                "reason": "居住地无法解析，暂时不能规划路线。",
             }
         resolved_origin, resolved_destination = await asyncio.gather(
             self._resolve_tool_place(origin),
@@ -833,7 +833,7 @@ class LifeDomainService:
         if await self.resolve_home_location() is None:
             return {
                 "ok": False,
-                "reason": "常住详细地址无法解析，暂时不能安排外出路线。",
+                "reason": "居住地无法解析，暂时不能安排外出路线。",
             }
         current = await self._resolve_tool_place(start)
         if not current:
@@ -1028,7 +1028,7 @@ class LifeDomainService:
             "ok": False,
             "reason": (
                 f"{self.map_provider_label}自然语言工具未启用，或尚未配置"
-                "常住详细地址和对应的服务端 Key。"
+                "居住地和对应的服务端 Key。"
             ),
         }
 

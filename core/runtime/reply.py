@@ -61,6 +61,7 @@ class SemanticSegmentRuntimeMixin:
         self._semantic_segment_epochs: dict[str, int] = {}
         self._semantic_segment_metrics: dict[str, int] = {
             "segmented": 0,
+            "planning_failed": 0,
             "fallback_single": 0,
             "fallback_natural": 0,
             "sent": 0,
@@ -118,7 +119,9 @@ class SemanticSegmentRuntimeMixin:
             self._chat_pacing_state = state
         pacing = state.setdefault(scope, {})
         current = float(pacing.get("effect") or 0.0)
-        target = 1.0 if outcome == "positive" else (-1.0 if outcome == "negative" else 0.0)
+        target = (
+            1.0 if outcome == "positive" else (-1.0 if outcome == "negative" else 0.0)
+        )
         pacing["effect"] = max(-1.0, min(current * 0.65 + target * 0.35, 1.0))
 
     def _semantic_expression_plan_from_event(
@@ -310,9 +313,9 @@ class SemanticSegmentRuntimeMixin:
         if segmented_text != source_text:
             return None
         channel = str(payload.get("channel") or "text").strip().lower()
-        emotion_category = str(
-            payload.get("emotion_category") or "neutral"
-        ).strip().lower()
+        emotion_category = (
+            str(payload.get("emotion_category") or "neutral").strip().lower()
+        )
         stance = str(payload.get("stance") or "respond").strip().lower()
         if channel not in {"text", "voice"}:
             channel = "text"
@@ -430,8 +433,8 @@ class SemanticSegmentRuntimeMixin:
                 f"{LOG_PREFIX} 模型语义分段调用异常详情：{type(exc).__name__}: {exc}"
             )
             logger.debug(f"{LOG_PREFIX} 模型语义分段调用异常，已改用自然分段")
-        self._semantic_segment_metrics["fallback_single"] = (
-            self._semantic_segment_metrics.get("fallback_single", 0) + 1
+        self._semantic_segment_metrics["planning_failed"] = (
+            self._semantic_segment_metrics.get("planning_failed", 0) + 1
         )
         return fallback
 
@@ -586,6 +589,9 @@ class SemanticSegmentRuntimeMixin:
                     self._semantic_segment_metrics.get("fallback_natural", 0) + 1
                 )
                 return True
+            self._semantic_segment_metrics["fallback_single"] = (
+                self._semantic_segment_metrics.get("fallback_single", 0) + 1
+            )
             return False
         plan = self._semantic_segment_clean_plan_punctuation(event, plan, source_text)
         self._semantic_segment_log_expression_trace(plan, event=event, scope=scope)
@@ -679,7 +685,9 @@ class SemanticSegmentRuntimeMixin:
             return True
         if outcome.status == "failed":
             self._semantic_segment_metrics["failed"] += 1
-            logger.debug(f"{LOG_PREFIX} 模型语义分段发送失败，保留默认发送：{outcome.error}")
+            logger.debug(
+                f"{LOG_PREFIX} 模型语义分段发送失败，保留默认发送：{outcome.error}"
+            )
             return False
         try:
             reaction = getattr(self, "note_tool_reaction_message_sent", None)
@@ -844,6 +852,9 @@ class SemanticSegmentRuntimeMixin:
             else []
         )
         if len(natural_segments) > 1:
+            self._semantic_segment_metrics["fallback_natural"] = (
+                self._semantic_segment_metrics.get("fallback_natural", 0) + 1
+            )
             natural_plan = SemanticSegmentPlan(
                 tuple(
                     SegmentPart(
@@ -875,6 +886,9 @@ class SemanticSegmentRuntimeMixin:
                 source=source,
             )
 
+        self._semantic_segment_metrics["fallback_single"] = (
+            self._semantic_segment_metrics.get("fallback_single", 0) + 1
+        )
         fallback_plan = self._semantic_segment_clean_plan_punctuation(
             source_event,
             SemanticSegmentPlan(

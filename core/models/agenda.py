@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar
 
-from .vitals import LifeState, WeatherInfo
 from .relations import EventRecord, PlaceRecord
+from .vitals import LifeState, WeatherInfo
 
 
 @dataclass(slots=True)
@@ -18,7 +19,7 @@ class TimelineItem:
     execution_updated_at: str = ""
 
     @staticmethod
-    def from_value(value: Any) -> "TimelineItem":
+    def from_value(value: Any) -> TimelineItem:
         if isinstance(value, TimelineItem):
             return value
         raw = value if isinstance(value, dict) else {}
@@ -55,6 +56,22 @@ class TimelineItem:
 
 @dataclass(slots=True)
 class DayRecord:
+    PERSISTED_FIELDS: ClassVar[tuple[str, ...]] = (
+        "outfit",
+        "timeline",
+        "places",
+        "new_events",
+        "weather",
+        "weather_info",
+        "weather_last_update",
+        "time_period",
+        "meta",
+        "outfit_history",
+        "memo",
+        "state",
+        "state_log",
+    )
+
     date: str
     outfit: str = ""
     timeline: list[TimelineItem] = field(default_factory=list)
@@ -69,9 +86,36 @@ class DayRecord:
     memo: str = ""
     state: LifeState | None = None
     state_log: list[str] = field(default_factory=list)
+    revision: int = 0
+    _baseline: dict[str, Any] = field(
+        default_factory=dict,
+        repr=False,
+        compare=False,
+    )
+
+    def persistence_snapshot(self) -> dict[str, Any]:
+        """返回可安全比较和合并的持久化字段快照。"""
+
+        return {
+            name: copy.deepcopy(getattr(self, name)) for name in self.PERSISTED_FIELDS
+        }
+
+    def mark_persisted(self, revision: int) -> None:
+        """记录当前数据库版本及对应字段基线。"""
+
+        self.revision = max(0, int(revision or 0))
+        self._baseline = self.persistence_snapshot()
+
+    def apply_persisted(self, source: DayRecord) -> None:
+        """用已保存记录同步当前实例，避免调用方继续持有旧状态。"""
+
+        for name in self.PERSISTED_FIELDS:
+            setattr(self, name, copy.deepcopy(getattr(source, name)))
+        self.mark_persisted(source.revision)
 
     def as_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
+            "revision": self.revision,
             "outfit": self.outfit,
             "timeline": [item.as_dict() for item in self.timeline],
             "places": [place.as_dict() for place in self.places],

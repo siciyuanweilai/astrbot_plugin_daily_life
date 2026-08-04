@@ -188,7 +188,7 @@ class BackgroundTaskScheduler:
             return self.video_gate
         if category == "vision":
             return self.vision_gate
-        if label == self.chat_label:
+        if category == "chat" or label == self.chat_label:
             return self.chat_gate
         return self.normal_gate
 
@@ -267,12 +267,14 @@ class BackgroundTaskScheduler:
                 if source_coro is not None:
                     self._close_coro(source_coro)
         except Exception as exc:
-            self._failed_counts[category] = int(self._failed_counts.get(category, 0)) + 1
+            self._failed_counts[category] = (
+                int(self._failed_counts.get(category, 0)) + 1
+            )
             logger.warning(f"{LOG_PREFIX} 后台任务失败（{task_name}）：{exc}")
         else:
-            self._completed_counts[category] = int(
-                self._completed_counts.get(category, 0)
-            ) + 1
+            self._completed_counts[category] = (
+                int(self._completed_counts.get(category, 0)) + 1
+            )
             run_seconds = float(getattr(done_task, _TASK_RUN_SECONDS_ATTR, 0.0) or 0.0)
             total_seconds = float(
                 getattr(done_task, _TASK_TOTAL_SECONDS_ATTR, run_seconds) or run_seconds

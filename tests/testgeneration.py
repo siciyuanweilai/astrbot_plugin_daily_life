@@ -4,7 +4,6 @@ import types
 import unittest
 
 import support  # noqa: F401 - 安装轻量级 AstrBot 测试替身
-
 from core.runtime.generation import DailyGenerationBusy, DailyGenerationMixin
 from core.runtime.spine.pulse import SpinePulseMixin
 
@@ -12,6 +11,7 @@ from core.runtime.spine.pulse import SpinePulseMixin
 class GenerationArchive:
     def __init__(self):
         self.day = None
+        self.deleted_dates = []
 
     async def get_day(self, date_str):
         if self.day is not None and self.day.date == date_str:
@@ -19,6 +19,7 @@ class GenerationArchive:
         return None
 
     async def delete_day(self, date_str):
+        self.deleted_dates.append(date_str)
         if self.day is not None and self.day.date == date_str:
             self.day = None
 
@@ -94,6 +95,29 @@ class GenerationRuntime(DailyGenerationMixin, SpinePulseMixin):
 
 
 class DailyGenerationTest(unittest.IsolatedAsyncioTestCase):
+    async def test_failed_forced_generation_keeps_existing_day(self):
+        runtime = GenerationRuntime()
+        existing = types.SimpleNamespace(
+            date="2026-07-14",
+            timeline=[types.SimpleNamespace(time="08:00", activity="原有日程")],
+        )
+        runtime.archive.day = existing
+
+        async def fail_generation(**kwargs):
+            raise RuntimeError("模型暂时不可用")
+
+        runtime.composer.generate_daily = fail_generation
+        with self.assertRaisesRegex(RuntimeError, "模型暂时不可用"):
+            await runtime.run_daily_generation(
+                date=datetime.datetime(2026, 7, 14, 16, 30),
+                source="command_reset",
+                force=True,
+                delete_existing=True,
+            )
+
+        self.assertIs(runtime.archive.day, existing)
+        self.assertEqual(runtime.archive.deleted_dates, [])
+
     async def test_daily_generation_does_not_wait_for_plugin_global_lock(self):
         runtime = GenerationRuntime()
         await runtime.generation_lock.acquire()
@@ -143,7 +167,9 @@ class DailyGenerationTest(unittest.IsolatedAsyncioTestCase):
             runtime.composer.search_calls[0][2]["trace_id"],
             result.operation_id,
         )
-        self.assertEqual(runtime.daily_generation_status("2026-07-14")["phase"], "completed")
+        self.assertEqual(
+            runtime.daily_generation_status("2026-07-14")["phase"], "completed"
+        )
 
     async def test_cancelled_frontend_wait_does_not_cancel_generation(self):
         runtime = GenerationRuntime()

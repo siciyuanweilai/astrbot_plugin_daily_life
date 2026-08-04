@@ -207,7 +207,9 @@ class DailyGenerationMixin:
 
             await self._set_daily_generation_phase(operation, "waiting")
             if delete_existing:
-                await self.archive.delete_day(operation.date)
+                logger.debug(
+                    f"{LOG_PREFIX} 日程任务采用生成成功后原子替换：任务={task_id}"
+                )
             if not force:
                 existing = await self.archive.get_day(operation.date)
                 if existing is not None:

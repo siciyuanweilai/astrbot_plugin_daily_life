@@ -7,6 +7,8 @@ from typing import Any
 
 from astrbot.api import logger
 
+from ..archive import DayRevisionConflict
+from ..clock import now as life_now
 from ..life.condition import (
     format_state_prompt,
     normalize_state,
@@ -26,7 +28,6 @@ from ..prompts import (
     CORE_STATE_BEHAVIOR_RULES,
     cache_friendly_prompt,
 )
-from ..clock import now as life_now
 from .markers import LOG_PREFIX
 
 
@@ -534,6 +535,11 @@ class StatusMixin:
                     notify_page=notify_page,
                 ),
             )
+        except DayRevisionConflict as exc:
+            logger.debug(
+                f"{LOG_PREFIX} 实时状态结果已过期，保留较新的生活状态：{exc}"
+            )
+            return await self.archive.get_day(date_str)
         except Exception as e:
             logger.warning(f"{LOG_PREFIX} 更新实时状态失败：{e}")
             return data

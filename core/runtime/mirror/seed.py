@@ -93,7 +93,11 @@ class SnapshotSeedMixin:
                 force=False,
             )
             data = result.day
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                f"[{log_scope}] 补全 {target_date_str} 当天生活失败，"
+                f"将在 10 分钟后允许重试：{type(exc).__name__}: {exc}"
+            )
             data = None
         if data:
             self.failed_dates.pop(target_date_str, None)

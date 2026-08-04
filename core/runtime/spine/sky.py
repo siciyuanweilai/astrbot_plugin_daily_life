@@ -6,7 +6,6 @@ from ...clock import timestamp as life_timestamp
 from ...life.tools import analyze_weather
 from ...models import WeatherInfo
 
-
 _AUTO_WEATHER_REFRESH_SECONDS = 3600
 _MANUAL_WEATHER_REFRESH_SECONDS = 30
 
@@ -24,9 +23,7 @@ class SpineClimateMixin:
         weather_info = data.weather_info
         has_rich_info = bool(weather_info.condition or weather_info.temp is not None)
         refresh_seconds = (
-            _MANUAL_WEATHER_REFRESH_SECONDS
-            if force
-            else _AUTO_WEATHER_REFRESH_SECONDS
+            _MANUAL_WEATHER_REFRESH_SECONDS if force else _AUTO_WEATHER_REFRESH_SECONDS
         )
         if (
             has_rich_info
@@ -45,9 +42,7 @@ class SpineClimateMixin:
             if not city:
                 return False
             action = "手动" if force else "自动"
-            logger.debug(
-                f"[天气更新] 正在通过柠柚接口{action}刷新 {city} 天气……"
-            )
+            logger.debug(f"[天气更新] 正在通过柠柚接口{action}刷新 {city} 天气……")
             weather_data = await self.weather_client.get_weather(city)
             if not isinstance(weather_data, dict) and "失败" in str(weather_data):
                 return False
@@ -56,10 +51,13 @@ class SpineClimateMixin:
             if analyzed.get("temp") is None:
                 return False
 
-            data.weather = analyzed["raw"]
-            data.weather_info = WeatherInfo.from_value(analyzed)
-            data.weather_last_update = now_ts
-            await self.archive.save_day(data)
+            def apply_weather(latest) -> None:
+                latest.weather = analyzed["raw"]
+                latest.weather_info = WeatherInfo.from_value(analyzed)
+                latest.weather_last_update = now_ts
+
+            if await self.archive.mutate_day(today_str, apply_weather) is None:
+                return False
             await self.mark_page_status_changed("weather")
             logger.debug(f"[天气更新] 天气数据已更新：{analyzed['raw']}")
             return True

@@ -590,7 +590,7 @@ class LifeSettingsTest(unittest.TestCase):
         )
         items = schema["life_domain_config"]["items"]
 
-        self.assertEqual(items["home_address"]["description"], "常住详细地址")
+        self.assertEqual(items["home_address"]["description"], "居住地")
         self.assertEqual(items["map_provider"]["options"], ["amap", "tencent", "baidu"])
         self.assertEqual(
             items["map_provider"]["option_labels"],
@@ -1332,9 +1332,9 @@ class LifeSettingsTest(unittest.TestCase):
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertIn("version: 1.1.0", metadata)
-        self.assertIn("version-1.1.0", readme)
-        self.assertIn("v1.1.0 · 2026-08-04", changelog)
+        self.assertIn("version: 1.1.1", metadata)
+        self.assertIn("version-1.1.1", readme)
+        self.assertIn("v1.1.1 · 2026-08-04", changelog)
         self.assertIn("v1.0.4 · 2026-08-01", changelog)
         self.assertLess(changelog.index("v1.0.4"), changelog.index("v1.0.3"))
 

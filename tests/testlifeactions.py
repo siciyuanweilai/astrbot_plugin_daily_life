@@ -268,7 +268,7 @@ class _ArchiveStub:
         self.saved_outcomes = []
         self.saved_traces = []
 
-    async def save_day(self, day):
+    async def save_day(self, day, *, replace=False):
         self.saved_days.append(day)
 
     async def save_life_action_outcome(self, outcome):

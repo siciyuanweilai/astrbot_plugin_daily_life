@@ -293,8 +293,15 @@ class AwarenessMixin:
         if monologue:
             parts.append(f"旁白={monologue}")
         log = "；".join(parts)
-        logs = list(day.state_log)
-        if log and (not logs or logs[-1] != log):
+        if not log:
+            return
+
+        def append_log(latest) -> bool:
+            logs = list(latest.state_log)
+            if logs and logs[-1] == log:
+                return False
             logs.append(log)
-            day.state_log = logs[-10:]
-            await self.archive.save_day(day)
+            latest.state_log = logs[-10:]
+            return True
+
+        await self.archive.mutate_day(day.date, append_log)

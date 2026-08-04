@@ -287,7 +287,7 @@ const CONFIG_GROUP_LABELS = new Map([
   }],
   ["weather_awareness", {
     description: "天气环境",
-    hint: "配置天气接口，以及天气是否影响穿搭和活动；天气城市由常住详细地址自动解析。",
+    hint: "配置天气接口，以及天气是否影响穿搭和活动；天气城市由居住地自动解析。",
   }],
   ["state_config", {
     description: "实时状态",

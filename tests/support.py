@@ -727,8 +727,17 @@ class DataManager:
                     break
         return days
 
-    async def save_day(self, day):
+    async def save_day(self, day, *, replace=False):
         self.days[day.date] = day
+
+    async def mutate_day(self, date_str, mutator):
+        day = self.days.get(date_str)
+        if day is None:
+            return None
+        if mutator(day) is False:
+            return day
+        self.days[date_str] = day
+        return day
 
     async def replace_day_timeline(self, date_str, timeline):
         day = self.days.get(date_str)

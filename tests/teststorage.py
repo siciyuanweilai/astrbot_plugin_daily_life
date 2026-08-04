@@ -1,3 +1,4 @@
+# ruff: noqa: I001
 import asyncio
 import datetime
 import re
@@ -7,8 +8,11 @@ import time
 import unittest
 from unittest.mock import patch
 
+import support  # noqa: F401 - 安装轻量级 AstrBot 测试替身
+
 from core.archive.categories import STORAGE_CATEGORIES, validate_storage_categories
 from core.archive.ddl import iter_schema_sql
+from core.archive import DayRevisionConflict
 from core.archive.schema import SCHEMA_VERSION, ArchiveSchemaError
 from core.clock import today as life_today
 from core.labels import event_status_label
@@ -57,6 +61,55 @@ from support import LifeArchive, LifeSettings
 
 
 class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
+    async def test_stale_day_saves_merge_disjoint_fields(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(f"{tmpdir}/daily_life.db")
+            try:
+                await archive.save_day(
+                    DayRecord(
+                        date="2026-08-04",
+                        outfit="旧穿搭",
+                        timeline=[TimelineItem(time="08:00", activity="旧日程")],
+                    )
+                )
+                outfit_writer = await archive.get_day("2026-08-04")
+                timeline_writer = await archive.get_day("2026-08-04")
+
+                outfit_writer.outfit = "新穿搭"
+                await archive.save_day(outfit_writer)
+                timeline_writer.timeline = [
+                    TimelineItem(time="09:00", activity="新日程")
+                ]
+                await archive.save_day(timeline_writer)
+
+                saved = await archive.get_day("2026-08-04")
+                self.assertEqual(saved.outfit, "新穿搭")
+                self.assertEqual(saved.timeline[0].activity, "新日程")
+                self.assertEqual(saved.revision, 3)
+                self.assertEqual(timeline_writer.revision, 3)
+            finally:
+                await archive.aclose()
+
+    async def test_stale_day_save_rejects_same_field_conflict(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(f"{tmpdir}/daily_life.db")
+            try:
+                await archive.save_day(DayRecord(date="2026-08-04", outfit="初始穿搭"))
+                first = await archive.get_day("2026-08-04")
+                second = await archive.get_day("2026-08-04")
+
+                first.outfit = "第一套穿搭"
+                await archive.save_day(first)
+                second.outfit = "第二套穿搭"
+                with self.assertRaises(DayRevisionConflict):
+                    await archive.save_day(second)
+
+                saved = await archive.get_day("2026-08-04")
+                self.assertEqual(saved.outfit, "第一套穿搭")
+                self.assertEqual(saved.revision, 2)
+            finally:
+                await archive.aclose()
+
     async def test_memory_vectors_persist_and_update(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = f"{tmpdir}/daily_life.db"
@@ -221,9 +274,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                 "decision_source",
                 "decision_category",
             ):
-                connection.execute(
-                    f"ALTER TABLE action_decisions DROP COLUMN {column}"
-                )
+                connection.execute(f"ALTER TABLE action_decisions DROP COLUMN {column}")
             connection.execute(
                 "UPDATE meta SET value = '5' WHERE key = 'schema_version'"
             )
@@ -236,7 +287,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                     "SELECT value FROM meta WHERE key = 'schema_version'"
                 ).fetchone()[0]
                 records = await migrated.get_action_decision_records(10)
-                self.assertEqual(version, "6")
+                self.assertEqual(version, str(SCHEMA_VERSION))
                 self.assertEqual(records[0].decision_category, "memory")
                 self.assertEqual(records[0].decision_outcome, "save_memory")
                 self.assertEqual(records[1].decision_category, "proactive")
@@ -244,6 +295,47 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(records[1].decision_stage, "proposal")
                 self.assertEqual(records[1].decision_outcome, "observe")
                 self.assertEqual(records[1].reason, "候选阶段决定继续观察")
+            finally:
+                await migrated.aclose()
+
+    async def test_v6_database_migrates_day_revision_without_losing_data(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = f"{tmpdir}/daily_life.db"
+            archive = LifeArchive(db_path)
+            await archive.save_day(
+                DayRecord(
+                    date="2026-08-04",
+                    outfit="保留的穿搭",
+                    timeline=[TimelineItem(time="10:00", activity="保留的日程")],
+                )
+            )
+            await archive.aclose()
+
+            connection = sqlite3.connect(db_path)
+            connection.execute("ALTER TABLE days DROP COLUMN revision")
+            connection.execute(
+                "UPDATE meta SET value = '6' WHERE key = 'schema_version'"
+            )
+            connection.commit()
+            connection.close()
+
+            migrated = LifeArchive(db_path)
+            try:
+                version = migrated._conn.execute(
+                    "SELECT value FROM meta WHERE key = 'schema_version'"
+                ).fetchone()[0]
+                columns = {
+                    row[1]
+                    for row in migrated._conn.execute(
+                        "PRAGMA table_info(days)"
+                    ).fetchall()
+                }
+                day = await migrated.get_day("2026-08-04")
+                self.assertEqual(version, "7")
+                self.assertIn("revision", columns)
+                self.assertEqual(day.outfit, "保留的穿搭")
+                self.assertEqual(day.timeline[0].activity, "保留的日程")
+                self.assertEqual(day.revision, 1)
             finally:
                 await migrated.aclose()
 

@@ -1,8 +1,11 @@
+# ruff: noqa: I001
 import asyncio
 import unittest
 
-from support import DailyLifeRuntime
+import support  # noqa: F401 - 安装轻量级 AstrBot 测试替身
+
 from core.runtime.background import BackgroundTaskScheduler
+from support import DailyLifeRuntime
 
 
 class BackgroundTaskSchedulerTest(unittest.IsolatedAsyncioTestCase):
@@ -73,6 +76,40 @@ class BackgroundTaskSchedulerTest(unittest.IsolatedAsyncioTestCase):
         await asyncio.gather(*list(runtime._background_scheduler.tasks))
         self.assertEqual(runtime._background_scheduler.tasks, set())
         self.assertEqual(runtime._background_scheduler.keys, set())
+
+    async def test_explicit_chat_category_uses_chat_concurrency_limit(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime._background_scheduler = BackgroundTaskScheduler(
+            normal_limit=4, chat_limit=1
+        )
+
+        active = 0
+        peak = 0
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def job():
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            entered.set()
+            await release.wait()
+            active -= 1
+
+        for index in range(3):
+            runtime._schedule_background_task(
+                job(),
+                label="普通回复效果学习",
+                key=f"reply-effect:{index}",
+                category="chat",
+            )
+
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        await asyncio.sleep(0)
+        self.assertEqual(peak, 1)
+
+        release.set()
+        await asyncio.gather(*list(runtime._background_scheduler.tasks))
 
     async def test_background_task_duplicate_key_is_closed_without_queueing(self):
         scheduler = BackgroundTaskScheduler()
@@ -179,8 +216,8 @@ class BackgroundTaskSchedulerTest(unittest.IsolatedAsyncioTestCase):
 
         infos = []
         old_info = background_module.logger.info
-        background_module.logger.info = lambda message, *args, **kwargs: (
-            infos.append(str(message))
+        background_module.logger.info = lambda message, *args, **kwargs: infos.append(
+            str(message)
         )
         try:
             scheduler = BackgroundTaskScheduler(slow_task_seconds=0)
@@ -195,9 +232,7 @@ class BackgroundTaskSchedulerTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(scheduler.tasks, set())
         self.assertEqual(scheduler.keys, set())
-        self.assertTrue(
-            any("后台任务完成（耗时测试）" in message for message in infos)
-        )
+        self.assertTrue(any("后台任务完成（耗时测试）" in message for message in infos))
         self.assertTrue(
             any("耗时 " in message and "总耗时" not in message for message in infos)
         )

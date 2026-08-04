@@ -11,7 +11,7 @@ from .tables.domains import DOMAIN_INDEX_SQL, DOMAIN_SQL
 
 SCHEMA_VERSION_KEY = "schema_version"
 BASELINE_SCHEMA_VERSION = 1
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 LEGACY_BASELINE_SCHEMA_FINGERPRINT = (
     "9e6243276bf6bd509f6019502e30192310da4197838bd0f7d478f0100f8750a5"
 )
@@ -27,8 +27,11 @@ PREVIOUS_CURRENT_SCHEMA_FINGERPRINT = (
 PREVIOUS_V5_SCHEMA_FINGERPRINT = (
     "909f7660043197c3fa12f66bb0eb58d323945f9eefc2e1f3bc68eb39db6b2cc9"
 )
-CURRENT_SCHEMA_FINGERPRINT = (
+PREVIOUS_V6_SCHEMA_FINGERPRINT = (
     "d23b0eb16fa2075c6dbf92a6b277e2101dc3e7607cf6ef53073cd61d2e8f653a"
+)
+CURRENT_SCHEMA_FINGERPRINT = (
+    "62d201bcf9bc94f896bc1a30c014c18c0dac6ec11c11adfedf8e09cba429f140"
 )
 
 MigrationStep = Callable[[sqlite3.Connection], None]
@@ -147,9 +150,7 @@ def _migrate_action_decision_dimensions(conn: sqlite3.Connection) -> None:
     }
     for name, definition in additions.items():
         if name not in columns:
-            conn.execute(
-                f"ALTER TABLE action_decisions ADD COLUMN {name} {definition}"
-            )
+            conn.execute(f"ALTER TABLE action_decisions ADD COLUMN {name} {definition}")
 
     rows = conn.execute(
         "SELECT id, action, scene_type, decision_category, decision_source, "
@@ -177,6 +178,16 @@ def _migrate_action_decision_dimensions(conn: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_day_revisions(conn: sqlite3.Connection) -> None:
+    """为每日生活聚合增加乐观并发版本号。"""
+
+    columns = {
+        str(row[1]) for row in conn.execute("PRAGMA table_info(days)").fetchall()
+    }
+    if "revision" not in columns:
+        conn.execute("ALTER TABLE days ADD COLUMN revision INTEGER NOT NULL DEFAULT 1")
+
+
 # 键是迁移完成后的目标版本；每个步骤只负责从前一版本升级一次。
 MIGRATIONS: dict[int, MigrationStep] = {
     2: _migrate_timeline_execution_state,
@@ -184,6 +195,7 @@ MIGRATIONS: dict[int, MigrationStep] = {
     4: _migrate_action_receipts,
     5: _migrate_life_domains,
     6: _migrate_action_decision_dimensions,
+    7: _migrate_day_revisions,
 }
 
 
@@ -226,6 +238,7 @@ def is_baseline_schema(conn: sqlite3.Connection) -> bool:
         PREVIOUS_BASELINE_SCHEMA_FINGERPRINT,
         PREVIOUS_CURRENT_SCHEMA_FINGERPRINT,
         PREVIOUS_V5_SCHEMA_FINGERPRINT,
+        PREVIOUS_V6_SCHEMA_FINGERPRINT,
         LEGACY_BASELINE_SCHEMA_FINGERPRINT,
         CURRENT_SCHEMA_FINGERPRINT,
     }
@@ -317,6 +330,7 @@ __all__ = [
     "MIGRATIONS",
     "PREVIOUS_BASELINE_SCHEMA_FINGERPRINT",
     "PREVIOUS_V5_SCHEMA_FINGERPRINT",
+    "PREVIOUS_V6_SCHEMA_FINGERPRINT",
     "SCHEMA_VERSION",
     "SCHEMA_VERSION_KEY",
     "MigrationStep",

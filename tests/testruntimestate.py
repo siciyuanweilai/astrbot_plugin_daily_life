@@ -1,3 +1,5 @@
+# ruff: noqa: I001
+
 import unittest
 
 from runtimehelpers import (
@@ -344,6 +346,36 @@ class RuntimeStateTest(unittest.TestCase):
 
 
 class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTestCase):
+    async def test_life_memory_context_uses_one_semantic_ranking_call(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.config = LifeSettings.from_dict({})
+        calls = []
+
+        async def rank_once(query, groups, limits):
+            calls.append((query, groups, limits))
+            return {key: [] for key in groups}
+
+        runtime.rank_semantic_groups = rank_once
+        world_context, experience_context = await runtime._select_life_memory_contexts(
+            {},
+            DayRecord(
+                date="2026-08-04",
+                memo="晚上整理照片",
+                meta={"theme": "慢节奏生活"},
+            ),
+            "今天打算做什么？",
+        )
+
+        self.assertEqual(len(calls), 1)
+        query, groups, limits = calls[0]
+        self.assertIn("今天打算做什么", query)
+        self.assertIn("relationships", groups)
+        self.assertIn("episodes", groups)
+        self.assertIn("relationships", limits)
+        self.assertIn("episodes", limits)
+        self.assertEqual(world_context, "")
+        self.assertEqual(experience_context, "")
+
     async def test_manual_weather_refresh_bypasses_hour_cache_and_debounces(self):
         class WeatherClient:
             def __init__(self):
