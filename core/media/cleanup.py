@@ -6,7 +6,7 @@ from pathlib import Path
 
 from astrbot.api import logger
 
-from ..clock import now as life_now
+from ..clock import timestamp as life_timestamp
 from ..paths import runtime_data_root
 from ..runtime.markers import LOG_PREFIX
 
@@ -40,7 +40,7 @@ class MediaFileCleanupMixin:
             target = root / dirname
             if not await asyncio.to_thread(target.is_dir):
                 continue
-            cutoff = life_now().timestamp() - keep_days * 86400
+            cutoff = life_timestamp() - keep_days * 86400
             files, dirs = await asyncio.to_thread(
                 self._prune_media_cache_tree, target, cutoff
             )

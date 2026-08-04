@@ -44,7 +44,14 @@ class SpineClimateMixin:
             action = "手动" if force else "自动"
             logger.debug(f"[天气更新] 正在通过柠柚接口{action}刷新 {city} 天气……")
             weather_data = await self.weather_client.get_weather(city)
-            if not isinstance(weather_data, dict) and "失败" in str(weather_data):
+            weather_ok = bool(
+                weather_data.get(
+                    "ok",
+                    weather_data.get("code") == 200
+                    and isinstance(weather_data.get("data"), dict),
+                )
+            )
+            if not weather_ok:
                 return False
 
             analyzed = analyze_weather(weather_data)

@@ -12,14 +12,13 @@ from typing import Any
 from astrbot.api import logger
 
 from ...life.people import MEDIA_PERSON_TEXT_PATHS
+from ...media.base import GROUP_IDENTITY_CONTINUITY_RULE, image_mime_and_ext
 from ...media.picture.routes import image_provider_label, requested_image_provider
 from ...outcome import ToolResultText
-from ...media.base import GROUP_IDENTITY_CONTINUITY_RULE, image_mime_and_ext
 from ...paths import path_is_file, runtime_data_root
 from ...prompts import CORE_MEDIA_REPLY_RULES, cache_friendly_prompt
 from ..delivery import BackgroundTextMode
 from ..markers import LOG_PREFIX
-
 
 PHOTO_SUITE_DEFAULT_COUNT = 3
 PHOTO_SUITE_MIN_COUNT = 2
@@ -78,8 +77,11 @@ class RuntimePhotoSuiteMediaMixin:
                 provider_id = str(
                     getattr(meta_getter(), "id", "") or provider_id
                 ).strip()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(
+                    f"{LOG_PREFIX} 读取套图模型元信息失败，改用配置标识："
+                    f"{type(exc).__name__}"
+                )
         model = str(
             getattr(provider, "model_name", "") or config.get("model") or ""
         ).strip()

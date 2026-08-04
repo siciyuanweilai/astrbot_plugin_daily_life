@@ -1,10 +1,12 @@
+import datetime
 import json
 import random
-import datetime
+from typing import Any
+
 import chinese_calendar
-from typing import Any, List, Dict
-from ..config.vocab import TIME_PERIOD_CN, WEEKDAY_NAMES
+
 from ..clock import now as life_now
+from ..config.vocab import TIME_PERIOD_CN, WEEKDAY_NAMES
 
 
 # ==================== 节假日及调休感知 ====================
@@ -290,6 +292,10 @@ def analyze_weather(weather_data: Any) -> dict:
             result["temp"] = temp
         return result
 
+    if isinstance(weather_data, dict) and weather_data.get("ok") is False:
+        result["raw"] = str(weather_data.get("message") or "天气查询失败").strip()
+        return result
+
     if isinstance(weather_data, dict) and "data" in weather_data:
         data = weather_data["data"]
         w = data.get("weather", {})
@@ -409,8 +415,8 @@ def get_weather_activity_constraint(weather_info: dict, enabled: bool = True) ->
 
 def get_matching_hairstyle(
     style_name: str,
-    style_map: Dict[str, List[str]],
-    night_styles: List[str],
+    style_map: dict[str, list[str]],
+    night_styles: list[str],
     is_night=False,
 ):
     """根据穿搭风格获取匹配的发型"""
@@ -421,7 +427,7 @@ def get_matching_hairstyle(
         text = "".join(str(value or "").strip().lower().split())
         return text.replace("（", "(").replace("）", ")")
 
-    def pick(items: List[str]) -> str:
+    def pick(items: list[str]) -> str:
         return random.choice(items) if items else ""
 
     raw_name = str(style_name or "").strip()
@@ -436,7 +442,7 @@ def get_matching_hairstyle(
     if not normalized_name:
         return "自然披发"
 
-    normalized_items: list[tuple[str, List[str]]] = []
+    normalized_items: list[tuple[str, list[str]]] = []
     for key, hairstyles in style_map.items():
         if not hairstyles:
             continue
@@ -449,7 +455,7 @@ def get_matching_hairstyle(
         if normalized_key == normalized_name:
             return pick(hairstyles)
 
-    contains_matches: list[List[str]] = []
+    contains_matches: list[list[str]] = []
     for normalized_key, hairstyles in normalized_items:
         if normalized_name in normalized_key or normalized_key in normalized_name:
             contains_matches.append(hairstyles)
@@ -457,7 +463,7 @@ def get_matching_hairstyle(
         return pick(random.choice(contains_matches))
 
     best_overlap = 0
-    best_matches: list[List[str]] = []
+    best_matches: list[list[str]] = []
     name_parts = [
         part
         for part in normalized_name.replace("·", " ").replace("-", " ").split()
@@ -559,9 +565,7 @@ def get_current_timeline_status(
 TIMELINE_EXECUTION_STATES = frozenset(
     {"planned", "active", "completed", "expired", "skipped", "cancelled"}
 )
-TIMELINE_TERMINAL_STATES = frozenset(
-    {"completed", "expired", "skipped", "cancelled"}
-)
+TIMELINE_TERMINAL_STATES = frozenset({"completed", "expired", "skipped", "cancelled"})
 
 
 def reconcile_timeline_execution(

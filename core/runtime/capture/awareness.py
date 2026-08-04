@@ -90,7 +90,6 @@ class AwarenessMixin:
         decision: dict,
         meta: dict[str, str],
     ) -> ActionDecisionRecord:
-        action = self._str_payload(decision.get("action"), "skip_memory")
         return ActionDecisionRecord(
             session_id=meta["session_id"],
             message_id=meta["message_id"],
@@ -99,7 +98,7 @@ class AwarenessMixin:
             group_id=meta["group_id"],
             group_name=meta["group_name"],
             date=meta["date"],
-            action=action,
+            action=self._str_payload(decision.get("action"), "skip_memory"),
             reason=self._str_payload(decision.get("reason")),
             confidence=max(self._float_payload(decision.get("confidence")), 0.0),
             scene_type=self._str_payload(decision.get("scene_type")),
@@ -108,8 +107,6 @@ class AwarenessMixin:
             deep_analysis=self._bool_payload(decision.get("deep_analysis")),
             inner_monologue=self._str_payload(decision.get("inner_monologue")),
             reply_strategy=self._str_payload(decision.get("reply_strategy")),
-            decision_source="chat_memory",
-            decision_outcome=action,
         )
 
     def _group_environment_from_payload(

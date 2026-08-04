@@ -4,7 +4,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from core.archive.schema import SCHEMA_VERSION
 from core.config.options import LifeDomainSettings
@@ -265,12 +265,8 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reason, "")
         self.assertEqual(revised["timeline"][1]["place"], "另一家测试书店")
         self.assertEqual(revised["timeline"][1]["place_kind"], "poi")
-        self.assertEqual(
-            revised["timeline"][1]["place_address"], "测试区测试街9号"
-        )
-        self.assertEqual(
-            revised["timeline"][1]["activity"], "到另一家测试书店看看"
-        )
+        self.assertEqual(revised["timeline"][1]["place_address"], "测试区测试街9号")
+        self.assertEqual(revised["timeline"][1]["activity"], "到另一家测试书店看看")
         self.assertEqual(revised["planned_actions"][0]["target"], "另一家测试书店")
         self.assertEqual(revised["location_audit"]["substituted_places"], 1)
         self.assertEqual(
@@ -596,10 +592,31 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot["fitness"][0]["activity"], "室内拉伸")
         self.assertEqual(len(snapshot["timeline"]), 1)
         self.assertEqual(snapshot["timeline"][0]["kind"], "fitness")
-        self.assertEqual(
-            snapshot["timeline"][0]["action_id"], "2026-08-03:exercise:0"
-        )
+        self.assertEqual(snapshot["timeline"][0]["action_id"], "2026-08-03:exercise:0")
         self.assertNotIn("voice", snapshot)
+
+    async def test_skipped_activity_session_keeps_distinct_status(self):
+        day = self._day(
+            {
+                "action_id": "2026-08-03:rest:skipped",
+                "action_type": "rest",
+                "target": "取消的休息安排",
+                "timeline_index": 0,
+                "duration_minutes": 15,
+                "source": "daily_plan",
+            }
+        )
+        day.timeline[0].execution_state = "skipped"
+        day.timeline[0].execution_reason = "临时安排变化"
+        day.timeline[0].execution_evidence = "夜间复盘确认跳过"
+
+        await self.domains.sync_activity_sessions(
+            day,
+            now=datetime.datetime(2026, 8, 3, 23, 59),
+        )
+
+        sessions = await self.archive.get_activity_sessions(limit=0)
+        self.assertEqual(sessions[0]["status"], "skipped")
 
     async def test_unsettled_activity_session_remains_in_unified_timeline(self):
         day = self._day(
@@ -804,6 +821,72 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
             stale_action_id,
             {item["action_id"] for item in snapshot["activity_sessions"]},
         )
+
+    async def test_domain_snapshot_hides_past_unconfirmed_terminal_plans(self):
+        expired_action_id = "2026-08-03:photo:expired"
+        failed_action_id = "2026-08-03:photo:failed"
+        day = DayRecord(
+            date="2026-08-03",
+            timeline=[
+                TimelineItem(time="10:00", activity="未确认的测试照片"),
+                TimelineItem(time="11:00", activity="执行失败的测试照片"),
+            ],
+            meta={
+                "planned_life_actions": json.dumps(
+                    [
+                        {
+                            "action_id": expired_action_id,
+                            "action_type": "photo",
+                            "timeline_index": 0,
+                        },
+                        {
+                            "action_id": failed_action_id,
+                            "action_type": "photo",
+                            "timeline_index": 1,
+                        },
+                    ],
+                    ensure_ascii=False,
+                )
+            },
+        )
+        await self.archive.save_day(day, replace=True)
+        for action_id, title, status in (
+            (expired_action_id, "未确认的测试照片", "expired"),
+            (failed_action_id, "执行失败的测试照片", "failed"),
+        ):
+            await self.archive.upsert_activity_session(
+                {
+                    "action_id": action_id,
+                    "date": day.date,
+                    "activity_type": "photo",
+                    "title": title,
+                    "status": status,
+                    "started_at": f"{day.date} 10:00:00",
+                    "ended_at": f"{day.date} 23:59:00",
+                    "source": "daily_plan",
+                }
+            )
+        await self.archive.save_life_action_receipt(
+            {
+                "receipt_id": "receipt:photo:failed",
+                "action_id": failed_action_id,
+                "date": day.date,
+                "action_type": "photo",
+                "status": "failed",
+                "source": "test_receipt",
+                "occurred_at": f"{day.date} 11:05:00",
+            }
+        )
+
+        with patch(
+            "core.archive.domains.life_today",
+            return_value=datetime.date(2026, 8, 4),
+        ):
+            snapshot = await self.domains.snapshot()
+
+        visible_ids = {item["action_id"] for item in snapshot["activity_sessions"]}
+        self.assertNotIn(expired_action_id, visible_ids)
+        self.assertIn(failed_action_id, visible_ids)
 
     async def test_empty_current_action_set_hides_old_simulated_records(self):
         day = self._day(
@@ -1180,6 +1263,9 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(places[0]["distance_meters"], 350)
         self.assertEqual(tips[0]["city"], "测试市")
         self.assertEqual(detail["poi_id"], "poi-1")
+        traffic = await client.traffic_status((23.0, 113.0))
+        self.assertFalse(traffic["supported"])
+        self.assertEqual(traffic["provider"], "tencent")
 
     async def test_baidu_map_responses_use_unified_coordinates(self):
         client = BaiduMapWebServiceClient("test-key", city="测试市")
@@ -1281,6 +1367,9 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(places[0]["coordinate"][0], expected_gcj[0], places=7)
         self.assertEqual(tips[0]["poi_id"], "poi-1")
         self.assertEqual(detail["photos"], ["https://example.com/place.jpg"])
+        traffic = await client.traffic_status(expected_gcj)
+        self.assertFalse(traffic["supported"])
+        self.assertEqual(traffic["provider"], "baidu")
 
     def test_baidu_coordinate_conversion_round_trips(self):
         coordinate = (23.123456, 113.123456)
@@ -1786,6 +1875,113 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(version, str(SCHEMA_VERSION))
                 self.assertIn("latitude", columns)
                 self.assertEqual(events[0].summary, "迁移前保留的测试事件")
+            finally:
+                await migrated.aclose()
+
+    async def test_v7_database_restores_activity_terminal_statuses(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = f"{tmpdir}/migration.db"
+            archive = LifeArchive(path)
+            day = DayRecord(
+                date="2026-08-03",
+                timeline=[
+                    TimelineItem(
+                        time="10:00",
+                        activity="过期计划",
+                        execution_state="expired",
+                    ),
+                    TimelineItem(
+                        time="11:00",
+                        activity="跳过计划",
+                        execution_state="skipped",
+                    ),
+                    TimelineItem(
+                        time="12:00",
+                        activity="真实失败计划",
+                        execution_state="skipped",
+                    ),
+                ],
+                meta={
+                    "planned_life_actions": json.dumps(
+                        [
+                            {
+                                "action_id": "legacy-expired",
+                                "action_type": "photo",
+                                "timeline_index": 0,
+                            },
+                            {
+                                "action_id": "legacy-skipped",
+                                "action_type": "rest",
+                                "timeline_index": 1,
+                            },
+                            {
+                                "action_id": "legacy-failed",
+                                "action_type": "photo",
+                                "timeline_index": 2,
+                            },
+                        ],
+                        ensure_ascii=False,
+                    )
+                },
+            )
+            await archive.save_day(day, replace=True)
+            for index, action_id in enumerate(
+                ("legacy-expired", "legacy-skipped", "legacy-failed")
+            ):
+                await archive.upsert_activity_session(
+                    {
+                        "action_id": action_id,
+                        "date": day.date,
+                        "activity_type": "photo" if index != 1 else "rest",
+                        "title": f"旧活动 {index}",
+                        "status": "failed",
+                        "started_at": f"{day.date} 1{index}:00:00",
+                        "ended_at": f"{day.date} 23:59:00",
+                        "source": "daily_plan",
+                        "metadata": {"timeline_index": index},
+                    }
+                )
+            await archive.save_life_action_outcome(
+                {
+                    "action_id": "legacy-expired",
+                    "date": day.date,
+                    "action_type": "photo",
+                    "status": "expired",
+                }
+            )
+            await archive.save_life_action_receipt(
+                {
+                    "receipt_id": "receipt:legacy-failed",
+                    "action_id": "legacy-failed",
+                    "date": day.date,
+                    "action_type": "photo",
+                    "status": "failed",
+                    "source": "test_receipt",
+                    "occurred_at": f"{day.date} 12:05:00",
+                }
+            )
+            await archive.aclose()
+
+            connection = sqlite3.connect(path)
+            connection.execute(
+                "UPDATE meta SET value = '7' WHERE key = 'schema_version'"
+            )
+            connection.commit()
+            connection.close()
+
+            migrated = LifeArchive(path)
+            try:
+                sessions = {
+                    item["action_id"]: item["status"]
+                    for item in await migrated.get_activity_sessions(limit=0)
+                }
+                version = migrated._conn.execute(
+                    "SELECT value FROM meta WHERE key = 'schema_version'"
+                ).fetchone()[0]
+                self.assertEqual(version, str(SCHEMA_VERSION))
+                self.assertEqual(sessions["legacy-expired"], "expired")
+                self.assertEqual(sessions["legacy-skipped"], "skipped")
+                self.assertEqual(sessions["legacy-failed"], "failed")
             finally:
                 await migrated.aclose()
 

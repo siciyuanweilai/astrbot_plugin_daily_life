@@ -125,7 +125,7 @@ class ProactiveStoreMixin:
         meta = await self._event_context_meta(event, sender_name, now)
         source = self._str_payload(payload.get("source"), "proactive_reply")
         decision_name = self._str_payload(payload.get("decision"), "observe")
-        action = "private_revisit" if source == "private_revisit" else "proactive_reply"
+        action = "proactive_reply" if sent else f"proactive_{stage}_{decision_name}"
         reason = self._str_payload(payload.get("reason"))
         strategy = self._str_payload(payload.get("reply_strategy"))
         saved = await self.archive.save_action_decision(
@@ -150,10 +150,6 @@ class ProactiveStoreMixin:
                 deep_analysis=False,
                 inner_monologue=self._str_payload(payload.get("inner_monologue")),
                 reply_strategy=strategy or reply_text,
-                decision_category="proactive",
-                decision_source=source,
-                decision_stage=stage,
-                decision_outcome="reply" if sent else decision_name,
             )
         )
         await self.composer._save_life_decision_record(

@@ -530,6 +530,40 @@ class LifeActionIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(day.meta["schedule_anchor_count"], "6")
         self.assertEqual(len(json.loads(day.meta["schedule_anchors"])), 6)
 
+    async def test_nightly_review_does_not_overwrite_terminal_timeline_state(self):
+        composer = _ComposerStub()
+        day = DayRecord(
+            date="2026-08-01",
+            timeline=[
+                TimelineItem(
+                    time="08:00",
+                    activity="等待外部回执的计划",
+                    execution_state="expired",
+                    execution_reason="没有收到可验证回执",
+                    execution_evidence="动作结果记录为过期",
+                    execution_updated_at="2026-08-01 20:00:00",
+                )
+            ],
+        )
+
+        await composer._apply_timeline_review_updates(
+            day,
+            {
+                "timeline_updates": [
+                    {
+                        "item_index": 0,
+                        "status": "skipped",
+                        "reason": "模型尝试重新分类",
+                        "evidence": "夜间复盘输出",
+                    }
+                ]
+            },
+        )
+
+        self.assertEqual(day.timeline[0].execution_state, "expired")
+        self.assertEqual(day.timeline[0].execution_reason, "没有收到可验证回执")
+        self.assertEqual(day.timeline[0].execution_evidence, "动作结果记录为过期")
+
 
 if __name__ == "__main__":
     unittest.main()

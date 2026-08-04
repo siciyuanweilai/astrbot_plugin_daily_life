@@ -15,6 +15,7 @@ from ..prompts import (
 from .appearance import format_life_preference_context
 from .evolution import LifeEvolutionService
 from .tools import (
+    TIMELINE_TERMINAL_STATES,
     extract_json_from_text,
     format_timeline_to_text,
     reconcile_timeline_execution,
@@ -507,6 +508,8 @@ class LifecycleMixin:
                 if status in {"skipped", "cancelled"} and not evidence:
                     continue
                 item = day.timeline[item_index]
+                if item.execution_state in TIMELINE_TERMINAL_STATES:
+                    continue
                 item.execution_state = status
                 item.execution_reason = reason or "夜间复盘收束"
                 item.execution_evidence = evidence or "夜间复盘"

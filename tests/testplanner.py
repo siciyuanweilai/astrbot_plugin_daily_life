@@ -1049,14 +1049,14 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
             '{"time":"22:20","activity":"回家洗漱后准备休息","status":"放松"}],'
             '"places":[],"new_events":[]}'
         )
-        changed = repeated.replace(
-            '"decision":"keep"', '"decision":"change"', 1
-        ).replace(
-            '"style":"清爽甜美风"', '"style":"轻盈休闲风"', 1
-        ).replace(
-            '"outfit":"米白色短袖衬衫搭浅蓝色高腰短裙，脚穿白色帆布鞋"',
-            '"outfit":"淡绿色棉麻短袖上衣搭白色直筒九分裤，脚穿灰色慢跑鞋"',
-            1,
+        changed = (
+            repeated.replace('"decision":"keep"', '"decision":"change"', 1)
+            .replace('"style":"清爽甜美风"', '"style":"轻盈休闲风"', 1)
+            .replace(
+                '"outfit":"米白色短袖衬衫搭浅蓝色高腰短裙，脚穿白色帆布鞋"',
+                '"outfit":"淡绿色棉麻短袖上衣搭白色直筒九分裤，脚穿灰色慢跑鞋"',
+                1,
+            )
         )
         composer, provider, _, archive = make_composer([repeated, changed])
         await archive.save_day(
@@ -1227,7 +1227,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("生成穿搭与 2026-06-11 过于相似", reason)
         self.assertEqual(composer._last_validation_issue_code, "outfit_repeat")
 
-    async def test_daily_generation_prompt_keeps_static_rules_before_dynamic_context(
+    async def test_daily_generation_accepts_valid_json_after_natural_preface(
         self,
     ):
         valid_json = (
@@ -1251,14 +1251,11 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNotNone(data)
         self.assertEqual(data.outfit, "宽松白色长T恤，低马尾，浅灰棉质长裤")
-        self.assertEqual(len(provider.prompts), 2)
+        self.assertEqual(len(provider.prompts), 1)
         self.assertLess(
             provider.prompts[0].index("## 👤 角色设定"),
             provider.prompts[0].index("目标日期：2026-06-23"),
         )
-        self.assertIn("未能解析出 JSON 对象", provider.prompts[1])
-        self.assertIn("只输出完整 JSON 对象", provider.prompts[1])
-        self.assertIn("原始输出", provider.prompts[1])
 
     async def test_daily_generation_applies_safe_location_correction_first(self):
         valid_json = (
@@ -1528,6 +1525,42 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
             stored.meta["hair"],
             "黑色长发在脑后松松扎成低马尾，额前留有几缕碎发",
         )
+
+    async def test_update_outfit_clears_replaced_optional_appearance_fields(self):
+        composer, _, _, archive = make_composer(
+            [
+                '{"outfit_decision":"change","scene_category":"home","style_pool":"sleep_styles",'
+                '"outfit":"宽松米白色棉质睡裙","style":"","hair_style":"",'
+                '"hair":"","reason":""}'
+            ]
+        )
+        await archive.save_day(
+            DayRecord(
+                date="2026-07-17",
+                outfit="浅蓝短袖衬衫和米白长裤",
+                timeline=[
+                    TimelineItem(time="22:10", activity="洗漱后准备休息", status="放松")
+                ],
+                meta={
+                    "style": "清爽外出风",
+                    "hair_style": "低马尾",
+                    "hair": "黑色长发扎成低马尾",
+                    "outfit_reason": "此前准备外出",
+                },
+            )
+        )
+
+        result = await composer.update_outfit(
+            "2026-07-17",
+            "night",
+            current_time=datetime.datetime(2026, 7, 17, 22, 10),
+        )
+
+        self.assertIsNotNone(result)
+        stored = await archive.get_day("2026-07-17")
+        self.assertEqual(stored.outfit, "宽松米白色棉质睡裙")
+        for key in ("style", "hair_style", "hair", "outfit_reason"):
+            self.assertNotIn(key, stored.meta)
 
     async def test_update_outfit_instruction_preserves_life_context(self):
         composer, provider, _, archive = make_composer(

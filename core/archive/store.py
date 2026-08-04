@@ -22,7 +22,7 @@ from .vectors import MemoryVectorArchiveMixin
 from .weeks import WeekArchiveMixin
 
 T = TypeVar("T")
-_DIRECT_DB_READ = contextvars.ContextVar("daily_life_direct_db_read", default=False)
+_DB_LOCK_HELD = contextvars.ContextVar("daily_life_db_lock_held", default=False)
 
 _CONTEXT_SNAPSHOT_KEYS = (
     "relationships",
@@ -82,10 +82,12 @@ class LifeArchive(
         self._physiological_rhythm_trend_cache: dict[str, dict] = {}
         self._conn: sqlite3.Connection | None = None
         self._initialized = False
+        self._closed = False
         if initialize:
             self._initialize_sync()
 
     def _initialize_sync(self) -> None:
+        self._require_not_closed()
         self._path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self._path, check_same_thread=False)
         try:
@@ -99,13 +101,16 @@ class LifeArchive(
         self._initialized = True
 
     async def initialize(self) -> None:
+        self._require_not_closed()
         if self._initialized:
             return
         async with self._lock:
+            self._require_not_closed()
             if not self._initialized:
                 await asyncio.to_thread(self._initialize_sync)
 
     def close(self) -> None:
+        self._closed = True
         conn = self._conn
         self._conn = None
         self._initialized = False
@@ -116,12 +121,41 @@ class LifeArchive(
         async with self._lock:
             await asyncio.to_thread(self.close)
 
+    def _require_not_closed(self) -> None:
+        """拒绝在归档关闭后继续复用实例。
+
+        Raises:
+            RuntimeError: 归档已经关闭。
+        """
+
+        if self._closed:
+            raise RuntimeError("生活归档已关闭，不能继续访问数据库")
+
+    def _require_open(self) -> sqlite3.Connection:
+        """返回当前连接，并拒绝关闭后或初始化前的访问。
+
+        Returns:
+            已初始化的 SQLite 连接。
+
+        Raises:
+            RuntimeError: 归档已经关闭或尚未初始化。
+        """
+
+        self._require_not_closed()
+        if self._conn is None:
+            raise RuntimeError("生活归档数据库尚未初始化")
+        return self._conn
+
     async def _run_db(self, func: Callable[..., T], *args: Any, **kwargs: Any) -> T:
-        if _DIRECT_DB_READ.get():
-            return func(*args, **kwargs)
+        if _DB_LOCK_HELD.get():
+            self._require_open()
+            return await asyncio.to_thread(func, *args, **kwargs)
+        if self._closed:
+            self._require_open()
         if not self._initialized:
             await self.initialize()
         async with self._lock:
+            self._require_open()
             return await asyncio.to_thread(func, *args, **kwargs)
 
     async def save(self) -> None:
@@ -140,44 +174,47 @@ class LifeArchive(
         """在一次数据库锁定期间读取完整的提示词注入快照。"""
 
         async def collect() -> dict[str, Any]:
-            values = await asyncio.gather(
-                self.get_recent_relationships(8),
-                self.get_recent_places(10),
-                self.get_recent_events(10),
-                self.get_recent_chat_summaries(max_summaries),
-                self.get_commitments(status="active", limit=8),
-                self.get_recent_group_environments(3),
-                self.get_recent_action_decisions(3),
-                self.get_recent_message_visibility(3),
-                self.get_life_episodes(limit=3),
-                self.get_focus_targets(limit=4),
-                self.get_behavior_feedback(limit=3),
-                self.get_emotion_arcs(limit=4, scope=experience_scope),
-                self.get_physiological_rhythm_logs(limit=3),
-                self.get_physiological_rhythm_trend(days=7, limit=6),
-                self.get_reply_effects(limit=4, scope=experience_scope),
-                self.get_memory_corrections(limit=3, unapplied_only=True),
-                self.get_expression_profiles(limit=4),
-                self.get_expression_reviews(limit=3, scope=experience_scope),
-                self.get_behavior_patterns(limit=4),
-                self.get_behavior_scenes(limit=4, scope=experience_scope),
-                self.get_session_mid_summaries(limit=3, session_id=session_id),
-                self.get_temporary_expression_states(limit=3, scope=experience_scope),
-                self.get_focus_slots(limit=4, scope=experience_scope),
-                self.get_expression_intents(limit=3, scope=experience_scope),
-                self.get_life_terms(limit=6, scope=experience_scope),
-                self.get_memory_boundaries(limit=4),
-                self.get_temporal_facts(scope=experience_scope, limit=12),
-                self.get_persona_assertions(scope="global", limit=6),
-                self.get_persona_assertions(scope=experience_scope, limit=6)
-                if experience_scope and experience_scope != "global"
-                else asyncio.sleep(0, result=[]),
-                self.get_affective_states(scope="global", limit=6),
-                self.get_affective_states(scope=experience_scope, limit=6)
-                if experience_scope and experience_scope != "global"
-                else asyncio.sleep(0, result=[]),
-                self.get_grounded_diary_entries(scope="global", limit=2),
-            )
+            scoped = bool(experience_scope and experience_scope != "global")
+            values = [
+                await self.get_recent_relationships(8),
+                await self.get_recent_places(10),
+                await self.get_recent_events(10),
+                await self.get_recent_chat_summaries(max_summaries),
+                await self.get_commitments(status="active", limit=8),
+                await self.get_recent_group_environments(3),
+                await self.get_recent_action_decisions(3),
+                await self.get_recent_message_visibility(3),
+                await self.get_life_episodes(limit=3),
+                await self.get_focus_targets(limit=4),
+                await self.get_behavior_feedback(limit=3),
+                await self.get_emotion_arcs(limit=4, scope=experience_scope),
+                await self.get_physiological_rhythm_logs(limit=3),
+                await self.get_physiological_rhythm_trend(days=7, limit=6),
+                await self.get_reply_effects(limit=4, scope=experience_scope),
+                await self.get_memory_corrections(limit=3, unapplied_only=True),
+                await self.get_expression_profiles(limit=4),
+                await self.get_expression_reviews(limit=3, scope=experience_scope),
+                await self.get_behavior_patterns(limit=4),
+                await self.get_behavior_scenes(limit=4, scope=experience_scope),
+                await self.get_session_mid_summaries(limit=3, session_id=session_id),
+                await self.get_temporary_expression_states(
+                    limit=3, scope=experience_scope
+                ),
+                await self.get_focus_slots(limit=4, scope=experience_scope),
+                await self.get_expression_intents(limit=3, scope=experience_scope),
+                await self.get_life_terms(limit=6, scope=experience_scope),
+                await self.get_memory_boundaries(limit=4),
+                await self.get_temporal_facts(scope=experience_scope, limit=12),
+                await self.get_persona_assertions(scope="global", limit=6),
+                await self.get_persona_assertions(scope=experience_scope, limit=6)
+                if scoped
+                else [],
+                await self.get_affective_states(scope="global", limit=6),
+                await self.get_affective_states(scope=experience_scope, limit=6)
+                if scoped
+                else [],
+                await self.get_grounded_diary_entries(scope="global", limit=2),
+            ]
             snapshot = dict(zip(_CONTEXT_SNAPSHOT_KEYS, values))
             snapshot["persona_assertions"] = list(
                 snapshot.get("persona_assertions") or []
@@ -187,14 +224,15 @@ class LifeArchive(
             ) + list(snapshot.pop("scoped_affective_states", []) or [])
             return snapshot
 
-        def read() -> dict[str, Any]:
-            token = _DIRECT_DB_READ.set(True)
+        if not self._initialized:
+            await self.initialize()
+        async with self._lock:
+            self._require_open()
+            token = _DB_LOCK_HELD.set(True)
             try:
-                return asyncio.run(collect())
+                return await collect()
             finally:
-                _DIRECT_DB_READ.reset(token)
-
-        return await self._run_db(read)
+                _DB_LOCK_HELD.reset(token)
 
     async def reset_all(self):
         def write() -> None:

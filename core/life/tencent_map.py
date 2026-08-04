@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import math
 from typing import Any
 
-import aiohttp
-
 from astrbot.api import logger
+
+from .map_common import non_negative_number
+from .map_http import request_map_json
 
 _TENCENT_MAP_BASE_URL = "https://apis.map.qq.com"
 _ROUTE_PATHS = {
@@ -90,8 +90,8 @@ class TencentMapWebServiceClient:
         first = routes[0] if isinstance(routes, list) and routes else None
         if not isinstance(first, dict):
             return None
-        distance = self._non_negative_number(first.get("distance"))
-        duration_minutes = self._non_negative_number(first.get("duration"))
+        distance = non_negative_number(first.get("distance"))
+        duration_minutes = non_negative_number(first.get("duration"))
         if distance is None or duration_minutes is None:
             return None
         return {
@@ -189,25 +189,23 @@ class TencentMapWebServiceClient:
 
     async def traffic_status(
         self, center: tuple[float, float], *, radius_meters: int = 1000
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         del center, radius_meters
-        return None
+        return {
+            "supported": False,
+            "provider": self.provider_id,
+            "reason": "腾讯地图当前通道未提供实时路况查询。",
+        }
 
     async def _request_json(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
         request_params = {**params, "key": self.api_key, "output": "json"}
-        try:
-            timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(
-                    f"{_TENCENT_MAP_BASE_URL}{path}", params=request_params
-                ) as response:
-                    response.raise_for_status()
-                    payload = await response.json(content_type=None)
-        except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
-            logger.debug(f"[日常生活] 腾讯地图请求失败：{type(exc).__name__}")
-            return {}
-        if not isinstance(payload, dict):
-            return {}
+        payload = await request_map_json(
+            f"{_TENCENT_MAP_BASE_URL}{path}",
+            request_params,
+            timeout_seconds=self.timeout_seconds,
+            provider_label=self.provider_label,
+            endpoint_label=path,
+        )
         try:
             status = int(payload.get("status"))
         except (TypeError, ValueError):
@@ -235,14 +233,6 @@ class TencentMapWebServiceClient:
     def _text_value(value: Any) -> str:
         return str(value or "").strip()
 
-    @staticmethod
-    def _non_negative_number(value: Any) -> float | None:
-        try:
-            number = float(value)
-        except (TypeError, ValueError):
-            return None
-        return number if math.isfinite(number) and number >= 0 else None
-
     @classmethod
     def _normalize_poi(cls, value: dict[str, Any]) -> dict[str, Any] | None:
         name = cls._text_value(value.get("title") or value.get("name"))
@@ -265,7 +255,7 @@ class TencentMapWebServiceClient:
                 ad_info.get("district") or value.get("district")
             ),
             "adcode": cls._text_value(ad_info.get("adcode") or value.get("adcode")),
-            "distance_meters": cls._non_negative_number(
+            "distance_meters": non_negative_number(
                 value.get("_distance") or value.get("distance")
             ),
             "telephone": cls._text_value(value.get("tel")),

@@ -36,13 +36,20 @@ class VoiceSwitchRecordMixin:
             if hasattr(next_item, attr):
                 try:
                     setattr(next_item, attr, None)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug(
+                        f"{LOG_PREFIX} 清理语音组件附带文字失败："
+                        f"字段={attr}；异常={type(exc).__name__}"
+                    )
         return next_item
 
     def _replace_result_with_voice(self, event: Any, path: str) -> None:
         raw_chain = list(getattr(self._record_message_chain(path), "chain", []) or [])
-        voice_items = [self._strip_voice_record_caption(item) for item in raw_chain if self._voice_record_component(item)]
+        voice_items = [
+            self._strip_voice_record_caption(item)
+            for item in raw_chain
+            if self._voice_record_component(item)
+        ]
         chain = voice_items or raw_chain
         setter = getattr(event, "set_result", None)
         chain_result = getattr(event, "chain_result", None)

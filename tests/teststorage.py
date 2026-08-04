@@ -195,21 +195,28 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
     async def test_context_snapshot_uses_one_database_entry(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             archive = LifeArchive(f"{tmpdir}/daily_life.db")
-            original_to_thread = asyncio.to_thread
             entries = 0
 
-            async def counted_to_thread(func, *args, **kwargs):
-                nonlocal entries
-                entries += 1
-                return await original_to_thread(func, *args, **kwargs)
+            class CountingLock:
+                def __init__(self, lock):
+                    self.lock = lock
+
+                async def __aenter__(self):
+                    nonlocal entries
+                    entries += 1
+                    await self.lock.acquire()
+                    return self
+
+                async def __aexit__(self, exc_type, exc, traceback):
+                    self.lock.release()
 
             try:
-                with patch("core.archive.store.asyncio.to_thread", counted_to_thread):
-                    snapshot = await archive.get_context_snapshot(
-                        max_summaries=5,
-                        experience_scope="group:10001",
-                        session_id="session:10001",
-                    )
+                archive._lock = CountingLock(archive._lock)
+                snapshot = await archive.get_context_snapshot(
+                    max_summaries=5,
+                    experience_scope="group:10001",
+                    session_id="session:10001",
+                )
 
                 self.assertEqual(entries, 1)
                 self.assertEqual(
@@ -250,6 +257,35 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 archive.close()
 
+    async def test_closed_archive_rejects_reinitialization_and_database_access(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(f"{tmpdir}/daily_life.db")
+
+            await archive.aclose()
+
+            self.assertTrue(archive._closed)
+            self.assertIsNone(archive._conn)
+            with self.assertRaisesRegex(RuntimeError, "生活归档已关闭"):
+                await archive.initialize()
+            with self.assertRaisesRegex(RuntimeError, "生活归档已关闭"):
+                await archive.get_day("2026-08-05")
+            self.assertIsNone(archive._conn)
+
+    async def test_waiting_database_read_rechecks_state_after_close(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(f"{tmpdir}/daily_life.db")
+            await archive._lock.acquire()
+            close_task = asyncio.create_task(archive.aclose())
+            await asyncio.sleep(0)
+            read_task = asyncio.create_task(archive.get_recent_places(1))
+            await asyncio.sleep(0)
+            archive._lock.release()
+
+            await close_task
+            with self.assertRaisesRegex(RuntimeError, "生活归档已关闭"):
+                await read_task
+            self.assertIsNone(archive._conn)
+
     async def test_context_snapshot_does_not_replace_archive_database_runner(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             archive = LifeArchive(f"{tmpdir}/daily_life.db")
@@ -285,7 +321,18 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 archive.close()
 
-    async def test_v5_database_migrates_action_decision_dimensions(self):
+    def test_schema_initialization_rejects_incomplete_storage_categories(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch(
+                "core.archive.schema.validate_storage_categories",
+                side_effect=ValueError("存储分类定义不完整：未分类：测试表"),
+            ):
+                with self.assertRaises(ArchiveSchemaError) as raised:
+                    LifeArchive(f"{tmpdir}/daily_life.db")
+
+        self.assertIn("存储分类定义不完整", str(raised.exception))
+
+    async def test_v5_database_keeps_v109_action_decision_structure(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = f"{tmpdir}/daily_life.db"
             archive = LifeArchive(db_path)
@@ -305,13 +352,6 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             await archive.aclose()
 
             connection = sqlite3.connect(db_path)
-            for column in (
-                "decision_outcome",
-                "decision_stage",
-                "decision_source",
-                "decision_category",
-            ):
-                connection.execute(f"ALTER TABLE action_decisions DROP COLUMN {column}")
             connection.execute(
                 "UPDATE meta SET value = '5' WHERE key = 'schema_version'"
             )
@@ -324,13 +364,35 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                     "SELECT value FROM meta WHERE key = 'schema_version'"
                 ).fetchone()[0]
                 records = await migrated.get_action_decision_records(10)
+                columns = {
+                    str(row[1])
+                    for row in migrated._conn.execute(
+                        "PRAGMA table_info(action_decisions)"
+                    ).fetchall()
+                }
                 self.assertEqual(version, str(SCHEMA_VERSION))
-                self.assertEqual(records[0].decision_category, "memory")
-                self.assertEqual(records[0].decision_outcome, "save_memory")
-                self.assertEqual(records[1].decision_category, "proactive")
-                self.assertEqual(records[1].decision_source, "proactive_reply")
-                self.assertEqual(records[1].decision_stage, "proposal")
-                self.assertEqual(records[1].decision_outcome, "observe")
+                self.assertTrue(
+                    {
+                        "decision_category",
+                        "decision_source",
+                        "decision_stage",
+                        "decision_outcome",
+                    }
+                    <= columns
+                )
+                dimensions = migrated._conn.execute(
+                    "SELECT decision_category, decision_source, decision_stage, "
+                    "decision_outcome FROM action_decisions ORDER BY id"
+                ).fetchall()
+                self.assertEqual(
+                    [tuple(row) for row in dimensions],
+                    [
+                        ("", "", "", ""),
+                        ("", "", "", ""),
+                    ],
+                )
+                self.assertEqual(records[0].action, "save_memory")
+                self.assertEqual(records[1].action, "proactive_proposal_observe")
                 self.assertEqual(records[1].reason, "候选阶段决定继续观察")
             finally:
                 await migrated.aclose()
@@ -368,13 +430,46 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                     ).fetchall()
                 }
                 day = await migrated.get_day("2026-08-04")
-                self.assertEqual(version, "7")
+                self.assertEqual(version, str(SCHEMA_VERSION))
                 self.assertIn("revision", columns)
                 self.assertEqual(day.outfit, "保留的穿搭")
                 self.assertEqual(day.timeline[0].activity, "保留的日程")
                 self.assertEqual(day.revision, 1)
             finally:
                 await migrated.aclose()
+
+    async def test_existing_v7_action_decision_dimension_columns_stay_compatible(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = f"{tmpdir}/daily_life.db"
+            archive = LifeArchive(db_path)
+            await archive.save_action_decision(
+                ActionDecisionRecord(action="observe", reason="保留旧裁定")
+            )
+            await archive.aclose()
+
+            connection = sqlite3.connect(db_path)
+            connection.execute(
+                "UPDATE action_decisions SET decision_category = 'conversation', "
+                "decision_outcome = 'observe'"
+            )
+            connection.commit()
+            connection.close()
+
+            reopened = LifeArchive(db_path)
+            try:
+                old_records = await reopened.get_action_decision_records(10)
+                self.assertEqual(old_records[0].action, "observe")
+                self.assertEqual(old_records[0].reason, "保留旧裁定")
+                await reopened.save_action_decision(
+                    ActionDecisionRecord(action="reply", reason="新裁定不再细分")
+                )
+                row = reopened._conn.execute(
+                    "SELECT decision_category, decision_source, decision_stage, "
+                    "decision_outcome FROM action_decisions ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                self.assertEqual(tuple(row), ("", "", "", ""))
+            finally:
+                await reopened.aclose()
 
     def test_existing_incomplete_current_schema_is_rejected_without_modification(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1899,8 +1994,6 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(visibility[0].reactivated_from_id, 2)
             self.assertIn("重新关注", visibility[0].reactivation_hint)
             self.assertEqual(decisions[0].action, "save_memory")
-            self.assertEqual(decisions[0].decision_category, "memory")
-            self.assertEqual(decisions[0].decision_outcome, "save_memory")
             self.assertIn("Bob 的近况", decisions[0].inner_monologue)
             self.assertIn("继续观察", decisions[0].reply_strategy)
             self.assertEqual(episodes[0].title, "看展话题被记住")

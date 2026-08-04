@@ -58,94 +58,13 @@ class DailyLocationAuditMixin:
         home_city = str(home_location.get("city") or "").strip()
         home_coordinate = home_location.get("coordinate")
         home_address = str(home_location.get("formatted_address") or "").strip()
-        entries: list[dict[str, Any]] = []
-        search_requests: dict[tuple[str, str], None] = {}
-
-        for index, item in enumerate(timeline):
-            if not isinstance(item, dict):
-                return payload, f"timeline[{index}] 不是有效对象，无法校正地点"
-            place_kind = str(item.get("place_kind") or "").strip().lower()
-            place_scope = str(item.get("place_scope") or "").strip().lower()
-            place = str(item.get("place") or "").strip()
-            place_city = str(item.get("place_city") or "").strip()
-            place_hint = str(item.get("place_hint") or "").strip()
-            travel_mode = str(item.get("travel_mode") or "").strip().lower()
-            if place_kind not in _PLACE_KINDS:
-                if not allow_safe_corrections:
-                    return (
-                        payload,
-                        f"timeline[{index}].place_kind 必须明确填写为受支持的地点类型",
-                    )
-                place_kind = "home" if place == "家" else ("generic" if place else "none")
-                item["place_kind"] = place_kind
-                logger.warning(
-                    f"[日程生成] timeline[{index}].place_kind 无效，地图校正已按"
-                    f"地点内容校正为 {place_kind}。"
-                )
-            if place_scope not in _PLACE_SCOPES:
-                if not allow_safe_corrections:
-                    return (
-                        payload,
-                        f"timeline[{index}].place_scope 必须填写 local 或 travel",
-                    )
-                place_scope = "travel" if place_city else "local"
-                item["place_scope"] = place_scope
-                logger.warning(
-                    f"[日程生成] timeline[{index}].place_scope 无效，地图校正已"
-                    f"校正为 {place_scope}。"
-                )
-            if travel_mode and travel_mode not in _TRAVEL_MODES:
-                if not allow_safe_corrections:
-                    return payload, f"timeline[{index}].travel_mode 不是受支持的交通方式"
-                travel_mode = ""
-                item["travel_mode"] = ""
-                logger.warning(
-                    f"[日程生成] timeline[{index}].travel_mode 无效，地图校正将"
-                    "根据实际路线重新选择。"
-                )
-            if place_scope == "travel" and not place_city:
-                if not allow_safe_corrections:
-                    return payload, f"timeline[{index}] 是跨城安排，但没有填写目标城市"
-                place_scope = "local"
-                item["place_scope"] = "local"
-                logger.warning(
-                    f"[日程生成] timeline[{index}] 未提供跨城目标城市，地图校正"
-                    "按居住城市内活动处理。"
-                )
-            if place_kind in {"poi", "generic"} and not place:
-                if not allow_safe_corrections:
-                    return payload, f"timeline[{index}] 缺少明确的地点名称"
-                place_kind = "none"
-                item["place_kind"] = "none"
-                logger.warning(
-                    f"[日程生成] timeline[{index}] 缺少地点名称，地图校正已改为"
-                    "无地点节点。"
-                )
-            if place_kind == "home" and place_scope == "travel":
-                if not allow_safe_corrections:
-                    return payload, f"timeline[{index}] 不能把居住地标记为跨城地点"
-                place_scope = "local"
-                place_city = ""
-                item["place_scope"] = "local"
-                item["place_city"] = ""
-
-            target_city = place_city if place_scope == "travel" else home_city
-            query = " ".join(value for value in (place, place_hint) if value)
-            entry = {
-                "index": index,
-                "item": item,
-                "kind": place_kind,
-                "scope": place_scope,
-                "place": place,
-                "hint": place_hint,
-                "city": target_city,
-                "mode": travel_mode,
-                "query": query,
-                "coordinate": None,
-            }
-            entries.append(entry)
-            if place_kind == "poi":
-                search_requests[(query, target_city)] = None
+        entries, search_requests, issue = self._normalize_location_entries(
+            timeline,
+            home_city=home_city,
+            allow_safe_corrections=allow_safe_corrections,
+        )
+        if issue:
+            return payload, issue
 
         search_keys = list(search_requests)
         search_values = await asyncio.gather(
@@ -382,6 +301,169 @@ class DailyLocationAuditMixin:
                     }
                 )
 
+        transitions, route_by_index, issue = await self._audit_location_routes(
+            entries,
+            allow_safe_corrections=allow_safe_corrections,
+        )
+        if issue:
+            return payload, issue
+
+        issue = self._synchronize_travel_actions(
+            revised,
+            entries=entries,
+            route_by_index=route_by_index,
+            allow_safe_corrections=allow_safe_corrections,
+        )
+        if issue:
+            return payload, issue
+
+        revised["places"] = canonical_places
+        self._replace_place_references(revised, substituted_places)
+        revised["location_audit"] = {
+            "map_provider": self.map_provider_label,
+            "home_city": home_city,
+            "verified_places": verified_count,
+            "checked_routes": len(transitions),
+            "substituted_places": len(substituted_places),
+            "place_substitutions": substituted_places,
+            "downgraded_places": len(downgraded_places),
+            "downgraded_place_names": downgraded_places,
+        }
+        logger.debug(
+            f"[日程生成] 地图地点校正通过：地点={verified_count}；路线={len(transitions)}；"
+            f"地图替代={len(substituted_places)}；泛化降级={len(downgraded_places)}；"
+            f"服务={self.map_provider_label}"
+        )
+        return revised, ""
+
+    @staticmethod
+    def _normalize_location_entries(
+        timeline: list[Any],
+        *,
+        home_city: str,
+        allow_safe_corrections: bool,
+    ) -> tuple[list[dict[str, Any]], dict[tuple[str, str], None], str]:
+        """归一化时间轴地点字段并整理地图搜索请求。
+
+        Args:
+            timeline: 日程时间轴原始节点。
+            home_city: 居住城市。
+            allow_safe_corrections: 是否允许自动修正安全问题。
+
+        Returns:
+            地点节点、去重后的搜索请求和失败原因。
+        """
+
+        entries: list[dict[str, Any]] = []
+        search_requests: dict[tuple[str, str], None] = {}
+        for index, item in enumerate(timeline):
+            if not isinstance(item, dict):
+                return [], {}, f"timeline[{index}] 不是有效对象，无法校正地点"
+            place_kind = str(item.get("place_kind") or "").strip().lower()
+            place_scope = str(item.get("place_scope") or "").strip().lower()
+            place = str(item.get("place") or "").strip()
+            place_city = str(item.get("place_city") or "").strip()
+            place_hint = str(item.get("place_hint") or "").strip()
+            travel_mode = str(item.get("travel_mode") or "").strip().lower()
+            if place_kind not in _PLACE_KINDS:
+                if not allow_safe_corrections:
+                    return (
+                        [],
+                        {},
+                        f"timeline[{index}].place_kind 必须明确填写为受支持的地点类型",
+                    )
+                place_kind = (
+                    "home" if place == "家" else ("generic" if place else "none")
+                )
+                item["place_kind"] = place_kind
+                logger.warning(
+                    f"[日程生成] timeline[{index}].place_kind 无效，地图校正已按"
+                    f"地点内容校正为 {place_kind}。"
+                )
+            if place_scope not in _PLACE_SCOPES:
+                if not allow_safe_corrections:
+                    return (
+                        [],
+                        {},
+                        f"timeline[{index}].place_scope 必须填写 local 或 travel",
+                    )
+                place_scope = "travel" if place_city else "local"
+                item["place_scope"] = place_scope
+                logger.warning(
+                    f"[日程生成] timeline[{index}].place_scope 无效，地图校正已"
+                    f"校正为 {place_scope}。"
+                )
+            if travel_mode and travel_mode not in _TRAVEL_MODES:
+                if not allow_safe_corrections:
+                    return [], {}, f"timeline[{index}].travel_mode 不是受支持的交通方式"
+                travel_mode = ""
+                item["travel_mode"] = ""
+                logger.warning(
+                    f"[日程生成] timeline[{index}].travel_mode 无效，地图校正将"
+                    "根据实际路线重新选择。"
+                )
+            if place_scope == "travel" and not place_city:
+                if not allow_safe_corrections:
+                    return [], {}, f"timeline[{index}] 是跨城安排，但没有填写目标城市"
+                place_scope = "local"
+                item["place_scope"] = "local"
+                logger.warning(
+                    f"[日程生成] timeline[{index}] 未提供跨城目标城市，地图校正"
+                    "按居住城市内活动处理。"
+                )
+            if place_kind in {"poi", "generic"} and not place:
+                if not allow_safe_corrections:
+                    return [], {}, f"timeline[{index}] 缺少明确的地点名称"
+                place_kind = "none"
+                item["place_kind"] = "none"
+                logger.warning(
+                    f"[日程生成] timeline[{index}] 缺少地点名称，地图校正已改为"
+                    "无地点节点。"
+                )
+            if place_kind == "home" and place_scope == "travel":
+                if not allow_safe_corrections:
+                    return [], {}, f"timeline[{index}] 不能把居住地标记为跨城地点"
+                place_scope = "local"
+                place_city = ""
+                item["place_scope"] = "local"
+                item["place_city"] = ""
+
+            target_city = place_city if place_scope == "travel" else home_city
+            query = " ".join(value for value in (place, place_hint) if value)
+            entries.append(
+                {
+                    "index": index,
+                    "item": item,
+                    "kind": place_kind,
+                    "scope": place_scope,
+                    "place": place,
+                    "hint": place_hint,
+                    "city": target_city,
+                    "mode": travel_mode,
+                    "query": query,
+                    "coordinate": None,
+                }
+            )
+            if place_kind == "poi":
+                search_requests[(query, target_city)] = None
+        return entries, search_requests, ""
+
+    async def _audit_location_routes(
+        self,
+        entries: list[dict[str, Any]],
+        *,
+        allow_safe_corrections: bool,
+    ) -> tuple[list[dict[str, Any]], dict[int, dict[str, Any]], str]:
+        """核验连续地点之间的交通方式、耗时和时间窗。
+
+        Args:
+            entries: 已完成地图地点解析的时间轴节点。
+            allow_safe_corrections: 是否允许自动调整路线和时间轴。
+
+        Returns:
+            地点转换列表、按时间轴索引组织的路线和失败原因。
+        """
+
         unwrapped_minutes: list[int | None] = []
         last_unwrapped = None
         day_offset = 0
@@ -407,11 +489,8 @@ class DailyLocationAuditMixin:
             if entry["kind"] not in {"home", "poi"} or not entry["coordinate"]:
                 continue
             if previous is not None:
-                origin_coordinate = previous["coordinate"]
-                destination_coordinate = entry["coordinate"]
-                lat1, lon1 = origin_coordinate
-                lat2, lon2 = destination_coordinate
-                radius = 6_371_000.0
+                lat1, lon1 = previous["coordinate"]
+                lat2, lon2 = entry["coordinate"]
                 phi1 = math.radians(lat1)
                 phi2 = math.radians(lat2)
                 delta_phi = math.radians(lat2 - lat1)
@@ -421,7 +500,7 @@ class DailyLocationAuditMixin:
                     + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
                 )
                 distance = (
-                    radius
+                    6_371_000.0
                     * 2
                     * math.atan2(math.sqrt(haversine), math.sqrt(1 - haversine))
                 )
@@ -429,7 +508,8 @@ class DailyLocationAuditMixin:
                     if not entry["mode"]:
                         if not allow_safe_corrections:
                             return (
-                                payload,
+                                [],
+                                {},
                                 f"从“{previous['place']}”前往“{entry['place']}”缺少 travel_mode",
                             )
                         entry["mode"] = "walking"
@@ -479,7 +559,8 @@ class DailyLocationAuditMixin:
                 if required_minutes > available_minutes:
                     if not allow_safe_corrections:
                         return (
-                            payload,
+                            [],
+                            {},
                             f"从“{transition['origin']['place']}”到“{transition['destination']['place']}”"
                             f"预计需要约 {required_minutes} 分钟，但时间轴只预留了 {available_minutes} 分钟",
                         )
@@ -528,6 +609,27 @@ class DailyLocationAuditMixin:
                 "destination": transition["destination"]["place"],
                 "mode": mode,
             }
+        return transitions, route_by_index, ""
+
+    def _synchronize_travel_actions(
+        self,
+        revised: dict[str, Any],
+        *,
+        entries: list[dict[str, Any]],
+        route_by_index: dict[int, dict[str, Any]],
+        allow_safe_corrections: bool,
+    ) -> str:
+        """让移动动作与地图核验后的路线保持一致。
+
+        Args:
+            revised: 正在修订的日程结果。
+            entries: 已归一化的时间轴地点节点。
+            route_by_index: 按时间轴索引组织的路线。
+            allow_safe_corrections: 是否允许丢弃或修正无效动作。
+
+        Returns:
+            校验失败原因，为空表示处理完成。
+        """
 
         planned_actions = revised.get("planned_actions")
         discarded_actions: set[int] = set()
@@ -540,7 +642,7 @@ class DailyLocationAuditMixin:
                 timeline_index = int(action.get("timeline_index"))
             except (TypeError, ValueError):
                 if not allow_safe_corrections:
-                    return payload, "move/travel 动作缺少有效的 timeline_index"
+                    return "move/travel 动作缺少有效的 timeline_index"
                 discarded_actions.add(id(action))
                 logger.warning(
                     "[日程生成] move/travel 动作缺少有效时间轴索引，地图校正已"
@@ -600,10 +702,7 @@ class DailyLocationAuditMixin:
                 route_by_index[timeline_index] = route
             if not route:
                 if not allow_safe_corrections:
-                    return (
-                        payload,
-                        f"timeline[{timeline_index}] 的 move/travel 动作没有对应的可验证路线",
-                    )
+                    return f"timeline[{timeline_index}] 的 move/travel 动作没有对应的可验证路线"
                 discarded_actions.add(id(action))
                 logger.warning(
                     f"[日程生成] timeline[{timeline_index}] 的 move/travel 动作"
@@ -613,9 +712,8 @@ class DailyLocationAuditMixin:
             if planned_minutes and route["duration_minutes"] > planned_minutes:
                 if not allow_safe_corrections:
                     return (
-                        payload,
                         f"前往“{route['destination']}”预计需要约 {route['duration_minutes']} 分钟，"
-                        f"但 travel 动作只预留了 {planned_minutes} 分钟",
+                        f"但 travel 动作只预留了 {planned_minutes} 分钟"
                     )
                 logger.warning(
                     f"[日程生成] 前往“{route['destination']}”的动作时长由 "
@@ -641,25 +739,7 @@ class DailyLocationAuditMixin:
                 for action in planned_actions
                 if id(action) not in discarded_actions
             ]
-
-        revised["places"] = canonical_places
-        self._replace_place_references(revised, substituted_places)
-        revised["location_audit"] = {
-            "map_provider": self.map_provider_label,
-            "home_city": home_city,
-            "verified_places": verified_count,
-            "checked_routes": len(transitions),
-            "substituted_places": len(substituted_places),
-            "place_substitutions": substituted_places,
-            "downgraded_places": len(downgraded_places),
-            "downgraded_place_names": downgraded_places,
-        }
-        logger.debug(
-            f"[日程生成] 地图地点校正通过：地点={verified_count}；路线={len(transitions)}；"
-            f"地图替代={len(substituted_places)}；泛化降级={len(downgraded_places)}；"
-            f"服务={self.map_provider_label}"
-        )
-        return revised, ""
+        return ""
 
     async def _select_route_for_window(
         self,
@@ -672,11 +752,7 @@ class DailyLocationAuditMixin:
         """选择能落入时间窗的路线，找不到时返回耗时最短的方案。"""
 
         modes = [requested_mode]
-        modes.extend(
-            mode
-            for mode in _ROUTE_FALLBACK_MODES
-            if mode != requested_mode
-        )
+        modes.extend(mode for mode in _ROUTE_FALLBACK_MODES if mode != requested_mode)
         alternative_modes = modes[1:]
         alternative_values = await asyncio.gather(
             *(
@@ -709,9 +785,7 @@ class DailyLocationAuditMixin:
         measured = [
             (mode, route, self._route_minutes(route)) for mode, route in options
         ]
-        fitting = [
-            option for option in measured if option[2] <= available_minutes
-        ]
+        fitting = [option for option in measured if option[2] <= available_minutes]
         return fitting[0] if fitting else min(measured, key=lambda option: option[2])
 
     @staticmethod
@@ -784,9 +858,7 @@ class DailyLocationAuditMixin:
             or candidate_city == target_city
             or (
                 min(len(candidate_city), len(target_city)) >= 2
-                and (
-                    candidate_city in target_city or target_city in candidate_city
-                )
+                and (candidate_city in target_city or target_city in candidate_city)
             )
         )
 
@@ -833,9 +905,7 @@ class DailyLocationAuditMixin:
             {
                 "place_kind": "generic",
                 "place_scope": entry["scope"],
-                "place_city": entry["city"]
-                if entry["scope"] == "travel"
-                else "",
+                "place_city": entry["city"] if entry["scope"] == "travel" else "",
                 "place_address": "",
                 "place_latitude": None,
                 "place_longitude": None,

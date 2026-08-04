@@ -7,7 +7,7 @@ from ..clock import now as life_now
 from .people import DAILY_PERSON_TEXT_PATHS
 from .tools import (
     analyze_weather,
-    extract_pure_json_object,
+    extract_json_from_text,
     get_time_period_cn,
     parse_schedule_time,
     resolve_daily_hint,
@@ -305,7 +305,7 @@ class DailyEngineMixin:
                         )
                         continue
 
-                    result = extract_pure_json_object(completion_text)
+                    result = extract_json_from_text(completion_text)
                     ok, reason = self._validate_daily_payload(
                         result,
                         context["manual_extra"],

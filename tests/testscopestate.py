@@ -2,9 +2,9 @@ import asyncio
 import types
 import unittest
 
-from support import DailyLifeRuntime
 from core.runtime.locks import operation_lock
 from core.runtime.scopes import RuntimeScopeState
+from support import DailyLifeRuntime
 
 
 class RuntimeScopeStateTest(unittest.IsolatedAsyncioTestCase):
@@ -13,12 +13,13 @@ class RuntimeScopeStateTest(unittest.IsolatedAsyncioTestCase):
         runtime = types.SimpleNamespace()
         runtime._event_session_id = lambda event: event.scope
         runtime._event_group_meta = lambda event: (event.group_id, "")
-        runtime._safe_event_call = (
-            lambda event, name: event.sender_id if name == "get_sender_id" else ""
+        runtime._safe_event_call = lambda event, name: (
+            event.sender_id if name == "get_sender_id" else ""
         )
         runtime._response_gate_last_seen_at = {}
         runtime._structured_messages = {}
         runtime._semantic_segment_revisions = {}
+        runtime._chat_pacing_state = {}
         runtime._proactive_idle_candidates = {}
         runtime._proactive_idle_tasks = {}
         runtime._injection_snapshot_cache = {}
@@ -42,6 +43,7 @@ class RuntimeScopeStateTest(unittest.IsolatedAsyncioTestCase):
         runtime._response_gate_last_seen_at["group-one"] = object()
         runtime._structured_messages[first.scope] = ["message"]
         runtime._semantic_segment_revisions[first.scope] = 1
+        runtime._chat_pacing_state[first.scope] = {"effect": 0.5}
         runtime._proactive_idle_candidates["group-one"] = {"state": "pending"}
         idle_task = asyncio.create_task(asyncio.sleep(60))
         runtime._proactive_idle_tasks["group-one"] = idle_task
@@ -52,6 +54,7 @@ class RuntimeScopeStateTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("group-one", runtime._response_gate_last_seen_at)
         self.assertNotIn(first.scope, runtime._structured_messages)
         self.assertNotIn(first.scope, runtime._semantic_segment_revisions)
+        self.assertNotIn(first.scope, runtime._chat_pacing_state)
         self.assertNotIn("group-one", runtime._proactive_idle_candidates)
         self.assertNotIn("group-one", runtime._proactive_idle_tasks)
         self.assertTrue(idle_task.cancelled())

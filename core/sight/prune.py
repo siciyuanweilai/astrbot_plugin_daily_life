@@ -6,7 +6,7 @@ from pathlib import Path
 
 from astrbot.api import logger
 
-from ..clock import now as life_now
+from ..clock import timestamp as life_timestamp
 from ..runtime.markers import LOG_PREFIX
 from .sample import sight_cache_dir
 
@@ -16,7 +16,7 @@ class SightCleanupMixin:
         cache_dir = sight_cache_dir(getattr(self, "data_path", None))
         settings = getattr(getattr(self, "config", None), "sight", None)
         keep_days = max(1, int(getattr(settings, "sight_cache_keep_days", 7) or 7))
-        cutoff = life_now().timestamp() - keep_days * 86400
+        cutoff = life_timestamp() - keep_days * 86400
         targets = [
             cache_dir / "frames",
             cache_dir / "media",

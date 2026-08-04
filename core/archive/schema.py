@@ -1,6 +1,7 @@
 import sqlite3
 from functools import lru_cache
 
+from .categories import validate_storage_categories
 from .ddl import DROP_SCHEMA_SQL, iter_schema_sql
 from .migrations import (
     BASELINE_SCHEMA_VERSION,
@@ -48,7 +49,9 @@ def _schema_indexes(conn: sqlite3.Connection) -> set[str]:
 
 
 @lru_cache(maxsize=1)
-def _expected_schema_contract() -> tuple[dict[str, frozenset[str]], frozenset[str]]:
+def _expected_schema_contract() -> tuple[
+    dict[str, frozenset[str]], frozenset[str], frozenset[str]
+]:
     expected = sqlite3.connect(":memory:")
     try:
         for script in iter_schema_sql():
@@ -58,13 +61,20 @@ def _expected_schema_contract() -> tuple[dict[str, frozenset[str]], frozenset[st
             for table in _schema_tables(expected)
         }
         indexes = frozenset(_schema_indexes(expected))
-        return tables, indexes
+        storage_tables = frozenset(
+            str(row[1])
+            for row in expected.execute("PRAGMA table_list").fetchall()
+            if str(row[0]) == "main"
+            and str(row[2]) == "table"
+            and not str(row[1]).startswith("sqlite_")
+        )
+        return tables, indexes, storage_tables
     finally:
         expected.close()
 
 
 def validate_schema(conn: sqlite3.Connection) -> None:
-    expected_tables, expected_indexes = _expected_schema_contract()
+    expected_tables, expected_indexes, _ = _expected_schema_contract()
     actual_tables = _schema_tables(conn)
     missing_tables = sorted(set(expected_tables) - actual_tables)
     missing_columns = sorted(
@@ -91,6 +101,14 @@ def validate_schema(conn: sqlite3.Connection) -> None:
     raise ArchiveSchemaError(
         "数据库结构不符合当前定义（" + "；".join(problems) + "）。数据库没有被修改。"
     )
+
+
+def _validate_storage_category_contract() -> None:
+    _, _, storage_tables = _expected_schema_contract()
+    try:
+        validate_storage_categories(set(storage_tables), ignored_tables={"meta"})
+    except ValueError as exc:
+        raise ArchiveSchemaError(str(exc)) from exc
 
 
 def _iter_sql_statements(script: str):
@@ -169,6 +187,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
         )
     except SchemaMigrationError as exc:
         raise ArchiveSchemaError(str(exc)) from exc
+    _validate_storage_category_contract()
     if not _schema_tables(conn):
         _create_fresh_schema(conn)
         return None

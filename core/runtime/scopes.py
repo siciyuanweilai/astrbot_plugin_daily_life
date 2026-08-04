@@ -32,6 +32,7 @@ class RuntimeScopeState:
         "_structured_sequence_counters",
         "_semantic_segment_revisions",
         "_semantic_segment_epochs",
+        "_chat_pacing_state",
         "_proactive_last_reply_at",
         "_proactive_private_last_revisit_at",
         "_proactive_air_state",
@@ -96,8 +97,7 @@ class RuntimeScopeState:
         stale = {
             key
             for key, entry in self._entries.items()
-            if key not in protected
-            and current - entry.touched_at > self.idle_seconds
+            if key not in protected and current - entry.touched_at > self.idle_seconds
         }
         remaining = len(self._entries) - len(stale)
         if remaining > self.max_scopes:
@@ -156,9 +156,7 @@ class RuntimeScopeState:
             return
         aliases = set(entry.aliases)
         shared_aliases = {
-            alias
-            for other in self._entries.values()
-            for alias in other.aliases
+            alias for other in self._entries.values() for alias in other.aliases
         }
         aliases.difference_update(shared_aliases)
         if not aliases:
@@ -173,7 +171,10 @@ class RuntimeScopeState:
                 store.pop(alias, None)
 
         attention = getattr(self.runtime, "_response_gate_attention", None)
-        if isinstance(attention, dict) and str(attention.get("focus_key") or "") in aliases:
+        if (
+            isinstance(attention, dict)
+            and str(attention.get("focus_key") or "") in aliases
+        ):
             attention.clear()
         self._remove_snapshot_aliases(aliases)
 

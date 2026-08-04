@@ -1606,14 +1606,8 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
             status["world"]["action_decisions"][1]["reason"], "先观察，不急着接话"
         )
         self.assertEqual(status["world"]["action_decisions"][0]["sender_name"], "小林")
-        self.assertEqual(
-            status["world"]["action_decisions"][0]["decision_category"],
-            "conversation",
-        )
-        self.assertEqual(
-            status["world"]["action_decisions"][0]["decision_outcome"],
-            "reply",
-        )
+        self.assertNotIn("decision_category", status["world"]["action_decisions"][0])
+        self.assertNotIn("decision_outcome", status["world"]["action_decisions"][0])
 
     async def test_page_status_keeps_group_environment_history(self):
         await self.plugin.runtime.archive.save_group_environment(
@@ -2945,9 +2939,7 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
             f"life_domain_config.{field_key}"
             for field_key in schema["life_domain_config"]["items"]
         ]
-        field_positions = [
-            life_groups.index(f'"{path}"') for path in expected_fields
-        ]
+        field_positions = [life_groups.index(f'"{path}"') for path in expected_fields]
         self.assertEqual(field_positions, sorted(field_positions))
 
         for path in expected_fields:
@@ -3585,35 +3577,26 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         )
         self.assertIn('worldTab: "life_decisions"', app)
 
-    def test_dashboard_action_decisions_have_structured_filters(self):
+    def test_dashboard_action_decisions_use_v109_compact_display(self):
         root = Path(__file__).resolve().parents[1] / "pages" / "dashboard"
         html = (root / "index.html").read_text(encoding="utf-8")
         app = (root / "app.js").read_text(encoding="utf-8")
-        terms = (root / "shared" / "terms.js").read_text(encoding="utf-8")
         style = self._dashboard_style(root)
 
-        for key in (
-            "all",
-            "conversation",
-            "memory",
-            "proactive",
-            "expression",
-            "lifecycle",
-        ):
-            self.assertIn(f'data-decision-filter="{key}"', html)
-        self.assertIn('decisionFilter: "all"', app)
-        self.assertIn("function syncDecisionFilters()", app)
-        self.assertIn("export function decisionMatchesFilter", app)
-        self.assertIn("function decisionRecord", app)
-        self.assertIn("item.decision_category", app)
-        self.assertIn("item.decision_source", app)
-        self.assertIn("item.decision_stage", app)
-        self.assertIn("item.decision_outcome", app)
-        self.assertIn("DECISION_CATEGORY_LABELS", terms)
-        self.assertIn("DECISION_SOURCE_LABELS", terms)
-        self.assertIn('skip: "跳过"', terms)
-        self.assertIn(".memory-panel .decision-filter-tabs", style)
-        self.assertIn("flex-wrap: wrap;", style)
+        self.assertNotIn("data-decision-filter", html)
+        self.assertNotIn("decisionFilter", app)
+        self.assertNotIn("decisionMatchesFilter", app)
+        self.assertNotIn("function decisionRecord", app)
+        self.assertNotIn("item.decision_category", app)
+        self.assertNotIn("item.decision_source", app)
+        self.assertNotIn("item.decision_stage", app)
+        self.assertNotIn("item.decision_outcome", app)
+        self.assertIn('enumLabel(item.action, ACTION_LABELS) || "未定"', app)
+        self.assertIn("enumLabel(item.scene_type, SCENE_TYPE_LABELS)", app)
+        self.assertIn("enumLabel(item.understanding, UNDERSTANDING_LABELS)", app)
+        self.assertIn('relationshipText(item.reason) || "无裁定说明"', app)
+        self.assertNotIn("decision-filter-tabs", style)
+        self.assertNotIn(".decision-record", style)
 
     def test_dashboard_experience_tabs_group_long_records(self):
         import re
@@ -3638,7 +3621,9 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertIn("renderExperience(state.status || {});", app)
         self.assertIn('experienceTab: "relationships"', app)
         self.assertIn("function experienceGroups(status)", app)
-        self.assertIn("const longTermMemories = objectItems(experience.long_term_memories);", app)
+        self.assertIn(
+            "const longTermMemories = objectItems(experience.long_term_memories);", app
+        )
         self.assertIn('sourceTable === "chat_summaries"', app)
         self.assertIn('category === "chat_summary"', app)
         self.assertIn('fromChatSummary ? "来源：会话摘要" : ""', app)
@@ -3703,9 +3688,7 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
             'readableReferenceLabel(sender, "未知发送者")',
             app,
         )
-        self.assertIn(
-            '["原因", relationship.text(item.reason) || "无裁定说明"]', app
-        )
+        self.assertIn('relationshipText(item.reason) || "无裁定说明"', app)
         self.assertIn("今日决策摘要", app)
         self.assertIn("memory_clusters", app)
         self.assertIn("memory_entities", app)
@@ -4585,33 +4568,6 @@ await import("./pages/dashboard/app.js");
         )
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
 
-    def test_dashboard_action_decision_filter_uses_structured_dimensions(self):
-        root = Path(__file__).resolve().parents[1]
-        script = (
-            self._dashboard_dom_mock_script()
-            + """
-const mod = await import("./pages/dashboard/app.js");
-const conversation = { decision_category: "conversation", decision_stage: "" };
-const proactive = { decision_category: "proactive", decision_stage: "proposal" };
-if (!mod.decisionMatchesFilter(conversation, "all")) throw new Error("全部筛选失效");
-if (!mod.decisionMatchesFilter(conversation, "conversation")) throw new Error("会话响应筛选失效");
-if (mod.decisionMatchesFilter(conversation, "memory")) throw new Error("会话裁定误入记忆处理");
-if (!mod.decisionMatchesFilter(proactive, "proactive")) throw new Error("主动互动筛选失效");
-if (!mod.decisionMatchesFilter(proactive, "lifecycle")) throw new Error("流程状态筛选失效");
-if (mod.decisionMatchesFilter(conversation, "lifecycle")) throw new Error("普通会话误入流程状态");
-"""
-        )
-        result = subprocess.run(
-            ["node", "--input-type=module"],
-            cwd=root,
-            input=script,
-            text=True,
-            encoding="utf-8",
-            capture_output=True,
-            check=False,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
-
     def test_dashboard_relationship_scope_uses_profile_display_name(self):
         from pathlib import Path
 
@@ -4872,17 +4828,19 @@ if (!intentPair.current || intentPair.current.time !== "20:50") {
             'self: "当前角色"',
             'shared: "共同"',
             'serving: "份"',
+            'failed: "执行失败"',
+            'skipped: "已跳过"',
         ):
             self.assertIn(expected, terms)
         self.assertIn(
-            "enumLabelOrReadableText(item.meal_type, MEAL_TYPE_LABELS, \"饮食\")",
+            'enumLabelOrReadableText(item.meal_type, MEAL_TYPE_LABELS, "饮食")',
             app,
         )
         self.assertIn(
-            "enumLabelOrReadableText(item.owner, ACTION_OWNER_LABELS, \"未定\")",
+            'enumLabelOrReadableText(item.owner, ACTION_OWNER_LABELS, "未定")',
             app,
         )
-        self.assertNotIn("clean(item.meal_type, \"饮食\")", app)
+        self.assertNotIn('clean(item.meal_type, "饮食")', app)
         self.assertNotIn('`负责人：${clean(item.owner, "未定")}`', app)
 
     def test_current_outfit_display_separates_clothing_and_hair(self):

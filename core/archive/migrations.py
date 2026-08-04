@@ -5,13 +5,12 @@ import json
 import sqlite3
 from collections.abc import Callable, Mapping
 
-from ..decisions import normalize_action_decision_dimensions
 from .tables.cognition import COGNITION_INDEX_SQL, COGNITION_SQL
 from .tables.domains import DOMAIN_INDEX_SQL, DOMAIN_SQL
 
 SCHEMA_VERSION_KEY = "schema_version"
 BASELINE_SCHEMA_VERSION = 1
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 LEGACY_BASELINE_SCHEMA_FINGERPRINT = (
     "9e6243276bf6bd509f6019502e30192310da4197838bd0f7d478f0100f8750a5"
 )
@@ -136,7 +135,7 @@ def _migrate_life_domains(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_action_decision_dimensions(conn: sqlite3.Connection) -> None:
-    """为动作裁定增加稳定的类别、来源、阶段和结果字段。"""
+    """保留历史兼容列，不再对动作裁定分类或回填。"""
 
     columns = {
         str(row[1])
@@ -152,31 +151,6 @@ def _migrate_action_decision_dimensions(conn: sqlite3.Connection) -> None:
         if name not in columns:
             conn.execute(f"ALTER TABLE action_decisions ADD COLUMN {name} {definition}")
 
-    rows = conn.execute(
-        "SELECT id, action, scene_type, decision_category, decision_source, "
-        "decision_stage, decision_outcome FROM action_decisions"
-    ).fetchall()
-    for row in rows:
-        dimensions = normalize_action_decision_dimensions(
-            action=row[1],
-            scene_type=row[2],
-            category=row[3],
-            source=row[4],
-            stage=row[5],
-            outcome=row[6],
-        )
-        conn.execute(
-            "UPDATE action_decisions SET decision_category = ?, decision_source = ?, "
-            "decision_stage = ?, decision_outcome = ? WHERE id = ?",
-            (
-                dimensions["decision_category"],
-                dimensions["decision_source"],
-                dimensions["decision_stage"],
-                dimensions["decision_outcome"],
-                row[0],
-            ),
-        )
-
 
 def _migrate_day_revisions(conn: sqlite3.Connection) -> None:
     """为每日生活聚合增加乐观并发版本号。"""
@@ -188,6 +162,96 @@ def _migrate_day_revisions(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE days ADD COLUMN revision INTEGER NOT NULL DEFAULT 1")
 
 
+def _migrate_activity_session_status_semantics(conn: sqlite3.Connection) -> None:
+    """恢复旧版活动会话中被合并的不同终态。
+
+    Args:
+        conn: 当前正在迁移的 SQLite 连接。
+    """
+
+    rows = conn.execute(
+        """
+        SELECT id, action_id, date, status, metadata_json
+        FROM activity_sessions
+        WHERE source = 'daily_plan' AND status = 'failed'
+        """
+    ).fetchall()
+    for row in rows:
+        session_id = int(row[0])
+        action_id = str(row[1] or "").strip()
+        date_text = str(row[2] or "").strip()
+        corrected_status = ""
+
+        receipt = conn.execute(
+            """
+            SELECT status
+            FROM life_action_receipts
+            WHERE action_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (action_id,),
+        ).fetchone()
+        if receipt is not None:
+            corrected_status = {
+                "confirmed": "completed",
+                "simulated": "completed",
+                "failed": "failed",
+                "cancelled": "cancelled",
+            }.get(str(receipt[0] or "").strip().lower(), "")
+
+        if not corrected_status:
+            outcome = conn.execute(
+                """
+                SELECT status
+                FROM life_action_outcomes
+                WHERE action_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (action_id,),
+            ).fetchone()
+            if outcome is not None:
+                corrected_status = {
+                    "committed": "completed",
+                    "confirmed": "completed",
+                    "simulated": "completed",
+                    "failed": "failed",
+                    "cancelled": "cancelled",
+                    "expired": "expired",
+                }.get(str(outcome[0] or "").strip().lower(), "")
+
+        if not corrected_status:
+            try:
+                metadata = json.loads(str(row[4] or "{}"))
+                timeline_index = int(metadata.get("timeline_index"))
+            except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+                timeline_index = -1
+            if timeline_index >= 0:
+                timeline = conn.execute(
+                    """
+                    SELECT execution_state
+                    FROM timelines
+                    WHERE date = ? AND sort_order = ?
+                    LIMIT 1
+                    """,
+                    (date_text, timeline_index),
+                ).fetchone()
+                if timeline is not None:
+                    corrected_status = {
+                        "completed": "completed",
+                        "expired": "expired",
+                        "skipped": "skipped",
+                        "cancelled": "cancelled",
+                    }.get(str(timeline[0] or "").strip().lower(), "")
+
+        if corrected_status and corrected_status != str(row[3] or "").strip():
+            conn.execute(
+                "UPDATE activity_sessions SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (corrected_status, session_id),
+            )
+
+
 # 键是迁移完成后的目标版本；每个步骤只负责从前一版本升级一次。
 MIGRATIONS: dict[int, MigrationStep] = {
     2: _migrate_timeline_execution_state,
@@ -196,6 +260,7 @@ MIGRATIONS: dict[int, MigrationStep] = {
     5: _migrate_life_domains,
     6: _migrate_action_decision_dimensions,
     7: _migrate_day_revisions,
+    8: _migrate_activity_session_status_semantics,
 }
 
 

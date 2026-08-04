@@ -4,6 +4,10 @@ import datetime
 import hashlib
 from typing import Any
 
+from astrbot.api import logger
+
+from ..markers import LOG_PREFIX
+
 
 class ResponseGateScoreMixin:
     @staticmethod
@@ -165,7 +169,15 @@ class ResponseGateScoreMixin:
             (social, 70, 25, 0.1, -0.12, "社交意愿较高", "社交意愿偏低"),
             (social_battery, 75, 25, 0.06, -0.1, "社交电量较足", "社交电量偏低"),
         )
-        for value, high, low, high_delta, low_delta, high_reason, low_reason in social_bands:
+        for (
+            value,
+            high,
+            low,
+            high_delta,
+            low_delta,
+            high_reason,
+            low_reason,
+        ) in social_bands:
             delta += self._response_gate_band_delta(
                 value,
                 reasons,
@@ -205,7 +217,10 @@ class ResponseGateScoreMixin:
             try:
                 value = getter(profile_id)
                 relationship = await value if hasattr(value, "__await__") else value
-            except Exception:
+            except Exception as exc:
+                logger.debug(
+                    f"{LOG_PREFIX} 回复意愿评分读取关系档案失败：{type(exc).__name__}"
+                )
                 relationship = None
             if relationship is not None:
                 break

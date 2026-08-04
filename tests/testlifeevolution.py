@@ -1,6 +1,7 @@
 import datetime
 import unittest
 from dataclasses import dataclass
+from unittest.mock import patch
 
 from core.life.evolution import LifeEvolutionService
 
@@ -155,6 +156,23 @@ class LifeEvolutionServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["diary_saved"])
         self.assertEqual(archive.reflections, [])
         self.assertEqual(archive.diaries, [])
+
+    async def test_review_uses_life_clock_when_now_is_omitted(self):
+        archive = FakeArchive()
+        service = LifeEvolutionService(archive)
+        expected = datetime.datetime(2026, 8, 1, 23, 45)
+
+        with patch("core.life.evolution.life_now", return_value=expected) as clock:
+            await service.settle_review(
+                {},
+                date="2026-08-01",
+                events=[],
+                decisions=[],
+                feedback=[],
+                reply_effects=[],
+            )
+
+        clock.assert_called_once_with()
 
 
 if __name__ == "__main__":

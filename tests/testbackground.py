@@ -166,6 +166,22 @@ class BackgroundTaskSchedulerTest(unittest.IsolatedAsyncioTestCase):
         await asyncio.gather(*list(scheduler.tasks))
         self.assertEqual(scheduler.snapshot()["video"]["scheduled"], 0)
 
+    async def test_photo_suite_uses_video_task_capacity(self):
+        scheduler = BackgroundTaskScheduler(video_limit=1, video_backlog_limit=0)
+        release = asyncio.Event()
+
+        async def job():
+            await release.wait()
+
+        self.assertTrue(scheduler.schedule(job(), key="photo_suite:test:first"))
+        rejected = job()
+        self.assertFalse(scheduler.schedule(rejected, key="photo_suite:test:second"))
+        self.assertEqual(scheduler.snapshot()["video"]["scheduled"], 1)
+        self.assertEqual(scheduler.snapshot()["normal"]["scheduled"], 0)
+
+        release.set()
+        await asyncio.gather(*list(scheduler.tasks))
+
     async def test_cancel_all_resets_backlog_accounting(self):
         scheduler = BackgroundTaskScheduler(normal_limit=1, normal_backlog_limit=1)
         release = asyncio.Event()

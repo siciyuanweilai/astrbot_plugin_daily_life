@@ -442,6 +442,7 @@ reason 使用自然中文，不写内部枚举。
         if should_abort and should_abort():
             return None
         old_data.outfit_history[target_period] = new_outfit
+        clearable_keys = {"style", "hair_style", "hair", "outfit_reason"}
         for key, value in {
             "outfit_decision": decision,
             "outfit_scene_category": scene_category,
@@ -454,7 +455,7 @@ reason 使用自然中文，不写内部枚举。
             text = str(value or "").strip()
             if text:
                 old_data.meta[key] = text
-            elif key == "hair_style":
+            elif key in clearable_keys:
                 old_data.meta.pop(key, None)
         old_data.outfit = new_outfit
         old_data.time_period = target_period

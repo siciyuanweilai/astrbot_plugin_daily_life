@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import aiohttp
+
 from astrbot.api import logger
 
 from ...config.options import VideoGenerationSettings
@@ -33,7 +34,9 @@ class GrokVideoService:
     ) -> GeneratedVideo:
         prompt = self._validate_prompt(prompt)
         headers = self._headers()
-        timeout = aiohttp.ClientTimeout(total=None)
+        timeout = aiohttp.ClientTimeout(
+            total=max(int(self.settings.request_timeout_seconds), 300)
+        )
         async with aiohttp.ClientSession(timeout=timeout) as session:
             return await self._generate_video_task(
                 session,

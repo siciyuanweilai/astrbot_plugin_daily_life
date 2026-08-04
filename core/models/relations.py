@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..decisions import normalize_action_decision_dimensions
 from .primitive import optional_bool, optional_float, optional_int
 
 
@@ -531,10 +530,6 @@ class ActionDecisionRecord:
     deep_analysis: bool = False
     inner_monologue: str = ""
     reply_strategy: str = ""
-    decision_category: str = ""
-    decision_source: str = ""
-    decision_stage: str = ""
-    decision_outcome: str = ""
     created_at: str = ""
 
     @staticmethod
@@ -547,14 +542,6 @@ class ActionDecisionRecord:
         if not (action or reason):
             return None
         confidence = optional_float(raw.get("confidence"))
-        dimensions = normalize_action_decision_dimensions(
-            action=action,
-            scene_type=raw.get("scene_type"),
-            category=raw.get("decision_category"),
-            source=raw.get("decision_source"),
-            stage=raw.get("decision_stage"),
-            outcome=raw.get("decision_outcome"),
-        )
         return ActionDecisionRecord(
             id=optional_int(raw.get("id")) or 0,
             session_id=str(raw.get("session_id") or "").strip(),
@@ -573,22 +560,10 @@ class ActionDecisionRecord:
             deep_analysis=optional_bool(raw.get("deep_analysis")) or False,
             inner_monologue=str(raw.get("inner_monologue") or "").strip(),
             reply_strategy=str(raw.get("reply_strategy") or "").strip(),
-            decision_category=dimensions["decision_category"],
-            decision_source=dimensions["decision_source"],
-            decision_stage=dimensions["decision_stage"],
-            decision_outcome=dimensions["decision_outcome"],
             created_at=str(raw.get("created_at") or "").strip(),
         )
 
     def as_dict(self) -> dict[str, Any]:
-        dimensions = normalize_action_decision_dimensions(
-            action=self.action,
-            scene_type=self.scene_type,
-            category=self.decision_category,
-            source=self.decision_source,
-            stage=self.decision_stage,
-            outcome=self.decision_outcome,
-        )
         return {
             "id": self.id,
             "session_id": self.session_id,
@@ -607,6 +582,5 @@ class ActionDecisionRecord:
             "deep_analysis": self.deep_analysis,
             "inner_monologue": self.inner_monologue,
             "reply_strategy": self.reply_strategy,
-            **dimensions,
             "created_at": self.created_at,
         }

@@ -4,8 +4,6 @@ import {
   ATMOSPHERE_LABELS,
   BOT_WATCH_STATE_LABELS,
   CURRENT_SLEEP_LABELS,
-  DECISION_CATEGORY_LABELS,
-  DECISION_SOURCE_LABELS,
   EMOJI_SOURCE_LABELS,
   EMOJI_STATUS_LABELS,
   EMOJI_TYPE_LABELS,
@@ -291,7 +289,6 @@ const state = {
   emojiAnimatedPreviewSeq: 0,
   memoryTab: "world",
   worldTab: "life_decisions",
-  decisionFilter: "all",
   experienceTab: "relationships",
   domainTab: "timeline",
   noticeTimer: 0,
@@ -370,8 +367,6 @@ const el = {
   domainTabs: all("[data-domain-tab]"),
   domainList: byId("domainList"),
   worldTabs: all("[data-world-tab]"),
-  decisionFilters: byId("decisionFilters"),
-  decisionFilterButtons: all("[data-decision-filter]"),
   experienceTabs: all("[data-experience-tab]"),
   worldList: byId("worldList"),
   lifecycleList: byId("lifecycleList"),
@@ -1458,94 +1453,20 @@ function lifeObservationRecords(status) {
   return records;
 }
 
-function syncDecisionFilters() {
-  const activeFilter = text(state.decisionFilter || "all").trim() || "all";
-  el.decisionFilterButtons.forEach((button) => {
-    const active = button.dataset.decisionFilter === activeFilter;
-    button.classList.toggle("active", active);
-    button.setAttribute("aria-pressed", active ? "true" : "false");
-  });
-}
-
-export function decisionMatchesFilter(item, filter) {
-  if (filter === "all") return true;
-  if (filter === "lifecycle") return Boolean(text(item?.decision_stage).trim());
-  return text(item?.decision_category).trim() === filter;
-}
-
-function decisionEmptyText(filter) {
-  const labels = {
-    conversation: "暂无会话响应裁定",
-    memory: "暂无记忆处理裁定",
-    proactive: "暂无主动互动裁定",
-    expression: "暂无表达方式裁定",
-    lifecycle: "暂无流程状态记录",
-  };
-  return labels[filter] || "暂无裁定记录";
-}
-
-function decisionRecord(item, relationship) {
-  const record = node("div", "record decision-record");
-  const title = node("div", "record-title");
-  const category = enumLabel(item.decision_category, DECISION_CATEGORY_LABELS);
-  const source = enumLabel(item.decision_source, DECISION_SOURCE_LABELS);
-  const stage = enumLabel(item.decision_stage, DECISION_STAGE_LABELS);
-  const outcome = enumLabel(item.decision_outcome || item.action, ACTION_LABELS);
-  const action = enumLabel(item.action, ACTION_LABELS);
-  const titleText = item.decision_category === "proactive"
-    ? source || category || outcome || action
-    : outcome || action || category || "未定";
-  const sender = relationship.scope(item.sender_name || item.sender_profile_id);
-  const scope = item.group_id
-    ? relationship.scope(item.group_name || item.group_id) || "群聊"
-    : "私聊";
-  const confidence = Number(item.confidence);
-  const meta = [
-    category,
-    source && source !== titleText ? source : "",
-    stage,
-    outcome && outcome !== titleText ? outcome : "",
-    scope,
-    sender || clean(item.sender_name, ""),
-    enumLabelOrReadableText(item.scene_type, SCENE_TYPE_LABELS, ""),
-    enumLabel(item.understanding, UNDERSTANDING_LABELS),
-    item.deep_analysis ? "深析" : "",
-    Number.isFinite(confidence) ? `置信度 ${Math.round(confidence * 100)}%` : "",
-  ].filter(Boolean).join(" · ");
-  title.append(node("span", "", titleText), node("span", "muted", meta));
-  record.append(
-    title,
-    recordLines([
-      ["原因", relationship.text(item.reason) || "无裁定说明"],
-      item.topic_owner ? ["话题归属", relationship.text(item.topic_owner)] : "",
-      item.created_at || item.date ? ["时间", clean(item.created_at || item.date)] : "",
-    ])
-  );
-  return record;
-}
-
 function renderWorld(status) {
   const activeTab = text(state.worldTab || "relationships").trim() || "relationships";
   const relationship = relationshipTextResolver(status);
   const relationshipText = relationship.text;
   syncTabSelection(el.worldTabs, "worldTab", activeTab, el.worldList);
-  const showingDecisions = activeTab === "action_decisions";
-  if (el.decisionFilters) el.decisionFilters.hidden = !showingDecisions;
-  if (showingDecisions) syncDecisionFilters();
   if (activeTab === "life_decisions") {
     const records = lifeObservationRecords(status);
     el.worldList.replaceChildren(...(records.length ? records : [empty(worldEmptyText(activeTab))]));
     return;
   }
   const world = status.world || {};
-  const rawItems = Array.isArray(world[activeTab]) ? world[activeTab] : [];
-  const items = showingDecisions
-    ? rawItems.filter((item) => decisionMatchesFilter(item, state.decisionFilter))
-    : rawItems;
+  const items = Array.isArray(world[activeTab]) ? world[activeTab] : [];
   if (!items.length) {
-    el.worldList.replaceChildren(
-      empty(showingDecisions ? decisionEmptyText(state.decisionFilter) : worldEmptyText(activeTab))
-    );
+    el.worldList.replaceChildren(empty(worldEmptyText(activeTab)));
     return;
   }
 
@@ -1601,7 +1522,15 @@ function renderWorld(status) {
         const reactivation = relationshipText(item.reactivation_hint);
         record.append(title, node("div", "record-body", `${relationshipText(item.reason) || "无留意说明"}${reactivation ? ` · 再激活：${reactivation}` : ""}`));
       } else if (activeTab === "action_decisions") {
-        return decisionRecord(item, relationship);
+        const sender = relationship.scope(item.sender_name || item.sender_profile_id);
+        const meta = [
+          sender || clean(item.sender_name, ""),
+          enumLabel(item.scene_type, SCENE_TYPE_LABELS),
+          enumLabel(item.understanding, UNDERSTANDING_LABELS),
+          item.deep_analysis ? "深析" : "",
+        ].filter(Boolean).join(" · ");
+        title.append(node("span", "", enumLabel(item.action, ACTION_LABELS) || "未定"), node("span", "muted", meta || `${Math.round(Number(item.confidence || 0) * 100)}%`));
+        record.append(title, node("div", "record-body", relationshipText(item.reason) || "无裁定说明"));
       } else if (activeTab === "places") {
         title.append(node("span", "", clean(item.name)), node("span", "muted", `${item.visits || 0} 次`));
         record.append(title, node("div", "record-body", relationshipText(item.hint) || enumLabelOrReadableText(item.type, PLACE_TYPE_LABELS, "其他地点")));
@@ -3033,12 +2962,6 @@ function bindEvents() {
   bindRovingTabs(el.worldTabs, (tab) => {
     state.worldTab = tab.dataset.worldTab;
     renderWorld(state.status || {});
-  });
-  el.decisionFilterButtons.forEach((button) => {
-    button.addEventListener("click", () => {
-      state.decisionFilter = button.dataset.decisionFilter || "all";
-      renderWorld(state.status || {});
-    });
   });
   bindRovingTabs(el.experienceTabs, (tab) => {
     state.experienceTab = tab.dataset.experienceTab;

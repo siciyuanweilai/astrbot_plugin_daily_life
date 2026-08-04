@@ -156,11 +156,13 @@ class SpineBootMixin:
         if callable(get_insts):
             try:
                 return list(get_insts() or [])
-            except Exception:
+            except Exception as exc:
+                logger.debug(f"{LOG_PREFIX} 读取平台实例失败：{type(exc).__name__}")
                 return []
         try:
             return list(getattr(manager, "platform_insts", []) or [])
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"{LOG_PREFIX} 读取平台实例列表失败：{type(exc).__name__}")
             return []
 
     @staticmethod
@@ -183,8 +185,11 @@ class SpineBootMixin:
         if callable(get_client):
             try:
                 return get_client()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(
+                    f"{LOG_PREFIX} 获取平台客户端失败，尝试备用属性："
+                    f"{type(exc).__name__}"
+                )
         return getattr(instance, "bot", None)
 
     @classmethod

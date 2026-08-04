@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from ..clock import today as life_today
+
 
 class DomainArchiveMixin:
     """持久化活动、饮食、家务、运动和出行记录。"""
@@ -724,6 +726,7 @@ class DomainArchiveMixin:
                 ).fetchall()
                 if self._text(row["action_id"])
             }
+            current_date = life_today().isoformat()
             superseded_action_ids = {
                 self._text(row["action_id"])
                 for row in self._conn.execute(
@@ -751,13 +754,22 @@ class DomainArchiveMixin:
             ) -> bool:
                 action_id = self._text(item.get(action_key))
                 date_text = self._text(date_value)[:10]
-                if not action_id or not date_text or date_text not in planned_action_ids:
+                if (
+                    not action_id
+                    or not date_text
+                    or date_text not in planned_action_ids
+                ):
                     return True
                 if (
                     action_id in planned_action_ids[date_text]
                     or action_id in trusted_action_ids
                 ):
-                    return True
+                    return not (
+                        date_text < current_date
+                        and action_id not in trusted_action_ids
+                        and self._text(item.get("status"))
+                        in {"expired", "skipped", "failed"}
+                    )
                 return self._text(item.get("source")) not in {
                     "daily_plan",
                     "life_action_simulation",

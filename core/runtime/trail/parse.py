@@ -4,8 +4,11 @@ import asyncio
 import json
 from typing import Any
 
+from astrbot.api import logger
+
 from ...media.base import image_data_url
 from ...paths import expand_path, path_is_file
+from ..markers import LOG_PREFIX
 
 
 class HistoryParseMixin:
@@ -272,8 +275,11 @@ class HistoryParseMixin:
                     converted_text = str(converted or "").strip()
                     if converted_text:
                         values["path"] = converted_text
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug(
+                        f"{LOG_PREFIX} 历史媒体路径转换失败，继续使用原始引用："
+                        f"{type(exc).__name__}"
+                    )
         ref = (
             values.get("path")
             or values.get("file")

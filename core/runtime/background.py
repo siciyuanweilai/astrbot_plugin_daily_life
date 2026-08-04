@@ -244,7 +244,9 @@ class BackgroundTaskScheduler:
     @staticmethod
     def _category_for_key(key: str) -> str:
         value = str(key or "")
-        if value.startswith(("sight:", "bili:", "life_video:", "life_suite:")):
+        if value.startswith(
+            ("sight:", "bili:", "life_video:", "life_suite:", "photo_suite:")
+        ):
             return "video"
         if value.startswith(
             ("visual_context:", "emoji_capture:", "emoji_asset_vision:")

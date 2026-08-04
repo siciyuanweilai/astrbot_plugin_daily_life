@@ -5,7 +5,6 @@ from typing import Any
 
 from astrbot.api import logger
 
-from ...clock import now as life_now
 from ..markers import LOG_PREFIX
 
 
@@ -30,7 +29,7 @@ class SnapshotPackMixin:
             group_id, _ = self._event_group_meta(event)
             experience_scope = group_id or session_id
 
-        now_ts = life_now().timestamp()
+        now_ts = time.time()
         cache_key = f"{max_summaries}:{experience_scope}"
         if use_cache:
             cached = cache.get(cache_key)

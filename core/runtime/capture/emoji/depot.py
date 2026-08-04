@@ -8,7 +8,7 @@ from urllib.parse import unquote, urlparse
 
 from astrbot.api import logger
 
-from ....clock import now as life_now
+from ....clock import timestamp as life_timestamp
 from ....security import is_public_http_url_async
 from ...markers import LOG_PREFIX
 
@@ -59,7 +59,7 @@ class EmojiCacheMixin:
                 referenced_paths.add(resolved)
 
         deleted = 0
-        now_ts = life_now().timestamp()
+        now_ts = life_timestamp()
         paths = await asyncio.to_thread(lambda: list(cache_dir.iterdir()))
         for path in paths:
             if (
@@ -124,9 +124,7 @@ class EmojiCacheMixin:
 
     @staticmethod
     def _emoji_asset_temporary_path(target_path: Path) -> Path:
-        return target_path.with_name(
-            f".{target_path.name}.{uuid.uuid4().hex}.tmp"
-        )
+        return target_path.with_name(f".{target_path.name}.{uuid.uuid4().hex}.tmp")
 
     @staticmethod
     async def _remove_emoji_asset_temporary_path(path: Path | None) -> None:
@@ -204,7 +202,9 @@ class EmojiCacheMixin:
 
             if not await is_public_http_url_async(url):
                 if log_failure:
-                    logger.debug(f"{LOG_PREFIX} 表情素材联网缓存跳过：地址不是公网 HTTP(S)")
+                    logger.debug(
+                        f"{LOG_PREFIX} 表情素材联网缓存跳过：地址不是公网 HTTP(S)"
+                    )
                 return None
             timeout = aiohttp.ClientTimeout(total=8)
             async with aiohttp.ClientSession(timeout=timeout) as session:

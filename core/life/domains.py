@@ -254,7 +254,7 @@ class LifeDomainService(DailyLocationAuditMixin):
                 "completed": "completed",
                 "expired": "expired",
                 "cancelled": "cancelled",
-                "skipped": "failed",
+                "skipped": "skipped",
             }.get(item.execution_state, "planned")
             await saver(
                 {

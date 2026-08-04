@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import math
 from typing import Any
 
-import aiohttp
-
 from astrbot.api import logger
+
+from .map_common import non_negative_number
+from .map_http import request_map_json
 
 _AMAP_BASE_URL = "https://restapi.amap.com"
 _ROUTE_PATHS = {
@@ -112,9 +112,7 @@ class AmapWebServiceClient:
             if destination_city_value == origin_city_value:
                 city2 = city1
             else:
-                city2 = await self._resolve_transit_city_adcode(
-                    destination_city_value
-                )
+                city2 = await self._resolve_transit_city_adcode(destination_city_value)
             if not city1 or not city2:
                 logger.debug(
                     "[日常生活] 高德公交路线城市解析失败："
@@ -285,22 +283,13 @@ class AmapWebServiceClient:
     async def _request_json(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
         request_params = {**params, "key": self.api_key, "output": "JSON"}
         endpoint = _ENDPOINT_LABELS.get(path, path)
-        try:
-            timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(
-                    f"{_AMAP_BASE_URL}{path}", params=request_params
-                ) as response:
-                    response.raise_for_status()
-                    payload = await response.json(content_type=None)
-        except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
-            logger.debug(
-                f"[日常生活] 高德地图请求失败：接口={endpoint}；"
-                f"异常={type(exc).__name__}"
-            )
-            return {}
-        if not isinstance(payload, dict):
-            return {}
+        payload = await request_map_json(
+            f"{_AMAP_BASE_URL}{path}",
+            request_params,
+            timeout_seconds=self.timeout_seconds,
+            provider_label=self.provider_label,
+            endpoint_label=endpoint,
+        )
         if str(payload.get("status") or "") != "1":
             info = str(payload.get("info") or "未知错误").strip()
             infocode = str(payload.get("infocode") or "").strip()
@@ -384,34 +373,24 @@ class AmapWebServiceClient:
             "city": cls._text_value(value.get("cityname")),
             "district": cls._text_value(value.get("adname")),
             "adcode": cls._text_value(value.get("adcode")),
-            "distance_meters": cls._non_negative_number(value.get("distance")),
+            "distance_meters": non_negative_number(value.get("distance")),
             "telephone": cls._text_value(business.get("tel") or value.get("tel")),
             "opening_hours": cls._text_value(
                 business.get("opentime_week") or business.get("opentime_today")
             ),
-            "rating": cls._non_negative_number(business.get("rating")),
-            "average_cost": cls._non_negative_number(business.get("cost")),
+            "rating": non_negative_number(business.get("rating")),
+            "average_cost": non_negative_number(business.get("cost")),
             "photos": photo_urls,
             "coordinate": cls._parse_location(value.get("location")),
         }
 
-    @staticmethod
-    def _non_negative_number(value: Any) -> float | None:
-        try:
-            number = float(value)
-        except (TypeError, ValueError):
-            return None
-        return number if math.isfinite(number) and number >= 0 else None
-
     @classmethod
     def _route_metric(cls, route: dict[str, Any], name: str) -> float | None:
-        direct = cls._non_negative_number(route.get(name))
+        direct = non_negative_number(route.get(name))
         if direct is not None:
             return direct
         cost = route.get("cost")
-        return (
-            cls._non_negative_number(cost.get(name)) if isinstance(cost, dict) else None
-        )
+        return non_negative_number(cost.get(name)) if isinstance(cost, dict) else None
 
 
 __all__ = ["AmapWebServiceClient"]

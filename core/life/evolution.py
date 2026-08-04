@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime
 from typing import Any
 
+from ..clock import now as life_now
 from ..models.cognition import AffectiveStateRecord, ReflectionRecord
 from .affect import AffectEngine, AffectiveSnapshot
 
@@ -178,9 +179,7 @@ class LifeEvolutionService:
                 (item for item in states if str(item.label) == "关系亲近度"), None
             )
             delta = (
-                update.familiarity_delta
-                + update.trust_delta
-                + update.affinity_delta
+                update.familiarity_delta + update.trust_delta + update.affinity_delta
             ) / 3.0
             signal = {
                 "layer": "relationship",
@@ -191,9 +190,9 @@ class LifeEvolutionService:
                 "evidence_ids": update.evidence_ids,
                 "source": "daily_review",
             }
-            normalized = self.affect.signals_from_payload(
-                {"affect_updates": [signal]}
-            )[0]
+            normalized = self.affect.signals_from_payload({"affect_updates": [signal]})[
+                0
+            ]
             settled = self.affect.apply(
                 self._snapshot(current) if current else None,
                 normalized,
@@ -276,7 +275,12 @@ class LifeEvolutionService:
         ]
         summary = " ".join(str(raw.get("summary") or "").split())[:1000]
         saver = getattr(self.archive, "save_reflection", None)
-        if not gate.should_reflect or not summary or not evidence or not callable(saver):
+        if (
+            not gate.should_reflect
+            or not summary
+            or not evidence
+            or not callable(saver)
+        ):
             return False, gate.importance, gate.reason_code
         getter = getattr(self.archive, "get_reflections", None)
         if callable(getter):
@@ -289,11 +293,13 @@ class LifeEvolutionService:
                     ).replace(tzinfo=None)
                 except ValueError:
                     last_time = None
-                if last_time and now.replace(tzinfo=None) < last_time + datetime.timedelta(
-                    hours=12
-                ):
+                if last_time and now.replace(
+                    tzinfo=None
+                ) < last_time + datetime.timedelta(hours=12):
                     return False, gate.importance, "reflection_cooldown"
-        assertion = raw.get("assertion") if isinstance(raw.get("assertion"), dict) else {}
+        assertion = (
+            raw.get("assertion") if isinstance(raw.get("assertion"), dict) else {}
+        )
         await saver(
             ReflectionRecord(
                 scope=scope,
@@ -301,9 +307,9 @@ class LifeEvolutionService:
                 summary=summary,
                 importance=gate.importance / 100.0,
                 evidence_ids=evidence,
-                assertion_subject=" ".join(
-                    str(assertion.get("subject") or "").split()
-                )[:180],
+                assertion_subject=" ".join(str(assertion.get("subject") or "").split())[
+                    :180
+                ],
                 assertion_predicate=" ".join(
                     str(assertion.get("predicate") or "").split()
                 )[:120],
@@ -343,7 +349,7 @@ class LifeEvolutionService:
             各演化通道的实际保存数量和反思门控结果。
         """
 
-        now = now or datetime.datetime.now()
+        now = now or life_now()
         scope = "global"
         allowed = self.evidence_ids(
             events=events,

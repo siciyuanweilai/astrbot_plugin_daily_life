@@ -324,18 +324,6 @@
   width: 100%;
 }
 
-.memory-panel .decision-filter-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-start;
-  width: 100%;
-  overflow: visible;
-}
-
-.decision-filter-tabs .tab {
-  flex: 0 0 auto;
-}
-
 .memory-page .record-body,
 .memory-page .record-lines {
   max-height: none;
