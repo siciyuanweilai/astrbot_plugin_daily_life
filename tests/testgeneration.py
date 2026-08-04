@@ -136,6 +136,23 @@ class DailyGenerationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.day.date, "2026-07-14")
         self.assertEqual(len(runtime.composer.generate_calls), 1)
 
+    async def test_manual_reset_marks_existing_day_as_replacement(self):
+        runtime = GenerationRuntime()
+        runtime.archive.day = types.SimpleNamespace(
+            date="2026-07-14",
+            outfit="米白衬衫和浅蓝短裙",
+            timeline=[types.SimpleNamespace(time="08:00", activity="原有日程")],
+        )
+
+        result = await runtime.run_daily_generation(
+            date=datetime.datetime(2026, 7, 14, 16, 30),
+            source="dashboard_reset",
+            force=True,
+        )
+
+        self.assertEqual(result.day.date, "2026-07-14")
+        self.assertTrue(runtime.composer.generate_calls[0][2]["regenerate_existing"])
+
     async def test_same_date_manual_reset_has_one_search_and_one_writer(self):
         runtime = GenerationRuntime()
         date = datetime.datetime(2026, 7, 14, 16, 30)

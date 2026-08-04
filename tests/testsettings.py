@@ -1332,9 +1332,9 @@ class LifeSettingsTest(unittest.TestCase):
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertIn("version: 1.1.1", metadata)
-        self.assertIn("version-1.1.1", readme)
-        self.assertIn("v1.1.1 · 2026-08-04", changelog)
+        self.assertIn("version: 1.1.2", metadata)
+        self.assertIn("version-1.1.2", readme)
+        self.assertIn("v1.1.2 · 2026-08-04", changelog)
         self.assertIn("v1.0.4 · 2026-08-01", changelog)
         self.assertLess(changelog.index("v1.0.4"), changelog.index("v1.0.3"))
 

@@ -145,6 +145,7 @@ class BaiduMapWebServiceClient:
         query: str,
         *,
         center: tuple[float, float] | None = None,
+        city_hint: str = "",
         category: str = "",
         radius_meters: int = 3000,
         limit: int = 5,
@@ -172,7 +173,12 @@ class BaiduMapWebServiceClient:
                 }
             )
         else:
-            params.update({"region": self.city or "全国", "city_limit": "true"})
+            params.update(
+                {
+                    "region": str(city_hint or self.city).strip() or "全国",
+                    "city_limit": "true",
+                }
+            )
         payload = await self._request_json("/place/v2/search", params)
         results = payload.get("results") if isinstance(payload, dict) else None
         if not isinstance(results, list):
@@ -189,6 +195,7 @@ class BaiduMapWebServiceClient:
         query: str,
         *,
         center: tuple[float, float] | None = None,
+        city_hint: str = "",
         limit: int = 5,
     ) -> list[dict[str, Any]]:
         del center
@@ -199,7 +206,7 @@ class BaiduMapWebServiceClient:
             "/place/v2/suggestion",
             {
                 "query": query,
-                "region": self.city or "全国",
+                "region": str(city_hint or self.city).strip() or "全国",
                 "city_limit": "true",
             },
         )

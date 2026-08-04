@@ -628,6 +628,7 @@ def format_timeline_to_text(timeline: list) -> str:
     if not timeline:
         return "暂无详细日程"
     lines = []
+    previous_place = ""
     for item in timeline:
         time_str = _timeline_field(item, "time")
         act = _timeline_field(item, "activity")
@@ -636,4 +637,61 @@ def format_timeline_to_text(timeline: list) -> str:
         execution = _timeline_field(item, "execution_state", "planned")
         execution_str = f" [执行:{execution}]" if execution else ""
         lines.append(f"{time_str} - {act}{status_str}{execution_str}")
+        travel_text = _format_timeline_travel(item, previous_place=previous_place)
+        if travel_text:
+            lines.append(f"  出行：{travel_text}")
+        place = _timeline_field(item, "place")
+        if place:
+            previous_place = place
     return "\n".join(lines)
+
+
+def _format_timeline_travel(item: Any, *, previous_place: str = "") -> str:
+    mode = _timeline_field(item, "travel_mode")
+    minutes = _non_negative_timeline_number(item, "travel_minutes")
+    distance = _non_negative_timeline_number(item, "travel_distance_meters")
+    if not mode and minutes <= 0 and distance <= 0:
+        return ""
+
+    origin = _timeline_field(item, "travel_origin") or previous_place
+    destination = _timeline_field(item, "place")
+    parts = []
+    if origin and destination and origin != destination:
+        parts.append(f"从{origin}前往{destination}")
+
+    mode_label = {
+        "walking": "步行",
+        "cycling": "骑行",
+        "driving": "驾车",
+        "transit": "公共交通",
+    }.get(mode, mode or "出行")
+    parts.append(f"{mode_label}约 {int(minutes)} 分钟" if minutes > 0 else mode_label)
+    if distance > 0:
+        parts.append(_format_travel_distance(distance))
+
+    provider = _timeline_field(item, "travel_provider")
+    provider_label = {
+        "amap": "高德地图",
+        "tencent": "腾讯地图",
+        "baidu": "百度地图",
+        "coordinate_estimate": "坐标估算",
+        "default_estimate": "默认估算",
+    }.get(provider, "")
+    if provider_label:
+        parts.append(provider_label)
+    return " · ".join(parts)
+
+
+def _non_negative_timeline_number(item: Any, field: str) -> float:
+    try:
+        return max(0.0, float(_timeline_field(item, field, 0) or 0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _format_travel_distance(distance_meters: float) -> str:
+    if distance_meters < 1000:
+        return f"{int(round(distance_meters))} 米"
+    kilometers = distance_meters / 1000
+    digits = 0 if kilometers >= 10 else 1
+    return f"{kilometers:.{digits}f} 公里"

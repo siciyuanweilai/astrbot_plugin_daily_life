@@ -9,7 +9,9 @@ from astrbot.api import logger
 
 from ..config.options import LifeDomainSettings
 from ..models import DayRecord, LifeActionIntent, LifeActionOutcome
+from .location_audit import DailyLocationAuditMixin
 from .maps import create_map_client, map_provider_label, normalize_map_provider
+from .tools import get_week_id
 
 INTERNAL_SIMULATED_ACTION_TYPES = frozenset(
     {
@@ -51,7 +53,7 @@ _ROUTE_SOURCE_LABELS = {
 }
 
 
-class LifeDomainService:
+class LifeDomainService(DailyLocationAuditMixin):
     """协调生活领域记录、动作副作用和上下文预算。"""
 
     def __init__(
@@ -68,6 +70,8 @@ class LifeDomainService:
         self._home_location: dict[str, Any] | None = None
         self._home_location_retry_after = 0.0
         self._home_location_lock = asyncio.Lock()
+        self._residence_boundary_date: str | None = None
+        self._detected_residence_change_at = ""
         self.map_provider = normalize_map_provider(settings.map_provider)
         self.map_provider_label = map_provider_label(self.map_provider)
         self._map = create_map_client(settings)
@@ -122,6 +126,21 @@ class LifeDomainService:
                         )
                         break
 
+            if (
+                previous_coordinate is not None
+                and coordinate is not None
+                and self._haversine(previous_coordinate, coordinate) > 10_000
+            ):
+                changed_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                resetter = getattr(self.archive, "reset_residence_context", None)
+                if callable(resetter):
+                    await resetter(
+                        changed_at=changed_at,
+                        week_id=get_week_id(datetime.datetime.now()),
+                    )
+                self._residence_boundary_date = changed_at[:10]
+                self._detected_residence_change_at = changed_at
+
             self.home_city = city
             self._map.city = city
             await self._remember_tool_place(
@@ -129,13 +148,6 @@ class LifeDomainService:
             )
             self._coordinates[home_address] = coordinate
             self._place_cities[home_address] = self._place_cities.get("家", city)
-            if (
-                previous_coordinate is not None
-                and self._haversine(previous_coordinate, coordinate) > 10
-            ):
-                invalidator = getattr(self.archive, "delete_routes_for_place", None)
-                if callable(invalidator):
-                    await invalidator("家")
             self._home_location = {
                 "city": city,
                 "coordinate": coordinate,
@@ -145,6 +157,43 @@ class LifeDomainService:
             }
             logger.debug(f"[日常生活] 已从居住地解析天气城市：{city}")
             return self._home_location
+
+    def set_residence_boundary(self, changed_at: str) -> None:
+        """同步配置切换阶段已经写入的居住地边界。"""
+
+        value = str(changed_at or "").strip()
+        self._residence_boundary_date = value[:10] if value else ""
+
+    def consume_detected_residence_change(self) -> str:
+        """取出地图层检测到的跨居住地变化信号。"""
+
+        changed_at = self._detected_residence_change_at
+        self._detected_residence_change_at = ""
+        return changed_at
+
+    def invalidate_home_location_cache(self) -> None:
+        """清除居住地解析缓存，供切换后的统一刷新重新解析。"""
+
+        home_address = str(self.settings.home_address or "").strip()
+        self.home_city = ""
+        self._home_location = None
+        self._home_location_retry_after = 0.0
+        self._geocode_misses.discard(home_address)
+        self._coordinates.pop(home_address, None)
+        self._coordinates.pop("家", None)
+        self._place_cities.pop(home_address, None)
+        self._place_cities.pop("家", None)
+        self._map.city = ""
+
+    async def residence_boundary_date(self) -> str:
+        """返回当前居住地上下文允许读取历史记录的最早日期。"""
+
+        if self._residence_boundary_date is not None:
+            return self._residence_boundary_date
+        getter = getattr(self.archive, "get_residence_context_boundary", None)
+        value = await getter() if callable(getter) else ""
+        self._residence_boundary_date = str(value or "").strip()[:10]
+        return self._residence_boundary_date
 
     async def resolve_weather_city(self) -> str:
         """返回居住地解析出的天气城市，不使用其他来源回退。"""
@@ -175,17 +224,22 @@ class LifeDomainService:
             values = json.loads(raw) if raw else []
         except (TypeError, ValueError, json.JSONDecodeError):
             values = []
-        saver = getattr(self.archive, "upsert_activity_session", None)
-        if not callable(saver):
-            return
+        actions: list[LifeActionIntent] = []
         for value in values if isinstance(values, list) else []:
             action = LifeActionIntent.from_value(value)
             if (
-                not action.action_id
-                or action.timeline_index is None
-                or not 0 <= action.timeline_index < len(day.timeline)
+                action.action_id
+                and action.timeline_index is not None
+                and 0 <= action.timeline_index < len(day.timeline)
             ):
-                continue
+                actions.append(action)
+        reconciler = getattr(self.archive, "reconcile_activity_sessions", None)
+        if callable(reconciler):
+            await reconciler(day.date, {action.action_id for action in actions})
+        saver = getattr(self.archive, "upsert_activity_session", None)
+        if not callable(saver):
+            return
+        for action in actions:
             item = day.timeline[action.timeline_index]
             started_at = self._timeline_datetime(day.date, item.time)
             duration_seconds = max(0, action.duration_minutes) * 60
@@ -1112,6 +1166,10 @@ class LifeDomainService:
             return ""
         snapshot = await self.snapshot(limit=8)
         blocks: list[str] = []
+        if self.home_city:
+            blocks.append(
+                f"当前居住城市：{self.home_city}（当前地点和天气判断以此为准）"
+            )
         action_items = [
             item
             for item in snapshot["conversation_actions"]

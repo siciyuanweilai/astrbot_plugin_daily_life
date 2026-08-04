@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import math
 from typing import Any
 
@@ -14,6 +15,18 @@ _ROUTE_PATHS = {
     "driving": "/v5/direction/driving",
     "transit": "/v5/direction/transit/integrated",
 }
+_ENDPOINT_LABELS = {
+    "/v3/geocode/geo": "地理编码",
+    "/v5/direction/walking": "步行路线",
+    "/v5/direction/bicycling": "骑行路线",
+    "/v5/direction/driving": "驾车路线",
+    "/v5/direction/transit/integrated": "公交路线",
+    "/v5/place/around": "周边地点搜索",
+    "/v5/place/text": "关键词地点搜索",
+    "/v3/assistant/inputtips": "地点输入提示",
+    "/v5/place/detail": "地点详情",
+    "/v3/traffic/status/circle": "实时交通态势",
+}
 
 
 class AmapWebServiceClient:
@@ -26,6 +39,8 @@ class AmapWebServiceClient:
         self.api_key = str(api_key or "").strip()
         self.city = str(city or "").strip()
         self.timeout_seconds = max(1, int(timeout_seconds))
+        self._transit_city_adcodes: dict[str, str] = {}
+        self._transit_city_adcode_lock = asyncio.Lock()
 
     @property
     def available(self) -> bool:
@@ -89,9 +104,23 @@ class AmapWebServiceClient:
             "show_fields": "cost",
         }
         if normalized_mode == "transit":
-            city1 = str(origin_city or self.city).strip()
-            city2 = str(destination_city or self.city).strip()
+            origin_city_value = str(origin_city or self.city).strip()
+            destination_city_value = str(destination_city or self.city).strip()
+            if not origin_city_value or not destination_city_value:
+                return None
+            city1 = await self._resolve_transit_city_adcode(origin_city_value)
+            if destination_city_value == origin_city_value:
+                city2 = city1
+            else:
+                city2 = await self._resolve_transit_city_adcode(
+                    destination_city_value
+                )
             if not city1 or not city2:
+                logger.debug(
+                    "[日常生活] 高德公交路线城市解析失败："
+                    f"起点城市={origin_city_value or '未提供'}；"
+                    f"终点城市={destination_city_value or '未提供'}"
+                )
                 return None
             params.update({"city1": city1, "city2": city2})
         payload = await self._request_json(_ROUTE_PATHS[normalized_mode], params)
@@ -118,6 +147,7 @@ class AmapWebServiceClient:
         query: str,
         *,
         center: tuple[float, float] | None = None,
+        city_hint: str = "",
         category: str = "",
         radius_meters: int = 3000,
         limit: int = 5,
@@ -148,8 +178,9 @@ class AmapWebServiceClient:
             )
         else:
             path = "/v5/place/text"
-            if self.city:
-                params.update({"region": self.city, "city_limit": "true"})
+            search_city = str(city_hint or self.city).strip()
+            if search_city:
+                params.update({"region": search_city, "city_limit": "true"})
         payload = await self._request_json(path, params)
         pois = payload.get("pois") if isinstance(payload, dict) else None
         if not isinstance(pois, list):
@@ -166,6 +197,7 @@ class AmapWebServiceClient:
         query: str,
         *,
         center: tuple[float, float] | None = None,
+        city_hint: str = "",
         limit: int = 5,
     ) -> list[dict[str, Any]]:
         """提供同名地点消歧候选。"""
@@ -174,8 +206,9 @@ class AmapWebServiceClient:
         if not self.available or not query:
             return []
         params: dict[str, Any] = {"keywords": query, "datatype": "all"}
-        if self.city:
-            params.update({"city": self.city, "citylimit": "true"})
+        search_city = str(city_hint or self.city).strip()
+        if search_city:
+            params.update({"city": search_city, "citylimit": "true"})
         if center is not None:
             latitude, longitude = center
             params["location"] = f"{longitude:.7f},{latitude:.7f}"
@@ -251,6 +284,7 @@ class AmapWebServiceClient:
 
     async def _request_json(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
         request_params = {**params, "key": self.api_key, "output": "JSON"}
+        endpoint = _ENDPOINT_LABELS.get(path, path)
         try:
             timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
             async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -260,16 +294,47 @@ class AmapWebServiceClient:
                     response.raise_for_status()
                     payload = await response.json(content_type=None)
         except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
-            logger.debug(f"[日常生活] 高德地图请求失败：{type(exc).__name__}")
+            logger.debug(
+                f"[日常生活] 高德地图请求失败：接口={endpoint}；"
+                f"异常={type(exc).__name__}"
+            )
             return {}
         if not isinstance(payload, dict):
             return {}
         if str(payload.get("status") or "") != "1":
             info = str(payload.get("info") or "未知错误").strip()
             infocode = str(payload.get("infocode") or "").strip()
-            logger.debug(f"[日常生活] 高德地图返回失败：{info}（{infocode}）")
+            logger.debug(
+                f"[日常生活] 高德地图返回失败：接口={endpoint}；"
+                f"错误={info}（{infocode}）"
+            )
             return {}
         return payload
+
+    async def _resolve_transit_city_adcode(self, city: str) -> str:
+        """把展示城市名解析为高德公交路线接口要求的行政区划编码。"""
+
+        value = str(city or "").strip()
+        if not value:
+            return ""
+        if len(value) == 6 and value.isdigit():
+            return value
+        cached = self._transit_city_adcodes.get(value)
+        if cached:
+            return cached
+        async with self._transit_city_adcode_lock:
+            cached = self._transit_city_adcodes.get(value)
+            if cached:
+                return cached
+            geocoded = await self.geocode(value, city_hint="")
+            adcode = self._text_value((geocoded or {}).get("adcode"))
+            if len(adcode) != 6 or not adcode.isdigit():
+                return ""
+            self._transit_city_adcodes[value] = adcode
+            resolved_city = self._text_value((geocoded or {}).get("city"))
+            if resolved_city:
+                self._transit_city_adcodes.setdefault(resolved_city, adcode)
+            return adcode
 
     @staticmethod
     def _parse_location(value: Any) -> tuple[float, float] | None:

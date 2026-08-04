@@ -38,20 +38,33 @@ class EpisodeArchiveMixin:
         def dbwork():
             episode_id = int(item.id or 0)
             if not episode_id:
-                existing = self._conn.execute(
-                    """
-                    SELECT id
-                    FROM life_episodes
-                    WHERE date = ? AND title = ? AND source = ? AND protected = 0
-                    ORDER BY id DESC
-                    LIMIT 1
-                    """,
-                    (
-                        self._text(item.date),
-                        self._text(item.title),
-                        self._text(item.source) or "daily",
-                    ),
-                ).fetchone()
+                if item.kind == "daily_plan" and item.source == "daily":
+                    existing = self._conn.execute(
+                        """
+                        SELECT id
+                        FROM life_episodes
+                        WHERE date = ? AND kind = 'daily_plan' AND source = 'daily'
+                          AND protected = 0
+                        ORDER BY id DESC
+                        LIMIT 1
+                        """,
+                        (self._text(item.date),),
+                    ).fetchone()
+                else:
+                    existing = self._conn.execute(
+                        """
+                        SELECT id
+                        FROM life_episodes
+                        WHERE date = ? AND title = ? AND source = ? AND protected = 0
+                        ORDER BY id DESC
+                        LIMIT 1
+                        """,
+                        (
+                            self._text(item.date),
+                            self._text(item.title),
+                            self._text(item.source) or "daily",
+                        ),
+                    ).fetchone()
                 episode_id = int(existing["id"]) if existing else 0
             if episode_id:
                 cursor = self._conn.execute(

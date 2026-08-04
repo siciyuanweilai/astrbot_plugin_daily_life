@@ -10,6 +10,7 @@ from ..models import (
     TimelineItem,
     WeatherInfo,
 )
+from .appearance import strip_hair_from_outfit
 from .condition import normalize_state, state_log_entry
 from .surroundings import normalize_event_items
 from .wardrobe import (
@@ -59,7 +60,11 @@ class DailyAssemblyMixin:
         state = LifeState.from_value(
             normalize_state(result.get("state"), source="daily")
         )
-        outfit = str(result.get("outfit", "")).strip()
+        outfit = strip_hair_from_outfit(
+            result.get("outfit", ""),
+            meta.get("hair_style", ""),
+            meta.get("hair", ""),
+        )
         planned_actions = []
         raw_actions = result.get("planned_actions")
         for raw_action in raw_actions if isinstance(raw_actions, list) else []:
@@ -118,7 +123,7 @@ class DailyAssemblyMixin:
     ) -> list[PlaceRecord]:
         evidence_parts: list[str] = []
         for item in timeline:
-            evidence_parts.extend([item.activity, item.status])
+            evidence_parts.extend([item.activity, item.status, item.place])
         for event in events:
             evidence_parts.extend([event.summary, event.place])
 
@@ -210,6 +215,20 @@ class DailyAssemblyMixin:
             text = self._meta_text(value)
             if text:
                 meta[key] = text
+        location_audit = result.get("location_audit")
+        if isinstance(location_audit, dict):
+            meta["location_audit_provider"] = self._meta_text(
+                location_audit.get("map_provider")
+            )
+            meta["location_audit_city"] = self._meta_text(
+                location_audit.get("home_city")
+            )
+            meta["location_audit_places"] = str(
+                max(0, int(location_audit.get("verified_places") or 0))
+            )
+            meta["location_audit_routes"] = str(
+                max(0, int(location_audit.get("checked_routes") or 0))
+            )
         return meta
 
 

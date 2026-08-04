@@ -62,6 +62,100 @@ export const TIME_PERIOD_LABELS = {
   late_night: "深夜",
 };
 
+export const MEAL_TYPE_LABELS = {
+  breakfast: "早餐",
+  morning_snack: "上午加餐",
+  brunch: "早午餐",
+  lunch: "午餐",
+  afternoon_tea: "下午茶",
+  tea: "下午茶",
+  snack: "加餐",
+  dessert: "甜品",
+  dinner: "晚餐",
+  supper: "晚餐",
+  late_night_snack: "夜宵",
+  midnight_snack: "夜宵",
+};
+
+export const LIFE_DOMAIN_KIND_LABELS = {
+  activity: "活动",
+  meal: "饮食",
+  chore: "家务",
+  fitness: "运动",
+  conversation_action: "行动项",
+};
+
+export const LIFE_DOMAIN_STATUS_LABELS = {
+  planned: "待进行",
+  active: "进行中",
+  simulated: "模拟完成",
+  completed: "已完成",
+  confirmed: "已确认",
+  open: "待处理",
+  pending: "已安排",
+  queued: "排队中",
+  running: "进行中",
+  done: "已完成",
+  failed: "未完成",
+  rejected: "已拒绝",
+  expired: "已过期",
+  canceled: "已取消",
+  cancelled: "已取消",
+};
+
+export const LIFE_DOMAIN_SOURCE_LABELS = {
+  daily_plan: "日程计划",
+  life_action: "动作回执",
+  life_action_simulation: "生活模拟",
+  timeline_simulation: "时间轴模拟",
+  conversation: "会话行动项",
+  schedule: "日程安排",
+  user: "用户记录",
+  manual: "手动记录",
+};
+
+export const ACTION_OWNER_LABELS = {
+  self: "当前角色",
+  bot: "当前角色",
+  assistant: "当前角色",
+  current_character: "当前角色",
+  speaker: "说话人",
+  user: "用户",
+  shared: "共同",
+  both: "共同",
+  unknown: "未定",
+  undecided: "未定",
+};
+
+export const QUANTITY_UNIT_LABELS = {
+  piece: "个",
+  pieces: "个",
+  item: "个",
+  items: "个",
+  serving: "份",
+  servings: "份",
+  portion: "份",
+  portions: "份",
+  gram: "克",
+  grams: "克",
+  g: "克",
+  kilogram: "千克",
+  kilograms: "千克",
+  kg: "千克",
+  milliliter: "毫升",
+  milliliters: "毫升",
+  ml: "毫升",
+  liter: "升",
+  liters: "升",
+  l: "升",
+  bottle: "瓶",
+  bottles: "瓶",
+  bag: "袋",
+  bags: "袋",
+  box: "盒",
+  boxes: "盒",
+};
+
 export const LIFE_MODE_LABELS = {
   awake: "清醒",
   sleeping: "睡眠中",

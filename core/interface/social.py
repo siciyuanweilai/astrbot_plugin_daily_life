@@ -1,8 +1,9 @@
 import datetime
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
 from ..labels import commitment_kind_label, time_window_label
-from ..models import CommitmentRecord, EventRecord
+from ..models import CommitmentRecord, EventRecord, PlaceRecord
 from .request import CommandRequest
 
 
@@ -205,6 +206,31 @@ class SocialCommandMixin:
         )
         if new_timeline:
             data.timeline = new_timeline
+            audited_places = (
+                decision.get("_audited_places") if isinstance(decision, dict) else None
+            )
+            if isinstance(audited_places, list):
+                data.places = [
+                    place
+                    for place in (
+                        PlaceRecord.from_value(item) for item in audited_places
+                    )
+                    if place is not None
+                ]
+                if data.places:
+                    await self.runtime.archive.touch_places(
+                        req.target_date_str, data.places, source="invite"
+                    )
+            location_audit = (
+                decision.get("_location_audit") if isinstance(decision, dict) else None
+            )
+            if isinstance(location_audit, dict):
+                data.meta["location_audit_provider"] = str(
+                    location_audit.get("map_provider") or ""
+                )
+                data.meta["location_audit_city"] = str(
+                    location_audit.get("home_city") or ""
+                )
             if self.runtime.config.state.enabled:
                 data = await self.runtime.refresh_state_for_day(
                     req.target_date_str,

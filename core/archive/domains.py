@@ -107,6 +107,50 @@ class DomainArchiveMixin:
 
         return await self._run_db(dbwork)
 
+    async def reconcile_activity_sessions(
+        self,
+        date: str,
+        active_action_ids: set[str],
+    ) -> int:
+        """移除同日日程替换后不再有效的未完成活动会话。"""
+
+        date_text = self._text(date)
+        keep_ids = sorted(
+            {
+                self._text(action_id)
+                for action_id in active_action_ids
+                if self._text(action_id)
+            }
+        )
+        if not date_text:
+            return 0
+
+        def dbwork() -> int:
+            params: list[Any] = [date_text]
+            sql = """
+                DELETE FROM activity_sessions
+                WHERE date = ?
+                  AND source = 'daily_plan'
+                  AND status IN ('planned', 'active')
+            """
+            if keep_ids:
+                placeholders = ", ".join("?" for _ in keep_ids)
+                sql += f" AND action_id NOT IN ({placeholders})"
+                params.extend(keep_ids)
+            sql += """
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM life_action_receipts receipt
+                      WHERE receipt.action_id = activity_sessions.action_id
+                        AND receipt.status IN ('confirmed', 'failed', 'cancelled')
+                  )
+            """
+            cursor = self._conn.execute(sql, tuple(params))
+            self._conn.commit()
+            return max(0, int(cursor.rowcount or 0))
+
+        return await self._run_db(dbwork)
+
     async def upsert_route(self, payload: dict[str, Any]) -> dict[str, Any]:
         origin = self._text(payload.get("origin_name"))
         destination = self._text(payload.get("destination_name"))
@@ -185,6 +229,51 @@ class DomainArchiveMixin:
             )
             self._conn.commit()
             return max(0, int(cursor.rowcount or 0))
+
+        return await self._run_db(dbwork)
+
+    async def reset_residence_context(
+        self,
+        *,
+        changed_at: str,
+        week_id: str = "",
+    ) -> None:
+        """重置只对当前居住地有效的索引，同时保留历史每日记录。"""
+
+        boundary = self._text(changed_at)
+        current_week = self._text(week_id)
+
+        def dbwork() -> None:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._conn.execute("DELETE FROM route_cache")
+                self._conn.execute("DELETE FROM places")
+                if current_week:
+                    self._conn.execute(
+                        "DELETE FROM week_plans WHERE week_id = ?",
+                        (current_week,),
+                    )
+                self._conn.execute(
+                    "INSERT INTO meta(key, value) VALUES(?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    ("residence_context_changed_at", boundary),
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
+        await self._run_db(dbwork)
+
+    async def get_residence_context_boundary(self) -> str:
+        """返回最近一次居住地变化时间。"""
+
+        def dbwork() -> str:
+            row = self._conn.execute(
+                "SELECT value FROM meta WHERE key = ?",
+                ("residence_context_changed_at",),
+            ).fetchone()
+            return self._text(row["value"] if row else "")
 
         return await self._run_db(dbwork)
 
@@ -589,46 +678,8 @@ class DomainArchiveMixin:
         )
 
     async def get_unified_life_timeline(self, limit: int = 60) -> list[dict[str, Any]]:
-        sessions = await self.get_activity_sessions(limit=limit)
-        meals = await self.get_meal_records(limit=limit)
-        chores = await self.get_chore_records(limit=limit)
-        fitness = await self.get_fitness_records(limit=limit)
-        action_items = await self.get_conversation_action_items(limit=limit)
-        values: list[dict[str, Any]] = []
-        for item in sessions:
-            values.append(
-                {
-                    "kind": "activity",
-                    "title": item.get("title") or item.get("activity_type"),
-                    "status": item.get("status"),
-                    "occurred_at": item.get("ended_at") or item.get("started_at"),
-                    "source": item.get("source"),
-                    "action_id": item.get("action_id"),
-                    "details": item.get("metadata", {}),
-                }
-            )
-        for kind, records, title_key in (
-            ("meal", meals, "name"),
-            ("chore", chores, "name"),
-            ("fitness", fitness, "activity"),
-            ("conversation_action", action_items, "title"),
-        ):
-            for item in records:
-                values.append(
-                    {
-                        "kind": kind,
-                        "title": item.get(title_key),
-                        "status": item.get("status"),
-                        "occurred_at": item.get("occurred_at")
-                        or item.get("due_at")
-                        or item.get("created_at"),
-                        "source": item.get("source") or "conversation",
-                        "action_id": item.get("action_id") or "",
-                        "details": item,
-                    }
-                )
-        values.sort(key=lambda item: str(item.get("occurred_at") or ""), reverse=True)
-        return values[: max(0, int(limit))]
+        snapshot = await self.get_domain_snapshot(limit=max(0, int(limit)))
+        return list(snapshot.get("timeline", []))[: max(0, int(limit))]
 
     async def get_domain_snapshot(self, limit: int = 20) -> dict[str, Any]:
         """在一次数据库锁定中读取生活领域面板数据。"""
@@ -645,28 +696,145 @@ class DomainArchiveMixin:
                     for row in self._conn.execute(sql, params).fetchall()
                 ]
 
+            planned_action_ids: dict[str, set[str]] = {
+                self._text(row["date"]): set()
+                for row in self._conn.execute("SELECT date FROM days").fetchall()
+                if self._text(row["date"])
+            }
+            for row in self._conn.execute(
+                "SELECT date, value FROM day_meta WHERE key = 'planned_life_actions'"
+            ).fetchall():
+                date_text = self._text(row["date"])
+                values = self._domain_value(row["value"], [])
+                if not date_text or not isinstance(values, list):
+                    continue
+                planned_action_ids[date_text] = {
+                    self._text(item.get("action_id"))
+                    for item in values
+                    if isinstance(item, dict) and self._text(item.get("action_id"))
+                }
+            trusted_action_ids = {
+                self._text(row["action_id"])
+                for row in self._conn.execute(
+                    """
+                    SELECT DISTINCT action_id
+                    FROM life_action_receipts
+                    WHERE status IN ('confirmed', 'failed', 'cancelled')
+                    """
+                ).fetchall()
+                if self._text(row["action_id"])
+            }
+            superseded_action_ids = {
+                self._text(row["action_id"])
+                for row in self._conn.execute(
+                    """
+                    SELECT action_id, date
+                    FROM activity_sessions
+                    WHERE source = 'daily_plan'
+                    """
+                ).fetchall()
+                if self._text(row["date"]) in planned_action_ids
+                and self._text(row["action_id"])
+                not in planned_action_ids[self._text(row["date"])]
+                and self._text(row["action_id"]) not in trusted_action_ids
+            }
+            candidate_limit = max(int(limit) * 4, 80) if limit > 0 else 0
+
+            def visible_limit(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+                return items[: int(limit)] if limit > 0 else items
+
+            def is_visible_plan_record(
+                item: dict[str, Any],
+                *,
+                date_value: str,
+                action_key: str = "action_id",
+            ) -> bool:
+                action_id = self._text(item.get(action_key))
+                date_text = self._text(date_value)[:10]
+                if not action_id or not date_text or date_text not in planned_action_ids:
+                    return True
+                if (
+                    action_id in planned_action_ids[date_text]
+                    or action_id in trusted_action_ids
+                ):
+                    return True
+                return self._text(item.get("source")) not in {
+                    "daily_plan",
+                    "life_action_simulation",
+                    "timeline_simulation",
+                }
+
+            activity_sessions = visible_limit(
+                [
+                    item
+                    for item in rows(
+                        "activity_sessions",
+                        "COALESCE(NULLIF(ended_at, ''), started_at) DESC, id DESC",
+                        candidate_limit,
+                    )
+                    if is_visible_plan_record(item, date_value=item.get("date", ""))
+                ]
+            )
+            meals = visible_limit(
+                [
+                    item
+                    for item in rows(
+                        "meal_records",
+                        "date DESC, occurred_at DESC, id DESC",
+                        candidate_limit,
+                    )
+                    if is_visible_plan_record(item, date_value=item.get("date", ""))
+                ]
+            )
+            chore_records = visible_limit(
+                [
+                    item
+                    for item in rows(
+                        "chore_records",
+                        "occurred_at DESC, id DESC",
+                        candidate_limit,
+                    )
+                    if is_visible_plan_record(
+                        item, date_value=self._text(item.get("occurred_at"))[:10]
+                    )
+                ]
+            )
+            fitness = visible_limit(
+                [
+                    item
+                    for item in rows(
+                        "fitness_records",
+                        "date DESC, occurred_at DESC, id DESC",
+                        candidate_limit,
+                    )
+                    if is_visible_plan_record(item, date_value=item.get("date", ""))
+                ]
+            )
+            chores = visible_limit(
+                [
+                    item
+                    for item in rows(
+                        "chores",
+                        "enabled DESC, next_due_at, updated_at DESC",
+                        candidate_limit,
+                    )
+                    if not (
+                        self._text(item.get("source")) == "life_action_simulation"
+                        and self._text(item.get("id")) in superseded_action_ids
+                    )
+                ]
+            )
+
             return {
-                "activity_sessions": rows(
-                    "activity_sessions",
-                    "COALESCE(NULLIF(ended_at, ''), started_at) DESC, id DESC",
-                    limit,
-                ),
+                "activity_sessions": activity_sessions,
                 "pantry": rows(
                     "pantry_items", "expires_at, updated_at DESC, name", limit
                 ),
                 "recipes": rows("recipes", "updated_at DESC, name", limit),
-                "meals": rows(
-                    "meal_records", "date DESC, occurred_at DESC, id DESC", limit
-                ),
-                "chores": rows(
-                    "chores", "enabled DESC, next_due_at, updated_at DESC", limit
-                ),
-                "chore_records": rows(
-                    "chore_records", "occurred_at DESC, id DESC", limit
-                ),
-                "fitness": rows(
-                    "fitness_records", "date DESC, occurred_at DESC, id DESC", limit
-                ),
+                "meals": meals,
+                "chores": chores,
+                "chore_records": chore_records,
+                "fitness": fitness,
                 "conversation_actions": rows(
                     "conversation_action_items", "status, due_at, id DESC", limit
                 ),
@@ -681,18 +849,7 @@ class DomainArchiveMixin:
         snapshot: dict[str, Any], limit: int
     ) -> list[dict[str, Any]]:
         values: list[dict[str, Any]] = []
-        for item in snapshot.get("activity_sessions", []):
-            values.append(
-                {
-                    "kind": "activity",
-                    "title": item.get("title") or item.get("activity_type"),
-                    "status": item.get("status"),
-                    "occurred_at": item.get("ended_at") or item.get("started_at"),
-                    "source": item.get("source"),
-                    "action_id": item.get("action_id"),
-                    "details": item.get("metadata", {}),
-                }
-            )
+        represented_action_ids: set[str] = set()
         for kind, key, title_key in (
             ("meal", "meals", "name"),
             ("chore", "chore_records", "name"),
@@ -700,6 +857,9 @@ class DomainArchiveMixin:
             ("conversation_action", "conversation_actions", "title"),
         ):
             for item in snapshot.get(key, []):
+                action_id = str(item.get("action_id") or "").strip()
+                if action_id and action_id in represented_action_ids:
+                    continue
                 values.append(
                     {
                         "kind": kind,
@@ -709,10 +869,29 @@ class DomainArchiveMixin:
                         or item.get("due_at")
                         or item.get("created_at"),
                         "source": item.get("source") or "conversation",
-                        "action_id": item.get("action_id") or "",
+                        "action_id": action_id,
                         "details": item,
                     }
                 )
+                if action_id:
+                    represented_action_ids.add(action_id)
+        for item in snapshot.get("activity_sessions", []):
+            action_id = str(item.get("action_id") or "").strip()
+            if action_id and action_id in represented_action_ids:
+                continue
+            values.append(
+                {
+                    "kind": "activity",
+                    "title": item.get("title") or item.get("activity_type"),
+                    "status": item.get("status"),
+                    "occurred_at": item.get("ended_at") or item.get("started_at"),
+                    "source": item.get("source"),
+                    "action_id": action_id,
+                    "details": item.get("metadata", {}),
+                }
+            )
+            if action_id:
+                represented_action_ids.add(action_id)
         values.sort(key=lambda item: str(item.get("occurred_at") or ""), reverse=True)
         return values[: max(0, int(limit))]
 

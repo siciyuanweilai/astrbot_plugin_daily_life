@@ -3,12 +3,12 @@ import uuid
 
 from astrbot.api import logger
 
+from ..clock import now as life_now
 from ..config.vocab import WEEKDAY_CN
 from ..models import WeekPlanRecord
 from ..prompts import cache_friendly_prompt, json_output_section
-from ..clock import now as life_now
-from .tools import extract_json_from_text, get_monday_of_week, get_week_id
 from .people import WEEK_PERSON_TEXT_PATHS
+from .tools import extract_json_from_text, get_monday_of_week, get_week_id
 
 
 class WeekMixin:
@@ -29,12 +29,15 @@ class WeekMixin:
     async def _get_week_progress(self):
         monday = get_monday_of_week()
         today = life_now()
+        boundary = await self._current_residence_boundary_date()
         lines = []
         for i in range(7):
             day = monday + datetime.timedelta(days=i)
             if day.date() > today.date():
                 break
             date_str = day.strftime("%Y-%m-%d")
+            if boundary and date_str < boundary:
+                continue
             data = await self.archive.get_day(date_str)
             if data and data.timeline:
                 first_act = data.timeline[0].activity[:50]

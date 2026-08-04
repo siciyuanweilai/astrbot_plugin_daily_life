@@ -57,7 +57,8 @@ class DailyDraftMixin:
             return ""
         return (
             "## 🚫 需要避免的重复内容\n"
-            "以下是最近几天的安排骨架；今天要有自然变化点，不要机械复刻相似的穿搭、活动、地点和心情：\n"
+            "以下只列出最近几天的日程骨架，用于识别重复；不要把它当作今天的素材池，"
+            "今天应根据当前天气、状态、承诺和人物关系形成新的活动组合：\n"
             f"{history_schedules_str}"
         )
 
@@ -121,8 +122,8 @@ class DailyDraftMixin:
   }},
   "outfit": "当前实际穿着的详细视觉描述，只写可见服装、材质和必要配饰，不写动作或剧情",
   "timeline": [
-    {{"time": "08:15", "activity": "具体的行为描写，富有沉浸感", "status": "当前情绪/状态词"}},
-    {{"time": "09:30", "activity": "...", "status": "..."}}
+    {{"time": "08:15", "activity": "具体的行为描写，富有沉浸感", "status": "当前情绪/状态词", "place": "家", "place_kind": "home | poi | generic | transit | online | none", "place_scope": "local | travel", "place_city": "跨城安排的目标城市，否则为空字符串", "place_hint": "同名地点消歧所需的区县、商圈或地址，否则为空字符串", "travel_mode": "walking | cycling | driving | transit 或空字符串"}},
+    {{"time": "09:30", "activity": "...", "status": "...", "place": "...", "place_kind": "...", "place_scope": "...", "place_city": "...", "place_hint": "...", "travel_mode": "..."}}
   ],
   "planned_actions": [
     {{
@@ -188,6 +189,12 @@ class DailyDraftMixin:
 {self.config.timeline_prompt}
 - 系统会根据 timeline 自动检查时间覆盖，不需要输出额外时间覆盖说明。
 - 正常整日生成需要形成从较早生活起点到晚间或睡前收束的自然跨度；目标时段生成只写目标时段。
+- 完整全天通常生成 8-12 个有意义节点；跨度较长时相应增加，避免相邻节点超过约 3 小时。持续活动不必逐小时拆分，但要记录期间真实发生的就餐、移动、短暂休息、场景切换或状态变化，不要用重复动作凑数量。
+- 每个节点都必须填写 place_kind。home 表示居住地，poi 表示需要地图确认的具体场所，generic 表示不绑定具体商家的泛化场景，transit 表示途中，online 表示线上空间，none 表示没有地点含义。
+- place_kind 为 home 时 place 固定写“家”；为 poi 或 generic 时必须填写 place；为 transit、online 或 none 时不要虚构精确地点。
+- 普通本地生活使用 place_scope=local，place_city 留空；明确的出差、旅行、返乡或跨城安排才使用 place_scope=travel，并必须填写 place_city。
+- travel_mode 表示从上一处可定位地点前往当前地点的交通方式；地点未变化或无法形成实际路线时留空。不要为了补字段制造出行动作。
+- 具体店铺、场馆、景点、车站和机场使用 poi；“附近街区”“河边散步区域”“线上群聊”等不应强行绑定随机 POI。
 4.1 planned_actions 要求：
 - 只为确实需要状态结算的 timeline 节点输出，可为空数组，不要为了填满而制造动作。
 - action_type、timeline_index、前置条件和影响必须显式填写；不得要求系统从 activity 文案猜动作。
@@ -219,6 +226,7 @@ class DailyDraftMixin:
         lifecycle_context: str,
         autonomy_context: str,
         person_fact_context: str,
+        replacement_context: str,
         current_time_text: str,
     ) -> list[str]:
         return [
@@ -241,6 +249,7 @@ class DailyDraftMixin:
             lifecycle_context.strip(),
             autonomy_context.strip(),
             person_fact_context.strip(),
+            replacement_context.strip(),
             self._timeline_prompt_memo_section(memo_str),
             self._timeline_prompt_repeat_section(history_schedules_str),
         ]
@@ -265,6 +274,7 @@ class DailyDraftMixin:
         lifecycle_context: str = "",
         autonomy_context: str = "",
         person_fact_context: str = "",
+        replacement_context: str = "",
         expected_coverage: str = "full_day",
         current_time_text: str = "",
     ) -> str:
@@ -288,6 +298,7 @@ class DailyDraftMixin:
             lifecycle_context=lifecycle_context,
             autonomy_context=autonomy_context,
             person_fact_context=person_fact_context,
+            replacement_context=replacement_context,
             current_time_text=current_time_text,
         )
         dynamic = "\n\n".join(part for part in dynamic_sections if part)

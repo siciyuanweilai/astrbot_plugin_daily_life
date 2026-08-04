@@ -73,9 +73,24 @@ class PageComposer:
         )
 
     async def generate_daily(
-        self, date=None, force=False, target_hour=None, extra=None, web_inspiration=""
+        self,
+        date=None,
+        force=False,
+        target_hour=None,
+        extra=None,
+        web_inspiration="",
+        regenerate_existing=False,
     ):
-        self.daily_calls.append((date, force, target_hour, extra, web_inspiration))
+        self.daily_calls.append(
+            (
+                date,
+                force,
+                target_hour,
+                extra,
+                web_inspiration,
+                regenerate_existing,
+            )
+        )
         day = DayRecord(
             date=date.strftime("%Y-%m-%d"),
             outfit="浅蓝外套",
@@ -271,7 +286,7 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
             DayRecord(
                 date="2026-06-11",
                 outfit="浅蓝外套和白裙子",
-                weather="北京 晴 24C",
+                weather="测试市 晴 24C",
                 timeline=[
                     TimelineItem(
                         time="09:20", activity="整理早餐和手帐", status="慢慢来"
@@ -1645,6 +1660,37 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item.time for item in day.timeline], ["09:05", "15:30"])
         self.assertEqual(day.timeline[0].activity, "慢慢吃早餐")
 
+    async def test_timeline_save_preserves_existing_travel_context(self):
+        day = await self.plugin.runtime.archive.get_day("2026-06-11")
+        day.timeline[1].place = "测试咖啡店"
+        day.timeline[1].place_kind = "poi"
+        day.timeline[1].travel_mode = "walking"
+        day.timeline[1].travel_origin = "家"
+        day.timeline[1].travel_provider = "amap"
+        day.timeline[1].travel_minutes = 16
+        day.timeline[1].travel_distance_meters = 1300
+        await self.plugin.runtime.archive.save_day(day)
+        self.plugin.body = {
+            "date": "2026-06-11",
+            "timeline": [
+                {
+                    "time": item.time,
+                    "activity": item.activity,
+                    "status": item.status,
+                }
+                for item in day.timeline
+            ],
+        }
+
+        result = await self.plugin.page_timeline_save()
+        saved = await self.plugin.runtime.archive.get_day("2026-06-11")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(saved.timeline[1].travel_origin, "家")
+        self.assertEqual(saved.timeline[1].travel_provider, "amap")
+        self.assertEqual(saved.timeline[1].travel_minutes, 16)
+        self.assertEqual(saved.timeline[1].travel_distance_meters, 1300)
+
     async def test_reset_day_uses_current_business_date(self):
         self.plugin.body = {"extra": "今天多安排室内活动"}
 
@@ -1656,6 +1702,7 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(call[1])
         self.assertEqual(call[3], "今天多安排室内活动")
         self.assertEqual(call[4], "")
+        self.assertTrue(call[5])
         self.assertEqual(result["data"]["day"]["outfit"], "浅蓝外套")
         self.assertEqual(result["data"]["status"]["day"]["outfit"], "浅蓝外套")
 
@@ -1860,6 +1907,16 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
             'return /[A-Za-z]/.test(readable) ? "其他" : readable;',
             formatter,
         )
+
+    def test_dashboard_timeline_displays_and_preserves_travel_details(self):
+        root = Path(__file__).resolve().parents[1] / "pages" / "dashboard"
+        app = (root / "app.js").read_text(encoding="utf-8")
+        style = self._dashboard_style(root)
+
+        self.assertIn("function timelineTravelText", app)
+        self.assertIn('node("div", "timeline-travel", travel)', app)
+        self.assertIn("...source", app)
+        self.assertIn(".timeline-travel", style)
 
     def test_dashboard_local_assets_do_not_use_version_queries(self):
         from pathlib import Path
@@ -3880,6 +3937,11 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         )
         self.assertIn('node("div", "today-week-appearance-hair", "")', app)
         self.assertIn('const hairStyle = clean(meta.hair_style, "")', display)
+        self.assertIn("function stripCoveredAppearanceDetail", display)
+        self.assertIn(
+            "stripCoveredAppearanceDetail(day.outfit, hairStyle, hair)",
+            display,
+        )
         self.assertIn("return { style, outfit, hairStyle, hair }", display)
         self.assertIn('hair_style: "发型名称"', display)
         self.assertIn('hair: "发型细节"', display)
@@ -4796,3 +4858,75 @@ if (!intentPair.current || intentPair.current.time !== "20:50") {
         self.assertNotIn("currentDecisionId", display)
         self.assertIn("visibleExperienceEvidence(evidence, episodes)", app)
         self.assertIn("visibleEvidence.slice(0, 3).forEach", app)
+
+    def test_life_domain_enums_are_rendered_with_chinese_labels(self):
+        root = Path(__file__).resolve().parents[1] / "pages" / "dashboard"
+        app = (root / "app.js").read_text(encoding="utf-8")
+        terms = (root / "shared" / "terms.js").read_text(encoding="utf-8")
+
+        for expected in (
+            'lunch: "午餐"',
+            'snack: "加餐"',
+            'breakfast: "早餐"',
+            'dinner: "晚餐"',
+            'self: "当前角色"',
+            'shared: "共同"',
+            'serving: "份"',
+        ):
+            self.assertIn(expected, terms)
+        self.assertIn(
+            "enumLabelOrReadableText(item.meal_type, MEAL_TYPE_LABELS, \"饮食\")",
+            app,
+        )
+        self.assertIn(
+            "enumLabelOrReadableText(item.owner, ACTION_OWNER_LABELS, \"未定\")",
+            app,
+        )
+        self.assertNotIn("clean(item.meal_type, \"饮食\")", app)
+        self.assertNotIn('`负责人：${clean(item.owner, "未定")}`', app)
+
+    def test_current_outfit_display_separates_clothing_and_hair(self):
+        root = Path(__file__).resolve().parents[1]
+        script = """
+const mod = await import("./pages/dashboard/shared/format.js");
+const repeated = mod.currentOutfitDisplayText(
+  {
+    outfit: "浅绿色短袖衬衫搭配白色直筒裤，脚穿帆布鞋；头发扎成蓬松高马尾，用浅色发圈固定，额前留有轻薄刘海。",
+  },
+  {
+    style: "清爽日常风",
+    hair_style: "蓬松高马尾",
+    hair: "蓬松高马尾用浅色发圈固定，额前留有轻薄刘海，发尾自然微卷。",
+  },
+);
+if (
+  repeated.outfit !== "浅绿色短袖衬衫搭配白色直筒裤，脚穿帆布鞋"
+  || !repeated.hair.includes("浅色发圈")
+  || repeated.hairStyle !== "蓬松高马尾"
+) {
+  throw new Error(`穿搭与发型没有正确分离：${JSON.stringify(repeated)}`);
+}
+const distinct = mod.currentOutfitDisplayText(
+  { outfit: "浅绿色短袖衬衫搭配白色直筒裤，脚穿帆布鞋。" },
+  {
+    hair_style: "蓬松高马尾",
+    hair: "蓬松高马尾用浅色发圈固定，额前留有轻薄刘海。",
+  },
+);
+if (
+  distinct.outfit !== "浅绿色短袖衬衫搭配白色直筒裤，脚穿帆布鞋"
+  || !distinct.hair.includes("浅色发圈")
+) {
+  throw new Error(`独立穿搭或发型被错误修改：${JSON.stringify(distinct)}`);
+}
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module"],
+            cwd=root,
+            input=script,
+            text=True,
+            encoding="utf-8",
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)

@@ -5,7 +5,6 @@ from typing import Any
 
 from ..models import PreferenceRecord
 
-
 APPEARANCE_PREFERENCE_CATEGORIES = ("outfit", "hair", "style")
 APPEARANCE_PRIORITY_RULE = (
     "优先级：用户当前明确要求 > 短期生活纠偏 > 已学习长期偏好 > 配置审美 > 近期重复抑制 > 模型自由发挥。"
@@ -18,10 +17,84 @@ CURRENT_APPEARANCE_GENERATION_RULES = (
     "按场景自然交代长度/层次、扎法/分缝、刘海/发尾、发饰/整理状态中的有效细节；"
     "style 只写简短审美标签，不重复服装清单。"
 )
+_APPEARANCE_COMPARISON_IGNORED_CHARACTERS = frozenset(
+    " ，。；：、！？!?.,;:()（）[]【】{}<>《》‘’“”\n\r\t"
+)
+_APPEARANCE_CLAUSE_BOUNDARIES = frozenset("，。；！？!?.,;\n\r")
 
 
 def _clean_text(value: object, limit: int = 240) -> str:
     return " ".join(str(value or "").strip().split())[:limit]
+
+
+def _appearance_characters(value: object) -> list[str]:
+    return [
+        character
+        for character in str(value or "")
+        if character not in _APPEARANCE_COMPARISON_IGNORED_CHARACTERS
+    ]
+
+
+def _appearance_pairs(value: object) -> list[str]:
+    characters = _appearance_characters(value)
+    return [
+        f"{characters[index]}{characters[index + 1]}"
+        for index in range(len(characters) - 1)
+    ]
+
+
+def _appearance_texts_overlap(left: object, right: object) -> bool:
+    left_pairs = _appearance_pairs(left)
+    right_pairs = _appearance_pairs(right)
+    if not left_pairs or not right_pairs:
+        return False
+    shorter, longer = (
+        (left_pairs, set(right_pairs))
+        if len(left_pairs) <= len(right_pairs)
+        else (right_pairs, set(left_pairs))
+    )
+    matched = sum(1 for pair in shorter if pair in longer)
+    return matched >= 2 and matched / len(shorter) >= 0.55
+
+
+def _appearance_clauses(value: object) -> list[str]:
+    clauses = []
+    current = []
+    for character in str(value or ""):
+        current.append(character)
+        if character in _APPEARANCE_CLAUSE_BOUNDARIES:
+            clauses.append("".join(current))
+            current = []
+    if current:
+        clauses.append("".join(current))
+    return clauses
+
+
+def strip_hair_from_outfit(outfit: object, hair_style: object, hair: object) -> str:
+    """从穿搭展示文本中移除已由结构化发型字段承载的片段。"""
+
+    outfit_text = _clean_text(outfit, 280)
+    normalized_hair_style = "".join(_appearance_characters(hair_style))
+    appearance_reference = _clean_text(
+        " ".join(value for value in (str(hair_style or ""), str(hair or "")) if value),
+        260,
+    )
+    if not appearance_reference:
+        return outfit_text
+    clothing_clauses = []
+    for clause in _appearance_clauses(outfit_text):
+        normalized_clause = "".join(_appearance_characters(clause))
+        contains_hair_style = bool(
+            len(normalized_hair_style) >= 2
+            and normalized_hair_style in normalized_clause
+        )
+        if contains_hair_style or _appearance_texts_overlap(
+            appearance_reference, clause
+        ):
+            continue
+        clothing_clauses.append(clause)
+    result = "".join(clothing_clauses).strip()
+    return result.rstrip(" ，。；：、！？!?.,;:\n\r\t")
 
 
 def current_appearance_values(day: Any) -> dict[str, str]:
@@ -30,11 +103,15 @@ def current_appearance_values(day: Any) -> dict[str, str]:
     meta = getattr(day, "meta", {}) or {}
     if not isinstance(meta, dict):
         meta = {}
+    hair_style = _clean_text(meta.get("hair_style"), 80)
+    hair = _clean_text(meta.get("hair"), 180)
     return {
-        "outfit": _clean_text(getattr(day, "outfit", ""), 280),
+        "outfit": strip_hair_from_outfit(
+            getattr(day, "outfit", ""), hair_style, hair
+        ),
         "style": _clean_text(meta.get("style"), 120),
-        "hair_style": _clean_text(meta.get("hair_style"), 80),
-        "hair": _clean_text(meta.get("hair"), 180),
+        "hair_style": hair_style,
+        "hair": hair,
     }
 
 

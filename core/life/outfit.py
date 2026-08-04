@@ -19,6 +19,7 @@ from .appearance import (
     APPEARANCE_PREFERENCE_CATEGORIES,
     CURRENT_APPEARANCE_GENERATION_RULES,
     format_life_preference_context,
+    strip_hair_from_outfit,
 )
 from .condition import format_physiological_rhythm_prompt
 from .fashion import outfit_style_contamination_reason
@@ -289,8 +290,6 @@ class OutfitMixin:
             "mood_color": old_meta.get("mood", "未设定"),
             "instruction": str(instruction or "").strip(),
             "appearance_context": await self._outfit_appearance_context(),
-            "inertia": await self._build_life_inertia_context(current_time),
-            "autonomy_context": await self._build_autonomous_life_context(current_time),
         }
 
     async def _outfit_appearance_context(self) -> str:
@@ -362,8 +361,6 @@ reason 使用自然中文，不写内部枚举。
 {context["state_context"]}
 长期审美偏好：
 {context["appearance_context"] or "无"}
-{context["inertia"]}
-{context["autonomy_context"]}
 当前实际时间：{current_time.strftime("%Y-%m-%d %H:%M")}
 当前时间范围：{PERIOD_TIME_RANGES.get(target_period, "未知")}
 用户本次明确穿搭要求：{context["instruction"] or "无"}"""
@@ -406,6 +403,11 @@ reason 使用自然中文，不写内部枚举。
             final_style = generated_style
             final_hair_style = generated_hair_style
             final_hair = generated_hair
+        new_outfit = strip_hair_from_outfit(
+            new_outfit,
+            final_hair_style,
+            final_hair,
+        )
         if not new_outfit:
             return None
         scene_category = normalize_outfit_scene_category(

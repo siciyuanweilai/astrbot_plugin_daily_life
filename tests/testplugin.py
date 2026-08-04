@@ -1380,7 +1380,9 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
             ),
             "承诺结果",
         )
-        self.assertEqual(await plugin.tool_life_weather(event, city="佛山"), "天气结果")
+        self.assertEqual(
+            await plugin.tool_life_weather(event, city="测试市"), "天气结果"
+        )
         self.assertEqual(
             await plugin.tool_life_review(event, action="generate", date="2026-05-24"),
             "复盘结果",
@@ -1391,7 +1393,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
                 ("query", event, "world", 3, "2026-05-24"),
                 ("adjust", event, "set_schedule_time", "", "", "07:30", "2026-05-24"),
                 ("commitment", event, "reschedule", "", 4, "2026-06-01"),
-                ("weather", event, "佛山"),
+                ("weather", event, "测试市"),
                 ("review", event, "generate", "2026-05-24"),
             ],
         )

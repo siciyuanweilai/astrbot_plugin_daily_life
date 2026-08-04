@@ -210,6 +210,37 @@ class LayerChainMixin:
         self, snapshot: dict[str, Any], data: Any, event_message: str
     ) -> tuple[str, str]:
         meta = data.meta or {}
+        boundary_getter = getattr(
+            getattr(self, "domains", None),
+            "residence_boundary_date",
+            None,
+        )
+        residence_boundary = (
+            str(await boundary_getter() or "").strip()[:10]
+            if callable(boundary_getter)
+            else ""
+        )
+
+        def record_date(item: Any, field: str) -> str:
+            if isinstance(item, dict):
+                return str(item.get(field) or "").strip()[:10]
+            return str(getattr(item, field, "") or "").strip()[:10]
+
+        place_items = list(snapshot.get("places") or [])
+        event_items = list(snapshot.get("events") or [])
+        if residence_boundary:
+            place_items = [
+                item
+                for item in place_items
+                if not record_date(item, "last_seen")
+                or record_date(item, "last_seen") >= residence_boundary
+            ]
+            event_items = [
+                item
+                for item in event_items
+                if not record_date(item, "date")
+                or record_date(item, "date") >= residence_boundary
+            ]
         world_limits = {
             "relationships": 5,
             "places": 8,
@@ -227,13 +258,14 @@ class LayerChainMixin:
             "terms": 3,
         }
         groups = {
-            kind: self._semantic_snapshot_group(kind, list(snapshot.get(key) or []))
-            for kind, key in (
-                ("relationships", "relationships"),
-                ("places", "places"),
-                ("events", "events"),
-                ("summaries", "summaries"),
-            )
+            "relationships": self._semantic_snapshot_group(
+                "relationships", list(snapshot.get("relationships") or [])
+            ),
+            "places": self._semantic_snapshot_group("places", place_items),
+            "events": self._semantic_snapshot_group("events", event_items),
+            "summaries": self._semantic_snapshot_group(
+                "summaries", list(snapshot.get("summaries") or [])
+            ),
         }
         groups.update(
             {

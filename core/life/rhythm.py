@@ -100,7 +100,12 @@ class LifecycleMixin:
             day.meta["schedule_anchor_count"] = str(len(anchors))
         return day
 
-    async def _build_lifecycle_context(self, date: datetime.datetime) -> str:
+    async def _build_lifecycle_context(
+        self,
+        date: datetime.datetime,
+        *,
+        exclude_daily_plan_date: str = "",
+    ) -> str:
         sections = []
         previous_day = await self.archive.get_day(
             (date - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
@@ -154,7 +159,18 @@ class LifecycleMixin:
             ]
             sections.append("## ✨ 生活事件池\n" + "\n".join(lines))
 
-        episodes = await self.archive.get_life_episodes(limit=5)
+        episodes = await self.archive.get_life_episodes(limit=20)
+        if exclude_daily_plan_date:
+            episodes = [
+                item
+                for item in episodes
+                if not (
+                    item.date == exclude_daily_plan_date
+                    and item.kind == "daily_plan"
+                    and item.source == "daily"
+                )
+            ]
+        episodes = episodes[:5]
         if episodes:
             lines = [
                 f"- {item.date or '未定'}｜{item.title}：{item.correction or item.summary or item.impact}"

@@ -34,7 +34,7 @@ class RuntimeStateTest(unittest.TestCase):
         runtime.config = LifeSettings.from_dict({})
         data = DayRecord(
             date="2026-05-24",
-            weather="北京 晴 20°C",
+            weather="测试市 晴 20°C",
             weather_info=WeatherInfo(temp=20, temp_desc="舒适"),
             outfit="浅蓝外套和白裙子",
             timeline=[
@@ -85,7 +85,7 @@ class RuntimeStateTest(unittest.TestCase):
         runtime.config = LifeSettings.from_dict({})
         data = DayRecord(
             date="2026-05-24",
-            weather="北京 晴 20°C",
+            weather="测试市 晴 20°C",
             timeline=[
                 TimelineItem(time="12:10", activity="去咖啡店写手帐", status="专注")
             ],
@@ -112,7 +112,7 @@ class RuntimeStateTest(unittest.TestCase):
         runtime.config = LifeSettings.from_dict({})
         data = DayRecord(
             date="2026-05-24",
-            weather="北京 晴 20°C",
+            weather="测试市 晴 20°C",
             weather_info=WeatherInfo(temp=20, temp_desc="舒适"),
             outfit="浅蓝外套和白裙子",
             state=LifeState.from_value(
@@ -144,6 +144,44 @@ class RuntimeStateTest(unittest.TestCase):
         self.assertNotIn("回复风格约束", text)
         self.assertNotIn("[HiddenAttentionState]", text)
 
+    def test_residence_refresh_hides_stale_current_life_facts(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.config = LifeSettings.from_dict({})
+        data = DayRecord(
+            date="2026-08-04",
+            weather="旧城市 晴 30°C",
+            weather_info=WeatherInfo(temp=30, temp_desc="炎热"),
+            outfit="旧城市出门穿搭",
+            timeline=[
+                TimelineItem(
+                    time="18:00",
+                    activity="去旧城市公园散步",
+                    status="轻松",
+                )
+            ],
+            meta={
+                "theme": "旧城市生活",
+                "mood": "橙色·轻快",
+                "residence_context_stale": "true",
+            },
+            state=LifeState.from_value({"summary": "正在旧城市公园"}),
+            memo="晚上回复朋友的消息",
+        )
+
+        text = runtime.build_hidden_life_context(
+            data,
+            datetime.datetime(2026, 8, 4, 18, 10),
+            using_extended_night=False,
+        )
+
+        self.assertIn("[HiddenResidenceRefresh]", text)
+        self.assertIn("晚上回复朋友的消息", text)
+        self.assertNotIn("旧城市出门穿搭", text)
+        self.assertNotIn("去旧城市公园散步", text)
+        self.assertNotIn("旧城市 晴 30°C", text)
+        self.assertNotIn("正在旧城市公园", text)
+        self.assertNotIn("旧城市生活", text)
+
     def test_hidden_context_keeps_fast_changing_parts_after_stable_daily_parts(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.config = LifeSettings.from_dict(
@@ -157,7 +195,7 @@ class RuntimeStateTest(unittest.TestCase):
         )
         data = DayRecord(
             date="2026-05-24",
-            weather="北京 晴 20°C",
+            weather="测试市 晴 20°C",
             weather_info=WeatherInfo(temp=20, temp_desc="舒适"),
             outfit="浅蓝外套和白裙子",
             memo="晚上记得取快递",
@@ -375,6 +413,43 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertIn("episodes", limits)
         self.assertEqual(world_context, "")
         self.assertEqual(experience_context, "")
+
+    async def test_life_memory_context_excludes_pre_residence_places_and_events(self):
+        class Domains:
+            async def residence_boundary_date(self):
+                return "2026-08-04"
+
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.config = LifeSettings.from_dict({})
+        runtime.domains = Domains()
+        calls = []
+
+        async def rank_once(query, groups, limits):
+            calls.append((query, groups, limits))
+            return {key: [] for key in groups}
+
+        runtime.rank_semantic_groups = rank_once
+        await runtime._select_life_memory_contexts(
+            {
+                "places": [
+                    {"name": "旧城市公园", "last_seen": "2026-08-03"},
+                    {"name": "新城市书店", "last_seen": "2026-08-04"},
+                ],
+                "events": [
+                    {"summary": "在旧城市公园散步", "date": "2026-08-03"},
+                    {"summary": "整理新居书架", "date": "2026-08-04"},
+                ],
+            },
+            DayRecord(date="2026-08-04"),
+            "附近有什么地方",
+        )
+
+        self.assertEqual(len(calls), 1)
+        groups = calls[0][1]
+        self.assertNotIn("旧城市公园", str(groups))
+        self.assertIn("新城市书店", str(groups))
+        self.assertNotIn("在旧城市公园散步", str(groups))
+        self.assertIn("整理新居书架", str(groups))
 
     async def test_manual_weather_refresh_bypasses_hour_cache_and_debounces(self):
         class WeatherClient:
@@ -723,6 +798,48 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(calls[0]["source"], "startup_seed")
         stored = await runtime.archive.get_day("2026-07-31")
         self.assertEqual(stored.date, "2026-07-31")
+
+    async def test_startup_consumes_offline_residence_change_and_rebuilds_day(self):
+        class Domains:
+            async def resolve_home_location(self):
+                return {"city": "新城市"}
+
+            def consume_detected_residence_change(self):
+                return "2026-08-04 09:00:00"
+
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.config = LifeSettings.from_dict({"schedule_time": "07:30"})
+        runtime.archive = DataManager()
+        runtime.domains = Domains()
+        await runtime.archive.save_day(
+            DayRecord(
+                date="2026-08-04",
+                weather="旧城市 晴 30°C",
+                timeline=[
+                    TimelineItem(time="10:00", activity="在旧城市公园散步")
+                ],
+            )
+        )
+        runtime.resolve_injection_target = lambda now: async_return(
+            ("2026-08-04", False)
+        )
+        calls = []
+
+        async def prepare(target):
+            calls.append(("prepare", target))
+
+        async def refresh(target):
+            calls.append(("refresh", target))
+
+        runtime._prepare_residence_change = prepare
+        runtime._refresh_after_residence_change = refresh
+
+        await runtime.ensure_startup_day_data(
+            datetime.datetime(2026, 8, 4, 10, 0)
+        )
+
+        self.assertEqual([item[0] for item in calls], ["prepare", "refresh"])
+        self.assertEqual(calls[0][1], datetime.datetime(2026, 8, 4, 10, 0))
 
     async def test_startup_generation_waits_for_onebot_connection(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
@@ -1258,7 +1375,14 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
 
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.context = Context(Provider([]))
-        runtime.raw_config = Config({"rhythm_config": {"schedule_time": "07:00"}})
+        runtime.raw_config = Config(
+            {
+                "rhythm_config": {"schedule_time": "07:00"},
+                "life_domain_config": {
+                    "home_address": "测试省旧城市测试区旧路1号"
+                },
+            }
+        )
         runtime.generation_lock = asyncio.Lock()
         runtime.config = LifeSettings.from_dict(runtime.raw_config)
         runtime.archive = DataManager()
@@ -1275,6 +1399,19 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         runtime.run_daily_refresh = daily_task
         runtime.run_weekly_refresh = week_refresh_task
         runtime.check_autonomous_life_update = auto_task
+        prepared = []
+        scheduled = []
+
+        async def prepare_residence_change(target):
+            prepared.append(target)
+
+        def schedule_background(coroutine, *, label="", key=""):
+            coroutine.close()
+            scheduled.append((label, key))
+            return True
+
+        runtime._prepare_residence_change = prepare_residence_change
+        runtime._schedule_background_task = schedule_background
 
         await runtime.apply_config(
             {
@@ -1299,6 +1436,70 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertFalse(runtime.config.state.enabled)
         self.assertTrue(runtime.weather_client is not None)
         self.assertTrue(runtime.rhythm.scheduler.running)
+        self.assertEqual(len(prepared), 1)
+        self.assertEqual(scheduled, [("居住地变化刷新", "residence_change_refresh")])
+
+    async def test_prepare_residence_change_invalidates_current_location_context(self):
+        from core.life.tools import get_week_id
+        from core.models import PlaceRecord, WeekPlanRecord
+
+        class Domains:
+            def __init__(self):
+                self.boundary = ""
+
+            def set_residence_boundary(self, changed_at):
+                self.boundary = changed_at
+
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.archive = DataManager()
+        runtime.domains = Domains()
+        runtime._injection_snapshot_cache = {"old": object()}
+        changed_reasons = []
+        runtime.mark_page_status_changed = lambda reason="": (
+            changed_reasons.append(reason) or async_return(1)
+        )
+        target = datetime.datetime(2026, 8, 4, 18, 0)
+        await runtime.archive.save_day(
+            DayRecord(
+                date="2026-08-04",
+                weather="旧城市 晴 30°C",
+                weather_info=WeatherInfo(condition="晴", temp=30),
+                weather_last_update=123,
+                places=[PlaceRecord(name="旧城市公园")],
+                timeline=[
+                    TimelineItem(time="18:00", activity="去旧城市公园散步")
+                ],
+            )
+        )
+        await runtime.archive.save_week_plan(
+            WeekPlanRecord(week_id=get_week_id(target), theme="旧城市生活")
+        )
+        await runtime.archive.touch_places(
+            "2026-08-03", [PlaceRecord(name="旧城市公园")]
+        )
+
+        with patch(
+            "core.runtime.spine.adapt.life_now",
+            return_value=datetime.datetime(2026, 8, 4, 18, 1),
+        ):
+            await runtime._prepare_residence_change(target)
+
+        day = await runtime.archive.get_day("2026-08-04")
+        self.assertEqual(day.weather, "")
+        self.assertIsNone(day.weather_info.temp)
+        self.assertEqual(day.weather_last_update, 0)
+        self.assertEqual(day.places, [])
+        self.assertEqual(day.meta["residence_context_stale"], "true")
+        self.assertEqual(day.timeline[0].activity, "去旧城市公园散步")
+        self.assertEqual(runtime.archive.places, {})
+        self.assertEqual(runtime.archive.week_plans, {})
+        self.assertEqual(
+            runtime.archive.residence_context_changed_at,
+            "2026-08-04 18:01:00",
+        )
+        self.assertEqual(runtime.domains.boundary, "2026-08-04 18:01:00")
+        self.assertEqual(runtime._injection_snapshot_cache, {})
+        self.assertEqual(changed_reasons, ["residence_changed"])
 
     async def test_runtime_service_swap_waits_for_active_lease(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
@@ -1454,7 +1655,7 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         await runtime.archive.save_day(
             DayRecord(
                 date="2026-05-24",
-                weather="北京 晴 20°C",
+                weather="测试市 晴 20°C",
                 timeline=[TimelineItem(time="12:00", activity="在家休息", status="慢")],
                 state=LifeState(updated_at="2026-05-24 11:00"),
             )

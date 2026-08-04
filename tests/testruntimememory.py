@@ -47,7 +47,7 @@ class RuntimeMemoryTest(unittest.TestCase):
         runtime.config = LifeSettings.from_dict({})
         data = DayRecord(
             date="2026-05-24",
-            weather="北京 晴 20°C",
+            weather="测试市 晴 20°C",
             weather_info=WeatherInfo(temp=20, temp_desc="舒适"),
             outfit="浅蓝外套和白裙子",
             timeline=[
@@ -115,7 +115,7 @@ class RuntimeMemoryTest(unittest.TestCase):
         runtime.config = LifeSettings.from_dict({})
         data = DayRecord(
             date="2026-05-24",
-            weather="北京 晴 20°C",
+            weather="测试市 晴 20°C",
             timeline=[
                 TimelineItem(time="12:10", activity="去咖啡店写手帐", status="专注")
             ],

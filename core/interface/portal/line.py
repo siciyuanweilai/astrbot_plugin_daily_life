@@ -3,6 +3,23 @@ from __future__ import annotations
 from ...clock import now as life_now
 from ...models import TimelineItem
 
+_TIMELINE_CONTEXT_DEFAULTS = {
+    "place": "",
+    "place_kind": "none",
+    "place_scope": "local",
+    "place_city": "",
+    "place_hint": "",
+    "travel_mode": "",
+    "place_address": "",
+    "place_latitude": None,
+    "place_longitude": None,
+    "place_coordinate_source": "",
+    "travel_origin": "",
+    "travel_provider": "",
+    "travel_minutes": 0,
+    "travel_distance_meters": 0.0,
+}
+
 
 class PortalLineMixin:
     @staticmethod
@@ -47,6 +64,9 @@ class PortalLineMixin:
                         previous.activity,
                     ):
                         continue
+                    for field, default in _TIMELINE_CONTEXT_DEFAULTS.items():
+                        if getattr(item, field) == default:
+                            setattr(item, field, getattr(previous, field))
                     item.execution_state = previous.execution_state
                     item.execution_reason = previous.execution_reason
                     item.execution_evidence = previous.execution_evidence

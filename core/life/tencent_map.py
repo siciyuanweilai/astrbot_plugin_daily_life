@@ -106,6 +106,7 @@ class TencentMapWebServiceClient:
         query: str,
         *,
         center: tuple[float, float] | None = None,
+        city_hint: str = "",
         category: str = "",
         radius_meters: int = 3000,
         limit: int = 5,
@@ -121,7 +122,7 @@ class TencentMapWebServiceClient:
                 f"{max(100, min(50000, int(radius_meters)))})"
             )
         else:
-            boundary = f"region({self.city or '全国'},1)"
+            boundary = f"region({str(city_hint or self.city).strip() or '全国'},1)"
         params: dict[str, Any] = {
             "keyword": query,
             "boundary": boundary,
@@ -147,6 +148,7 @@ class TencentMapWebServiceClient:
         query: str,
         *,
         center: tuple[float, float] | None = None,
+        city_hint: str = "",
         limit: int = 5,
     ) -> list[dict[str, Any]]:
         query = str(query or "").strip()
@@ -154,7 +156,7 @@ class TencentMapWebServiceClient:
             return []
         params: dict[str, Any] = {
             "keyword": query,
-            "region": self.city or "全国",
+            "region": str(city_hint or self.city).strip() or "全国",
             "region_fix": 0,
             "policy": 1,
         }

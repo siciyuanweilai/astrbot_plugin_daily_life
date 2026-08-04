@@ -789,11 +789,83 @@ function scheduleTypeText(value) {
   return clean(value, "");
 }
 
+const APPEARANCE_COMPARISON_IGNORED_CHARACTERS = new Set(Array.from(
+  " ，。；：、！？!?.,;:()（）[]【】{}<>《》‘’“”\n\r\t"
+));
+const APPEARANCE_CLAUSE_BOUNDARIES = new Set(Array.from(
+  "，。；！？!?.,;\n\r"
+));
+
+function appearanceComparableCharacters(value) {
+  return Array.from(text(value)).filter(
+    (character) => !APPEARANCE_COMPARISON_IGNORED_CHARACTERS.has(character)
+  );
+}
+
+function appearanceCharacterPairs(value) {
+  const characters = appearanceComparableCharacters(value);
+  const pairs = [];
+  for (let index = 0; index + 1 < characters.length; index += 1) {
+    pairs.push(`${characters[index]}${characters[index + 1]}`);
+  }
+  return pairs;
+}
+
+function appearanceTextsOverlap(left, right) {
+  const leftPairs = appearanceCharacterPairs(left);
+  const rightPairs = appearanceCharacterPairs(right);
+  if (!leftPairs.length || !rightPairs.length) return false;
+  const shorter = leftPairs.length <= rightPairs.length ? leftPairs : rightPairs;
+  const longer = new Set(leftPairs.length <= rightPairs.length ? rightPairs : leftPairs);
+  const matched = shorter.filter((pair) => longer.has(pair)).length;
+  return matched >= 2 && matched / shorter.length >= 0.55;
+}
+
+function appearanceClauses(value) {
+  const clauses = [];
+  let current = "";
+  for (const character of Array.from(text(value))) {
+    current += character;
+    if (APPEARANCE_CLAUSE_BOUNDARIES.has(character)) {
+      clauses.push(current);
+      current = "";
+    }
+  }
+  if (current) clauses.push(current);
+  return clauses;
+}
+
+function trimAppearanceEnding(value) {
+  const characters = Array.from(text(value).trim());
+  while (
+    characters.length
+    && (APPEARANCE_CLAUSE_BOUNDARIES.has(characters.at(-1)) || characters.at(-1) === " ")
+  ) {
+    characters.pop();
+  }
+  return characters.join("");
+}
+
+function stripCoveredAppearanceDetail(outfit, hairStyle, hair) {
+  const normalizedHairStyle = appearanceComparableCharacters(hairStyle).join("");
+  const appearanceReference = `${clean(hairStyle, "")} ${clean(hair, "")}`.trim();
+  if (!appearanceReference) return clean(outfit, "");
+  const clothingClauses = appearanceClauses(clean(outfit, "")).filter(
+    (clause) => {
+      const normalizedClause = appearanceComparableCharacters(clause).join("");
+      const containsHairStyle = normalizedHairStyle.length >= 2
+        && normalizedClause.includes(normalizedHairStyle);
+      return !containsHairStyle && !appearanceTextsOverlap(appearanceReference, clause);
+    }
+  );
+  return trimAppearanceEnding(clothingClauses.join(""));
+}
+
 function currentOutfitDisplayText(day = {}, meta = {}) {
   const style = clean(meta.style, "");
-  const outfit = clean(day.outfit, "");
   const hairStyle = clean(meta.hair_style, "");
   const hair = clean(meta.hair, "");
+  const outfit = stripCoveredAppearanceDetail(day.outfit, hairStyle, hair);
   return { style, outfit, hairStyle, hair };
 }
 

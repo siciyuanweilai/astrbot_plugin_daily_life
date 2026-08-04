@@ -13,8 +13,8 @@ from ..prompts import (
     cache_friendly_prompt,
 )
 from .condition import format_state_prompt
-from .tools import extract_json_from_text
 from .people import INVITE_PERSON_TEXT_PATHS
+from .tools import extract_json_from_text
 
 
 class InviteMixin:
@@ -60,7 +60,10 @@ class InviteMixin:
    - 如果体力低、社交意愿低或睡眠质量差，可以更自然地拒绝或改为低负担安排。
    - 如果心情放松、社交意愿高且忙碌度不高，可以更愿意接受。
 2. 简短地给出我决定接受、拒绝或改约的【内心真实理由】（reason）。注意：不要写成直接回复的台词；写成我的主观理由或现实顾虑。
-3. 如果接受，请返回新的 future_timeline；activity 要自然写清楚和邀请者一起做什么。
+3. 如果接受，请返回新的 future_timeline；activity 要自然写清楚和邀请者一起做什么，并为每个节点填写结构化地点。
+   - place_kind 只能是 home、poi、generic、transit、online 或 none。
+   - 普通本地活动使用 place_scope=local；明确跨城活动使用 place_scope=travel 并填写 place_city。
+   - 从上一处可定位地点移动到当前地点时填写 travel_mode；地点未变化时留空。
 4. 如果不接受但愿意改约，请给出 alternative_time；如果完全不想去则留空。
 5. 允许输出 preference_points 和 life_events，但只能基于当前邀约和状态，不要编造。
 
@@ -73,7 +76,7 @@ class InviteMixin:
   "response_tone": "符合关系和当下状态的简短语气描述，不写最终台词",
   "alternative_time": "可选改约时间或空字符串",
   "impact": "这次邀约对今日状态、社交意愿或后续日程的影响",
-  "new_future_timeline": [{{"time": "...", "activity": "...", "status": "..."}}],
+  "new_future_timeline": [{{"time": "...", "activity": "...", "status": "...", "place": "地点或空字符串", "place_kind": "home | poi | generic | transit | online | none", "place_scope": "local | travel", "place_city": "跨城目标城市或空字符串", "place_hint": "同名地点消歧信息或空字符串", "travel_mode": "walking | cycling | driving | transit 或空字符串"}}],
   "preference_points": [{{"category": "{LIFE_PREFERENCE_CATEGORY_ENUM}", "content": "可复用偏好", "weight": 0.1-1.0, "evidence": "依据"}}],
   "life_events": [{{"title": "邀约相关生活事件", "detail": "细节", "effect": "未来影响", "status": "open"}}]
 }}
@@ -127,6 +130,47 @@ JSON 输出要求：
                 result = audit.payload
                 decision = str(result.get("decision") or "").strip()
                 accepted = result.get("accept") is True or decision == "accept"
+                new_timeline = None
+                if accepted:
+                    candidate_timeline = past_timeline + [
+                        TimelineItem.from_value(item)
+                        for item in result["new_future_timeline"]
+                    ]
+                    location_auditor = getattr(
+                        getattr(self, "domains", None),
+                        "audit_daily_locations",
+                        None,
+                    )
+                    if callable(location_auditor):
+                        audited, location_reason = await location_auditor(
+                            {
+                                "timeline": [
+                                    item.as_dict() for item in candidate_timeline
+                                ],
+                                "planned_actions": [],
+                                "places": [],
+                            }
+                        )
+                        if location_reason:
+                            accepted = False
+                            decision = "propose_alternative"
+                            result["accept"] = False
+                            result["decision"] = decision
+                            result["reason"] = (
+                                f"地点安排暂时无法确认：{location_reason}"
+                            )
+                            result["location_issue"] = location_reason
+                        else:
+                            new_timeline = [
+                                TimelineItem.from_value(item)
+                                for item in audited.get("timeline", [])
+                            ]
+                            result["_audited_places"] = audited.get("places", [])
+                            result["_location_audit"] = audited.get(
+                                "location_audit", {}
+                            )
+                    else:
+                        new_timeline = candidate_timeline
                 await self._save_life_decision_record(
                     kind="invite",
                     date=date_str,
@@ -140,10 +184,6 @@ JSON 输出要求：
                     source="invite",
                 )
                 if accepted:
-                    new_timeline = past_timeline + [
-                        TimelineItem.from_value(item)
-                        for item in result["new_future_timeline"]
-                    ]
                     return (
                         result.get("reason", "内心觉得提议不错，顺其自然地答应了。"),
                         new_timeline,

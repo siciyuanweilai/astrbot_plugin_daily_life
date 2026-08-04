@@ -32,6 +32,26 @@ class DailyBriefingMixin:
             lines.append(f"- #{item.id} {item.content}{suffix}")
         return "\n".join(lines)
 
+    async def _current_residence_boundary_date(self) -> str:
+        getter = getattr(
+            getattr(self, "domains", None),
+            "residence_boundary_date",
+            None,
+        )
+        value = await getter() if callable(getter) else ""
+        if not value:
+            archive_getter = getattr(
+                getattr(self, "archive", None),
+                "get_residence_context_boundary",
+                None,
+            )
+            value = await archive_getter() if callable(archive_getter) else ""
+        return str(value or "").strip()[:10]
+
+    async def _is_before_residence_boundary(self, date_str: str) -> bool:
+        boundary = await self._current_residence_boundary_date()
+        return bool(boundary and str(date_str or "") < boundary)
+
     async def _build_life_inertia_context(self, date: datetime.datetime) -> str:
         builder = getattr(self, "_build_recent_pattern_context", None)
         text = await builder(date) if callable(builder) else ""
@@ -55,15 +75,20 @@ class DailyBriefingMixin:
         sleep_text = ""
         if sleep:
             sleep_text = f"\n- 昨日睡眠记录：质量 {sleep.quality if sleep.quality is not None else '未知'}；{sleep.summary or '无摘要'}"
+        if await self._is_before_residence_boundary(previous_str):
+            sleep_only_text = sleep_text or "\n- 昨日睡眠记录：无"
+            return (
+                "\n\n## 🌙 昨日状态参考"
+                f"{sleep_only_text}"
+                "\n居住地已经变化，只延续身体节律；旧地点、穿搭和活动不进入当前生活背景。"
+            )
         meta = previous_day.meta or {}
         timeline_hint = (
             previous_day.timeline[-1].activity[:80] if previous_day.timeline else ""
         )
         return (
             "\n\n## 🌙 昨日状态参考"
-            f"\n- 昨日穿搭：{previous_day.outfit or '未知'}"
             f"\n- 昨日生活模式：{meta.get('life_mode') or meta.get('schedule_intent') or '未知'}"
-            f"\n- 昨日换装决定：{meta.get('outfit_decision') or '未知'}"
             f"\n- 昨日最后片段：{timeline_hint or '无'}"
             f"{sleep_text}"
             "\n这些只是连续生活参考，不强制延续。"
@@ -73,23 +98,21 @@ class DailyBriefingMixin:
         history = []
         for i in range(1, self.config.reference_history_days + 1):
             previous_date = (date - datetime.timedelta(days=i)).strftime("%Y-%m-%d")
+            if await self._is_before_residence_boundary(previous_date):
+                continue
             previous_day = await self.archive.get_day(previous_date)
             if previous_day and previous_day.timeline:
                 meta = previous_day.meta or {}
                 first_act = previous_day.timeline[0].activity[:40]
                 last_act = previous_day.timeline[-1].activity[:40]
                 tags = [
-                    meta.get("theme"),
-                    meta.get("schedule_type"),
-                    meta.get("mood"),
-                    meta.get("outfit_style_pool") or meta.get("style"),
+                    meta.get("schedule_type") or meta.get("schedule_intent"),
                 ]
                 tag_text = "；".join(
                     str(item).strip() for item in tags if str(item or "").strip()
                 )
                 history.append(
-                    f"[{previous_date}] {tag_text or '无标签'} | 穿搭: {previous_day.outfit[:48]} | "
-                    f"起点: {first_act} | 收束: {last_act}"
+                    f"[{previous_date}] {tag_text or '无标签'} | 起点: {first_act} | 收束: {last_act}"
                 )
         return "\n".join(history) if history else ""
 
@@ -150,6 +173,13 @@ class DailyBriefingMixin:
         chat_summaries = await self.archive.get_recent_chat_summaries(
             self.config.memory.max_generation_items
         )
+        boundary = await self._current_residence_boundary_date()
+        if boundary:
+            recent_events = [
+                item
+                for item in recent_events
+                if not item.date or str(item.date) >= boundary
+            ]
 
         place_candidates = choose_place_candidates(
             saved_places,
@@ -177,13 +207,24 @@ class DailyBriefingMixin:
             event_limit=8,
             summary_limit=getattr(self.config.memory, "max_generation_items", 8),
         )
-        return format_world_prompt(
+        world_context = format_world_prompt(
             selected_world["relationships"],
             selected_world["places"],
             selected_world["events"],
             place_candidates,
             selected_world["summaries"],
         )
+        home_city = str(
+            getattr(getattr(self, "domains", None), "home_city", "") or ""
+        ).strip()
+        if home_city:
+            residence_context = (
+                "## 当前居住环境\n"
+                f"- 当前居住城市：{home_city}\n"
+                "- 旧城市地点只作为历史经历，不得视为当前附近地点或本地活动候选。"
+            )
+            world_context = f"{residence_context}\n\n{world_context}".strip()
+        return world_context
 
 
 __all__ = ["DailyBriefingMixin"]

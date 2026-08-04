@@ -255,11 +255,20 @@ class LayerTextMixin:
         recent_video: str = "",
         expression_event: Any = None,
     ) -> str:
-        status_desc, activity, period_cn = self.build_hidden_activity_hint(
-            data,
-            now,
-            using_extended_night,
+        meta = data.meta or {}
+        residence_context_stale = (
+            str(meta.get("residence_context_stale") or "").strip().lower() == "true"
         )
+        if residence_context_stale:
+            period_cn = get_time_period_cn(self._get_curr_period(now))
+            status_desc = "居住地已变化，当前生活状态等待新记录确认"
+            activity = "当前地点、穿搭、天气和时间轴暂不引用旧记录"
+        else:
+            status_desc, activity, period_cn = self.build_hidden_activity_hint(
+                data,
+                now,
+                using_extended_night,
+            )
         parts = [
             "\n\n<daily_life>",
             "\n[UseRule] 以下内容是角色日常生活背景的隐藏上下文，不是当前聊天话题。"
@@ -271,29 +280,37 @@ class LayerTextMixin:
         if style_hint:
             parts.append(style_hint)
 
-        appearance = format_current_appearance_context(data)
-        if appearance:
+        if residence_context_stale:
             parts.append(
-                f"\n[HiddenAppearanceHint]\n{appearance}\n"
-                "(仅在用户明确询问外貌、穿搭或相关视觉细节时参考，禁止主动介绍)"
+                "\n[HiddenResidenceRefresh] 居住地刚刚变化，旧记录仍作为历史保留，"
+                "但不得把其中的地点、天气、穿搭、心情、状态或日程视为当前事实；"
+                "新生活记录完成前，对这些问题只能自然表示暂未确定。"
             )
+        else:
+            appearance = format_current_appearance_context(data)
+            if appearance:
+                parts.append(
+                    f"\n[HiddenAppearanceHint]\n{appearance}\n"
+                    "(仅在用户明确询问外貌、穿搭或相关视觉细节时参考，禁止主动介绍)"
+                )
 
-        meta = data.meta
-        if meta:
-            parts.append(
-                f"\n[HiddenMoodHint] 主题<{meta.get('theme')}> | 心情<{meta.get('mood')}>"
-            )
+            if meta:
+                parts.append(
+                    f"\n[HiddenMoodHint] 主题<{meta.get('theme')}> | 心情<{meta.get('mood')}>"
+                )
 
-        if data.timeline:
-            schedule_window = self._format_hidden_schedule_window(data.timeline, now)
-            if schedule_window:
-                parts.append(f"\n{schedule_window}")
+            if data.timeline:
+                schedule_window = self._format_hidden_schedule_window(
+                    data.timeline, now
+                )
+                if schedule_window:
+                    parts.append(f"\n{schedule_window}")
 
-        weather_info = data.weather_info
-        weather_str = data.weather or "未知"
-        if weather_info.temp is not None:
-            weather_str = f"{weather_str} (体感: {weather_info.temp_desc})"
-        parts.append(f"\n[HiddenWeather] {weather_str}")
+            weather_info = data.weather_info
+            weather_str = data.weather or "未知"
+            if weather_info.temp is not None:
+                weather_str = f"{weather_str} (体感: {weather_info.temp_desc})"
+            parts.append(f"\n[HiddenWeather] {weather_str}")
 
         if data.memo:
             parts.append(
@@ -332,9 +349,10 @@ class LayerTextMixin:
         parts.append(f"\n[HiddenStatusHint] {status_desc}")
         parts.append(f"\n[HiddenActivityHint] {activity}")
         parts.append(f"\n[HiddenTime] {now.strftime('%Y-%m-%d %H:%M')} ({period_cn})")
-        state_context = self._format_hidden_state_compact(data.state)
-        if state_context:
-            parts.append(f"\n{state_context}")
+        if not residence_context_stale:
+            state_context = self._format_hidden_state_compact(data.state)
+            if state_context:
+                parts.append(f"\n{state_context}")
 
         if group_awareness_context:
             parts.append(

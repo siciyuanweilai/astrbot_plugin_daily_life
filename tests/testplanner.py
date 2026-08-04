@@ -1,5 +1,8 @@
+# ruff: noqa: I001
+
 import datetime
 import unittest
+from unittest.mock import AsyncMock, patch
 
 from support import (
     ActionBot,
@@ -20,6 +23,7 @@ from core.models import (
     DayRecord,
     EventRecord,
     FocusSlotRecord,
+    LifeEpisodeRecord,
     LifeState,
     MemoryCorrectionRecord,
     PlaceRecord,
@@ -72,7 +76,9 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_person_audit_includes_unverified_people_without_facts(self):
         composer, provider, _, _ = make_composer(
-            ['{"valid":true,"reason":"无明确性别冲突","conflicts":[],"replacements":[]}']
+            [
+                '{"valid":true,"reason":"无明确性别冲突","conflicts":[],"replacements":[]}'
+            ]
         )
         context = PersonFactContext(unverified_people=("测试对象",))
 
@@ -157,9 +163,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         )
         composer, provider, _, archive = make_composer(
             [generated, audit],
-            persona_manager=PersonaManager(
-                prompt="林远是我的男性好友，平常称呼阿林。"
-            ),
+            persona_manager=PersonaManager(prompt="林远是我的男性好友，平常称呼阿林。"),
         )
         await archive.touch_relationship(
             "profile:friend",
@@ -262,15 +266,30 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
     def test_place_candidates_keep_anchors_and_saved_places_without_random_pool(self):
         candidates = choose_place_candidates(
             [
-                {"name": "常去书店", "type": "bookstore", "visits": 4, "last_seen": "2026-05-24"},
-                {"name": "河边步道", "type": "walk", "visits": 2, "last_seen": "2026-05-23"},
+                {
+                    "name": "常去书店",
+                    "type": "bookstore",
+                    "visits": 4,
+                    "last_seen": "2026-05-24",
+                },
+                {
+                    "name": "河边步道",
+                    "type": "walk",
+                    "visits": 2,
+                    "last_seen": "2026-05-23",
+                },
             ],
             datetime.date(2026, 5, 24),
             limit=8,
         )
 
-        self.assertEqual([item["name"] for item in candidates], ["家", "家附近街区", "常去书店", "河边步道"])
-        self.assertTrue(all(item["source"] in {"anchor", "memory"} for item in candidates))
+        self.assertEqual(
+            [item["name"] for item in candidates],
+            ["家", "家附近街区", "常去书店", "河边步道"],
+        )
+        self.assertTrue(
+            all(item["source"] in {"anchor", "memory"} for item in candidates)
+        )
 
     async def test_extract_completion_text_recovers_structured_reasoning_content(self):
         resp = type(
@@ -377,13 +396,13 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
                 '"timeline":[{"time":"12:10","activity":"去咖啡店写手帐","status":"专注"}]}'
             ],
             persona_manager=PersonaManager(
-                prompt="住在苏州，喜欢清冷书卷气和安静书店。"
+                prompt="住在测试市，喜欢清冷书卷气和安静书店。"
             ),
         )
 
         await composer.generate_daily(datetime.datetime(2026, 5, 24, 10, 0))
 
-        self.assertIn("住在苏州", provider.prompts[0])
+        self.assertIn("住在测试市", provider.prompts[0])
         self.assertIn("清冷书卷气", provider.prompts[0])
 
     async def test_daily_prompt_uses_complete_persona_prompt(self):
@@ -579,8 +598,12 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(default_provider.prompts), 2)
         self.assertEqual(selected_provider.prompts, ["测试提示", "二次测试提示"])
         self.assertEqual(default_provider.prompts, ["测试提示", "二次测试提示"])
-        self.assertIn("最终可见输出只按要求的格式返回", selected_provider.system_prompts[0])
-        self.assertIn("最终可见输出只能是 JSON 对象本体", selected_provider.system_prompts[0])
+        self.assertIn(
+            "最终可见输出只按要求的格式返回", selected_provider.system_prompts[0]
+        )
+        self.assertIn(
+            "最终可见输出只能是 JSON 对象本体", selected_provider.system_prompts[0]
+        )
         self.assertNotIn("隐藏推理", selected_provider.system_prompts[0])
 
     async def test_update_outfit_missing_day_generates_target_date_without_deadlock(
@@ -821,7 +844,10 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("早睡恢复", prompt)
         self.assertIn("待应用修正", prompt)
         self.assertIn("不要把昨天的长时间外出", prompt)
-        self.assertIn("重复抑制参考", prompt)
+        self.assertNotIn("深蓝外出裙和小皮鞋", prompt)
+        self.assertNotIn("近期穿搭风格池", prompt)
+        self.assertNotIn("近期常出现地点", prompt)
+        self.assertNotIn("昨日穿搭：", prompt)
         decisions = await archive.get_life_decisions(limit=5)
         self.assertEqual(decisions[0].kind, "daily_plan")
         self.assertIn("低负担恢复日", decisions[0].decision)
@@ -1008,6 +1034,199 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         saved = await archive.get_day("2026-06-12")
         self.assertEqual(saved.outfit, "雾蓝薄开衫搭米白棉质长裙，头发松松编到一侧")
 
+    async def test_manual_regeneration_rejects_replaced_day_outfit(self):
+        repeated = (
+            '{"generation_contract":{"contract_version":"daily_life_generation","expected_coverage":"full_day",'
+            '"closed_loop_required":true},'
+            '"life_decision":{"life_mode":"mixed","sleep":{"mode":"normal","quality":78,"summary":"睡眠正常"},'
+            '"outfit":{"decision":"keep","scene_category":"outdoor","style_pool":"outfit_styles",'
+            '"style":"清爽甜美风","hair":"低马尾","reason":"延续原穿搭"},'
+            '"day_plan":{"schedule_type":"街区散步日","schedule_intent":"outing","energy_bias":"normal","social_bias":"light"},'
+            '"theme":"街区慢逛","mood":"薄荷绿·轻松"},'
+            '"state":{"energy":72,"mood":"轻松","busyness":30,"social":55,"sleep":{"quality":78,"summary":"睡眠正常"},"summary":"适合出门走走"},'
+            '"outfit":"米白色短袖衬衫搭浅蓝色高腰短裙，脚穿白色帆布鞋",'
+            '"timeline":[{"time":"08:10","activity":"洗漱后准备出门","status":"清醒"},'
+            '{"time":"22:20","activity":"回家洗漱后准备休息","status":"放松"}],'
+            '"places":[],"new_events":[]}'
+        )
+        changed = repeated.replace(
+            '"decision":"keep"', '"decision":"change"', 1
+        ).replace(
+            '"style":"清爽甜美风"', '"style":"轻盈休闲风"', 1
+        ).replace(
+            '"outfit":"米白色短袖衬衫搭浅蓝色高腰短裙，脚穿白色帆布鞋"',
+            '"outfit":"淡绿色棉麻短袖上衣搭白色直筒九分裤，脚穿灰色慢跑鞋"',
+            1,
+        )
+        composer, provider, _, archive = make_composer([repeated, changed])
+        await archive.save_day(
+            DayRecord(
+                date="2026-06-12",
+                outfit="米白色短袖衬衫搭浅蓝色高腰短裙，脚穿白色帆布鞋",
+                timeline=[
+                    TimelineItem(time="08:10", activity="原有日程", status="清醒"),
+                    TimelineItem(time="22:20", activity="准备休息", status="放松"),
+                ],
+                meta={"style": "清爽甜美风"},
+            )
+        )
+
+        day = await composer.generate_daily(
+            datetime.datetime(2026, 6, 12, 9, 0),
+            force=True,
+            extra="下午增加一段室内阅读",
+            regenerate_existing=True,
+        )
+
+        self.assertIsNotNone(day)
+        self.assertIn("淡绿色棉麻短袖上衣", day.outfit)
+        self.assertEqual(len(provider.prompts), 2)
+        self.assertIn("同日重生成边界", provider.prompts[0])
+        self.assertIn("待替换穿搭", provider.prompts[0])
+        self.assertIn("不能继续使用 keep", provider.prompts[1])
+
+    async def test_manual_regeneration_excludes_replaced_daily_episode(self):
+        composer, _, _, archive = make_composer()
+        await archive.save_life_episode(
+            LifeEpisodeRecord(
+                date="2026-06-12",
+                title="待替换的今日草稿",
+                summary="日程穿搭：预计保持",
+                kind="daily_plan",
+                source="daily",
+            )
+        )
+        await archive.save_life_episode(
+            LifeEpisodeRecord(
+                date="2026-06-11",
+                title="昨日真实片段",
+                summary="日程穿搭：已经换装",
+                kind="daily_plan",
+                source="daily",
+            )
+        )
+
+        context = await composer._build_lifecycle_context(
+            datetime.datetime(2026, 6, 12, 9, 0),
+            exclude_daily_plan_date="2026-06-12",
+        )
+
+        self.assertNotIn("待替换的今日草稿", context)
+        self.assertIn("昨日真实片段", context)
+
+    async def test_residence_boundary_excludes_old_city_generation_context(self):
+        composer, _, _, archive = make_composer([])
+        await archive.save_day(
+            DayRecord(
+                date="2026-06-11",
+                outfit="深蓝外套配旧城市限定纪念衫",
+                timeline=[
+                    TimelineItem(
+                        time="10:00",
+                        activity="去旧城市公园散步",
+                        status="轻松",
+                    )
+                ],
+                places=[PlaceRecord(name="旧城市公园", type="park")],
+                state=LifeState.from_value(
+                    {
+                        "sleep": {"quality": 66, "summary": "昨晚睡眠平稳"},
+                        "summary": "状态平稳",
+                    }
+                ),
+                meta={
+                    "theme": "旧城市散步",
+                    "schedule_type": "旧城闲逛日",
+                    "schedule_intent": "outing",
+                },
+            )
+        )
+        await archive.add_events(
+            "2026-06-11",
+            [
+                EventRecord(
+                    date="2026-06-11",
+                    summary="在旧城市公园拍照",
+                    place="旧城市公园",
+                )
+            ],
+        )
+        await archive.reset_residence_context(
+            changed_at="2026-06-12 08:00:00",
+            week_id="2026-W23",
+        )
+        composer.domains.home_city = "新城市"
+
+        target = datetime.datetime(2026, 6, 12, 9, 0)
+        contexts = "\n".join(
+            [
+                await composer._build_previous_life_context(target),
+                await composer._build_history_schedule_summary(target),
+                await composer._build_life_inertia_context(target),
+                await composer._build_autonomous_life_context(target),
+                await composer._build_world_context(
+                    target,
+                    "自主生活决策",
+                    {"condition": "晴"},
+                    [],
+                ),
+            ]
+        )
+        with (
+            patch("core.life.weekly.life_now", return_value=target),
+            patch(
+                "core.life.weekly.get_monday_of_week",
+                return_value=datetime.datetime(2026, 6, 8),
+            ),
+        ):
+            week_progress = await composer._get_week_progress()
+
+        self.assertIn("昨晚睡眠平稳", contexts)
+        self.assertIn("当前居住城市：新城市", contexts)
+        self.assertNotIn("旧城市公园", contexts)
+        self.assertNotIn("深蓝外套", contexts)
+        self.assertNotIn("旧城闲逛日", contexts)
+        self.assertNotIn("旧城市公园", week_progress)
+
+    async def test_recent_outfit_repeat_is_rejected_independently(self):
+        composer, _, _, archive = make_composer([])
+        repeated_outfit = "淡鹅黄色宽松短袖配米白直筒九分裤和浅灰慢跑鞋"
+        await archive.save_day(
+            DayRecord(
+                date="2026-06-11",
+                outfit=repeated_outfit,
+                timeline=[
+                    TimelineItem(time="09:00", activity="去图书馆看书", status="专注")
+                ],
+                meta={
+                    "schedule_type": "阅读日",
+                    "schedule_intent": "study",
+                    "outfit_style_pool": "outfit_styles",
+                },
+            )
+        )
+        candidate = DayRecord(
+            date="2026-06-12",
+            outfit=repeated_outfit,
+            timeline=[
+                TimelineItem(time="15:00", activity="在厨房尝试新菜", status="轻松")
+            ],
+            meta={
+                "schedule_type": "料理体验日",
+                "schedule_intent": "home",
+                "outfit_style_pool": "outfit_styles",
+            },
+        )
+
+        reason = await composer._repeat_generation_issue(
+            candidate,
+            datetime.datetime(2026, 6, 12, 9, 0),
+            {"decision_summary": {"novelty": "改为学习一道全新的菜"}},
+        )
+
+        self.assertIn("生成穿搭与 2026-06-11 过于相似", reason)
+        self.assertEqual(composer._last_validation_issue_code, "outfit_repeat")
+
     async def test_daily_generation_prompt_keeps_static_rules_before_dynamic_context(
         self,
     ):
@@ -1040,6 +1259,40 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("未能解析出 JSON 对象", provider.prompts[1])
         self.assertIn("只输出完整 JSON 对象", provider.prompts[1])
         self.assertIn("原始输出", provider.prompts[1])
+
+    async def test_daily_generation_applies_safe_location_correction_first(self):
+        valid_json = (
+            '{"generation_contract":{"contract_version":"daily_life_generation","expected_coverage":"full_day",'
+            '"closed_loop_required":true},'
+            '"outfit":"宽松白色长T恤和浅灰棉质长裤",'
+            '"timeline":[{"time":"09:00","activity":"在家整理今日计划","status":"平稳",'
+            '"place":"家","place_kind":"home","place_scope":"local","place_city":"",'
+            '"place_hint":"","travel_mode":""},'
+            '{"time":"21:00","activity":"洗漱后慢慢收尾","status":"放松",'
+            '"place":"家","place_kind":"home","place_scope":"local","place_city":"",'
+            '"place_hint":"","travel_mode":""}],'
+            '"places":[{"name":"家","type":"home","hint":""}],"new_events":[]}'
+        )
+        composer, provider, _, _ = make_composer([valid_json])
+
+        correction_flags = []
+
+        async def audit(payload, *, allow_safe_corrections=False):
+            correction_flags.append(allow_safe_corrections)
+            if not allow_safe_corrections:
+                return payload, "地图未能确认测试地点，请修正结构化地点"
+            return payload, ""
+
+        composer.domains.audit_daily_locations = AsyncMock(side_effect=audit)
+
+        data = await composer.generate_daily(
+            datetime.datetime(2026, 6, 23, 18, 29), force=True
+        )
+
+        self.assertIsNotNone(data)
+        self.assertEqual(composer.domains.audit_daily_locations.await_count, 1)
+        self.assertEqual(correction_flags, [True])
+        self.assertEqual(len(provider.prompts), 1)
 
     async def test_daily_generation_repairs_outfit_style_contaminated_by_theme_or_mood(
         self,
@@ -1131,7 +1384,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         data = await composer.update_outfit("2026-05-24", "forenoon")
 
         self.assertIsNotNone(data)
-        self.assertEqual(data.outfit, "宽松白色长T恤，低松马尾")
+        self.assertEqual(data.outfit, "宽松白色长T恤")
         self.assertEqual(data.meta["plan_outfit_decision"], "outdoor")
         self.assertEqual(data.meta["outfit_decision"], "keep")
         self.assertEqual(data.meta["outfit_scene_category"], "home")
@@ -1155,6 +1408,8 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("地点与衣着不能强制绑定", provider.prompts[0])
         self.assertIn("时段变化不等于已经换衣", provider.prompts[0])
         self.assertIn("长期审美偏好", provider.prompts[0])
+        self.assertNotIn("近期生活惯性", provider.prompts[0])
+        self.assertNotIn("重复抑制参考", provider.prompts[0])
         self.assertNotIn(
             "默认角色审美（来自配置，可清空；只作为软参考）", provider.prompts[0]
         )
@@ -1183,10 +1438,14 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
                 outfit=original_outfit,
                 timeline=[
                     TimelineItem(
-                        time="18:20", activity="回家把相机和帆布包放到桌边", status="放松"
+                        time="18:20",
+                        activity="回家把相机和帆布包放到桌边",
+                        status="放松",
                     ),
                     TimelineItem(
-                        time="19:10", activity="下楼取快递，顺便买瓶气泡水", status="轻松"
+                        time="19:10",
+                        activity="下楼取快递，顺便买瓶气泡水",
+                        status="轻松",
                     ),
                 ],
                 meta={
@@ -1234,7 +1493,9 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
                 outfit="米白短外套配浅蓝连衣裙，脚穿草绿色帆布鞋",
                 timeline=[
                     TimelineItem(
-                        time="18:20", activity="回家把相机和帆布包放到桌边", status="放松"
+                        time="18:20",
+                        activity="回家把相机和帆布包放到桌边",
+                        status="放松",
                     ),
                     TimelineItem(
                         time="20:10", activity="在客厅整理今天拍的照片", status="专注"
@@ -1292,7 +1553,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
                     place="书店",
                 )
             ],
-            weather="佛山 小雨 27°C",
+            weather="测试市 小雨 27°C",
             time_period="afternoon",
             meta={
                 "theme": "雨天慢生活",
@@ -1370,7 +1631,8 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         data = await composer.update_outfit("2026-05-24", "afternoon")
 
         self.assertIsNotNone(data)
-        self.assertEqual(data.outfit, "浅蓝外出裙，低马尾")
+        self.assertEqual(data.outfit, "浅蓝外出裙")
+        self.assertEqual(data.meta["hair"], "低马尾")
         self.assertEqual(len(outfit_provider.prompts), 1)
         self.assertEqual(len(default_provider.prompts), 0)
 
@@ -1394,7 +1656,8 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         data = await composer.update_outfit("2026-05-24", "evening")
 
         self.assertIsNotNone(data)
-        self.assertEqual(data.outfit, "白色T恤外搭薄衬衫，低马尾")
+        self.assertEqual(data.outfit, "白色T恤外搭薄衬衫")
+        self.assertEqual(data.meta["hair"], "低马尾")
         self.assertEqual(len(default_provider.prompts), 1)
         self.assertEqual(len(generation_provider.prompts), 0)
 
@@ -1429,11 +1692,12 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         stored = await archive.get_day("2026-05-24")
 
         self.assertIsNotNone(data)
-        self.assertEqual(stored.outfit, "浅杏色短袖衬衫，牛仔短裤，高马尾")
+        self.assertEqual(stored.outfit, "浅杏色短袖衬衫，牛仔短裤")
         self.assertEqual(
             stored.outfit_history["afternoon"],
-            "浅杏色短袖衬衫，牛仔短裤，高马尾",
+            "浅杏色短袖衬衫，牛仔短裤",
         )
+        self.assertEqual(stored.meta["hair"], "高马尾")
         self.assertEqual(stored.meta["outfit_scene_category"], "public")
         self.assertEqual(stored.meta["outfit_style_pool"], "outfit_styles")
         self.assertEqual(stored.meta["style"], "元气休闲风")
@@ -1609,7 +1873,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("scene_category", prompt)
         self.assertEqual(
             (await archive.get_day("2026-06-23")).outfit,
-            "米白针织开衫配浅色吊带裙，长发用发带松松束着",
+            "米白针织开衫配浅色吊带裙",
         )
 
     async def test_update_outfit_keep_ignores_future_homewear_rewrite(self):
@@ -1739,10 +2003,10 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         )
         await archive.save_day(DayRecord(date="2026-05-24"))
         first = await archive.add_life_event(
-            {"date":"2026-05-23","title":"待完成事件","status":"open"}
+            {"date": "2026-05-23", "title": "待完成事件", "status": "open"}
         )
         second = await archive.add_life_event(
-            {"date":"2026-05-23","title":"另一个事件","status":"open"}
+            {"date": "2026-05-23", "title": "另一个事件", "status": "open"}
         )
 
         await composer.compose_daily_review("2026-05-24", force=True)
@@ -1842,6 +2106,67 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(new_timeline)
         self.assertEqual(len(invite_provider.prompts), 1)
         self.assertEqual(len(default_provider.prompts), 0)
+
+    async def test_invite_timeline_is_location_audited_before_return(self):
+        composer, _, _, _ = make_composer(
+            [
+                '{"decision":"accept","accept":true,"reason":"愿意一起去",'
+                '"new_future_timeline":[{"time":"16:00","activity":"一起去测试书店",'
+                '"status":"期待","place":"测试书店","place_kind":"poi",'
+                '"place_scope":"local","place_city":"","place_hint":"测试区",'
+                '"travel_mode":"walking"}]}'
+            ]
+        )
+
+        async def audit(payload):
+            payload["timeline"][-1].update(
+                {
+                    "place_city": "测试市",
+                    "place_address": "测试区测试路1号",
+                    "place_latitude": 23.01,
+                    "place_longitude": 113.01,
+                    "place_coordinate_source": "amap_poi",
+                }
+            )
+            payload["places"] = [
+                {
+                    "name": "测试书店",
+                    "type": "书店",
+                    "hint": "测试区测试路1号",
+                    "latitude": 23.01,
+                    "longitude": 113.01,
+                    "coordinate_source": "amap_poi",
+                }
+            ]
+            payload["location_audit"] = {
+                "map_provider": "高德地图",
+                "home_city": "测试市",
+            }
+            return payload, ""
+
+        composer.domains.audit_daily_locations = AsyncMock(side_effect=audit)
+
+        _, new_timeline, result = await composer.handle_invite(
+            "2026-05-24",
+            [
+                TimelineItem(
+                    time="15:00",
+                    activity="在家整理书桌",
+                    status="平静",
+                    place="家",
+                    place_kind="home",
+                    place_scope="local",
+                )
+            ],
+            "下午一起去书店吗",
+            datetime.datetime(2026, 5, 24, 15, 0),
+            user_name="阿林",
+        )
+
+        self.assertIsNotNone(new_timeline)
+        self.assertEqual(new_timeline[-1].place_address, "测试区测试路1号")
+        self.assertEqual(result["_audited_places"][0]["name"], "测试书店")
+        self.assertEqual(result["_location_audit"]["map_provider"], "高德地图")
 
     async def test_invite_prompt_keeps_static_rules_before_dynamic_context(self):
         composer, provider, _, _ = make_composer(
@@ -2247,6 +2572,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
                 {"time": "09:42", "activity": "慢慢吃完早餐", "status": "清醒"},
                 {"time": "12:18", "activity": "去厨房准备午饭", "status": "专注"},
                 {"time": "14:53", "activity": "窝在沙发上看书", "status": "放松"},
+                {"time": "16:37", "activity": "起身倒水并整理照片", "status": "舒展"},
                 {"time": "18:26", "activity": "出门沿街散步", "status": "轻快"},
                 {"time": "21:11", "activity": "回家洗漱整理", "status": "安稳"},
                 {"time": "22:47", "activity": "关灯准备睡觉", "status": "困倦"},
@@ -2258,6 +2584,40 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertTrue(ok, reason)
+
+    def test_daily_payload_validation_rejects_sparse_full_day_timeline(self):
+        composer, *_ = make_composer()
+        payload = {
+            "generation_contract": {
+                "contract_version": "daily_life_generation",
+                "expected_coverage": "full_day",
+                "closed_loop_required": True,
+            },
+            "life_decision": {
+                "life_mode": "awake",
+                "sleep": {"mode": "normal", "quality": 75, "summary": "正常作息"},
+            },
+            "state": {"energy": 72, "mood": "平稳"},
+            "outfit": "浅色居家裙",
+            "planned_actions": [],
+            "timeline": [
+                {"time": "08:07", "activity": "自然醒后洗漱", "status": "刚醒"},
+                {"time": "09:42", "activity": "慢慢吃早餐", "status": "清醒"},
+                {"time": "12:18", "activity": "准备午饭", "status": "专注"},
+                {"time": "14:53", "activity": "坐在窗边看书", "status": "放松"},
+                {"time": "18:26", "activity": "出门散步", "status": "轻快"},
+                {"time": "21:11", "activity": "回家洗漱", "status": "安稳"},
+                {"time": "22:47", "activity": "关灯睡觉", "status": "困倦"},
+            ],
+        }
+
+        ok, reason = composer._validate_daily_payload(
+            payload, expected_coverage="full_day"
+        )
+
+        self.assertFalse(ok)
+        self.assertIn("只有 7 个时间轴节点", reason)
+        self.assertEqual(composer._last_validation_issue_code, "timeline_density")
 
     def test_daily_payload_validation_allows_night_life_cross_midnight_closure(self):
         composer, *_ = make_composer()
@@ -2586,7 +2946,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         composer, *_ = make_composer()
         weather_section, constraint_section = composer._build_weather_sections(
             {
-                "raw": "北京 晴 24°C",
+                "raw": "测试市 晴 24°C",
                 "temp": 24,
                 "temp_desc": "温暖",
                 "condition": "晴",
@@ -2607,7 +2967,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         composer, *_ = make_composer()
         _, constraint_section = composer._build_weather_sections(
             {
-                "raw": "北京 暴雨 18°C",
+                "raw": "测试市 暴雨 18°C",
                 "temp": 18,
                 "temp_desc": "凉爽",
                 "condition": "暴雨",

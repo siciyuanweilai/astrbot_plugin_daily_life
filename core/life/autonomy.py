@@ -39,13 +39,11 @@ class LifeAutonomyMixin:
         lookback_days = min(lookback_days, 14)
         modes: Counter[str] = Counter()
         intents: Counter[str] = Counter()
-        styles: Counter[str] = Counter()
-        places: Counter[str] = Counter()
-        moods: Counter[str] = Counter()
-        daily_lines: list[str] = []
 
         for offset in range(1, lookback_days + 1):
             day_str = (date - datetime.timedelta(days=offset)).strftime("%Y-%m-%d")
+            if await self._is_before_residence_boundary(day_str):
+                continue
             day = await self.archive.get_day(day_str)
             if not day:
                 continue
@@ -53,80 +51,16 @@ class LifeAutonomyMixin:
             for key, counter in (
                 ("life_mode", modes),
                 ("schedule_intent", intents),
-                ("outfit_style_pool", styles),
-                ("mood", moods),
             ):
                 value = _compact(meta.get(key), 60)
                 if value:
                     counter[value] += 1
-            for place in day.places[:3]:
-                name = _compact(getattr(place, "name", ""), 60)
-                if name:
-                    places[name] += 1
-
-            first = day.timeline[0] if day.timeline else None
-            last = day.timeline[-1] if day.timeline else None
-            daily_bits = [
-                _compact(meta.get("theme"), 48),
-                _compact(meta.get("schedule_type") or meta.get("schedule_intent"), 48),
-                _compact(meta.get("outfit_style_pool") or meta.get("style"), 48),
-            ]
-            if first:
-                daily_bits.append(f"起点 {first.time} {_compact(first.activity, 36)}")
-            if last and last is not first:
-                daily_bits.append(f"收束 {last.time} {_compact(last.activity, 36)}")
-            body = "；".join(bit for bit in daily_bits if bit)
-            if body:
-                daily_lines.append(f"- {day_str}：{body}")
 
         summary_lines = [
             self._counter_line(modes, "近期生活模式"),
             self._counter_line(intents, "近期活动倾向"),
-            self._counter_line(styles, "近期穿搭风格池"),
-            self._counter_line(moods, "近期心情色彩"),
-            self._counter_line(places, "近期常出现地点"),
         ]
-        if daily_lines:
-            summary_lines.append("近期逐日片段：")
-            summary_lines.extend(daily_lines[:8])
         return _lines("🧭 近期生活惯性", [line for line in summary_lines if line])
-
-    async def _build_repeat_guard_context(self, date: datetime.datetime) -> str:
-        lines: list[str] = []
-        for offset in range(1, 6):
-            day_str = (date - datetime.timedelta(days=offset)).strftime("%Y-%m-%d")
-            day = await self.archive.get_day(day_str)
-            if not day:
-                continue
-            meta = day.meta or {}
-            timeline_bits = [
-                _compact(item.activity, 32)
-                for item in (
-                    day.timeline[:2] + day.timeline[-2:]
-                    if len(day.timeline) > 2
-                    else day.timeline
-                )
-                if _compact(item.activity, 32)
-            ]
-            parts = [
-                _compact(meta.get("theme"), 48),
-                _compact(meta.get("schedule_type"), 48),
-                _compact(meta.get("mood"), 48),
-                _compact(meta.get("outfit_style_pool") or meta.get("style"), 48),
-                _compact(day.outfit, 60),
-                " / ".join(dict.fromkeys(timeline_bits)),
-            ]
-            body = "；".join(part for part in parts if part)
-            if body:
-                lines.append(f"- {day_str}：{body}")
-        if not lines:
-            return ""
-        return (
-            "## 🚫 重复抑制参考\n"
-            "下面是最近生活的主题、穿搭、活动和心情骨架。今天可以延续生活逻辑，但要主动给出新的变化点；"
-            "只有承诺、天气、身体状态或用户指令需要延续时，才自然保留相同元素。\n"
-            + "\n".join(lines)
-        )
 
     async def _build_short_term_life_context(self) -> str:
         sections: list[str] = []
@@ -195,17 +129,21 @@ class LifeAutonomyMixin:
         if not callable(get_decisions):
             return ""
         decisions = await get_decisions(limit=limit)
+        boundary = await self._current_residence_boundary_date()
         lines = [
             f"- {item.date or item.created_at[:10]}｜{item.kind}｜{item.decision}"
             + (f"；原因：{item.reason}" if item.reason else "")
             for item in decisions
-            if item.decision or item.reason
+            if (item.decision or item.reason)
+            and item.kind not in {"daily_plan", "outfit"}
+            and (not boundary or not item.date or item.date >= boundary)
         ]
         return _lines("🧾 近期生活决策记录", lines[:limit])
 
     async def _build_execution_review_context(self, date: datetime.datetime) -> str:
         previous_date = (date - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-        previous_day = await self.archive.get_day(previous_date)
+        if await self._is_before_residence_boundary(previous_date):
+            return ""
         previous_review = await self.archive.get_daily_review(previous_date)
         decisions = await self.archive.get_life_decisions(limit=8, kind="daily_plan")
         previous_decision = next(
@@ -217,17 +155,6 @@ class LifeAutonomyMixin:
                 lines.append(f"- 昨日决策：{_compact(previous_decision.decision, 120)}")
             if previous_decision.outcome:
                 lines.append(f"- 原安排：{_compact(previous_decision.outcome, 140)}")
-        if previous_day and previous_day.timeline:
-            first = previous_day.timeline[0]
-            last = previous_day.timeline[-1]
-            lines.append(
-                f"- 实际时间轴：{first.time} {_compact(first.activity, 48)}"
-                + (
-                    f"；{last.time} {_compact(last.activity, 48)}"
-                    if last is not first
-                    else ""
-                )
-            )
         if previous_review and previous_review.summary:
             lines.append(f"- 夜间复盘：{_compact(previous_review.summary, 160)}")
         if not lines:
@@ -243,7 +170,6 @@ class LifeAutonomyMixin:
             await self._build_emotion_arc_context(date),
             await self._build_recent_life_decision_context(),
             await self._build_execution_review_context(date),
-            await self._build_repeat_guard_context(date),
         ]
         return "\n\n".join(section for section in sections if section)
 

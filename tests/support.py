@@ -433,7 +433,7 @@ class Provider:
     def __init__(
         self,
         responses=(),
-        system_prompt="测试人格住在北京，喜欢甜妹风和小甜点。",
+        system_prompt="测试人格住在测试市，喜欢甜妹风和小甜点。",
         provider_id="",
     ):
         self.responses = list(responses)
@@ -645,6 +645,7 @@ class DataManager:
         self.memory_decision_links = {}
         self.next_memory_decision_link_id = 1
         self.memory_vectors = {}
+        self.residence_context_changed_at = ""
 
     @staticmethod
     def _text(value):
@@ -758,6 +759,15 @@ class DataManager:
 
     async def save_week_plan(self, plan):
         self.week_plans[plan.week_id] = plan
+
+    async def reset_residence_context(self, *, changed_at, week_id=""):
+        self.residence_context_changed_at = str(changed_at or "")
+        self.places.clear()
+        if week_id:
+            self.week_plans.pop(week_id, None)
+
+    async def get_residence_context_boundary(self):
+        return self.residence_context_changed_at
 
     async def save_commitment(self, commitment):
         item = (
@@ -3448,7 +3458,7 @@ class DataManager:
 
 class WeatherClient:
     async def get_weather(self, city):
-        return "北京 晴 20°C"
+        return "测试市 晴 20°C"
 
 
 class DomainService:

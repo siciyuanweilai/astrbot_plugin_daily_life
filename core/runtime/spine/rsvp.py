@@ -7,8 +7,8 @@ from typing import Any
 from astrbot.api import logger
 
 from ...clock import now as life_now
+from ...models import DayRecord, EventRecord, PlaceRecord
 from ..locks import operation_lock
-from ...models import DayRecord, EventRecord
 from ..markers import LOG_PREFIX
 
 
@@ -66,6 +66,23 @@ class SpineInviteMixin:
         raw_message: str,
     ) -> str:
         data.timeline = new_timeline
+        audited_places = decision.get("_audited_places")
+        if isinstance(audited_places, list):
+            data.places = [
+                place
+                for place in (PlaceRecord.from_value(item) for item in audited_places)
+                if place is not None
+            ]
+            if data.places:
+                await self.archive.touch_places(today_str, data.places, source="invite")
+        location_audit = decision.get("_location_audit")
+        if isinstance(location_audit, dict):
+            data.meta["location_audit_provider"] = str(
+                location_audit.get("map_provider") or ""
+            )
+            data.meta["location_audit_city"] = str(
+                location_audit.get("home_city") or ""
+            )
         if self.config.state.enabled:
             data = await self.refresh_state_for_day(
                 today_str,

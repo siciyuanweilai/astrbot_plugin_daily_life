@@ -19,7 +19,37 @@ class SnapshotSeedMixin:
             await wait_for_platform()
         now = now or self._runtime_now()
         target_date_str, _ = await self.resolve_injection_target(now)
-        if await self.archive.get_day(target_date_str):
+        domains = getattr(self, "domains", None)
+        resolver = getattr(domains, "resolve_home_location", None)
+        if callable(resolver):
+            await resolver()
+        residence_change_consumer = getattr(
+            domains,
+            "consume_detected_residence_change",
+            None,
+        )
+        detected_residence_change = (
+            residence_change_consumer()
+            if callable(residence_change_consumer)
+            else ""
+        )
+        current_day = await self.archive.get_day(target_date_str)
+        stale_residence_context = bool(
+            current_day
+            and str(
+                (getattr(current_day, "meta", {}) or {}).get(
+                    "residence_context_stale"
+                )
+                or ""
+            ).lower()
+            == "true"
+        )
+        if detected_residence_change or stale_residence_context:
+            target = self._target_datetime_for_command(target_date_str, now)
+            await self._prepare_residence_change(target)
+            await self._refresh_after_residence_change(target)
+            return
+        if current_day:
             return
         await self._generate_missing_day_background(
             target_date_str,

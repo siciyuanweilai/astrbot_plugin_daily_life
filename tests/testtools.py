@@ -2,25 +2,61 @@ import datetime
 import random
 import unittest
 
-from support import (
-    get_time_period,
-    get_current_timeline_status,
-    resolve_business_now,
-    resolve_daily_hint,
-    resolve_daily_suggested,
-)
-from core.life.tools import get_matching_hairstyle
-from core.life.tools import reconcile_timeline_execution
-from core.models import TimelineItem
-from core.life.surroundings import normalize_event_items, normalize_place_names
+from core.life.appearance import strip_hair_from_outfit
 from core.life.future import future_outfit_timing_issue
+from core.life.surroundings import normalize_event_items, normalize_place_names
+from core.life.tools import (
+    format_timeline_to_text,
+    get_matching_hairstyle,
+    reconcile_timeline_execution,
+)
 from core.life.wardrobe import (
     resolve_outfit_style_pool,
     style_pool_for_scene_category,
 )
+from core.models import TimelineItem
+from support import (
+    get_current_timeline_status,
+    get_time_period,
+    resolve_business_now,
+    resolve_daily_hint,
+    resolve_daily_suggested,
+)
 
 
 class LifeToolsTest(unittest.TestCase):
+    def test_outfit_and_hair_are_kept_in_separate_fields(self):
+        outfit = strip_hair_from_outfit(
+            "浅绿色短袖衬衫搭配白色直筒裤，脚穿帆布鞋；"
+            "头发扎成蓬松高马尾，用浅色发圈固定，额前留有轻薄刘海。",
+            "蓬松高马尾",
+            "蓬松高马尾用浅色发圈固定，额前留有轻薄刘海，发尾自然微卷。",
+        )
+
+        self.assertEqual(outfit, "浅绿色短袖衬衫搭配白色直筒裤，脚穿帆布鞋")
+
+    def test_timeline_text_includes_grounded_travel_details(self):
+        timeline = [
+            TimelineItem(time="08:00", activity="整理随身物品", place="家"),
+            TimelineItem(
+                time="09:00",
+                activity="到测试书店看书",
+                place="测试书店",
+                travel_mode="transit",
+                travel_origin="家",
+                travel_provider="amap",
+                travel_minutes=20,
+                travel_distance_meters=5600,
+            ),
+        ]
+
+        result = format_timeline_to_text(timeline)
+
+        self.assertIn(
+            "出行：从家前往测试书店 · 公共交通约 20 分钟 · 5.6 公里 · 高德地图",
+            result,
+        )
+
     def test_timeline_execution_follows_clock_and_preserves_skips(self):
         timeline = [
             TimelineItem(time="09:00", activity="早餐"),

@@ -59,6 +59,7 @@ class DailyGenerationMixin:
         "injection_seed": "即时补全",
         "startup_seed": "首次启动补全",
         "daily_refresh": "每日刷新",
+        "residence_change": "居住地变化",
     }
 
     def _init_daily_generation_state(self) -> None:
@@ -192,6 +193,11 @@ class DailyGenerationMixin:
         )
         web_inspiration = ""
         try:
+            regenerate_existing = bool(
+                force
+                and operation.source in {"dashboard_reset", "command_reset"}
+                and await self.archive.get_day(operation.date) is not None
+            )
             if use_web:
                 await self._set_daily_generation_phase(operation, "searching")
                 logger.debug(f"{LOG_PREFIX} 日程任务进入联网搜索：任务={task_id}")
@@ -231,6 +237,7 @@ class DailyGenerationMixin:
                     target_hour=target_hour,
                     extra=extra,
                     web_inspiration=web_inspiration,
+                    regenerate_existing=regenerate_existing,
                 )
 
             if day is None:

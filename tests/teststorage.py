@@ -61,6 +61,43 @@ from support import LifeArchive, LifeSettings
 
 
 class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
+    async def test_daily_plan_episode_is_replaced_for_same_date(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(f"{tmpdir}/daily_life.db")
+            try:
+                first = await archive.save_life_episode(
+                    LifeEpisodeRecord(
+                        date="2026-08-04",
+                        title="第一版日程",
+                        summary="日程穿搭：预计保持",
+                        kind="daily_plan",
+                        source="daily",
+                    )
+                )
+                second = await archive.save_life_episode(
+                    LifeEpisodeRecord(
+                        date="2026-08-04",
+                        title="第二版日程",
+                        summary="日程穿搭：已经换装",
+                        kind="daily_plan",
+                        source="daily",
+                    )
+                )
+
+                episodes = await archive.get_life_episodes(limit=10)
+                same_day = [
+                    item
+                    for item in episodes
+                    if item.date == "2026-08-04"
+                    and item.kind == "daily_plan"
+                    and item.source == "daily"
+                ]
+                self.assertEqual(first.id, second.id)
+                self.assertEqual(len(same_day), 1)
+                self.assertEqual(same_day[0].title, "第二版日程")
+            finally:
+                archive.close()
+
     async def test_stale_day_saves_merge_disjoint_fields(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             archive = LifeArchive(f"{tmpdir}/daily_life.db")

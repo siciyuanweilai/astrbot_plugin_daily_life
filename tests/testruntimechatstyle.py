@@ -173,7 +173,7 @@ class RuntimeChatStyleTest(unittest.TestCase):
         )
         data = DayRecord(
             date="2026-05-24",
-            weather="北京 晴 20°C",
+            weather="测试市 晴 20°C",
             timeline=[
                 TimelineItem(time="12:10", activity="去咖啡店写手帐", status="专注")
             ],

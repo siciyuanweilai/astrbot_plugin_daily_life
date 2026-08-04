@@ -1,5 +1,6 @@
 import {
   ACTION_LABELS,
+  ACTION_OWNER_LABELS,
   ATMOSPHERE_LABELS,
   BOT_WATCH_STATE_LABELS,
   CURRENT_SLEEP_LABELS,
@@ -16,8 +17,13 @@ import {
   FRESHNESS_LABELS,
   INTERRUPT_LEVEL_LABELS,
   LIFE_DECISION_KIND_LABELS,
+  LIFE_DOMAIN_KIND_LABELS,
+  LIFE_DOMAIN_SOURCE_LABELS,
+  LIFE_DOMAIN_STATUS_LABELS,
+  MEAL_TYPE_LABELS,
   PLACE_TYPE_LABELS,
   PREFERENCE_CATEGORY_LABELS,
+  QUANTITY_UNIT_LABELS,
   RHYTHM_LIFECYCLE_LABELS,
   SCHEDULE_INTENT_LABELS,
   SCHEDULE_TONE_LABELS,
@@ -855,15 +861,54 @@ function renderMeters(day = {}, status = {}) {
 }
 
 function cloneTimeline(timeline = []) {
-  return (Array.isArray(timeline) ? timeline : []).map((item) => ({
-    time: clean(item.time, ""),
-    activity: clean(item.activity, ""),
-    status: clean(item.status, ""),
-    execution_state: clean(item.execution_state, "planned"),
-    execution_reason: clean(item.execution_reason, ""),
-    execution_evidence: clean(item.execution_evidence, ""),
-    execution_updated_at: clean(item.execution_updated_at, ""),
-  }));
+  return (Array.isArray(timeline) ? timeline : []).map((item) => {
+    const source = item && typeof item === "object" ? item : {};
+    return {
+      ...source,
+      time: clean(source.time, ""),
+      activity: clean(source.activity, ""),
+      status: clean(source.status, ""),
+      execution_state: clean(source.execution_state, "planned"),
+      execution_reason: clean(source.execution_reason, ""),
+      execution_evidence: clean(source.execution_evidence, ""),
+      execution_updated_at: clean(source.execution_updated_at, ""),
+    };
+  });
+}
+
+function timelineTravelText(item = {}, previousItem = {}) {
+  const mode = clean(item.travel_mode, "");
+  const minutes = Math.max(0, Number(item.travel_minutes || 0));
+  const distance = Math.max(0, Number(item.travel_distance_meters || 0));
+  if (!mode && !minutes && !distance) return "";
+
+  const modeLabel = {
+    walking: "步行",
+    cycling: "骑行",
+    driving: "驾车",
+    transit: "公共交通",
+  }[mode] || mode || "出行";
+  const providerLabel = {
+    amap: "高德地图",
+    tencent: "腾讯地图",
+    baidu: "百度地图",
+    coordinate_estimate: "坐标估算",
+    default_estimate: "默认估算",
+  }[clean(item.travel_provider, "")] || "";
+  const origin = clean(item.travel_origin, "") || clean(previousItem.place, "");
+  const destination = clean(item.place, "");
+  const parts = [];
+  if (origin && destination && origin !== destination) {
+    parts.push(`从${origin}前往${destination}`);
+  }
+  parts.push(minutes ? `${modeLabel}约 ${Math.ceil(minutes)} 分钟` : modeLabel);
+  if (distance > 0) {
+    parts.push(distance < 1000
+      ? `${Math.round(distance)} 米`
+      : `${(distance / 1000).toFixed(distance >= 10000 ? 0 : 1)} 公里`);
+  }
+  if (providerLabel) parts.push(providerLabel);
+  return parts.join(" · ");
 }
 
 function setTimelineButtons(hasDay) {
@@ -879,11 +924,13 @@ function renderTimelineDisplay(timeline) {
     return;
   }
   el.timelineList.replaceChildren(
-    ...timeline.map((item) => {
+    ...timeline.map((item, index) => {
       const li = node("li", "timeline-item");
       li.append(node("div", "time", clean(item.time, TIMELINE_TIME_EMPTY_TEXT)));
       const body = node("div");
       body.append(node("div", "timeline-activity", clean(item.activity)));
+      const travel = timelineTravelText(item, timeline[index - 1]);
+      if (travel) body.append(node("div", "timeline-travel", travel));
       if (item.status) body.append(node("div", "status", clean(item.status)));
       const executionState = clean(item.execution_state, "planned");
       const executionLabel = TIMELINE_EXECUTION_LABELS[executionState];
@@ -974,37 +1021,6 @@ function renderStateLogs(day = {}) {
   );
 }
 
-const DOMAIN_KIND_LABELS = {
-  activity: "活动",
-  meal: "饮食",
-  chore: "家务",
-  fitness: "运动",
-  conversation_action: "行动项",
-};
-
-const DOMAIN_STATUS_LABELS = {
-  planned: "待进行",
-  active: "进行中",
-  simulated: "模拟完成",
-  completed: "已完成",
-  open: "待处理",
-  pending: "已安排",
-  done: "已完成",
-  failed: "未完成",
-  expired: "已过期",
-  cancelled: "已取消",
-};
-
-const DOMAIN_SOURCE_LABELS = {
-  daily_plan: "日程计划",
-  life_action: "动作回执",
-  life_action_simulation: "生活模拟",
-  timeline_simulation: "时间轴模拟",
-  conversation: "会话行动项",
-  schedule: "日程安排",
-  user: "用户记录",
-};
-
 function domainRecord(title, meta = "", lines = []) {
   const record = node("div", "record domain-record");
   const head = node("div", "record-head");
@@ -1023,14 +1039,14 @@ function domainRecord(title, meta = "", lines = []) {
 function renderDomainTimeline(domains = {}) {
   const items = Array.isArray(domains.timeline) ? domains.timeline : [];
   return items.map((item) => {
-    const kind = DOMAIN_KIND_LABELS[clean(item.kind, "")] || clean(item.kind, "生活");
-    const status = DOMAIN_STATUS_LABELS[clean(item.status, "")] || clean(item.status, "");
+    const kind = enumLabelOrReadableText(item.kind, LIFE_DOMAIN_KIND_LABELS, "生活");
+    const status = enumLabelOrReadableText(item.status, LIFE_DOMAIN_STATUS_LABELS, "状态未知");
     return domainRecord(
       clean(item.title, kind),
       [kind, status].filter(Boolean).join(" · "),
       [
         clean(item.occurred_at, ""),
-        DOMAIN_SOURCE_LABELS[clean(item.source, "")] || (item.source ? "其他来源" : ""),
+        enumLabelOrReadableText(item.source, LIFE_DOMAIN_SOURCE_LABELS, item.source ? "其他来源" : ""),
       ]
     );
   });
@@ -1040,7 +1056,10 @@ function renderDomainFood(domains = {}) {
   const meals = (Array.isArray(domains.meals) ? domains.meals : []).map((item) => (
     domainRecord(
       clean(item.name, "用餐"),
-      [clean(item.meal_type, "饮食"), DOMAIN_STATUS_LABELS[clean(item.status, "")] || ""].filter(Boolean).join(" · "),
+      [
+        enumLabelOrReadableText(item.meal_type, MEAL_TYPE_LABELS, "饮食"),
+        enumLabelOrReadableText(item.status, LIFE_DOMAIN_STATUS_LABELS, "状态未知"),
+      ].filter(Boolean).join(" · "),
       [clean(item.occurred_at || item.date, ""), clean(item.place, "")]
     )
   ));
@@ -1049,7 +1068,7 @@ function renderDomainFood(domains = {}) {
       clean(item.name, "库存物品"),
       "现有库存",
       [
-        `数量：${Number(item.quantity || 0)}${clean(item.unit, "")}`,
+        `数量：${Number(item.quantity || 0)}${enumLabelOrReadableText(item.unit, QUANTITY_UNIT_LABELS, "")}`,
         item.expires_at ? `到期：${clean(item.expires_at)}` : "",
       ]
     )
@@ -1072,7 +1091,7 @@ function renderDomainChores(domains = {}) {
     )),
     ...records.map((item) => domainRecord(
       clean(item.name, "家务"),
-      DOMAIN_STATUS_LABELS[clean(item.status, "")] || clean(item.status, ""),
+      enumLabelOrReadableText(item.status, LIFE_DOMAIN_STATUS_LABELS, "状态未知"),
       [clean(item.occurred_at, ""), item.duration_minutes ? `${Number(item.duration_minutes)} 分钟` : ""]
     )),
   ];
@@ -1082,7 +1101,7 @@ function renderDomainFitness(domains = {}) {
   const items = Array.isArray(domains.fitness) ? domains.fitness : [];
   return items.map((item) => domainRecord(
     clean(item.activity, "运动"),
-    DOMAIN_STATUS_LABELS[clean(item.status, "")] || clean(item.status, ""),
+    enumLabelOrReadableText(item.status, LIFE_DOMAIN_STATUS_LABELS, "状态未知"),
     [
       clean(item.occurred_at || item.date, ""),
       `${Number(item.duration_minutes || 0)} 分钟 · 强度 ${Number(item.intensity || 0)} · 负荷 ${Number(item.load_score || 0)}`,
@@ -1094,9 +1113,9 @@ function renderDomainActions(domains = {}) {
   const items = Array.isArray(domains.conversation_actions) ? domains.conversation_actions : [];
   return items.map((item) => domainRecord(
     clean(item.title, "行动项"),
-    DOMAIN_STATUS_LABELS[clean(item.status, "")] || clean(item.status, ""),
+    enumLabelOrReadableText(item.status, LIFE_DOMAIN_STATUS_LABELS, "状态未知"),
     [
-      `负责人：${clean(item.owner, "未定")}`,
+      `负责人：${enumLabelOrReadableText(item.owner, ACTION_OWNER_LABELS, "未定")}`,
       item.due_at ? `截止：${clean(item.due_at)}` : "",
       item.source_session ? `来源会话：${clean(item.source_session)}` : "",
     ]

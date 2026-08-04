@@ -9,7 +9,8 @@ from astrbot.api import logger
 
 from ...clock import now as life_now
 from ...config.options import LifeSettings
-from ...life.tools import get_time_period, resolve_business_now
+from ...life.tools import get_time_period, get_week_id, resolve_business_now
+from ...models import WeatherInfo
 from ..markers import LOG_PREFIX
 
 
@@ -84,6 +85,60 @@ class SpineAdaptMixin:
         finally:
             await self._end_runtime_service_swap()
 
+    @staticmethod
+    def _residence_address(config: LifeSettings) -> str:
+        return " ".join(str(config.domains.home_address or "").split()).casefold()
+
+    async def _prepare_residence_change(self, target: datetime.datetime) -> None:
+        changed_at = life_now().strftime("%Y-%m-%d %H:%M:%S")
+        resetter = getattr(self.archive, "reset_residence_context", None)
+        if callable(resetter):
+            await resetter(
+                changed_at=changed_at,
+                week_id=get_week_id(target),
+            )
+        domains = getattr(self, "domains", None)
+        boundary_setter = getattr(domains, "set_residence_boundary", None)
+        if callable(boundary_setter):
+            boundary_setter(changed_at)
+        cache_invalidator = getattr(domains, "invalidate_home_location_cache", None)
+        if callable(cache_invalidator):
+            cache_invalidator()
+
+        target_date = target.strftime("%Y-%m-%d")
+
+        def invalidate_location_context(day) -> None:
+            day.weather = ""
+            day.weather_info = WeatherInfo()
+            day.weather_last_update = 0
+            day.places = []
+            day.meta["residence_context_stale"] = "true"
+
+        mutator = getattr(self.archive, "mutate_day", None)
+        if callable(mutator):
+            await mutator(target_date, invalidate_location_context)
+        self._injection_snapshot_cache = {}
+        notifier = getattr(self, "mark_page_status_changed", None)
+        if callable(notifier):
+            await notifier("residence_changed")
+
+    async def _refresh_after_residence_change(
+        self, target: datetime.datetime
+    ) -> None:
+        resolver = getattr(getattr(self, "domains", None), "resolve_home_location", None)
+        if callable(resolver):
+            await resolver()
+        try:
+            await self.run_daily_generation(
+                date=target,
+                source="residence_change",
+                force=True,
+                delete_existing=False,
+                use_web=False,
+            )
+        except Exception as exc:
+            logger.warning(f"{LOG_PREFIX} 居住地变化后的生活背景刷新失败：{exc}")
+
     async def apply_config(self, next_config: dict[str, Any]) -> LifeSettings:
         if not isinstance(next_config, dict):
             raise ValueError("配置必须是对象")
@@ -93,6 +148,9 @@ class SpineAdaptMixin:
         payload = copy.deepcopy(next_config)
         parsed = LifeSettings.from_dict(payload)
         previous_config = copy.deepcopy(dict(self.raw_config))
+        previous_address = self._residence_address(self.config)
+        next_address = self._residence_address(parsed)
+        residence_changed = bool(previous_address) and previous_address != next_address
 
         async with self.generation_lock:
             previous_services = self._current_runtime_services()
@@ -118,6 +176,15 @@ class SpineAdaptMixin:
                 raise
 
             await self._close_runtime_services(previous_services)
+
+        if residence_changed:
+            target = resolve_business_now(self.config.schedule_time, life_now())
+            await self._prepare_residence_change(target)
+            self._schedule_background_task(
+                self._refresh_after_residence_change(target),
+                label="居住地变化刷新",
+                key="residence_change_refresh",
+            )
 
         logger.info(f"{LOG_PREFIX} 已从设置页重新加载配置")
         return self.config

@@ -1,11 +1,10 @@
 import datetime
-
+import math
 from collections import Counter
 from dataclasses import dataclass
 
 from ..prompts import cache_friendly_prompt
 from .fashion import outfit_style_contamination_reason
-
 
 GENERATION_CONTRACT_VERSION = "daily_life_generation"
 FULL_DAY_LATEST_START_MINUTES = 13 * 60 + 30
@@ -14,6 +13,10 @@ FULL_DAY_MIN_SPAN_MINUTES = 6 * 60
 NIGHT_DAY_LATEST_START_MINUTES = 20 * 60
 NIGHT_DAY_EARLIEST_END_MINUTES = 23 * 60
 DAY_MINUTES = 24 * 60
+FULL_DAY_MIN_TIMELINE_NODES = 8
+NIGHT_LIFE_MIN_TIMELINE_NODES = 6
+FULL_DAY_TARGET_GAP_MINUTES = 150
+FULL_DAY_MAX_GAP_MINUTES = 210
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,18 +135,36 @@ class DailyContractMixin:
         return " ".join(str(novelty or "").split())
 
     async def _repeat_generation_issue(
-        self, day, date: datetime.datetime, payload: dict, manual_extra: str = ""
+        self,
+        day,
+        date: datetime.datetime,
+        payload: dict,
+        manual_extra: str = "",
+        replaced_day=None,
     ) -> str:
-        if str(manual_extra or "").strip():
-            return ""
         novelty = self._decision_novelty_text(payload)
         current = self._day_repeat_profile(day)
         if not (current["schedule_type"] or current["outfit"] or current["timeline"]):
+            return ""
+        if replaced_day is not None:
+            replaced = self._day_repeat_profile(replaced_day)
+            outfit_similarity = self._repeat_similarity(
+                current["outfit"], replaced["outfit"]
+            )
+            if outfit_similarity >= 0.86:
+                self._set_validation_issue("outfit_repeat")
+                return (
+                    "手动重生成仍沿用了待替换日程的穿搭；"
+                    "请重新决定服装类别、主色、版型或层次组合，不能继续使用 keep"
+                )
+        if str(manual_extra or "").strip():
             return ""
         for offset in range(1, 4):
             previous_date = (date - datetime.timedelta(days=offset)).strftime(
                 "%Y-%m-%d"
             )
+            if await self._is_before_residence_boundary(previous_date):
+                continue
             previous_day = await self.archive.get_day(previous_date)
             if not previous_day:
                 continue
@@ -172,11 +193,22 @@ class DailyContractMixin:
             )
             has_clear_novelty = len(novelty) >= 8
             if (
+                outfit_similarity >= 0.86
+                and current["outfit_style_pool"] != "sleep_styles"
+                and previous["outfit_style_pool"] != "sleep_styles"
+            ):
+                self._set_validation_issue("outfit_repeat")
+                return (
+                    f"生成穿搭与 {previous_date} 过于相似；"
+                    "保留天气和场景适配，但需要改变服装类别、主色、版型或层次组合"
+                )
+            if (
                 same_schedule
                 and outfit_similarity >= 0.92
                 and timeline_similarity >= 0.72
                 and not has_clear_novelty
             ):
+                self._set_validation_issue("daily_repeat")
                 return f"生成内容与 {previous_date} 的日程、穿搭和活动过于相似，需要主动给出新的生活变化点"
             if (
                 total_similarity >= 0.88
@@ -185,6 +217,7 @@ class DailyContractMixin:
                 )
                 >= 2
             ):
+                self._set_validation_issue("daily_repeat")
                 return f"生成内容与 {previous_date} 的近期记录重复度过高，需要重写为自然延续但不机械复刻的生活安排"
         return ""
 
@@ -310,13 +343,51 @@ class DailyContractMixin:
         dominant_minute_count = max(minute_counts.values(), default=0)
         repeated_minute_position = dominant_minute_count * 5 >= len(minutes) * 4
         dominant_gap_count = max(gap_counts.values(), default=0)
-        repeated_interval = (
-            len(gaps) >= 4 and dominant_gap_count * 4 >= len(gaps) * 3
-        )
+        repeated_interval = len(gaps) >= 4 and dominant_gap_count * 4 >= len(gaps) * 3
         if too_few_minute_positions or repeated_minute_position or repeated_interval:
             return (
                 "timeline 时间点过于规律；请根据活动持续时间和自然过渡重新安排，"
                 "不要让分钟位置或相邻间隔形成统一模板"
+            )
+        return ""
+
+    def _timeline_density_issue(self, payload: dict) -> str:
+        if not (
+            isinstance(payload.get("life_decision"), dict)
+            and isinstance(payload.get("state"), dict)
+            and isinstance(payload.get("planned_actions"), list)
+        ):
+            return ""
+        timeline = payload.get("timeline")
+        minutes = self._timeline_unwrapped_minutes(timeline)
+        if len(minutes) < 2:
+            return "完整全天日程缺少足够的生活节点"
+        span = minutes[-1] - minutes[0]
+        profile = self._full_day_coverage_profile(payload)
+        base_nodes = (
+            NIGHT_LIFE_MIN_TIMELINE_NODES
+            if profile == "night_life"
+            else FULL_DAY_MIN_TIMELINE_NODES
+        )
+        minimum_nodes = max(
+            base_nodes,
+            math.ceil(span / FULL_DAY_TARGET_GAP_MINUTES) + 1,
+        )
+        if len(minutes) < minimum_nodes:
+            return (
+                f"完整全天日程覆盖约 {math.ceil(span / 60)} 小时，但只有 "
+                f"{len(minutes)} 个时间轴节点；请补充到至少 {minimum_nodes} 个"
+                "有意义的生活变化节点，不要用重复动作凑数量"
+            )
+        gaps = [right - left for left, right in zip(minutes, minutes[1:])]
+        largest_gap = max(gaps, default=0)
+        if largest_gap > FULL_DAY_MAX_GAP_MINUTES:
+            gap_index = gaps.index(largest_gap)
+            return (
+                f"timeline 在 {self._minutes_text(minutes[gap_index] % DAY_MINUTES)} "
+                f"至 {self._minutes_text(minutes[gap_index + 1] % DAY_MINUTES)} 之间"
+                f"跨度约 {math.ceil(largest_gap / 60)} 小时；请补充期间真实发生的"
+                "就餐、移动、休息、场景切换或状态变化"
             )
         return ""
 
@@ -471,6 +542,10 @@ class DailyContractMixin:
             if span < FULL_DAY_MIN_SPAN_MINUTES:
                 self._set_validation_issue("timeline_coverage_span")
                 return False, "完整全天日程覆盖范围不足，timeline 仍像局部片段"
+            density_issue = self._timeline_density_issue(payload)
+            if density_issue:
+                self._set_validation_issue("timeline_density")
+                return False, density_issue
         return True, ""
 
     @staticmethod
@@ -530,9 +605,7 @@ class DailyContractMixin:
             expected_coverage=expected_coverage, issue_code=issue_code
         )
         person_section = (
-            f"\n\n人物事实边界：\n{person_fact_context}"
-            if person_fact_context
-            else ""
+            f"\n\n人物事实边界：\n{person_fact_context}" if person_fact_context else ""
         )
         fixed = f"""你之前生成的日程未通过校验，请直接修复为可通过的 JSON。
 {contract_section}
@@ -548,15 +621,30 @@ class DailyContractMixin:
         return cache_friendly_prompt(fixed, dynamic, dynamic_title="日程修复")
 
     @staticmethod
-    def _repair_strategy_text(
-        expected_coverage: str = "", issue_code: str = ""
-    ) -> str:
+    def _repair_strategy_text(expected_coverage: str = "", issue_code: str = "") -> str:
         code = str(issue_code or "")
         if expected_coverage == "full_day" and code in {
             "timeline_cadence",
+            "timeline_density",
             "timeline_coverage_start",
             "timeline_coverage_end",
             "timeline_coverage_span",
         }:
-            return "保留生活决策、状态和穿搭判断，重写 timeline 让它形成完整自然日；系统会根据 timeline 自动检查覆盖范围。"
+            return (
+                "保留生活决策、状态、穿搭、人物和地点事实，重写 timeline 形成"
+                "疏密自然的完整一天；补充就餐、移动、休息、场景切换或状态变化"
+                "等真实节点，不要用重复动作或机械整点凑数量；"
+                "系统会根据 timeline 自动检查覆盖范围。"
+            )
+        if code == "outfit_repeat":
+            return (
+                "保留日程、状态、人物和地点事实，只重写 life_decision.outfit、"
+                "顶层 outfit 及对应发型；新穿搭仍要符合天气和当前场景，但不能复用近期相同组合。"
+            )
+        if code == "location_audit_invalid":
+            return (
+                "保留生活决策、状态、穿搭和人物事实，只修正 timeline 的结构化地点、"
+                "目标城市、交通方式、到达时间及对应 move/travel 动作；"
+                "本地日程使用 local，明确跨城旅行才使用 travel。"
+            )
         return "保留原结果的生活连续性，修复未通过校验的结构或内容；系统会根据 timeline 自动检查覆盖范围。"
