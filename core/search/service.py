@@ -3,13 +3,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import inspect
-import ipaddress
 import json
 import time
 import uuid
 from dataclasses import dataclass, field, replace
 from typing import Any
-from urllib.parse import urlparse
 
 import aiohttp
 
@@ -150,30 +148,10 @@ class SearchService:
         self._research_pollers: dict[str, asyncio.Task] = {}
 
     @staticmethod
-    def _normalize_public_url(value: Any) -> str:
-        """只允许公网 HTTP(S) 入口，避免把本地协议或空地址交给外部抓取服务。"""
+    def _normalize_url_input(value: Any) -> str:
+        """整理交给网页服务的地址输入。"""
 
-        text = str(value or "").strip()
-        try:
-            parsed = urlparse(text)
-            hostname = str(parsed.hostname or "").strip().lower().rstrip(".")
-        except ValueError:
-            return ""
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            return ""
-        if parsed.username or parsed.password:
-            return ""
-        if not hostname or hostname == "localhost" or hostname.endswith(".local"):
-            return ""
-        try:
-            address = ipaddress.ip_address(hostname)
-        except ValueError:
-            address = None
-        if address is not None and (
-            address.is_private or address.is_loopback or address.is_link_local
-        ):
-            return ""
-        return text
+        return str(value or "").strip()
 
     @staticmethod
     def _bounded_positive(value: Any, default: int, upper: int) -> int:
@@ -1681,7 +1659,7 @@ class SearchService:
 
     async def fetch(self, url: str, *, umo: str = "") -> dict[str, Any]:
         raw_url = str(url or "").strip()
-        url = self._normalize_public_url(raw_url)
+        url = self._normalize_url_input(raw_url)
         if not url:
             return {
                 "status": "error",
@@ -1690,7 +1668,7 @@ class SearchService:
                 "provider": "tavily",
                 "providers": ["tavily"],
                 "provider_mode": "tavily",
-                "error": "网页地址必须是公网 HTTP 或 HTTPS 地址",
+                "error": "网页地址不能为空",
             }
         if not self.tavily_available(umo):
             return {
@@ -1861,15 +1839,12 @@ class SearchService:
         umo: str = "",
     ) -> dict[str, Any]:
         values = []
-        invalid_values = []
         for item in urls or []:
             raw_value = str(item or "").strip()
-            normalized = self._normalize_public_url(raw_value)
+            normalized = self._normalize_url_input(raw_value)
             if normalized:
                 if normalized not in values:
                     values.append(normalized)
-            elif raw_value:
-                invalid_values.append(raw_value)
         if not values:
             return {
                 "status": "error",
@@ -1877,7 +1852,7 @@ class SearchService:
                 "provider": "tavily",
                 "providers": ["tavily"],
                 "provider_mode": "tavily",
-                "error": "网页地址必须是公网 HTTP 或 HTTPS 地址",
+                "error": "网页地址不能为空",
             }
         if not self.tavily_available(umo):
             return {
@@ -1915,10 +1890,6 @@ class SearchService:
                     entry["images"] = list(item["images"] or [])[:20]
                 results.append(entry)
             failed = list(data.get("failed_results") or [])
-            failed.extend(
-                {"url": item, "error": "地址不是公网 HTTP(S)"}
-                for item in invalid_values
-            )
             return {
                 "status": "ok" if results else "error",
                 "urls": values,
@@ -1956,7 +1927,7 @@ class SearchService:
         allow_external: bool = True,
         umo: str = "",
     ) -> dict[str, Any]:
-        normalized_url = self._normalize_public_url(url)
+        normalized_url = self._normalize_url_input(url)
         if not normalized_url:
             return {
                 "status": "error",
@@ -1964,7 +1935,7 @@ class SearchService:
                 "provider": "tavily",
                 "providers": ["tavily"],
                 "provider_mode": "tavily",
-                "error": "网站地址必须是公网 HTTP 或 HTTPS 地址",
+                "error": "网站地址不能为空",
             }
         if not self.tavily_available(umo):
             return {
@@ -2056,7 +2027,7 @@ class SearchService:
         format: str = "markdown",
         umo: str = "",
     ) -> dict[str, Any]:
-        normalized_url = self._normalize_public_url(url)
+        normalized_url = self._normalize_url_input(url)
         if not normalized_url:
             return {
                 "status": "error",
@@ -2064,7 +2035,7 @@ class SearchService:
                 "provider": "tavily",
                 "providers": ["tavily"],
                 "provider_mode": "tavily",
-                "error": "网站地址必须是公网 HTTP 或 HTTPS 地址",
+                "error": "网站地址不能为空",
             }
         if not self.tavily_available(umo):
             return {

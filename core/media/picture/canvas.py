@@ -20,7 +20,6 @@ from ...config.options import (
     ImageGenerationSettings,
 )
 from ...paths import expand_path, path_is_file, path_size
-from ...security import is_public_http_url_async
 from ..base import (
     GROUP_IDENTITY_CONTINUITY_RULE,
     LOG_PREFIX,
@@ -685,8 +684,6 @@ class GeminiImageService:
         return _best_supported_aspect_ratio(width, height)
 
     async def _download_reference_image(self, url: str) -> tuple[bytes, str]:
-        if not await is_public_http_url_async(url):
-            raise ValueError("参考图片地址不是公网 HTTP(S) 地址")
         session = await self._get_session()
         async with session.get(url) as response:
             if response.status != 200:

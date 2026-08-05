@@ -15,7 +15,6 @@ import aiohttp
 from astrbot.api import logger
 
 from ..runtime.markers import LOG_PREFIX
-from ..security import is_public_http_url_async
 from .auth import browser_headers
 from .bili import fetch_bili_metadata, resolve_bili_target, target_from_text
 from .cookie import BiliCookieJar
@@ -147,8 +146,6 @@ async def _download_remote_video_with_reason(
     source = clean_source(source)
     if not source.startswith(("http://", "https://")):
         return None, "不是远程视频地址"
-    if not await is_public_http_url_async(source):
-        return None, "远程视频地址不是公网 HTTP(S) 地址"
     lock_key = source_fingerprint(cache_identity or source)
     lock = _REMOTE_DOWNLOAD_LOCKS.setdefault(lock_key, asyncio.Lock())
     async with lock:

@@ -2265,6 +2265,28 @@ class SearchServiceTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(session.calls, [])
 
+    async def test_service_forwards_non_public_urls_without_local_policy(self):
+        service = SearchService(FakeContext(), self.settings(cache_ttl_seconds=0))
+        session = FakeSession()
+        service._session = session
+
+        fetch_url = "http://127.0.0.1/private-page"
+        map_url = "http://192.168.1.20/internal-site"
+        fetched = await service.fetch(fetch_url)
+        mapped = await service.map(map_url, limit=5)
+
+        self.assertEqual(fetched["status"], "ok")
+        self.assertEqual(mapped["status"], "ok")
+        extract_payload = next(
+            payload for url, payload, _headers in session.calls if url.endswith("/extract")
+        )
+        map_payload = next(
+            payload for url, payload, _headers in session.calls if url.endswith("/map")
+        )
+        self.assertEqual(extract_payload["urls"], [fetch_url])
+        self.assertEqual(map_payload["url"], map_url)
+        await service.close()
+
     async def test_tool_replacement_only_applies_when_search_is_available(self):
         enabled = SearchService(FakeContext(), self.settings(tavily_api_keys=[]))
         toolset = FakeToolSet(

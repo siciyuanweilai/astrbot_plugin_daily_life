@@ -78,6 +78,7 @@ BASE_NOTE_PROMPT = """\
 - 使用中文；专有名词、技术术语、品牌和人名可保留英文。
 - role 从 JSON 中列出的枚举选择，没有合适类型时使用 other 或留空；role 只用于组织，不作为标题。
 - start/end 使用 mm:ss 或 hh:mm:ss，覆盖章节使用的素材范围，start 不得晚于 end。
+- “总结与参考建议”是针对全片的收束内容，不对应单一时间点；该 section 的 start/end 必须留空字符串。
 - title 应简短、具体并反映实际议题，通常不超过 20 个汉字，不使用 role 名称或“视频内容、相关介绍”等通用标题。
 - paragraphs 承载概述或判断，bullets 承载事实、数据、案例、比较、影响或建议，quotes 只保留素材中的关键原话；没有依据的字段留空。
 - paragraphs 和 bullets 可用 `**...**` 少量标记核心概念、关键数据和结论；每项通常标记 1-2 处，不要加粗整句或全部文字。
@@ -591,17 +592,15 @@ def _merge_professional_closing_sections(
         sections,
         key=lambda item: (_section_bounds(item) or (float("inf"), 0))[0],
     )
-    last = ordered[-1]
-    bounds = [value for item in ordered if (value := _section_bounds(item))]
     paragraphs = _unique_section_values(ordered, "paragraphs", limit=3, char_limit=700)
     bullets = _unique_section_values(ordered, "bullets", limit=8, char_limit=280)
     quotes = _unique_section_values(ordered, "quotes", limit=2, char_limit=320)
     result = {
-        "start": _format_time(max(value[0] for value in bounds)) if bounds else "",
-        "end": _format_time(max(value[1] for value in bounds)) if bounds else "",
+        "start": "",
+        "end": "",
         "title": PROFESSIONAL_CLOSING_TITLE,
         "role": "suggestion",
-        "time": _payload_time(last.get("start") or last.get("time")),
+        "time": "",
         "paragraphs": paragraphs,
         "bullets": bullets,
         "claims": [],
@@ -645,10 +644,9 @@ def _professional_closing_fallback(
         if focus
         else "视频的主要内容、相关事实和观点已在上文分节整理。"
     )
-    bounds = [value for item in sections if (value := _section_bounds(item))]
     result = {
-        "start": _format_time(max(value[0] for value in bounds)) if bounds else "",
-        "end": _format_time(max(value[1] for value in bounds)) if bounds else "",
+        "start": "",
+        "end": "",
         "title": PROFESSIONAL_CLOSING_TITLE,
         "role": "suggestion",
         "time": "",
@@ -1061,7 +1059,16 @@ def _render_payload_section(
     section: dict[str, Any], *, style: str = "professional"
 ) -> list[str]:
     title = _section_render_title(section, style=style)
-    start_label = _payload_time(section.get("start") or section.get("time"))
+    is_professional_closing = (
+        _note_style_key(style) == "professional"
+        and _section_role(section.get("role")) == "suggestion"
+        and title == PROFESSIONAL_CLOSING_TITLE
+    )
+    start_label = (
+        ""
+        if is_professional_closing
+        else _payload_time(section.get("start") or section.get("time"))
+    )
     lines = [f"## {title}", ""]
     if start_label:
         lines.extend([f"⏱ {start_label}", ""])

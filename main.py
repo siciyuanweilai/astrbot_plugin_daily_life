@@ -798,12 +798,12 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         format: str = "markdown",
     ):
         """
-        已经有明确网页地址、需要读取网页正文或核对原文时调用。只读取公网网页，不用于普通搜索。
+        已经有明确网页地址、需要读取网页正文或核对原文时调用，不用于普通搜索。
         工具会优先提取网页正文；提取失败时会在同一时间预算内自动执行URL定向搜索，不需要再次调用搜索工具。
         返回 mode=page_extract 表示取得网页正文；mode=search_fallback 表示使用搜索资料补充，后者不能表述为逐字读完原文。
         Args:
-            url(string): 要读取的单个公网 HTTP 或 HTTPS 地址。
-            urls(array[string]): 可选多个公网地址；批量核验时使用，填写后优先于 url。
+            url(string): 要读取的单个网页地址。
+            urls(array[string]): 可选多个网页地址；批量核验时使用，填写后优先于 url。
             query(string): 可选正文相关性问题，用于提取与问题最相关的片段。
             chunks_per_source(number): 每个来源最多返回的相关片段数，范围 1 到 5。
             extract_depth(string): basic 或 advanced；需要表格和嵌入内容时使用 advanced。
@@ -843,7 +843,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         """
         需要探索一个网站的文档、栏目或页面结构时调用，不用于普通网页搜索。
         Args:
-            url(string): 网站首页或站点入口公网地址。
+            url(string): 网站首页或站点入口地址。
             instructions(string): 可选的站点内容筛选说明。
             max_depth(int): 映射深度，范围 1 到 5。
             max_breadth(int): 每层最多跟进链接数。

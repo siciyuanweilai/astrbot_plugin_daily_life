@@ -146,6 +146,8 @@ class SightPipelineTest(unittest.TestCase):
         )
         self.assertIn("**参考建议**", markdown)
         self.assertIn("可靠来源进一步核实", markdown)
+        closing = markdown.split("## 总结与参考建议", 1)[1]
+        self.assertNotIn("⏱", closing)
 
     def test_professional_note_preserves_model_closing_and_moves_it_last(self):
         insight = SightInsight(
@@ -182,6 +184,8 @@ class SightPipelineTest(unittest.TestCase):
         )
         self.assertIn("这是模型生成的整体总结", markdown)
         self.assertIn("保留这条具体建议", markdown)
+        closing = markdown.split("## 总结与参考建议", 1)[1]
+        self.assertNotIn("⏱", closing)
 
     def test_professional_note_preserves_specific_titles_and_role_fallback(self):
         insight = SightInsight(
@@ -1736,6 +1740,10 @@ class SightFrameCompatibilityTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("这是排版倾向，实际数量由素材决定", summary_provider.prompts[0])
         self.assertIn("最后一个 section 固定为", summary_provider.prompts[0])
         self.assertIn("title=“总结与参考建议”", summary_provider.prompts[0])
+        self.assertIn(
+            "该 section 的 start/end 必须留空字符串",
+            summary_provider.prompts[0],
+        )
         self.assertIn("不要求写成行动清单", summary_provider.prompts[0])
         self.assertIn("不要求由视频作者明确提出", summary_provider.prompts[0])
         self.assertIn("不得冒充作者原话", summary_provider.prompts[0])
