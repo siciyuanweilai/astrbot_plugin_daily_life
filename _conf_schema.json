@@ -1499,8 +1499,8 @@
       "model": {
         "description": "模型名称",
         "type": "string",
-        "default": "grok-imagine-video-1.5-preview",
-        "hint": "Grok Imagine Video 1.5 模型名称。"
+        "default": "grok-imagine-video-1.5",
+        "hint": "Grok Imagine Video 模型名称；已有自定义模型配置会继续保留。"
       },
       "duration": {
         "description": "时长（秒）",

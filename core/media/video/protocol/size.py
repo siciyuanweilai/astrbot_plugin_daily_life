@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import math
+
+_XAI_VIDEO_RATIOS = ("16:9", "9:16", "1:1", "4:3", "3:4", "2:3", "3:2")
+
 _RATIO_SIZE_BY_RESOLUTION: dict[str, dict[str, str]] = {
     "720p": {
         "1:1": "1280x720",
@@ -23,6 +27,32 @@ def video_size(aspect_ratio: str, resolution: str) -> str:
     res = str(resolution or "720p").strip().lower() or "720p"
     sizes = _RATIO_SIZE_BY_RESOLUTION.get(res) or _RATIO_SIZE_BY_RESOLUTION["720p"]
     return sizes[ratio]
+
+
+def video_aspect_ratio(aspect_ratio: str) -> str:
+    ratio = str(aspect_ratio or "1:1").strip() or "1:1"
+    if ratio in _XAI_VIDEO_RATIOS:
+        return ratio
+    if ":" not in ratio:
+        return "16:9"
+    left, right = ratio.split(":", 1)
+    try:
+        width = int(left)
+        height = int(right)
+    except ValueError:
+        return "16:9"
+    if width <= 0 or height <= 0:
+        return "16:9"
+    target = width / height
+    return min(
+        _XAI_VIDEO_RATIOS,
+        key=lambda candidate: abs(math.log(target / _ratio_value(candidate))),
+    )
+
+
+def _ratio_value(ratio: str) -> float:
+    width, height = ratio.split(":", 1)
+    return int(width) / int(height)
 
 
 def _video_supported_ratio(aspect_ratio: str) -> str:

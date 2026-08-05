@@ -4,3 +4,4 @@ aiohttp>=3.9
 yt-dlp>=2024.1
 imageio-ffmpeg>=0.5
 segno>=1.6
+pillow>=11.2.1

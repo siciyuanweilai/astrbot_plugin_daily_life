@@ -3,8 +3,8 @@ import unittest
 from unittest.mock import patch
 
 from runtimehelpers import (
-    Context,
     CORE_INTERNAL_SYSTEM_PROMPT,
+    Context,
     DailyLifeRuntime,
     DataManager,
     DayRecord,
@@ -3548,7 +3548,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(response_image_config["imageSize"], "2K")
         self.assertEqual(response_image_config["aspectRatio"], "16:9")
 
-    async def test_gemini_image_generation_can_attach_character_reference(self):
+    async def test_gemini_image_generation_always_attaches_character_reference(self):
         posted_payloads = []
         output_bytes = b"\x89PNG\r\n\x1a\noutput"
 
@@ -3604,7 +3604,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
                         {"path": str(character), "name": "正面参考.png"},
                         {"path": str(character_side), "name": "侧面参考.png"},
                     ],
-                    character_reference_policy="auto",
+                    character_reference_policy="always",
                 )
             }
         ).image_generation
@@ -3616,7 +3616,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         await service.generate_image("角色坐在窗边看雨")
 
         parts = posted_payloads[-1]["contents"][0]["parts"]
-        self.assertIn("如果画面包含角色本人", parts[0]["text"])
+        self.assertIn("优先保持角色", parts[0]["text"])
         self.assertEqual(
             parts[1]["text"], "下面 2 张图是角色形象参考图组，用于保持角色外貌一致。"
         )
@@ -3629,6 +3629,30 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             base64.b64decode(parts[5]["inlineData"]["data"]),
             character_side.read_bytes(),
         )
+
+    async def test_gemini_image_generation_auto_waits_for_identity_route(self):
+        temp_dir = Path(tempfile.mkdtemp())
+        character = temp_dir / "character.png"
+        character.write_bytes(b"\x89PNG\r\n\x1a\ncharacter")
+        settings = LifeSettings.from_dict(
+            {
+                "image_generation_config": image_generation_config(
+                    "gemini-key",
+                    character_reference_images=[
+                        {"path": str(character), "name": "角色参考.png"}
+                    ],
+                    character_reference_policy="auto",
+                )
+            }
+        ).image_generation
+        service = GeminiImageService(settings, temp_dir / "daily_life.db")
+        route = (await service._request_routes("text"))[0]
+
+        parts = await service._text_to_image_parts("陌生人在街边散步", route)
+
+        self.assertEqual(len(parts), 1)
+        self.assertNotIn("角色形象参考图", parts[0]["text"])
+        self.assertNotIn("inlineData", parts[0])
 
     async def test_gemini_image_edit_keeps_scene_reference_and_character_reference_separate(
         self,

@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any
 from urllib.parse import quote
 
 import aiohttp
@@ -33,7 +34,10 @@ _FAILED = {"failed", "expired", "error", "cancelled", "canceled", "rejected"}
 
 
 def task_status_url(endpoint: str, request_id: str) -> str:
-    return f"{endpoint.rstrip('/')}/{quote(str(request_id), safe='')}"
+    base = endpoint.rstrip("/")
+    if base.lower().endswith("/v1/videos/generations"):
+        base = base[: -len("/generations")]
+    return f"{base}/{quote(str(request_id), safe='')}"
 
 
 def status_label(status: str) -> str:

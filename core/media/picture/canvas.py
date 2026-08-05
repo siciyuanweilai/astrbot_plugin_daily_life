@@ -430,7 +430,12 @@ class GeminiImageService:
         self, prompt: str, route: ImageRoute, *, identity_profile: str = ""
     ) -> list[dict[str, Any]]:
         reference_parts = []
-        if self._route_accepts_character_reference(route, text_to_image=True):
+        policy = str(
+            getattr(self.settings, "character_reference_policy", "off") or "off"
+        )
+        if policy == "always" and self._route_accepts_character_reference(
+            route, text_to_image=True
+        ):
             reference_parts = await self._character_reference_parts()
         return [
             {

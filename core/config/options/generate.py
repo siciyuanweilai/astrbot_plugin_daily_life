@@ -140,7 +140,7 @@ class ImageGenerationSettings:
         return "1:1"
 
     @staticmethod
-    def from_dict(data: Any) -> "ImageGenerationSettings":
+    def from_dict(data: Any) -> ImageGenerationSettings:
         if not isinstance(data, dict):
             return ImageGenerationSettings()
         policy = (
@@ -174,7 +174,7 @@ class VideoGenerationSettings:
     enabled: bool = False
     base_url: str = ""
     api_keys: list[str] = field(default_factory=list)
-    model: str = "grok-imagine-video-1.5-preview"
+    model: str = "grok-imagine-video-1.5"
     duration: int = 8
     aspect_ratio: str = "1:1"
     resolution: str = "720p"
@@ -183,7 +183,7 @@ class VideoGenerationSettings:
     poll_interval_seconds: float = 5.0
 
     @staticmethod
-    def from_dict(data: Any) -> "VideoGenerationSettings":
+    def from_dict(data: Any) -> VideoGenerationSettings:
         if not isinstance(data, dict):
             return VideoGenerationSettings()
         return VideoGenerationSettings(
@@ -191,10 +191,10 @@ class VideoGenerationSettings:
             base_url=as_str(data.get("base_url", ""), "").strip(),
             api_keys=as_str_list(data.get("api_keys", [])),
             model=as_str(
-                data.get("model", "grok-imagine-video-1.5-preview"),
-                "grok-imagine-video-1.5-preview",
+                data.get("model", "grok-imagine-video-1.5"),
+                "grok-imagine-video-1.5",
             ).strip()
-            or "grok-imagine-video-1.5-preview",
+            or "grok-imagine-video-1.5",
             duration=as_int(data.get("duration", 8), 8, 1, 15),
             aspect_ratio="1:1",
             resolution=as_str(data.get("resolution", "720p"), "720p").strip() or "720p",
@@ -227,7 +227,7 @@ class VoiceGenerationSettings:
     max_retries: int = 2
 
     @staticmethod
-    def from_dict(data: Any) -> "VoiceGenerationSettings":
+    def from_dict(data: Any) -> VoiceGenerationSettings:
         if not isinstance(data, dict):
             return VoiceGenerationSettings()
         return VoiceGenerationSettings(

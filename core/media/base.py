@@ -110,7 +110,7 @@ def videos_endpoint(raw: str) -> str:
     base = str(raw or "").strip().rstrip("/")
     if not base:
         return ""
-    if base.endswith("/v1/videos"):
+    if base.endswith(("/v1/videos", "/v1/videos/generations")):
         return base
     if base.endswith("/v1"):
         return f"{base}/videos"

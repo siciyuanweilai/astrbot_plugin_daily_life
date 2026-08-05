@@ -16,9 +16,7 @@ class _AccessTrackingDict(dict):
         return super().get(key, default)
 
 
-def _representative_schema_value(
-    spec: dict, path: str, seen: set[str]
-):
+def _representative_schema_value(spec: dict, path: str, seen: set[str]):
     if spec.get("type") == "object":
         return _AccessTrackingDict(
             {
@@ -36,9 +34,7 @@ def _representative_schema_value(
             item_path = f"{path}.*"
             item = _AccessTrackingDict(
                 {
-                    key: _representative_schema_value(
-                        value, f"{item_path}.{key}", seen
-                    )
+                    key: _representative_schema_value(value, f"{item_path}.{key}", seen)
                     for key, value in template.get("items", {}).items()
                 },
                 path=item_path,
@@ -436,9 +432,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertTrue(config.video_generation.enabled)
         self.assertEqual(config.video_generation.base_url, "")
         self.assertEqual(config.video_generation.api_keys, ["xai-key"])
-        self.assertEqual(
-            config.video_generation.model, "grok-imagine-video-1.5-preview"
-        )
+        self.assertEqual(config.video_generation.model, "grok-imagine-video-1.5")
         self.assertEqual(config.video_generation.duration, 15)
         self.assertEqual(config.video_generation.aspect_ratio, "1:1")
         self.assertEqual(config.video_generation.resolution, "720p")
@@ -1147,9 +1141,7 @@ class LifeSettingsTest(unittest.TestCase):
         )
         video_items = schema["video_generation_config"]["items"]
         self.assertNotIn("aspect_ratio", video_items)
-        self.assertEqual(
-            video_items["model"]["default"], "grok-imagine-video-1.5-preview"
-        )
+        self.assertEqual(video_items["model"]["default"], "grok-imagine-video-1.5")
         self.assertEqual(
             schema["voice_generation_config"]["items"]["model"]["default"],
             "FunAudioLLM/CosyVoice2-0.5B",
@@ -1419,9 +1411,10 @@ class LifeSettingsTest(unittest.TestCase):
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertIn("version: 1.1.6", metadata)
-        self.assertIn("version-1.1.6", readme)
-        self.assertIn("v1.1.6 · 2026-08-05", changelog)
+        self.assertIn("version: 1.1.7", metadata)
+        self.assertIn("version-1.1.7", readme)
+        self.assertIn("v1.1.7 · 2026-08-06", changelog)
+        self.assertLess(changelog.index("v1.1.7"), changelog.index("v1.1.6"))
         self.assertLess(changelog.index("v1.1.6"), changelog.index("v1.1.5"))
         self.assertIn("v1.0.4 · 2026-08-01", changelog)
         self.assertLess(changelog.index("v1.0.4"), changelog.index("v1.0.3"))

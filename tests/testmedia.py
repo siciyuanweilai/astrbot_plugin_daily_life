@@ -1,17 +1,28 @@
+# ruff: noqa: I001
+
 import base64
 import tempfile
 import unittest
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
 
 from support import LifeSettings
-from core.media import video as video_module
+
 from core.media import GeminiImageService
+from core.media import video as video_module
+from core.media.base import videos_endpoint
 from core.media.picture import canvas as picture_canvas
 from core.media.picture import openai as openai_image
 from core.media.video import GrokVideoService
-from core.media.video.protocol.size import video_size
+from core.media.video.protocol.size import video_aspect_ratio, video_size
+from core.media.video.reference import (
+    VIDEO_REFERENCE_MAX_BYTES,
+    prepare_video_reference_image,
+)
+from core.media.video.tasks import task_status_url
 from core.runtime.proactive.send import ProactiveSendMixin
+from PIL import Image
 
 
 def _timeout_total(value):
@@ -34,6 +45,18 @@ def _png_bytes(width: int, height: int) -> bytes:
         + b"\x08\x02\x00\x00\x00"
         + (0).to_bytes(4, "big")
     )
+
+
+def _real_png_bytes(width: int, height: int) -> bytes:
+    output = BytesIO()
+    Image.new("RGB", (width, height), (72, 138, 112)).save(output, format="PNG")
+    return output.getvalue()
+
+
+def _real_bmp_bytes(width: int, height: int) -> bytes:
+    output = BytesIO()
+    Image.new("RGB", (width, height), (72, 138, 112)).save(output, format="BMP")
+    return output.getvalue()
 
 
 def _form_field(form, name: str):
@@ -1244,7 +1267,7 @@ class GrokVideoServiceTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, r"^Grok 视频任务超时：task-timeout$"):
             await service.generate_video("雨夜街边短视频")
 
-    async def test_video_uploads_reference_image_as_json_data_url(self):
+    async def test_video_uses_xai_compatible_json_payload(self):
         settings = LifeSettings.from_dict(
             {
                 "image_generation_config": {
@@ -1281,13 +1304,17 @@ class GrokVideoServiceTest(unittest.IsolatedAsyncioTestCase):
             session,
             service._headers(),
             "撑伞走路",
-            b"\x89PNG\r\n\x1a\nabc",
+            _real_png_bytes(900, 1600),
         )
 
         self.assertEqual(result.url, "https://cdn.example/video.mp4")
         self.assertEqual(calls[0][1], "https://relay.example/v1/videos")
         self.assertEqual(calls[0][3]["image"][:22], "data:image/png;base64,")
-        self.assertEqual(calls[0][3]["size"], "1024x1792")
+        self.assertEqual(calls[0][3]["aspect_ratio"], "9:16")
+        self.assertEqual(calls[0][3]["resolution"], "1080P")
+        self.assertEqual(calls[0][3]["seconds"], "8")
+        self.assertNotIn("size", calls[0][3])
+        self.assertNotIn("n", calls[0][3])
         self.assertIsNone(calls[0][4])
         self.assertEqual(_timeout_total(calls[0][5]), 300)
 
@@ -1295,6 +1322,187 @@ class GrokVideoServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(video_size("2:3", "720p"), "720x1280")
         self.assertEqual(video_size("4:5", "1080p"), "1024x1792")
         self.assertEqual(video_size("21:9", "720p"), "1280x720")
+
+    async def test_video_aspect_ratio_uses_nearest_supported_ratio(self):
+        self.assertEqual(video_aspect_ratio("2:3"), "2:3")
+        self.assertEqual(video_aspect_ratio("4:5"), "3:4")
+        self.assertEqual(video_aspect_ratio("21:9"), "16:9")
+
+    async def test_video_reference_under_limit_keeps_original_image(self):
+        source = _real_png_bytes(1086, 1448)
+
+        prepared = prepare_video_reference_image(
+            source,
+            aspect_ratio="3:4",
+            resolution="720p",
+        )
+
+        self.assertEqual((prepared.source_width, prepared.source_height), (1086, 1448))
+        self.assertEqual((prepared.output_width, prepared.output_height), (1086, 1448))
+        self.assertEqual(prepared.data, source)
+        self.assertFalse(prepared.compressed)
+
+    async def test_video_reference_over_limit_is_resized_and_compressed(self):
+        source = _real_bmp_bytes(2400, 3600)
+        self.assertGreater(len(source), VIDEO_REFERENCE_MAX_BYTES)
+
+        prepared = prepare_video_reference_image(
+            source,
+            aspect_ratio="9:16",
+            resolution="720p",
+        )
+
+        self.assertEqual((prepared.source_width, prepared.source_height), (2400, 3600))
+        self.assertEqual((prepared.output_width, prepared.output_height), (720, 1280))
+        self.assertTrue(prepared.data.startswith(b"\xff\xd8\xff"))
+        self.assertLessEqual(len(prepared.data), VIDEO_REFERENCE_MAX_BYTES)
+        self.assertTrue(prepared.compressed)
+
+    async def test_invalid_video_reference_fails_before_network_request(self):
+        settings = LifeSettings.from_dict(
+            {
+                "video_generation_config": {
+                    "enabled": True,
+                    "base_url": "https://relay.example",
+                    "api_keys": ["key-a"],
+                }
+            }
+        ).video_generation
+        service = GrokVideoService(settings, Path(tempfile.mkdtemp()))
+        calls = []
+
+        with self.assertRaisesRegex(ValueError, "视频首帧图片无法读取"):
+            await service._generate_video_task(
+                _Session(calls), service._headers(), "无效首帧", b"not-an-image"
+            )
+
+        self.assertEqual(calls, [])
+
+    async def test_video_retries_legacy_payload_and_reuses_successful_format(self):
+        settings = LifeSettings.from_dict(
+            {
+                "video_generation_config": {
+                    "enabled": True,
+                    "base_url": "https://legacy.example",
+                    "api_keys": ["key-a"],
+                    "poll_interval_seconds": 1,
+                }
+            }
+        ).video_generation
+        service = GrokVideoService(settings, Path(tempfile.mkdtemp()))
+        calls = []
+
+        class _LegacySession(_Session):
+            def request(
+                self, method, url, headers=None, json=None, data=None, timeout=None
+            ):
+                self.calls.append((method, url, headers or {}, json, data, timeout))
+                if method == "POST" and url.endswith("/v1/videos"):
+                    if "size" not in (json or {}):
+                        return _Response(422, text="unsupported request fields")
+                    task_number = sum(
+                        call[0] == "POST" and "size" in (call[3] or {})
+                        for call in self.calls
+                    )
+                    return _Response(payload={"task_id": f"legacy-{task_number}"})
+                if method == "GET":
+                    return _Response(
+                        payload={
+                            "status": "completed",
+                            "video_url": "https://cdn.example/legacy.mp4",
+                        }
+                    )
+                return _Response(500, text="unexpected")
+
+        session = _LegacySession(calls)
+
+        async def fake_sleep(_seconds):
+            return None
+
+        original_sleep = video_module.asyncio.sleep
+        video_module.asyncio.sleep = fake_sleep
+        self.addCleanup(lambda: setattr(video_module.asyncio, "sleep", original_sleep))
+
+        first = await service._generate_video_task(
+            session, service._headers(), "第一次生成", None
+        )
+        second = await service._generate_video_task(
+            session, service._headers(), "第二次生成", None
+        )
+
+        self.assertEqual(first.url, "https://cdn.example/legacy.mp4")
+        self.assertEqual(second.url, "https://cdn.example/legacy.mp4")
+        post_payloads = [call[3] for call in calls if call[0] == "POST"]
+        self.assertEqual(len(post_payloads), 3)
+        self.assertNotIn("size", post_payloads[0])
+        self.assertIn("size", post_payloads[1])
+        self.assertIn("size", post_payloads[2])
+
+    async def test_official_generation_endpoint_uses_duration_and_poll_base(self):
+        settings = LifeSettings.from_dict(
+            {
+                "video_generation_config": {
+                    "enabled": True,
+                    "base_url": "https://api.x.ai/v1/videos/generations",
+                    "api_keys": ["key-a"],
+                    "duration": 10,
+                    "resolution": "720p",
+                    "poll_interval_seconds": 1,
+                }
+            }
+        ).video_generation
+        service = GrokVideoService(settings, Path(tempfile.mkdtemp()))
+        calls = []
+
+        class _OfficialSession(_Session):
+            def request(
+                self, method, url, headers=None, json=None, data=None, timeout=None
+            ):
+                self.calls.append((method, url, headers or {}, json, data, timeout))
+                if method == "POST" and url.endswith("/v1/videos/generations"):
+                    return _Response(payload={"request_id": "official-1"})
+                if method == "GET" and url.endswith("/v1/videos/official-1"):
+                    return _Response(
+                        payload={
+                            "status": "done",
+                            "video": {"url": "https://cdn.example/official.mp4"},
+                        }
+                    )
+                return _Response(500, text="unexpected")
+
+        session = _OfficialSession(calls)
+
+        async def fake_sleep(_seconds):
+            return None
+
+        original_sleep = video_module.asyncio.sleep
+        video_module.asyncio.sleep = fake_sleep
+        self.addCleanup(lambda: setattr(video_module.asyncio, "sleep", original_sleep))
+
+        result = await service._generate_video_task(
+            session,
+            service._headers(),
+            "官方接口生成",
+            _real_png_bytes(640, 360),
+            aspect_ratio="16:9",
+        )
+
+        self.assertEqual(result.url, "https://cdn.example/official.mp4")
+        payload = calls[0][3]
+        self.assertEqual(payload["duration"], 10)
+        self.assertEqual(payload["aspect_ratio"], "16:9")
+        self.assertEqual(payload["resolution"], "720p")
+        self.assertTrue(payload["image"]["url"].startswith("data:image/png;base64,"))
+        self.assertNotIn("seconds", payload)
+        self.assertEqual(calls[1][1], "https://api.x.ai/v1/videos/official-1")
+
+    async def test_video_endpoint_helpers_preserve_generation_path(self):
+        endpoint = "https://api.x.ai/v1/videos/generations"
+        self.assertEqual(videos_endpoint(endpoint), endpoint)
+        self.assertEqual(
+            task_status_url(endpoint, "task/1"),
+            "https://api.x.ai/v1/videos/task%2F1",
+        )
 
     async def test_poll_timeout_continues_until_next_success(self):
         settings = LifeSettings.from_dict(
