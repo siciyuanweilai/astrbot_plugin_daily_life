@@ -1848,7 +1848,7 @@ class SearchService:
         if not values:
             return {
                 "status": "error",
-                "urls": invalid_values,
+                "urls": [],
                 "provider": "tavily",
                 "providers": ["tavily"],
                 "provider_mode": "tavily",

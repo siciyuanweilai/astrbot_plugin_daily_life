@@ -619,10 +619,29 @@ class PageViewMixin:
         decisions: list, limit: int = PAGE_WORLD_RECORD_LIMIT
     ) -> list:
         items = []
+        coalesced = set()
         for item in decisions:
             reason = str(getattr(item, "reason", "") or "").strip()
             if not reason:
                 continue
+            key = (
+                str(getattr(item, "action", "") or "").strip(),
+                str(getattr(item, "scene_type", "") or "").strip(),
+            )
+            if key in {
+                ("proactive_proposal_wait", "私聊回访/proposal"),
+                ("proactive_proposal_wait", "闲时回复/proposal"),
+            }:
+                scope = (
+                    str(getattr(item, "session_id", "") or "").strip()
+                    or str(getattr(item, "sender_profile_id", "") or "").strip()
+                    or str(getattr(item, "group_id", "") or "").strip()
+                    or str(getattr(item, "sender_name", "") or "").strip()
+                )
+                scoped_key = (scope, *key)
+                if scoped_key in coalesced:
+                    continue
+                coalesced.add(scoped_key)
             items.append(item)
             if limit > 0 and len(items) >= limit:
                 break

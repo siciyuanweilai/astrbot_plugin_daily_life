@@ -10,6 +10,7 @@ from astrbot.api import logger
 
 from ....clock import timestamp as life_timestamp
 from ...markers import LOG_PREFIX
+from ....security import is_http_url_allowed_async
 
 
 class EmojiCacheMixin:
@@ -198,6 +199,13 @@ class EmojiCacheMixin:
     ) -> Path | None:
         try:
             import aiohttp
+
+            if not await is_http_url_allowed_async(url):
+                if log_failure:
+                    logger.debug(
+                        f"{LOG_PREFIX} 表情素材联网缓存跳过：地址不在允许的媒体网络范围内"
+                    )
+                return None
 
             timeout = aiohttp.ClientTimeout(total=8)
             async with aiohttp.ClientSession(timeout=timeout) as session:

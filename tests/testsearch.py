@@ -328,6 +328,13 @@ class FakeToolSet:
 
 
 class SearchServiceTest(unittest.IsolatedAsyncioTestCase):
+    async def test_extract_empty_urls_returns_structured_error(self):
+        service = SearchService.__new__(SearchService)
+        result = await service.extract([])
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["urls"], [])
+        self.assertEqual(result["error"], "网页地址不能为空")
+
     def test_external_evidence_request_owns_share_search_policy(self):
         news = build_external_evidence_request("测试主题", "news")
         knowledge = build_external_evidence_request("测试知识", "knowledge")

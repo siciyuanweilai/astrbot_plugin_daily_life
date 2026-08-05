@@ -10,6 +10,7 @@ from astrbot.api import logger
 from ..config.options import LifeDomainSettings
 from ..models import DayRecord, LifeActionIntent, LifeActionOutcome
 from .location_audit import DailyLocationAuditMixin
+from .location_planning import DailyLocationPlanningMixin
 from .maps import create_map_client, map_provider_label, normalize_map_provider
 from .tools import get_week_id
 
@@ -22,6 +23,7 @@ INTERNAL_SIMULATED_ACTION_TYPES = frozenset(
         "work",
         "study",
         "groom",
+        "change_outfit",
         "cook",
         "order_food",
         "purchase",
@@ -53,7 +55,7 @@ _ROUTE_SOURCE_LABELS = {
 }
 
 
-class LifeDomainService(DailyLocationAuditMixin):
+class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
     """协调生活领域记录、动作副作用和上下文预算。"""
 
     def __init__(

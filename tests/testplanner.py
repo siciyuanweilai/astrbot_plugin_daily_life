@@ -1,6 +1,7 @@
 # ruff: noqa: I001
 
 import datetime
+import types
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -1290,6 +1291,182 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(composer.domains.audit_daily_locations.await_count, 1)
         self.assertEqual(correction_flags, [True])
         self.assertEqual(len(provider.prompts), 1)
+
+    async def test_daily_generation_preselects_map_places_before_final_schedule(self):
+        preplan = (
+            '{"requests":[{"purpose":"下午安静阅读","query":"书店",'
+            '"place_scope":"local","place_city":"",'
+            '"travel_mode":"walking","max_travel_minutes":30}]}'
+        )
+        valid_json = (
+            '{"generation_contract":{"contract_version":"daily_life_generation",'
+            '"expected_coverage":"full_day","closed_loop_required":true},'
+            '"outfit":"宽松白色短袖和浅灰长裤",'
+            '"timeline":[{"time":"09:00","activity":"在家整理今日计划",'
+            '"status":"平稳","place":"家","place_kind":"home",'
+            '"place_scope":"local","place_city":"","place_hint":"",'
+            '"travel_mode":""},{"time":"15:00","activity":"到测试书店看书",'
+            '"status":"专注","place":"测试书店","place_kind":"poi",'
+            '"place_scope":"local","place_city":"","place_hint":"测试区测试街2号",'
+            '"travel_mode":"walking"},{"time":"21:00","activity":"回家收尾",'
+            '"status":"放松","place":"家","place_kind":"home",'
+            '"place_scope":"local","place_city":"","place_hint":"",'
+            '"travel_mode":""}],"places":[],"new_events":[]}'
+        )
+        composer, provider, _, _ = make_composer([preplan, valid_json])
+        composer.domains = types.SimpleNamespace(
+            home_city="测试市",
+            map_tools_available=lambda: True,
+            prepare_daily_location_candidates=AsyncMock(
+                return_value={
+                    "available": True,
+                    "map_provider": "高德地图",
+                    "home_city": "测试市",
+                    "candidates": [
+                        {
+                            "purpose": "下午安静阅读",
+                            "name": "测试书店",
+                            "place_hint": "测试区测试街2号",
+                            "place_scope": "local",
+                            "place_city": "",
+                            "travel_mode": "walking",
+                            "travel_minutes": 15,
+                            "poi_id": "poi-preselected",
+                            "coordinate": (23.01, 113.01),
+                        }
+                    ],
+                    "warnings": [],
+                }
+            ),
+            audit_daily_locations=AsyncMock(
+                side_effect=lambda payload, **kwargs: (payload, "")
+            ),
+        )
+
+        data = await composer.generate_daily(
+            datetime.datetime(2026, 6, 23, 8, 0), force=True
+        )
+
+        self.assertIsNotNone(data)
+        self.assertEqual(len(provider.prompts), 2)
+        self.assertIn("日程地点预选", provider.prompts[0])
+        self.assertIn("地图已确认地点候选", provider.prompts[1])
+        self.assertIn("名称=测试书店", provider.prompts[1])
+        self.assertNotIn("poi-preselected", provider.prompts[1])
+        self.assertNotIn("23.01", provider.prompts[1])
+        composer.domains.prepare_daily_location_candidates.assert_awaited_once_with(
+            [
+                {
+                    "purpose": "下午安静阅读",
+                    "query": "书店",
+                    "place_scope": "local",
+                    "place_city": "",
+                    "travel_mode": "walking",
+                    "max_travel_minutes": 30,
+                }
+            ],
+            max_candidates=8,
+        )
+
+    async def test_daily_generation_continues_when_location_preselection_fails(self):
+        valid_json = (
+            '{"generation_contract":{"contract_version":"daily_life_generation",'
+            '"expected_coverage":"full_day","closed_loop_required":true},'
+            '"outfit":"宽松白色短袖和浅灰长裤",'
+            '"timeline":[{"time":"09:00","activity":"在家整理今日计划",'
+            '"status":"平稳","place":"家","place_kind":"home",'
+            '"place_scope":"local","place_city":"","place_hint":"",'
+            '"travel_mode":""},{"time":"15:00","activity":"在附近散步",'
+            '"status":"放松","place":"附近街区","place_kind":"generic",'
+            '"place_scope":"local","place_city":"","place_hint":"",'
+            '"travel_mode":"walking"},{"time":"21:00","activity":"回家收尾",'
+            '"status":"放松","place":"家","place_kind":"home",'
+            '"place_scope":"local","place_city":"","place_hint":"",'
+            '"travel_mode":""}],"places":[],"new_events":[]}'
+        )
+        composer, provider, _, _ = make_composer(["地点意图解析失败", valid_json])
+        composer.domains = types.SimpleNamespace(
+            map_tools_available=lambda: True,
+            prepare_daily_location_candidates=AsyncMock(),
+            audit_daily_locations=AsyncMock(
+                side_effect=lambda payload, **kwargs: (payload, "")
+            ),
+        )
+
+        data = await composer.generate_daily(
+            datetime.datetime(2026, 6, 23, 8, 0), force=True
+        )
+
+        self.assertIsNotNone(data)
+        self.assertEqual(len(provider.prompts), 2)
+        self.assertIn("日程地点预选", provider.prompts[0])
+        self.assertNotIn("地图已确认地点候选", provider.prompts[1])
+        composer.domains.prepare_daily_location_candidates.assert_not_awaited()
+
+    async def test_daily_location_preselection_uses_configured_provider(self):
+        preplan = (
+            '{"requests":[{"purpose":"下午安静阅读","query":"书店",'
+            '"place_scope":"local","place_city":"",'
+            '"travel_mode":"walking","max_travel_minutes":30}]}'
+        )
+        valid_json = (
+            '{"generation_contract":{"contract_version":"daily_life_generation",'
+            '"expected_coverage":"full_day","closed_loop_required":true},'
+            '"outfit":"宽松白色短袖和浅灰长裤",'
+            '"timeline":[{"time":"09:00","activity":"在家整理今日计划",'
+            '"status":"平稳","place":"家","place_kind":"home",'
+            '"place_scope":"local","place_city":"","place_hint":"",'
+            '"travel_mode":""},{"time":"15:00","activity":"到测试书店看书",'
+            '"status":"专注","place":"测试书店","place_kind":"poi",'
+            '"place_scope":"local","place_city":"","place_hint":"测试区测试街2号",'
+            '"travel_mode":"walking"},{"time":"21:00","activity":"回家收尾",'
+            '"status":"放松","place":"家","place_kind":"home",'
+            '"place_scope":"local","place_city":"","place_hint":"",'
+            '"travel_mode":""}],"places":[],"new_events":[]}'
+        )
+        location_provider = Provider([preplan], provider_id="location-model")
+        composer, provider, _, _ = make_composer(
+            [valid_json],
+            providers={"location-model": location_provider},
+            config_overrides={
+                "rhythm_config": {"location_planning_provider": "location-model"}
+            },
+        )
+        composer.domains = types.SimpleNamespace(
+            map_tools_available=lambda: True,
+            prepare_daily_location_candidates=AsyncMock(
+                return_value={
+                    "available": True,
+                    "map_provider": "高德地图",
+                    "home_city": "测试市",
+                    "candidates": [
+                        {
+                            "purpose": "下午安静阅读",
+                            "name": "测试书店",
+                            "place_hint": "测试区测试街2号",
+                            "place_scope": "local",
+                            "place_city": "",
+                            "travel_mode": "walking",
+                            "travel_minutes": 15,
+                            "coordinate": (23.01, 113.01),
+                        }
+                    ],
+                }
+            ),
+            audit_daily_locations=AsyncMock(
+                side_effect=lambda payload, **kwargs: (payload, "")
+            ),
+        )
+
+        data = await composer.generate_daily(
+            datetime.datetime(2026, 6, 23, 8, 0), force=True
+        )
+
+        self.assertIsNotNone(data)
+        self.assertEqual(len(location_provider.prompts), 1)
+        self.assertIn("日程地点预选", location_provider.prompts[0])
+        self.assertEqual(len(provider.prompts), 1)
+        self.assertIn("地图已确认地点候选", provider.prompts[0])
 
     async def test_daily_generation_repairs_outfit_style_contaminated_by_theme_or_mood(
         self,

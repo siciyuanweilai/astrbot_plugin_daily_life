@@ -13,6 +13,7 @@ class LifeSettingsTest(unittest.TestCase):
                 "rhythm_config": {
                     "schedule_time": "bad",
                     "llm_provider": "generation-model",
+                    "location_planning_provider": "location-model",
                     "history_days": "bad",
                     "history_hours": "bad",
                     "history_max_count": "0",
@@ -226,6 +227,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertEqual(config.reference_groups, ["123456"])
         self.assertEqual(config.reference_users, ["654321"])
         self.assertEqual(config.llm_provider, "generation-model")
+        self.assertEqual(config.location_planning_provider, "location-model")
         self.assertFalse(config.weather.aware_outfit)
         self.assertTrue(config.weather.aware_activity)
         self.assertFalse(hasattr(config.weather, "default_city"))
@@ -1332,9 +1334,9 @@ class LifeSettingsTest(unittest.TestCase):
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertIn("version: 1.1.4", metadata)
-        self.assertIn("version-1.1.4", readme)
-        self.assertIn("v1.1.4 · 2026-08-05", changelog)
+        self.assertIn("version: 1.1.5", metadata)
+        self.assertIn("version-1.1.5", readme)
+        self.assertIn("v1.1.5 · 2026-08-05", changelog)
         self.assertIn("v1.0.4 · 2026-08-01", changelog)
         self.assertLess(changelog.index("v1.0.4"), changelog.index("v1.0.3"))
 

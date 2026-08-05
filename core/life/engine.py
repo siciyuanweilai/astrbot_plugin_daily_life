@@ -138,6 +138,12 @@ class DailyEngineMixin:
             "period_cn": period_cn,
             "weather_info": weather_info,
             "weather_str_for_prompt": weather_info["raw"],
+            "week_plan": week_plan,
+            "today_hint": today_hint,
+            "today_suggested": today_suggested,
+            "memo_str": memo_str,
+            "recent_chats": recent_chats,
+            "world_context": world_context,
             "due_commitments": due_commitments,
             "prompt": prompt,
             "manual_extra": self._normalize_extra(extra),
@@ -265,14 +271,13 @@ class DailyEngineMixin:
             )
 
             gen_session_id = f"daily_life_gen_{uuid.uuid4().hex[:8]}"
+            location_session_id = f"{gen_session_id}_locations"
             try:
                 provider_id = self._generation_provider_id()
                 provider = await self._get_provider(provider_id)
                 if not provider:
                     return None
 
-                logger.debug("[日程生成] 开始调用大语言模型……")
-                current_prompt = context["prompt"]
                 domain_service = getattr(self, "domains", None)
                 location_auditor = getattr(
                     domain_service, "audit_daily_locations", None
@@ -284,6 +289,20 @@ class DailyEngineMixin:
                     callable(location_auditor)
                     and callable(map_tools_available)
                     and map_tools_available()
+                )
+                location_context = ""
+                preselected_places = []
+                if location_validation_enabled:
+                    logger.debug("[日程生成] 开始规划地点意图并通过地图预选候选……")
+                    location_context, preselected_places = await self._prepare_daily_location_context(
+                        context=context,
+                        provider=provider,
+                        provider_id=provider_id,
+                        session_id=location_session_id,
+                    )
+                logger.debug("[日程生成] 开始调用大语言模型生成最终日程……")
+                current_prompt = self._append_daily_location_context(
+                    context["prompt"], location_context
                 )
                 max_attempts = (
                     3
@@ -335,9 +354,11 @@ class DailyEngineMixin:
                             )
                     if ok:
                         if callable(location_auditor):
+                            audit_kwargs = {"allow_safe_corrections": True}
+                            if preselected_places:
+                                audit_kwargs["preselected_places"] = preselected_places
                             result, location_reason = await location_auditor(
-                                result,
-                                allow_safe_corrections=True,
+                                result, **audit_kwargs
                             )
                             if location_reason:
                                 ok = False
@@ -374,12 +395,14 @@ class DailyEngineMixin:
                             person_fact_context=context[
                                 "person_facts"
                             ].format_for_generation(include_persona=True),
+                            location_context=location_context,
                         )
 
                 logger.error("[日程生成] 最终生成失败，重试次数耗尽")
             except Exception as e:
                 logger.error(f"[日程生成] 生成失败：{e}")
             finally:
+                await self._cleanup_conversation(location_session_id)
                 await self._cleanup_conversation(gen_session_id)
             return None
 

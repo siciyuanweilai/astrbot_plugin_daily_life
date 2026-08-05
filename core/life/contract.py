@@ -589,6 +589,7 @@ class DailyContractMixin:
         expected_coverage: str = "",
         issue_code: str = "",
         person_fact_context: str = "",
+        location_context: str = "",
     ) -> str:
         extra_section = (
             f"用户补充要求（最高优先级）：{extra}"
@@ -607,6 +608,9 @@ class DailyContractMixin:
         person_section = (
             f"\n\n人物事实边界：\n{person_fact_context}" if person_fact_context else ""
         )
+        location_section = (
+            f"\n\n{location_context.strip()}" if location_context.strip() else ""
+        )
         fixed = f"""你之前生成的日程未通过校验，请直接修复为可通过的 JSON。
 {contract_section}
 
@@ -614,7 +618,7 @@ class DailyContractMixin:
 - 只输出完整 JSON 对象，不要解释、不要 Markdown、不要补充文字。
 - 修复方式：{repair_strategy}"""
         dynamic = f"""校验原因：{reason}
-{extra_section}{web_section}{person_section}
+{extra_section}{web_section}{person_section}{location_section}
 
 原始输出：
 {bad_text}"""

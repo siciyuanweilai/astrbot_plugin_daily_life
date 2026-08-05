@@ -15,6 +15,7 @@ import aiohttp
 from astrbot.api import logger
 
 from ..runtime.markers import LOG_PREFIX
+from ..security import is_http_url_allowed_async
 from .auth import browser_headers
 from .bili import fetch_bili_metadata, resolve_bili_target, target_from_text
 from .cookie import BiliCookieJar
@@ -183,6 +184,9 @@ async def _download_remote_video_with_reason_once(
     )
     if cached_ready:
         return target, ""
+
+    if not await is_http_url_allowed_async(source):
+        return None, "视频地址不在允许的媒体网络范围内"
 
     temp_target = target.with_name(f".{target.name}.part")
     await asyncio.to_thread(temp_target.unlink, missing_ok=True)

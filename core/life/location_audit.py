@@ -25,12 +25,14 @@ class DailyLocationAuditMixin:
         payload: dict[str, Any],
         *,
         allow_safe_corrections: bool = False,
+        preselected_places: list[dict[str, Any]] | None = None,
     ) -> tuple[dict[str, Any], str]:
         """在日程保存前核验结构化地点和连续路线。
 
         Args:
             payload: 已通过基础结构校验的日程结果。
             allow_safe_corrections: 是否自动收敛地点、路线和时间轴中的可修正问题。
+            preselected_places: 本轮生成前已由地图确认的候选地点；匹配时直接复用其坐标。
 
         Returns:
             写入地图标准字段后的日程，以及校验失败原因。原因为空表示通过。
@@ -51,6 +53,11 @@ class DailyLocationAuditMixin:
             return payload, ""
 
         revised = copy.deepcopy(payload)
+        preselected_places = [
+            item
+            for item in (preselected_places if isinstance(preselected_places, list) else [])
+            if isinstance(item, dict)
+        ]
         timeline = revised.get("timeline")
         if not isinstance(timeline, list):
             return payload, ""
@@ -66,7 +73,20 @@ class DailyLocationAuditMixin:
         if issue:
             return payload, issue
 
-        search_keys = list(search_requests)
+        search_keys = [
+            key
+            for key in search_requests
+            if not any(
+                entry["kind"] == "poi"
+                and entry["query"] == key[0]
+                and entry["city"] == key[1]
+                and any(
+                    self._preselected_place_matches(candidate, entry, key[1])
+                    for candidate in preselected_places
+                )
+                for entry in entries
+            )
+        ]
         search_values = await asyncio.gather(
             *(
                 self._map.search_places(query, city_hint=city, limit=5)
@@ -122,7 +142,12 @@ class DailyLocationAuditMixin:
                 continue
 
             if kind == "poi":
-                candidates = [
+                preselected = [
+                    candidate
+                    for candidate in preselected_places
+                    if self._preselected_place_matches(candidate, entry, target_city)
+                ]
+                candidates = preselected or [
                     candidate
                     for candidate in search_results.get(
                         (entry["query"], target_city), []
@@ -610,6 +635,30 @@ class DailyLocationAuditMixin:
                 "mode": mode,
             }
         return transitions, route_by_index, ""
+
+    def _preselected_place_matches(
+        self,
+        candidate: dict[str, Any],
+        entry: dict[str, Any],
+        target_city: str,
+    ) -> bool:
+        """判断预选 POI 是否就是时间轴声明的地点。"""
+
+        if not isinstance(candidate, dict) or not candidate.get("coordinate"):
+            return False
+        if str(candidate.get("name") or "").strip() != str(entry.get("place") or "").strip():
+            return False
+        if not self._cities_match(
+            str(candidate.get("city") or "").strip(), target_city
+        ):
+            return False
+        hint = str(entry.get("hint") or "").strip()
+        return bool(
+            not hint
+            or hint in str(candidate.get("address") or "")
+            or hint in str(candidate.get("district") or "")
+            or hint == str(candidate.get("place_hint") or "").strip()
+        )
 
     def _synchronize_travel_actions(
         self,

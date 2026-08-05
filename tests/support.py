@@ -1219,6 +1219,27 @@ class DataManager:
         item.reason = self._text(item.reason)
         item.inner_monologue = self._text(item.inner_monologue)
         item.reply_strategy = self._text(item.reply_strategy)
+        coalesced_key = (item.action, item.scene_type)
+        if coalesced_key in {
+            ("proactive_proposal_wait", "私聊回访/proposal"),
+            ("proactive_proposal_wait", "闲时回复/proposal"),
+        } and (item.session_id or item.sender_profile_id or item.group_id):
+            for existing in sorted(
+                self.action_decisions.values(),
+                key=lambda value: value.id,
+                reverse=True,
+            ):
+                if (
+                    existing.session_id == item.session_id
+                    and existing.sender_profile_id == item.sender_profile_id
+                    and existing.group_id == item.group_id
+                    and existing.date == item.date
+                    and existing.action == item.action
+                    and existing.scene_type == item.scene_type
+                ):
+                    item.id = existing.id
+                    self.action_decisions[item.id] = item
+                    return item
         if not item.id:
             item.id = self.next_action_decision_id
             self.next_action_decision_id += 1

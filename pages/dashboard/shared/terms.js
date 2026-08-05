@@ -771,6 +771,11 @@ export const ACTION_LABELS = {
   no_reply: "不回复",
   proactive_reply: "闲时回复",
   private_revisit: "私聊回访",
+  // 主动互动的旧记录会把阶段和结果拼进动作值，面板使用短标签保持可扫描。
+  proactive_proposal_wait: "等待回访",
+  proactive_proposal_observe: "候选观察",
+  proactive_proposal_reply: "准备回访",
+  proactive_proposal_skip: "暂不回访",
   regular_reply: "普通回复",
   previous_reply: "上一轮回复",
   proactive_observe: "随心观察",
@@ -828,6 +833,9 @@ export const SCENE_TYPE_LABELS = {
   eat_melon: "吃瓜",
   discussing_bot: "提到我",
   other: "其他",
+  // 兼容旧版主动裁定写入的“来源/阶段”场景值。
+  "私聊回访/proposal": "回访候选",
+  "闲时回复/proposal": "闲时候选",
 };
 
 export const BOT_WATCH_STATE_LABELS = {

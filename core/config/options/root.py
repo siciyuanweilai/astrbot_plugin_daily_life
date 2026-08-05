@@ -43,6 +43,7 @@ class LifeSettings:
     history_hours: int = 24
     history_max_count: int = 50
     llm_provider: str = ""
+    location_planning_provider: str = ""
     weather: WeatherSettings = field(default_factory=WeatherSettings)
     state: StateSettings = field(default_factory=StateSettings)
     commitments: CommitmentSettings = field(default_factory=CommitmentSettings)
@@ -117,6 +118,9 @@ class LifeSettings:
             rhythm_conf.get("history_max_count", 50), 50, 0, 200
         )
         config.llm_provider = as_str(rhythm_conf.get("llm_provider", ""))
+        config.location_planning_provider = as_str(
+            rhythm_conf.get("location_planning_provider", "")
+        ).strip()
 
         config.weather = WeatherSettings.from_dict(weather_conf)
         config.state = StateSettings.from_dict(state_conf)

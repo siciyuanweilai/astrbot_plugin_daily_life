@@ -1549,6 +1549,39 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             )
             archive.close()
 
+    async def test_repeated_proactive_wait_is_coalesced(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(f"{tmpdir}/daily_life.db")
+            first = await archive.save_action_decision(
+                ActionDecisionRecord(
+                    session_id="aiocqhttp:FriendMessage:100",
+                    sender_profile_id="u1",
+                    sender_name="测试对象",
+                    date="2026-08-05",
+                    action="proactive_proposal_wait",
+                    scene_type="私聊回访/proposal",
+                    understanding="partial",
+                    reason="最近私聊仅安静 5 分钟",
+                )
+            )
+            second = await archive.save_action_decision(
+                ActionDecisionRecord(
+                    session_id="aiocqhttp:FriendMessage:100",
+                    sender_profile_id="u1",
+                    sender_name="测试对象",
+                    date="2026-08-05",
+                    action="proactive_proposal_wait",
+                    scene_type="私聊回访/proposal",
+                    understanding="partial",
+                    reason="最近私聊仅安静 24 分钟",
+                )
+            )
+            records = await archive.get_action_decision_records(10)
+            self.assertEqual(first.id, second.id)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0].reason, "最近私聊仅安静 24 分钟")
+            await archive.aclose()
+
     async def test_archive_persists_core_records_in_sqlite(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = f"{tmpdir}/daily_life.db"

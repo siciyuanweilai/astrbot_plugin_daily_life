@@ -151,6 +151,84 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
             "测试书店", city_hint="测试市", limit=5
         )
 
+    async def test_daily_location_preselection_returns_map_confirmed_candidate(self):
+        service = self._location_audit_service()
+        service._map.search_places = AsyncMock(
+            return_value=[
+                {
+                    "poi_id": "poi-preselected",
+                    "name": "测试书店",
+                    "address": "测试区测试街2号",
+                    "district": "测试区",
+                    "category": "书店",
+                    "city": "测试市",
+                    "coordinate": (23.01, 113.01),
+                }
+            ]
+        )
+        service._map.route = AsyncMock(
+            return_value={
+                "distance_meters": 1800,
+                "duration_seconds": 900,
+                "provider": "amap",
+            }
+        )
+
+        result = await service.prepare_daily_location_candidates(
+            [
+                {
+                    "purpose": "下午安静阅读",
+                    "query": "书店",
+                    "place_scope": "local",
+                    "travel_mode": "walking",
+                }
+            ]
+        )
+
+        self.assertTrue(result["available"])
+        self.assertEqual(result["home_city"], "测试市")
+        self.assertEqual(result["candidates"][0]["name"], "测试书店")
+        self.assertEqual(result["candidates"][0]["place_hint"], "测试区测试街2号")
+        self.assertEqual(result["candidates"][0]["travel_minutes"], 15)
+        service._map.search_places.assert_awaited_once()
+        service._map.route.assert_awaited_once()
+
+    async def test_daily_location_audit_reuses_preselected_candidate(self):
+        service = self._location_audit_service()
+        service._map.search_places = AsyncMock(
+            side_effect=AssertionError("预选地点不应再次搜索")
+        )
+        service._map.route = AsyncMock(
+            return_value={
+                "distance_meters": 1800,
+                "duration_seconds": 900,
+                "provider": "amap",
+            }
+        )
+        preselected = [
+            {
+                "poi_id": "poi-preselected",
+                "name": "测试书店",
+                "address": "测试区测试街2号",
+                "district": "测试区",
+                "category": "书店",
+                "city": "测试市",
+                "place_hint": "测试区测试街2号",
+                "coordinate": (23.01, 113.01),
+            }
+        ]
+
+        revised, reason = await service.audit_daily_locations(
+            self._location_payload(hint="测试区测试街2号"),
+            preselected_places=preselected,
+        )
+
+        self.assertEqual(reason, "")
+        self.assertEqual(revised["timeline"][1]["place"], "测试书店")
+        self.assertEqual(revised["timeline"][1]["travel_minutes"], 15)
+        self.assertEqual(revised["location_audit"]["substituted_places"], 0)
+        service._map.search_places.assert_not_awaited()
+
     async def test_daily_location_audit_allows_explicit_cross_city_travel(self):
         service = self._location_audit_service()
         service._map.search_places = AsyncMock(
@@ -519,6 +597,92 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
         receipts = await self.archive.get_life_action_receipts(
             action_id="2026-08-03:meal:0"
         )
+        self.assertEqual(receipts[0].status, "simulated")
+
+    async def test_internal_outfit_change_completes_without_external_receipt(self):
+        outfit = "薄荷绿棉质上衣配浅色牛仔短裤"
+        day = self._day(
+            {
+                "action_id": "2026-08-03:change_outfit:0",
+                "action_type": "change_outfit",
+                "target": outfit,
+                "timeline_index": 0,
+                "duration_minutes": 10,
+                "source": "daily_plan",
+            }
+        )
+
+        await self.domains.sync_activity_sessions(
+            day,
+            now=datetime.datetime(2026, 8, 3, 12, 30),
+        )
+        outcomes = await self.harness.settle_completed_planned_actions(day)
+        await self.domains.sync_activity_sessions(
+            day,
+            now=datetime.datetime(2026, 8, 3, 12, 31),
+        )
+
+        self.assertEqual(outcomes[0].status, "committed")
+        self.assertEqual(day.timeline[0].execution_state, "completed")
+        self.assertEqual(day.outfit, outfit)
+        receipts = await self.archive.get_life_action_receipts(
+            action_id="2026-08-03:change_outfit:0"
+        )
+        self.assertEqual(receipts[0].status, "simulated")
+        sessions = await self.archive.get_activity_sessions(limit=0)
+        self.assertEqual(sessions[0]["status"], "completed")
+
+    async def test_legacy_expired_outfit_change_is_repaired_on_settlement(self):
+        action_id = "2026-08-03:change_outfit:legacy"
+        outfit = "浅绿色短袖配靛蓝色牛仔短裤"
+        detailed_outfit = "浅绿色纯棉短袖上衣，搭配靛蓝色高腰牛仔短裤和白色帆布鞋"
+        day = self._day(
+            {
+                "action_id": action_id,
+                "action_type": "change_outfit",
+                "target": outfit,
+                "timeline_index": 0,
+                "duration_minutes": 10,
+                "source": "daily_plan",
+            }
+        )
+        day.outfit = detailed_outfit
+        day.timeline[0].execution_state = "expired"
+        day.timeline[0].execution_reason = "计划时间已经结束，但没有收到可验证的执行回执"
+        day.meta["life_action_expirations"] = json.dumps(
+            {
+                action_id: {
+                    "action_id": action_id,
+                    "action_type": "change_outfit",
+                    "status": "expired",
+                }
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+
+        await self.domains.sync_activity_sessions(
+            day,
+            now=datetime.datetime(2026, 8, 3, 12, 30),
+        )
+        outcomes = await self.harness.settle_completed_planned_actions(
+            day,
+            now=datetime.datetime(2026, 8, 3, 12, 31),
+        )
+        await self.domains.sync_activity_sessions(
+            day,
+            now=datetime.datetime(2026, 8, 3, 12, 32),
+        )
+
+        self.assertEqual(outcomes[0].status, "committed")
+        self.assertEqual(day.timeline[0].execution_state, "completed")
+        self.assertEqual(day.outfit, detailed_outfit)
+        self.assertIn(detailed_outfit, day.outfit_history.values())
+        expirations = json.loads(day.meta["life_action_expirations"])
+        self.assertNotIn(action_id, expirations)
+        sessions = await self.archive.get_activity_sessions(limit=0)
+        self.assertEqual(sessions[0]["status"], "completed")
+        receipts = await self.archive.get_life_action_receipts(action_id=action_id)
         self.assertEqual(receipts[0].status, "simulated")
 
     async def test_insufficient_pantry_rejects_simulated_meal(self):

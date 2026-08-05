@@ -7,12 +7,14 @@ import subprocess
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import aiohttp
 
 from astrbot.api import logger
 
 from ..runtime.markers import LOG_PREFIX
+from ..security import is_http_url_allowed_async
 from .cookie import BiliCookieJar
 from .ffmpeg import ffmpeg_executable, ytdlp_ffmpeg_location
 from .probe import clean_source
@@ -72,15 +74,34 @@ async def transcribe_bcut_audio(
 
 
 async def prepare_audio_source(
-    source: str, cache_dir: Path, *, cookiefile: Path | None = None
+    source: str,
+    cache_dir: Path,
+    *,
+    cookiefile: Path | None = None,
 ) -> Path | None:
+    source_text = clean_source(source)
+    if source_text.startswith(("http://", "https://")):
+        hostname = str(urlparse(source_text).hostname or "").strip().lower().rstrip(".")
+        bili_host = hostname in {
+            "bilibili.com",
+            "www.bilibili.com",
+            "b23.tv",
+            "www.b23.tv",
+        }
+        bili_host = bili_host or hostname.endswith((".bilibili.com", ".b23.tv"))
+        if not bili_host and not await is_http_url_allowed_async(source_text):
+            logger.debug(f"{LOG_PREFIX} 音频素材下载跳过：地址不在允许的媒体网络范围内")
+            return None
     audio_path = await download_audio_with_ytdlp(
-        source, cache_dir, cookiefile=cookiefile
+        source_text or source, cache_dir, cookiefile=cookiefile
     )
     if audio_path:
         return _checked_audio_path(audio_path)
 
-    source_path = await resolve_sample_source(source, cache_dir)
+    source_path = await resolve_sample_source(
+        source,
+        cache_dir,
+    )
     if not source_path:
         logger.debug(f"{LOG_PREFIX} 未找到可用的视频源")
         return None

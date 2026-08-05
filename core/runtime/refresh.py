@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 import math
 from typing import Any
 
@@ -82,6 +83,33 @@ class RefreshMixin:
         if last is None:
             return True
         return (now - last).total_seconds() >= interval * 60
+
+    @staticmethod
+    def _has_legacy_outfit_expiration(data: DayRecord) -> bool:
+        """判断是否有旧版本误标为过期的换装动作需要修复。"""
+        raw_actions = str((data.meta or {}).get("planned_life_actions") or "")
+        raw_expirations = str((data.meta or {}).get("life_action_expirations") or "")
+        try:
+            actions = json.loads(raw_actions) if raw_actions else []
+            expirations = json.loads(raw_expirations) if raw_expirations else {}
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return False
+        if not isinstance(actions, list) or not isinstance(expirations, dict):
+            return False
+        for action in actions:
+            if not isinstance(action, dict):
+                continue
+            if str(action.get("action_type") or "").strip().lower() != "change_outfit":
+                continue
+            action_id = str(action.get("action_id") or "").strip()
+            expiration = expirations.get(action_id)
+            if (
+                action_id
+                and isinstance(expiration, dict)
+                and str(expiration.get("status") or "").strip().lower() == "expired"
+            ):
+                return True
+        return False
 
     @staticmethod
     def _state_stability_signature(data: DayRecord) -> tuple:
@@ -241,6 +269,7 @@ class RefreshMixin:
             not self._auto_life_check_due(data, now)
             and not execution_changed
             and not outfit_context_changed
+            and not self._has_legacy_outfit_expiration(data)
         ):
             return data
 

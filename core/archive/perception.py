@@ -8,6 +8,22 @@ from ..models import (
 )
 
 
+_COALESCED_ACTION_DECISION_KEYS = frozenset(
+    {
+        ("proactive_proposal_wait", "私聊回访/proposal"),
+        ("proactive_proposal_wait", "闲时回复/proposal"),
+    }
+)
+
+
+def _coalescible_action_decision(item: ActionDecisionRecord) -> bool:
+    """判断是否可以合并重复的主动等待裁定。"""
+
+    if not (item.session_id or item.sender_profile_id or item.group_id):
+        return False
+    return (item.action, item.scene_type) in _COALESCED_ACTION_DECISION_KEYS
+
+
 class PerceptionArchiveMixin:
     def _recent_scoped_rows_unlocked(self, table: str, limit: int) -> list[sqlite3.Row]:
         sql = f"""
@@ -254,6 +270,60 @@ class PerceptionArchiveMixin:
             raise ValueError("动作裁定记录不能为空")
 
         def write() -> ActionDecisionRecord:
+            if _coalescible_action_decision(item):
+                existing = self._conn.execute(
+                    """
+                    SELECT id
+                    FROM action_decisions
+                    WHERE session_id = ?
+                      AND sender_profile_id = ?
+                      AND group_id = ?
+                      AND date = ?
+                      AND action = ?
+                      AND scene_type = ?
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (
+                        self._text(item.session_id),
+                        self._text(item.sender_profile_id),
+                        self._text(item.group_id),
+                        self._text(item.date),
+                        self._text(item.action),
+                        self._text(item.scene_type),
+                    ),
+                ).fetchone()
+                if existing:
+                    self._conn.execute(
+                        """
+                        UPDATE action_decisions
+                        SET message_id = ?, sender_name = ?, group_name = ?,
+                            reason = ?, confidence = ?, topic_owner = ?,
+                            understanding = ?, deep_analysis = ?,
+                            inner_monologue = ?, reply_strategy = ?,
+                            created_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                        """,
+                        (
+                            self._text(item.message_id),
+                            self._text(item.sender_name),
+                            self._text(item.group_name),
+                            self._text(item.reason),
+                            max(float(item.confidence or 0.0), 0.0),
+                            self._text(item.topic_owner),
+                            self._text(item.understanding),
+                            self._flag(item.deep_analysis),
+                            self._text(item.inner_monologue),
+                            self._text(item.reply_strategy),
+                            int(existing["id"]),
+                        ),
+                    )
+                    self._conn.commit()
+                    row = self._conn.execute(
+                        "SELECT * FROM action_decisions WHERE id = ?",
+                        (int(existing["id"]),),
+                    ).fetchone()
+                    return self._compose_action_decision(row)
             cursor = self._conn.execute(
                 """
                 INSERT INTO action_decisions(

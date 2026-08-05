@@ -334,8 +334,13 @@ class LifeActionMixin:
             state.source = f"life_action:{action.action_type}"
 
             if action.action_type == "change_outfit":
-                day.outfit = action.target
-                day.outfit_history[committed_at] = action.target
+                resolved_outfit = (
+                    day.outfit
+                    if action.source == "daily_plan" and day.outfit
+                    else action.target
+                )
+                day.outfit = resolved_outfit
+                day.outfit_history[committed_at] = resolved_outfit
                 day.meta["outfit_decision"] = "life_action"
             if action.action_type in {"move", "travel"} and action.target:
                 previous_place = str(
@@ -805,10 +810,32 @@ class LifeActionMixin:
                 or action.action_type not in LIFE_ACTION_TYPES
                 or action.timeline_index is None
                 or not 0 <= action.timeline_index < len(day.timeline)
-                or action.action_id in expirations
             ):
                 continue
             timeline_item = day.timeline[action.timeline_index]
+            legacy_expiration = expirations.get(action.action_id)
+            repair_outfit_expiration = (
+                action.action_type == "change_outfit"
+                and timeline_item.execution_state == "expired"
+                and isinstance(legacy_expiration, dict)
+                and str(legacy_expiration.get("status") or "").strip().lower()
+                == "expired"
+            )
+            if repair_outfit_expiration:
+                expirations.pop(action.action_id, None)
+                timeline_item.execution_state = "completed"
+                timeline_item.execution_reason = "换装由虚拟生活时间轴自动结算"
+                timeline_item.execution_evidence = (
+                    timeline_item.execution_evidence
+                    or action.evidence
+                    or action.action_id
+                )
+                timeline_item.execution_updated_at = (now or life_now()).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+                changed = True
+            elif action.action_id in expirations:
+                continue
             if timeline_item.execution_state != "completed":
                 continue
             domain_service = getattr(self, "domains", None)

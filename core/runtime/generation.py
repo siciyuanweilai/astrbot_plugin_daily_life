@@ -101,7 +101,11 @@ class DailyGenerationMixin:
         except asyncio.CancelledError:
             return
         except Exception as exc:
-            logger.debug(f"{LOG_PREFIX} 读取日程任务结果失败：{type(exc).__name__}")
+            task_name = str(task.get_name() or "日程任务")
+            logger.error(
+                f"{LOG_PREFIX} 后台日程任务异常：任务={task_name}；"
+                f"异常={type(exc).__name__}: {exc}"
+            )
 
     async def run_daily_generation(
         self,
