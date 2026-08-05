@@ -22,7 +22,7 @@ class DailyLifeDashboardMixin(
     """日常生活插件的轻量页面面板。"""
 
     def _register_page_web_apis(self) -> None:
-        routes = (
+        dashboard_routes = (
             ("page/status", self.page_status, ["GET"], "日常生活工作台状态"),
             (
                 "page/status/wait",
@@ -37,12 +37,6 @@ class DailyLifeDashboardMixin(
                 "刷新日常生活状态",
             ),
             ("page/action/reset-day", self.page_reset_day, ["POST"], "重生成日常生活"),
-            (
-                "page/action/generate-week",
-                self.page_generate_week,
-                ["POST"],
-                "生成周计划",
-            ),
             ("page/timeline/save", self.page_timeline_save, ["POST"], "保存时间轴"),
             ("page/config", self.page_config, ["GET", "POST"], "日常生活设置"),
             (
@@ -94,6 +88,15 @@ class DailyLifeDashboardMixin(
             ),
             ("page/emoji/backup", self.page_emoji_backup, ["GET"], "备份表情素材"),
             ("page/emoji/restore", self.page_emoji_restore, ["POST"], "还原表情素材"),
+        )
+        # 这些接口供自动流程、命令或外部管理调用，不在 Dashboard 中重复放置入口。
+        programmatic_routes = (
+            (
+                "page/action/generate-week",
+                self.page_generate_week,
+                ["POST"],
+                "生成周计划",
+            ),
             (
                 "page/experience/episode/correct",
                 self.page_experience_episode_correct,
@@ -125,7 +128,9 @@ class DailyLifeDashboardMixin(
                 "保存行为反馈",
             ),
         )
-        for endpoint, handler, methods, desc in routes:
+        for endpoint, handler, methods, desc in (
+            dashboard_routes + programmatic_routes
+        ):
             self.context.register_web_api(
                 f"/{PLUGIN_ID}/{endpoint}", handler, methods, desc
             )

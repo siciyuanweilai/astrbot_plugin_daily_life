@@ -1,10 +1,43 @@
+import ast
 import asyncio
 import types
 import unittest
+from pathlib import Path
 
 from core.runtime.locks import operation_lock
 from core.runtime.scopes import RuntimeScopeState
 from support import DailyLifeRuntime
+
+
+class CancellationCleanupContractTest(unittest.TestCase):
+    def test_base_exception_cleanup_handlers_always_reraise(self):
+        root = Path(__file__).resolve().parents[1]
+        files = (
+            "main.py",
+            "core/archive/store.py",
+            "core/interface/portal/entry.py",
+            "core/runtime/locks.py",
+            "core/runtime/spine/adapt.py",
+            "core/runtime/spine/pulse.py",
+        )
+        handlers = []
+        for relative_path in files:
+            tree = ast.parse((root / relative_path).read_text(encoding="utf-8"))
+            handlers.extend(
+                (relative_path, node)
+                for node in ast.walk(tree)
+                if isinstance(node, ast.ExceptHandler)
+                and isinstance(node.type, ast.Name)
+                and node.type.id == "BaseException"
+            )
+
+        self.assertEqual(len(handlers), 8)
+        for relative_path, handler in handlers:
+            self.assertIsInstance(
+                handler.body[-1],
+                ast.Raise,
+                f"{relative_path}:{handler.lineno} 必须在清理后重新抛出异常",
+            )
 
 
 class RuntimeScopeStateTest(unittest.IsolatedAsyncioTestCase):

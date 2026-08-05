@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Awaitable, Callable
 
 from astrbot.api import logger
 
@@ -126,6 +126,7 @@ class PortalBaseMixin:
                     if size > max_bytes:
                         raise ValueError("上传文件超过大小限制")
                     await asyncio.to_thread(handle.write, chunk)
+        # 上传取消也要删除未完成文件，随后保留原取消语义。
         except BaseException:
             await asyncio.to_thread(target.unlink, missing_ok=True)
             raise
@@ -148,6 +149,7 @@ class PortalBaseMixin:
                     if size > max_bytes:
                         raise ValueError("上传文件超过大小限制")
                     handle.write(chunk)
+        # 同步读取可能由工作线程取消，临时文件仍需回收。
         except BaseException:
             target.unlink(missing_ok=True)
             raise

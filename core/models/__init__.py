@@ -1,4 +1,6 @@
 from .actions import (
+    EXTERNAL_RECEIPT_ACTION_TYPES,
+    INTERNAL_SIMULATED_ACTION_TYPES,
     LIFE_ACTION_TYPES,
     LifeActionEffect,
     LifeActionIntent,
@@ -78,6 +80,7 @@ from .vitals import (
 )
 
 __all__ = [
+    "EXTERNAL_RECEIPT_ACTION_TYPES",
     "ActionDecisionRecord",
     "AffectiveStateRecord",
     "BehaviorFeedbackRecord",
@@ -101,6 +104,7 @@ __all__ = [
     "FocusTargetRecord",
     "GroupEnvironmentRecord",
     "GroundedDiaryEntryRecord",
+    "INTERNAL_SIMULATED_ACTION_TYPES",
     "LifeEpisodeRecord",
     "LifeEventRecord",
     "LifeDecisionRecord",

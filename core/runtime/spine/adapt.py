@@ -76,6 +76,7 @@ class SpineAdaptMixin:
             for key in list(getattr(self, "_proactive_idle_candidates", {})):
                 self._schedule_proactive_idle_evaluation(key)
             self._injection_snapshot_cache = {}
+        # 配置切换取消也必须恢复上一组服务，随后继续抛出。
         except BaseException:
             candidate.rhythm.stop()
             self._install_runtime_services(previous)
@@ -169,6 +170,7 @@ class SpineAdaptMixin:
                     previous_services,
                     previous_rhythm_running=previous_rhythm_running,
                 )
+            # 写配置或服务替换被取消时，保持配置与运行服务一致。
             except BaseException:
                 candidate.rhythm.stop()
                 await self._restore_runtime_config(previous_config)

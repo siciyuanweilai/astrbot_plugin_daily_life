@@ -148,6 +148,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
                 self.runtime = runtime
                 self.commands = commands
                 self._register_page_web_apis()
+            # 初始化取消也必须回滚已安装资源，清理后继续抛出原异常。
             except BaseException:
                 self.runtime = None
                 self.commands = None

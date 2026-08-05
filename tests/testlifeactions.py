@@ -11,14 +11,33 @@ from core.life.assembly import DailyAssemblyMixin
 from core.life.record import DailyRecordMixin
 from core.life.rhythm import LifecycleMixin
 from core.models import (
+    EXTERNAL_RECEIPT_ACTION_TYPES,
+    INTERNAL_SIMULATED_ACTION_TYPES,
+    LIFE_ACTION_TYPES,
     LifeActionIntent,
     ReflectionSignal,
+    WeatherInfo,
 )
 
 
 class LifeActionTest(unittest.TestCase):
     def setUp(self):
         self.engine = LifeActionMixin()
+
+    def test_action_taxonomy_has_seventeen_complete_non_overlapping_types(self):
+        self.assertEqual(len(LIFE_ACTION_TYPES), 17)
+        self.assertEqual(len(INTERNAL_SIMULATED_ACTION_TYPES), 13)
+        self.assertEqual(
+            EXTERNAL_RECEIPT_ACTION_TYPES,
+            {"social", "chat", "photo", "video"},
+        )
+        self.assertEqual(
+            INTERNAL_SIMULATED_ACTION_TYPES | EXTERNAL_RECEIPT_ACTION_TYPES,
+            LIFE_ACTION_TYPES,
+        )
+        self.assertFalse(
+            INTERNAL_SIMULATED_ACTION_TYPES & EXTERNAL_RECEIPT_ACTION_TYPES
+        )
 
     def test_action_contract_does_not_infer_type_from_text(self):
         action = LifeActionIntent.from_value(
@@ -123,6 +142,97 @@ class LifeActionTest(unittest.TestCase):
         self.assertEqual(day.outfit, "浅黄色短袖和米白长裤")
         self.assertEqual(day.state.mood_score, 57)
         self.assertEqual(len(day.outfit_history), 1)
+
+    def test_action_preconditions_cover_life_weather_and_timeline_evidence(self):
+        day = DayRecord(
+            date="2026-08-01",
+            outfit="轻便穿搭",
+            time_period="下午",
+            state=LifeState(energy=60),
+            weather_info=WeatherInfo(condition="晴", temp=30),
+            timeline=[TimelineItem(time="15:00", activity="休息")],
+            meta={"current_place": "测试公园"},
+        )
+        action = {
+            "action_id": "rest-evidence",
+            "action_type": "rest",
+            "timeline_index": 0,
+            "preconditions": [
+                {"field": "day.date", "operator": "eq", "expected": "2026-08-01"},
+                {"field": "day.outfit", "operator": "ne", "expected": "居家穿搭"},
+                {"field": "day.time_period", "operator": "in", "expected": ["下午", "晚上"]},
+                {"field": "day.current_place", "operator": "present"},
+                {"field": "weather.condition", "operator": "eq", "expected": "晴"},
+                {"field": "weather.temp", "operator": "lte", "expected": 32},
+                {"field": "state.energy", "operator": "gte", "expected": 50},
+                {
+                    "field": "timeline.execution_state",
+                    "operator": "not_in",
+                    "expected": ["cancelled", "skipped"],
+                },
+            ],
+        }
+
+        outcome = self.engine.settle_life_action(
+            day, action, now=datetime.datetime(2026, 8, 1, 15, 0)
+        )
+
+        self.assertEqual(outcome.status, "committed")
+        self.assertEqual(day.timeline[0].execution_state, "completed")
+
+    def test_action_rejects_unknown_precondition_and_disallowed_effect(self):
+        unknown = self.engine.settle_life_action(
+            DayRecord(date="2026-08-01", state=LifeState(energy=50)),
+            {
+                "action_id": "rest-unknown",
+                "action_type": "rest",
+                "preconditions": [
+                    {"field": "state.unknown", "operator": "present"}
+                ],
+            },
+            now=datetime.datetime(2026, 8, 1, 15, 0),
+        )
+        disallowed = self.engine.settle_life_action(
+            DayRecord(date="2026-08-01", state=LifeState(energy=50)),
+            {
+                "action_id": "rest-effect",
+                "action_type": "rest",
+                "effects": [
+                    {"field": "interaction_capacity", "operation": "add", "value": 5}
+                ],
+            },
+            now=datetime.datetime(2026, 8, 1, 15, 0),
+        )
+
+        self.assertEqual(unknown.status, "rejected")
+        self.assertIn("前置条件未满足", unknown.reason)
+        self.assertEqual(disallowed.status, "rejected")
+        self.assertIn("不允许修改", disallowed.reason)
+
+    def test_move_action_updates_place_and_clamps_explicit_effect(self):
+        day = DayRecord(
+            date="2026-08-01",
+            state=LifeState(energy=95),
+            meta={"current_place": "测试住处"},
+        )
+        outcome = self.engine.settle_life_action(
+            day,
+            {
+                "action_id": "move-1",
+                "action_type": "move",
+                "target": "测试公园",
+                "effects": [
+                    {"field": "energy", "operation": "add", "value": 20}
+                ],
+            },
+            now=datetime.datetime(2026, 8, 1, 16, 0),
+        )
+
+        self.assertEqual(outcome.status, "committed")
+        self.assertEqual(day.state.energy, 100)
+        self.assertEqual(day.meta["previous_place"], "测试住处")
+        self.assertEqual(day.meta["current_place"], "测试公园")
+        self.assertEqual([place.name for place in day.places], ["测试公园"])
 
     def test_extracts_at_most_six_evenly_distributed_anchors(self):
         day = DayRecord(

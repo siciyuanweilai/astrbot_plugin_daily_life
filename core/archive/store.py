@@ -23,6 +23,9 @@ from .weeks import WeekArchiveMixin
 
 T = TypeVar("T")
 _DB_LOCK_HELD = contextvars.ContextVar("daily_life_db_lock_held", default=False)
+_DB_WORKER_ACTIVE = contextvars.ContextVar(
+    "daily_life_db_worker_active", default=False
+)
 
 _CONTEXT_SNAPSHOT_KEYS = (
     "relationships",
@@ -107,7 +110,7 @@ class LifeArchive(
         async with self._lock:
             self._require_not_closed()
             if not self._initialized:
-                await asyncio.to_thread(self._initialize_sync)
+                await self._run_db_worker(self._initialize_sync)
 
     def close(self) -> None:
         self._closed = True
@@ -119,7 +122,7 @@ class LifeArchive(
 
     async def aclose(self) -> None:
         async with self._lock:
-            await asyncio.to_thread(self.close)
+            await self._run_db_worker(self.close)
 
     def _require_not_closed(self) -> None:
         """拒绝在归档关闭后继续复用实例。
@@ -146,17 +149,41 @@ class LifeArchive(
             raise RuntimeError("生活归档数据库尚未初始化")
         return self._conn
 
+    @staticmethod
+    async def _run_db_worker(
+        func: Callable[..., T], *args: Any, **kwargs: Any
+    ) -> T:
+        worker = asyncio.create_task(asyncio.to_thread(func, *args, **kwargs))
+        cancellation: asyncio.CancelledError | None = None
+        while True:
+            try:
+                result = await asyncio.shield(worker)
+                break
+            except asyncio.CancelledError as exc:
+                # 工作线程无法被强制停止；先等它收束，避免锁提前释放后并发访问连接。
+                cancellation = cancellation or exc
+            except BaseException:
+                if cancellation is not None:
+                    raise cancellation
+                raise
+        if cancellation is not None:
+            raise cancellation
+        return result
+
     async def _run_db(self, func: Callable[..., T], *args: Any, **kwargs: Any) -> T:
+        if _DB_WORKER_ACTIVE.get():
+            self._require_open()
+            return func(*args, **kwargs)
         if _DB_LOCK_HELD.get():
             self._require_open()
-            return await asyncio.to_thread(func, *args, **kwargs)
+            return await self._run_db_worker(func, *args, **kwargs)
         if self._closed:
             self._require_open()
         if not self._initialized:
             await self.initialize()
         async with self._lock:
             self._require_open()
-            return await asyncio.to_thread(func, *args, **kwargs)
+            return await self._run_db_worker(func, *args, **kwargs)
 
     async def save(self) -> None:
         def write() -> None:
@@ -224,15 +251,22 @@ class LifeArchive(
             ) + list(snapshot.pop("scoped_affective_states", []) or [])
             return snapshot
 
-        if not self._initialized:
-            await self.initialize()
-        async with self._lock:
-            self._require_open()
-            token = _DB_LOCK_HELD.set(True)
+        def collect_in_worker() -> dict[str, Any]:
+            lock_token = _DB_LOCK_HELD.set(True)
+            worker_token = _DB_WORKER_ACTIVE.set(True)
+            coroutine = collect()
             try:
-                return await collect()
+                try:
+                    coroutine.send(None)
+                except StopIteration as completed:
+                    return completed.value
+                raise RuntimeError("上下文快照查询不能在数据库工作线程内挂起")
             finally:
-                _DB_LOCK_HELD.reset(token)
+                coroutine.close()
+                _DB_WORKER_ACTIVE.reset(worker_token)
+                _DB_LOCK_HELD.reset(lock_token)
+
+        return await self._run_db(collect_in_worker)
 
     async def reset_all(self):
         def write() -> None:

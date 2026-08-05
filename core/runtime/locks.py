@@ -21,6 +21,7 @@ class _OperationLockLease:
     async def __aenter__(self) -> asyncio.Lock:
         try:
             await self.entry.lock.acquire()
+        # 等锁任务被取消时也要归还引用计数，随后保留取消语义。
         except BaseException:
             self._release_reference()
             raise

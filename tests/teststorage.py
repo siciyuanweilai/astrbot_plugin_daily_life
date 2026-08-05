@@ -4,6 +4,7 @@ import datetime
 import re
 import sqlite3
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -286,6 +287,30 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                 await read_task
             self.assertIsNone(archive._conn)
 
+    async def test_cancelled_database_work_keeps_lock_until_worker_finishes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(f"{tmpdir}/daily_life.db")
+            started = threading.Event()
+            release = threading.Event()
+
+            def blocking_read():
+                started.set()
+                release.wait(timeout=2)
+                return archive._conn.execute("SELECT 1").fetchone()[0]
+
+            task = asyncio.create_task(archive._run_db(blocking_read))
+            await asyncio.to_thread(started.wait, 1)
+            task.cancel()
+            await asyncio.sleep(0)
+
+            self.assertTrue(archive._lock.locked())
+            self.assertFalse(task.done())
+            release.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            self.assertFalse(archive._lock.locked())
+            archive.close()
+
     async def test_context_snapshot_does_not_replace_archive_database_runner(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             archive = LifeArchive(f"{tmpdir}/daily_life.db")
@@ -295,6 +320,41 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(archive._run_db, original_runner)
             archive.close()
+
+    async def test_context_snapshot_uses_one_database_thread_switch(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(f"{tmpdir}/daily_life.db")
+            original_to_thread = asyncio.to_thread
+            thread_switches = 0
+
+            async def counted_to_thread(func, /, *args, **kwargs):
+                nonlocal thread_switches
+                thread_switches += 1
+                return await original_to_thread(func, *args, **kwargs)
+
+            try:
+                with patch(
+                    "core.archive.store.asyncio.to_thread", new=counted_to_thread
+                ):
+                    snapshot = await archive.get_context_snapshot(max_summaries=3)
+
+                self.assertEqual(thread_switches, 1)
+                self.assertIn("relationships", snapshot)
+            finally:
+                archive.close()
+
+    async def test_context_snapshot_does_not_create_nested_event_loop(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(f"{tmpdir}/daily_life.db")
+            try:
+                with patch(
+                    "core.archive.store.asyncio.run",
+                    side_effect=AssertionError("不应创建嵌套事件循环"),
+                ):
+                    snapshot = await archive.get_context_snapshot(max_summaries=3)
+                self.assertIn("relationships", snapshot)
+            finally:
+                archive.close()
 
     async def test_fresh_database_creates_current_schema(self):
         with tempfile.TemporaryDirectory() as tmpdir:

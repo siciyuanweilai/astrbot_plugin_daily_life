@@ -8,29 +8,16 @@ from typing import Any
 from astrbot.api import logger
 
 from ..config.options import LifeDomainSettings
-from ..models import DayRecord, LifeActionIntent, LifeActionOutcome
+from ..models import (
+    INTERNAL_SIMULATED_ACTION_TYPES,
+    DayRecord,
+    LifeActionIntent,
+    LifeActionOutcome,
+)
 from .location_audit import DailyLocationAuditMixin
 from .location_planning import DailyLocationPlanningMixin
 from .maps import create_map_client, map_provider_label, normalize_map_provider
 from .tools import get_week_id
-
-INTERNAL_SIMULATED_ACTION_TYPES = frozenset(
-    {
-        "rest",
-        "meal",
-        "move",
-        "travel",
-        "work",
-        "study",
-        "groom",
-        "change_outfit",
-        "cook",
-        "order_food",
-        "purchase",
-        "chore",
-        "exercise",
-    }
-)
 
 _TRAVEL_SPEED_METERS_PER_SECOND = {
     "walking": 1.25,
@@ -1233,4 +1220,4 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
         return text[: max(0, limit - 1)].rstrip() + "…"
 
 
-__all__ = ["INTERNAL_SIMULATED_ACTION_TYPES", "LifeDomainService"]
+__all__ = ["LifeDomainService"]

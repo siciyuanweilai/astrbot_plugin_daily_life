@@ -7,8 +7,8 @@ from astrbot.api import logger
 
 from ...clock import now as life_now
 from ...models import BehaviorSceneRecord, MemoryMaintenanceRecord
-from ..markers import LOG_PREFIX
 from ..locks import operation_lock
+from ..markers import LOG_PREFIX
 
 
 class SpinePulseMixin:
@@ -30,6 +30,7 @@ class SpinePulseMixin:
             async with operation_lock(self, f"review:{yesterday}"):
                 await self.composer.compose_daily_review(yesterday)
             await generation_task
+        # 复盘流程取消时同步收束配套生成任务，避免后台遗留写入。
         except BaseException:
             if not generation_task.done():
                 generation_task.cancel()

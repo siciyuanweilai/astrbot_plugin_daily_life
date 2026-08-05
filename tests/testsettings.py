@@ -5,7 +5,92 @@ from core.prompts import DEFAULT_WEB_TODAY_PROMPT
 from support import PLUGIN_ROOT, LifeSettings
 
 
+class _AccessTrackingDict(dict):
+    def __init__(self, *args, path: str = "", seen: set[str], **kwargs):
+        super().__init__(*args, **kwargs)
+        self._path = path
+        self._seen = seen
+
+    def get(self, key, default=None):
+        self._seen.add(f"{self._path}.{key}".strip("."))
+        return super().get(key, default)
+
+
+def _representative_schema_value(
+    spec: dict, path: str, seen: set[str]
+):
+    if spec.get("type") == "object":
+        return _AccessTrackingDict(
+            {
+                key: _representative_schema_value(
+                    value, f"{path}.{key}".strip("."), seen
+                )
+                for key, value in spec.get("items", {}).items()
+            },
+            path=path,
+            seen=seen,
+        )
+    if spec.get("type") == "list" and spec.get("templates"):
+        values = []
+        for template_key, template in spec["templates"].items():
+            item_path = f"{path}.*"
+            item = _AccessTrackingDict(
+                {
+                    key: _representative_schema_value(
+                        value, f"{item_path}.{key}", seen
+                    )
+                    for key, value in template.get("items", {}).items()
+                },
+                path=item_path,
+                seen=seen,
+            )
+            item["__template_key"] = template_key
+            values.append(item)
+        return values
+    return spec.get("default")
+
+
+def _schema_leaf_paths(spec: dict, path: str) -> set[str]:
+    if spec.get("type") == "object":
+        paths: set[str] = set()
+        for key, value in spec.get("items", {}).items():
+            paths.update(_schema_leaf_paths(value, f"{path}.{key}".strip(".")))
+        return paths
+    if spec.get("type") == "list" and spec.get("templates"):
+        keys = {
+            key
+            for template in spec["templates"].values()
+            for key in template.get("items", {})
+        }
+        return {f"{path}.*.{key}" for key in keys}
+    return {path}
+
+
 class LifeSettingsTest(unittest.TestCase):
+    def test_schema_leaf_paths_are_consumed_by_settings_parser(self):
+        schema = json.loads(
+            (PLUGIN_ROOT / "_conf_schema.json").read_text(encoding="utf-8")
+        )
+        externally_consumed_roots = {"relationship_aliases"}
+        parser_roots = set(schema) - externally_consumed_roots
+        seen: set[str] = set()
+        payload = _AccessTrackingDict(
+            {
+                key: _representative_schema_value(value, key, seen)
+                for key, value in schema.items()
+            },
+            seen=seen,
+        )
+
+        LifeSettings.from_dict(payload)
+
+        expected = {
+            path
+            for root in parser_roots
+            for path in _schema_leaf_paths(schema[root], root)
+        }
+        self.assertEqual(expected - seen, set())
+
     def test_config_parsing_tolerates_bad_types(self):
         config = LifeSettings.from_dict(
             {
@@ -1334,9 +1419,10 @@ class LifeSettingsTest(unittest.TestCase):
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertIn("version: 1.1.5", metadata)
-        self.assertIn("version-1.1.5", readme)
-        self.assertIn("v1.1.5 · 2026-08-05", changelog)
+        self.assertIn("version: 1.1.6", metadata)
+        self.assertIn("version-1.1.6", readme)
+        self.assertIn("v1.1.6 · 2026-08-05", changelog)
+        self.assertLess(changelog.index("v1.1.6"), changelog.index("v1.1.5"))
         self.assertIn("v1.0.4 · 2026-08-01", changelog)
         self.assertLess(changelog.index("v1.0.4"), changelog.index("v1.0.3"))
 

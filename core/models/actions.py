@@ -25,6 +25,9 @@ LIFE_ACTION_TYPES = frozenset(
     }
 )
 
+EXTERNAL_RECEIPT_ACTION_TYPES = frozenset({"social", "chat", "photo", "video"})
+INTERNAL_SIMULATED_ACTION_TYPES = LIFE_ACTION_TYPES - EXTERNAL_RECEIPT_ACTION_TYPES
+
 
 def _text(value: Any, limit: int = 160) -> str:
     """压缩模型文本字段。
@@ -467,6 +470,8 @@ class ReflectionDecision:
 
 
 __all__ = [
+    "EXTERNAL_RECEIPT_ACTION_TYPES",
+    "INTERNAL_SIMULATED_ACTION_TYPES",
     "LIFE_ACTION_TYPES",
     "LifeActionEffect",
     "LifeActionIntent",

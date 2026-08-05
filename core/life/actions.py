@@ -153,6 +153,211 @@ _ACTION_RULES: dict[str, dict[str, Any]] = {
 class LifeActionMixin:
     """提供生活动作结算、分层日程和反思门槛能力。"""
 
+    @staticmethod
+    def _load_action_settlements(day: DayRecord) -> dict[str, Any]:
+        stored_text = str((day.meta or {}).get(ACTION_SETTLEMENT_META_KEY) or "")
+        if not stored_text:
+            return {}
+        try:
+            stored_value = json.loads(stored_text)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+        return stored_value if isinstance(stored_value, dict) else {}
+
+    @staticmethod
+    def _validate_action_contract(
+        day: DayRecord,
+        action: LifeActionIntent,
+        rule: dict[str, Any],
+        state: LifeState | None,
+    ) -> str:
+        if not action.action_id:
+            return "缺少 action_id，无法保证动作幂等"
+        if action.action_type not in LIFE_ACTION_TYPES:
+            return "action_type 不在受支持的生活动作集合中"
+        if rule.get("requires_target") and not action.target:
+            return "该动作需要明确 target"
+        if action.timeline_index is not None:
+            if not 0 <= action.timeline_index < len(day.timeline):
+                return "timeline_index 超出当日时间轴范围"
+            timeline_state = day.timeline[action.timeline_index].execution_state
+            if timeline_state in {"skipped", "cancelled"} or (
+                timeline_state == "completed" and action.source != "daily_plan"
+            ):
+                return "对应日程已经收束，不能重复结算新动作"
+
+        minimum = rule.get("minimum")
+        if minimum and state is not None:
+            minimum_field, minimum_value = minimum
+            current_value = getattr(state, minimum_field, None)
+            if current_value is not None and current_value < minimum_value:
+                return f"{minimum_field} 低于动作最低可行值 {minimum_value}"
+        return ""
+
+    @staticmethod
+    def _action_condition_value(
+        day: DayRecord,
+        state: LifeState | None,
+        action: LifeActionIntent,
+        field: str,
+    ) -> tuple[bool, Any]:
+        if field.startswith("state."):
+            field_name = field.removeprefix("state.")
+            if field_name not in _NUMERIC_STATE_FIELDS and field_name not in {
+                "mood",
+                "watch_state",
+                "interrupt_level",
+            }:
+                return False, None
+            return True, getattr(state, field_name, None) if state else None
+        if field == "timeline.execution_state":
+            if action.timeline_index is None:
+                return False, None
+            return True, day.timeline[action.timeline_index].execution_state
+        if field in {
+            "day.date",
+            "day.outfit",
+            "day.time_period",
+            "day.current_place",
+        }:
+            field_name = field.removeprefix("day.")
+            if field_name == "current_place":
+                return True, str(
+                    (day.meta or {}).get("current_place") or ""
+                ).strip()
+            return True, getattr(day, field_name, None)
+        if field.startswith("weather."):
+            field_name = field.removeprefix("weather.")
+            actual = getattr(day.weather_info, field_name, None)
+            return actual is not None, actual
+        return False, None
+
+    @staticmethod
+    def _action_condition_matches(
+        *, known: bool, actual: Any, operator: str, expected: Any
+    ) -> bool:
+        if operator == "present":
+            return known and actual is not None and actual != ""
+        if operator == "eq":
+            return known and actual == expected
+        if operator == "ne":
+            return known and actual != expected
+        if operator in {"in", "not_in"}:
+            if not known or not isinstance(expected, (list, tuple, set)):
+                return False
+            contained = actual in expected
+            return contained if operator == "in" else not contained
+        if operator in {"gte", "lte"}:
+            if not known:
+                return False
+            try:
+                left = float(actual)
+                right = float(expected)
+            except (TypeError, ValueError):
+                return False
+            return left >= right if operator == "gte" else left <= right
+        return False
+
+    @classmethod
+    def _validate_action_preconditions(
+        cls,
+        day: DayRecord,
+        state: LifeState | None,
+        action: LifeActionIntent,
+    ) -> str:
+        for condition in action.preconditions:
+            known, actual = cls._action_condition_value(
+                day, state, action, condition.field
+            )
+            if not cls._action_condition_matches(
+                known=known,
+                actual=actual,
+                operator=condition.operator,
+                expected=condition.expected,
+            ):
+                return (
+                    f"前置条件未满足：{condition.field} {condition.operator}"
+                )
+        return ""
+
+    @staticmethod
+    def _resolve_action_effects(
+        action: LifeActionIntent, rule: dict[str, Any]
+    ) -> list[LifeActionEffect]:
+        return action.effects or [
+            LifeActionEffect(field=field_name, operation="add", value=value)
+            for field_name, value in rule.get("effects", ())
+        ]
+
+    @staticmethod
+    def _validate_action_effects(
+        effects: list[LifeActionEffect], rule: dict[str, Any]
+    ) -> str:
+        allowed_effects = rule.get("allowed", set())
+        for effect in effects:
+            if (
+                effect.field not in _NUMERIC_STATE_FIELDS
+                or effect.field not in allowed_effects
+            ):
+                return f"动作不允许修改状态字段：{effect.field}"
+        return ""
+
+    @staticmethod
+    def _commit_action_effects(
+        day: DayRecord,
+        action: LifeActionIntent,
+        effects: list[LifeActionEffect],
+        outcome: LifeActionOutcome,
+        committed_at: str,
+    ) -> None:
+        state = day.state or LifeState()
+        day.state = state
+        changes: dict[str, dict[str, float | int | None]] = {}
+        for effect in effects:
+            previous = getattr(state, effect.field, None)
+            base_value = float(previous) if previous is not None else 50.0
+            updated = (
+                base_value + effect.value
+                if effect.operation == "add"
+                else effect.value
+            )
+            updated = round(max(0.0, min(100.0, updated)), 2)
+            normalized: int | float = int(updated) if updated.is_integer() else updated
+            setattr(state, effect.field, normalized)
+            changes[effect.field] = {"before": previous, "after": normalized}
+        outcome.state_changes = changes
+        state.updated_at = committed_at
+        state.source = f"life_action:{action.action_type}"
+
+        if action.action_type == "change_outfit":
+            resolved_outfit = (
+                day.outfit
+                if action.source == "daily_plan" and day.outfit
+                else action.target
+            )
+            day.outfit = resolved_outfit
+            day.outfit_history[committed_at] = resolved_outfit
+            day.meta["outfit_decision"] = "life_action"
+        if action.action_type in {"move", "travel"} and action.target:
+            previous_place = str((day.meta or {}).get("current_place") or "").strip()
+            if previous_place:
+                day.meta["previous_place"] = previous_place
+            day.meta["current_place"] = action.target
+            if not any(place.name == action.target for place in day.places):
+                day.places.append(
+                    PlaceRecord(
+                        name=action.target,
+                        source="life_action",
+                        last_seen=committed_at,
+                    )
+                )
+        if action.timeline_index is not None:
+            item = day.timeline[action.timeline_index]
+            item.execution_state = "completed"
+            item.execution_reason = f"生活动作已结算：{action.action_type}"
+            item.execution_evidence = action.evidence or action.action_id
+            item.execution_updated_at = committed_at
+
     def settle_life_action(
         self,
         day: DayRecord,
@@ -173,134 +378,21 @@ class LifeActionMixin:
         action = LifeActionIntent.from_value(intent)
         current_time = now or life_now()
         committed_at = current_time.strftime("%Y-%m-%d %H:%M:%S")
-        settlements: dict[str, Any] = {}
-        stored_text = str((day.meta or {}).get(ACTION_SETTLEMENT_META_KEY) or "")
-        if stored_text:
-            try:
-                stored_value = json.loads(stored_text)
-                if isinstance(stored_value, dict):
-                    settlements = stored_value
-            except (TypeError, ValueError, json.JSONDecodeError):
-                settlements = {}
+        settlements = self._load_action_settlements(day)
 
         if action.action_id and isinstance(settlements.get(action.action_id), dict):
             replayed = LifeActionOutcome.from_value(settlements[action.action_id])
             replayed.replayed = True
             return replayed
 
-        reason = ""
-        if not action.action_id:
-            reason = "缺少 action_id，无法保证动作幂等"
-        elif action.action_type not in LIFE_ACTION_TYPES:
-            reason = "action_type 不在受支持的生活动作集合中"
-
         rule = _ACTION_RULES.get(action.action_type, {})
-        if not reason and rule.get("requires_target") and not action.target:
-            reason = "该动作需要明确 target"
-        if not reason and action.timeline_index is not None:
-            if not 0 <= action.timeline_index < len(day.timeline):
-                reason = "timeline_index 超出当日时间轴范围"
-            elif day.timeline[action.timeline_index].execution_state in {
-                "skipped",
-                "cancelled",
-            } or (
-                day.timeline[action.timeline_index].execution_state == "completed"
-                and action.source != "daily_plan"
-            ):
-                reason = "对应日程已经收束，不能重复结算新动作"
-
         state = day.state
-        minimum = rule.get("minimum")
-        if not reason and minimum and state is not None:
-            minimum_field, minimum_value = minimum
-            current_value = getattr(state, minimum_field, None)
-            if current_value is not None and current_value < minimum_value:
-                reason = f"{minimum_field} 低于动作最低可行值 {minimum_value}"
-
-        allowed_day_fields = {
-            "day.date",
-            "day.outfit",
-            "day.time_period",
-            "day.current_place",
-        }
-        for condition in action.preconditions if not reason else []:
-            actual: Any = None
-            known_field = True
-            if condition.field.startswith("state."):
-                field_name = condition.field.removeprefix("state.")
-                if field_name in _NUMERIC_STATE_FIELDS or field_name in {
-                    "mood",
-                    "watch_state",
-                    "interrupt_level",
-                }:
-                    actual = getattr(state, field_name, None) if state else None
-                else:
-                    known_field = False
-            elif condition.field == "timeline.execution_state":
-                if action.timeline_index is None:
-                    known_field = False
-                else:
-                    actual = day.timeline[action.timeline_index].execution_state
-            elif condition.field in allowed_day_fields:
-                field_name = condition.field.removeprefix("day.")
-                actual = (
-                    str((day.meta or {}).get("current_place") or "").strip()
-                    if field_name == "current_place"
-                    else getattr(day, field_name, None)
-                )
-            elif condition.field.startswith("weather."):
-                field_name = condition.field.removeprefix("weather.")
-                weather = day.weather_info
-                aliases = {"condition": "condition", "temp": "temp"}
-                actual = getattr(weather, aliases.get(field_name, field_name), None)
-                if actual is None:
-                    known_field = False
-            else:
-                known_field = False
-
-            passed = known_field
-            expected = condition.expected
-            if condition.operator == "present":
-                passed = passed and actual is not None and actual != ""
-            elif condition.operator == "eq":
-                passed = passed and actual == expected
-            elif condition.operator == "ne":
-                passed = passed and actual != expected
-            elif condition.operator in {"in", "not_in"}:
-                if not isinstance(expected, (list, tuple, set)):
-                    passed = False
-                else:
-                    contained = actual in expected
-                    passed = passed and (
-                        contained if condition.operator == "in" else not contained
-                    )
-            elif condition.operator in {"gte", "lte"}:
-                try:
-                    left = float(actual)
-                    right = float(expected)
-                except (TypeError, ValueError):
-                    passed = False
-                else:
-                    passed = (
-                        left >= right if condition.operator == "gte" else left <= right
-                    )
-            if not passed:
-                reason = f"前置条件未满足：{condition.field} {condition.operator}"
-                break
-
-        effects = action.effects or [
-            LifeActionEffect(field=field_name, operation="add", value=value)
-            for field_name, value in rule.get("effects", ())
-        ]
-        allowed_effects = rule.get("allowed", set())
+        reason = self._validate_action_contract(day, action, rule, state)
         if not reason:
-            for effect in effects:
-                if (
-                    effect.field not in _NUMERIC_STATE_FIELDS
-                    or effect.field not in allowed_effects
-                ):
-                    reason = f"动作不允许修改状态字段：{effect.field}"
-                    break
+            reason = self._validate_action_preconditions(day, state, action)
+        effects = self._resolve_action_effects(action, rule)
+        if not reason:
+            reason = self._validate_action_effects(effects, rule)
 
         outcome = LifeActionOutcome(
             action_id=action.action_id,
@@ -312,57 +404,9 @@ class LifeActionMixin:
             evidence=action.evidence,
         )
         if not reason:
-            state = state or LifeState()
-            day.state = state
-            changes: dict[str, dict[str, float | int | None]] = {}
-            for effect in effects:
-                previous = getattr(state, effect.field, None)
-                base_value = float(previous) if previous is not None else 50.0
-                updated = (
-                    base_value + effect.value
-                    if effect.operation == "add"
-                    else effect.value
-                )
-                updated = round(max(0.0, min(100.0, updated)), 2)
-                normalized: int | float = (
-                    int(updated) if updated.is_integer() else updated
-                )
-                setattr(state, effect.field, normalized)
-                changes[effect.field] = {"before": previous, "after": normalized}
-            outcome.state_changes = changes
-            state.updated_at = committed_at
-            state.source = f"life_action:{action.action_type}"
-
-            if action.action_type == "change_outfit":
-                resolved_outfit = (
-                    day.outfit
-                    if action.source == "daily_plan" and day.outfit
-                    else action.target
-                )
-                day.outfit = resolved_outfit
-                day.outfit_history[committed_at] = resolved_outfit
-                day.meta["outfit_decision"] = "life_action"
-            if action.action_type in {"move", "travel"} and action.target:
-                previous_place = str(
-                    (day.meta or {}).get("current_place") or ""
-                ).strip()
-                if previous_place:
-                    day.meta["previous_place"] = previous_place
-                day.meta["current_place"] = action.target
-                if not any(place.name == action.target for place in day.places):
-                    day.places.append(
-                        PlaceRecord(
-                            name=action.target,
-                            source="life_action",
-                            last_seen=committed_at,
-                        )
-                    )
-            if action.timeline_index is not None:
-                item = day.timeline[action.timeline_index]
-                item.execution_state = "completed"
-                item.execution_reason = f"生活动作已结算：{action.action_type}"
-                item.execution_evidence = action.evidence or action.action_id
-                item.execution_updated_at = committed_at
+            self._commit_action_effects(
+                day, action, effects, outcome, committed_at
+            )
 
         if action.action_id:
             settlements[action.action_id] = outcome.as_dict()

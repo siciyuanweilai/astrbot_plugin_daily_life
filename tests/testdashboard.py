@@ -624,9 +624,70 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn(
             "/astrbot_plugin_daily_life/page/experience/episode/correct", paths
         )
+        self.assertIn(
+            "/astrbot_plugin_daily_life/page/experience/episode/protect", paths
+        )
         self.assertIn("/astrbot_plugin_daily_life/page/experience/focus", paths)
         self.assertIn("/astrbot_plugin_daily_life/page/experience/boundary", paths)
         self.assertIn("/astrbot_plugin_daily_life/page/experience/feedback", paths)
+
+    async def test_programmatic_management_routes_complete_storage_roundtrip(self):
+        episode = await self.plugin.runtime.archive.save_life_episode(
+            LifeEpisodeRecord(
+                date="2026-06-11",
+                title="测试生活片段",
+                summary="用于验证程序化接口闭环。",
+            )
+        )
+        self.plugin.body = {
+            "episode_id": episode.id,
+            "correction": "修正后的测试片段",
+            "protected": True,
+        }
+        corrected = await self.plugin.page_experience_episode_correct()
+
+        self.plugin.body = {"episode_id": episode.id, "protected": False}
+        protected = await self.plugin.page_experience_episode_protect()
+
+        self.plugin.body = {
+            "focus": {
+                "target_id": "test-focus",
+                "label": "测试关注目标",
+                "scope": "test:scope",
+            }
+        }
+        focused = await self.plugin.page_experience_focus()
+
+        self.plugin.body = {
+            "boundary": {
+                "source_scope": "test:source",
+                "target_scope": "test:target",
+                "policy": "ask",
+            }
+        }
+        bounded = await self.plugin.page_experience_boundary()
+
+        self.plugin.body = {
+            "feedback": {
+                "target_id": "test-action",
+                "feedback": "测试反馈已确认",
+                "score": 1,
+            }
+        }
+        feedback = await self.plugin.page_experience_feedback()
+
+        for result in (corrected, protected, focused, bounded, feedback):
+            self.assertTrue(result["ok"])
+        saved_episode = (await self.plugin.runtime.archive.get_life_episodes(1))[0]
+        self.assertEqual(saved_episode.correction, "修正后的测试片段")
+        self.assertFalse(saved_episode.protected)
+        self.assertEqual(focused["data"]["focus"]["target_id"], "test-focus")
+        self.assertEqual(
+            bounded["data"]["boundary"]["target_scope"], "test:target"
+        )
+        self.assertEqual(
+            feedback["data"]["feedback"]["target_id"], "test-action"
+        )
 
     def test_page_error_messages_hide_internal_english_exceptions(self):
         self.assertEqual(
@@ -3325,6 +3386,14 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertNotIn("联网扩展", html)
         self.assertNotIn("generateWeek(", app)
         self.assertNotIn('"page/action/generate-week"', app)
+        for programmatic_endpoint in (
+            "page/experience/episode/correct",
+            "page/experience/episode/protect",
+            "page/experience/focus",
+            "page/experience/boundary",
+            "page/experience/feedback",
+        ):
+            self.assertNotIn(f'"{programmatic_endpoint}"', app)
         self.assertNotIn("templateDraft", app)
         self.assertNotIn("catalogDraft", app)
         self.assertNotIn("hairDraft", app)
