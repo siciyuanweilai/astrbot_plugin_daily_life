@@ -386,6 +386,7 @@ class ChatMemoryBatchMixin:
                     "trigger_date": "",
                     "trigger_time": "",
                     "time_window": "",
+                    "owner": "当前角色|说话人|共同|未定",
                     "people": [],
                     "place": "",
                     "confidence": 0.0,
@@ -578,6 +579,12 @@ class ChatMemoryBatchMixin:
     ) -> list[CommitmentRecord]:
         saved: list[CommitmentRecord] = []
         messages = batch["messages"]
+        try:
+            observed_at = datetime.datetime.fromisoformat(
+                str(messages[-1].get("occurred_at") or "")
+            )
+        except (IndexError, TypeError, ValueError):
+            observed_at = life_now()
         message_by_id: dict[str, dict[str, Any]] = {}
         for row in messages:
             message_by_id[str(row["id"])] = row
@@ -609,7 +616,18 @@ class ChatMemoryBatchMixin:
                 or commitment.confidence < self.config.commitments.min_confidence
             ):
                 continue
-            saved.append(await self.archive.save_commitment(commitment))
+            stored = await self.archive.save_commitment(commitment)
+            saved.append(stored)
+            apply_to_day = getattr(self, "apply_commitment_to_current_day", None)
+            if callable(apply_to_day):
+                try:
+                    await apply_to_day(
+                        stored,
+                        now=observed_at,
+                        owner_hint=str(raw.get("owner") or "").strip(),
+                    )
+                except Exception as exc:
+                    logger.warning(f"{LOG_PREFIX} 批次承诺合并到当天日程失败：{exc}")
         return saved
 
     async def _save_batch_temporal_facts(

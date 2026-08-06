@@ -1,15 +1,16 @@
 import datetime
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
-from ..runtime import DailyLifeRuntime
-from ..life.tools import get_time_period_cn
 from ..clock import now as life_now
+from ..life.tools import get_time_period_cn
+from ..runtime import DailyLifeRuntime
 from ..runtime.generation import DailyGenerationBusy
 from .display import DisplayCommandMixin
 from .operate import OperateCommandMixin
 from .preferences import SettingsCommandMixin
-from .social import SocialCommandMixin
 from .request import CommandHandler, CommandRequest
+from .social import SocialCommandMixin
 
 
 class _PlainTextEventProxy:
@@ -207,6 +208,8 @@ class DailyLifeCommandCenter(
         else:
             return "未能确认要执行的承诺处理动作。"
         req = await self._make_request(parts)
+        if action_key in {"add", "新增", "添加"}:
+            req.commitment_target_date = str(target_date or "").strip()[:10]
         return await self._run_text_handler(event, self._commitments, req)
 
     async def query_weather(self, event: Any, city: str = "") -> str:

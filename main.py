@@ -122,6 +122,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         self._initialize_lock = asyncio.Lock()
         self._external_condition = asyncio.Condition()
         self._external_users = 0
+        self._external_tasks: dict[asyncio.Task, int] = {}
         self._terminating = False
         self._external_search_turns: dict[str, None] = {}
 
@@ -183,8 +184,9 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         except TimeoutError:
             logger.warning(
                 f"[日常生活] 等待外部调用结束超时：仍有 {self._external_users} 个调用；"
-                "继续关闭插件资源"
+                "将取消未完成的外部调用后继续关闭插件资源"
             )
+            await self._cancel_external_calls()
         try:
             if runtime is not None:
                 await runtime.terminate()
@@ -232,6 +234,11 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             if self._terminating or runtime is None or self.commands is None:
                 raise RuntimeError("日常生活插件尚未就绪或正在终止")
             self._external_users += 1
+            current_task = asyncio.current_task()
+            if current_task is not None:
+                self._external_tasks[current_task] = (
+                    self._external_tasks.get(current_task, 0) + 1
+                )
         try:
             service_lease = getattr(runtime, "runtime_service_lease", None)
             if callable(service_lease):
@@ -242,8 +249,30 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         finally:
             async with self._external_condition:
                 self._external_users = max(0, self._external_users - 1)
+                current_task = asyncio.current_task()
+                if current_task is not None:
+                    remaining = self._external_tasks.get(current_task, 0) - 1
+                    if remaining > 0:
+                        self._external_tasks[current_task] = remaining
+                    else:
+                        self._external_tasks.pop(current_task, None)
                 if self._external_users == 0:
                     self._external_condition.notify_all()
+
+    async def _cancel_external_calls(self) -> None:
+        """超出排空期限后取消仍占用旧 runtime 的外部任务。"""
+
+        current_task = asyncio.current_task()
+        async with self._external_condition:
+            tasks = [
+                task
+                for task in self._external_tasks
+                if task is not current_task and not task.done()
+            ]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     @staticmethod
     def _runtime_guard(func):
@@ -420,13 +449,13 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         invite_details: str = "",
     ):
         """
-        当对方邀请当前角色共同活动，或提出陪伴、见面、一起行动的请求时调用。
+        当对方邀请当前角色共同活动，提出陪伴、见面、一起行动的请求，或确认刚刚由当前角色提出的改约方案时调用。
         结合角色当前状态、已有安排和双方关系，决定自然接受、拒绝或提出其他时间。
         工具结果用于生成最终回复。调用前可以先用角色口吻说一句简短、自然的等待语，表示需要看看自己当下的安排；
         这句话不能提前答应或拒绝，也不能声称已经记录、更新或调整了安排。工具完成后再给出最终态度。
 
         Args:
-            invite_details(string): 用户提出的邀约内容，例如“晚上8点一起看电影”或“现在上号双排”。
+            invite_details(string): 当前邀约或对上一条改约方案的确认，例如“晚上8点一起看电影”“现在上号双排”或“好，按你说的傍晚安排”。
         """
         return await self.runtime.accept_user_invite(
             event, str(invite_details or "").strip()
@@ -526,7 +555,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             action(string): 操作：list 查看未完成承诺；add 新增承诺；done 标记完成；cancel 取消；reschedule 延期；memo_tomorrow 写入明日强制备忘。
             content(string): 新增承诺、明日备忘或延期说明。
             commitment_id(int): done/cancel/reschedule 时的承诺编号。
-            target_date(string): reschedule 时的新日期，格式 YYYY-MM-DD；也可用 content 写“明天/周末/日期”。
+            target_date(string): add 或 reschedule 时的目标日期，格式 YYYY-MM-DD；留空时由内容与当前语境判断。
         """
         return await self.commands.manage_commitment(
             event,

@@ -1,6 +1,7 @@
 import datetime
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Callable
+from typing import Any
 
 
 @dataclass(slots=True)
@@ -16,6 +17,7 @@ class CommandRequest:
     period: str
     period_cn: str
     target_date_str: str
+    commitment_target_date: str = ""
 
 
 @dataclass(slots=True)

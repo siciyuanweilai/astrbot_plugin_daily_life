@@ -4,7 +4,7 @@ import types
 import unittest
 from pathlib import Path
 
-from support import Event
+from support import ActionBot, Event
 
 PLUGIN_PARENT = Path(__file__).resolve().parents[2]
 if str(PLUGIN_PARENT) not in sys.path:
@@ -36,9 +36,7 @@ class _ForwardRuntime(TextForwardMixin, ChatStyleRuntimeMixin):
 
 class TextForwardTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.runtime = _ForwardRuntime(
-            {"t2i": True, "t2i_word_threshold": 50}
-        )
+        self.runtime = _ForwardRuntime({"t2i": True, "t2i_word_threshold": 50})
 
     @staticmethod
     def _image_result(event):
@@ -109,7 +107,30 @@ class TextForwardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(nodes.nodes), 1)
         node = nodes.nodes[0]
         self.assertEqual(node.uin, "10000")
+        self.assertEqual(node.name, "机器人")
         self.assertEqual(str(node.content[0]), "第一条，原样。")
+
+    async def test_forward_uses_current_onebot_nickname(self):
+        bot = ActionBot({"get_login_info": {"nickname": "测试机器人昵称"}})
+        event = Event(bot=bot, self_id="10000")
+        self._commit(event, "需要转发的原文")
+
+        payload = json.loads(await self.runtime.forward_t2i_text(event))
+
+        self.assertEqual(payload["status"], "sent")
+        node = event.sent_messages[0].chain[0].nodes[0]
+        self.assertEqual(node.name, "测试机器人昵称")
+        self.assertEqual(bot.calls, [("get_login_info", {})])
+
+    async def test_forward_accepts_nested_onebot_login_payload(self):
+        bot = ActionBot({"get_login_info": {"data": {"nickname": "嵌套机器人昵称"}}})
+        event = Event(bot=bot, self_id="10000")
+        self._commit(event, "需要转发的原文")
+
+        await self.runtime.forward_t2i_text(event)
+
+        node = event.sent_messages[0].chain[0].nodes[0]
+        self.assertEqual(node.name, "嵌套机器人昵称")
 
     async def test_group_and_private_sessions_are_isolated(self):
         private = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")

@@ -4,6 +4,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from support import Event  # noqa: F401
 
@@ -11,12 +12,12 @@ PLUGIN_PARENT = Path(__file__).resolve().parents[2]
 if str(PLUGIN_PARENT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_PARENT))
 
-from astrbot_plugin_daily_life.main import DailyLifePlugin  # noqa: E402
+from astrbot_plugin_daily_life.core.archive import LifeArchive  # noqa: E402
+from astrbot_plugin_daily_life.core.models import ChatSummaryRecord  # noqa: E402
 from astrbot_plugin_daily_life.core.runtime.mirror.export import (  # noqa: E402
     SnapshotExportMixin,
 )
-from astrbot_plugin_daily_life.core.archive import LifeArchive  # noqa: E402
-from astrbot_plugin_daily_life.core.models import ChatSummaryRecord  # noqa: E402
+from astrbot_plugin_daily_life.main import DailyLifePlugin  # noqa: E402
 
 
 def _person(name, profile_id):
@@ -218,6 +219,85 @@ class ExternalLeaseTests(unittest.IsolatedAsyncioTestCase):
         await terminate_task
         self.assertTrue(terminated.is_set())
         self.assertIsNone(plugin.runtime)
+
+    async def test_terminate_cancels_external_call_after_grace_period(self):
+        plugin = DailyLifePlugin(types.SimpleNamespace(), {})
+        entered = asyncio.Event()
+        cancelled = asyncio.Event()
+        terminated = asyncio.Event()
+
+        class Runtime:
+            async def get_life_context(self, target_umo=""):
+                entered.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    cancelled.set()
+                    raise
+
+            async def terminate(self):
+                terminated.set()
+
+        plugin.runtime = Runtime()
+        plugin.commands = object()
+        context_task = asyncio.create_task(
+            plugin.get_life_context("bot-test:FriendMessage:user-test-a")
+        )
+        await entered.wait()
+
+        with patch(
+            "astrbot_plugin_daily_life.main.EXTERNAL_LEASE_SHUTDOWN_TIMEOUT_SECONDS",
+            0.01,
+        ):
+            await plugin.terminate()
+
+        self.assertTrue(cancelled.is_set())
+        self.assertTrue(terminated.is_set())
+        self.assertIsNone(plugin.runtime)
+        with self.assertRaises(asyncio.CancelledError):
+            await context_task
+
+    async def test_terminate_cancels_task_still_holding_reentrant_external_lease(self):
+        plugin = DailyLifePlugin(types.SimpleNamespace(), {})
+        entered = asyncio.Event()
+        cancelled = asyncio.Event()
+        terminated = asyncio.Event()
+
+        class Runtime:
+            async def terminate(self):
+                terminated.set()
+
+        plugin.runtime = Runtime()
+        plugin.commands = object()
+
+        async def hold_outer_lease_after_inner_exits():
+            try:
+                async with plugin._external_runtime_lease():
+                    async with plugin._external_runtime_lease():
+                        entered.set()
+                    await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        call_task = asyncio.create_task(hold_outer_lease_after_inner_exits())
+        await entered.wait()
+        try:
+            with patch(
+                "astrbot_plugin_daily_life.main.EXTERNAL_LEASE_SHUTDOWN_TIMEOUT_SECONDS",
+                0.01,
+            ):
+                await plugin.terminate()
+
+            self.assertTrue(cancelled.is_set())
+            self.assertTrue(terminated.is_set())
+            self.assertIsNone(plugin.runtime)
+            with self.assertRaises(asyncio.CancelledError):
+                await call_task
+        finally:
+            if not call_task.done():
+                call_task.cancel()
+                await asyncio.gather(call_task, return_exceptions=True)
 
 
 if __name__ == "__main__":

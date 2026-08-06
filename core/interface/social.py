@@ -1,4 +1,5 @@
 import datetime
+import json
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -73,7 +74,10 @@ class SocialCommandMixin:
                 CommitmentRecord(
                     content=content,
                     kind="plan",
-                    trigger_date=self._infer_manual_commitment_date(content, req.now),
+                    trigger_date=(
+                        req.commitment_target_date
+                        or self._infer_manual_commitment_date(content, req.now)
+                    ),
                     time_window="weekend" if "周末" in content else "",
                     people=[sender_name] if sender_name else [],
                     source="manual",
@@ -82,8 +86,19 @@ class SocialCommandMixin:
                     confidence=1.0,
                 )
             )
+            applied = False
+            apply_to_day = getattr(
+                self.runtime, "apply_commitment_to_current_day", None
+            )
+            if callable(apply_to_day):
+                applied = await apply_to_day(
+                    commitment,
+                    now=req.now,
+                    owner_hint="未定",
+                )
             yield event.plain_result(
                 f"已记录承诺 #{commitment.id}：{commitment.content}"
+                + ("\n已同步到今天尚未发生的日程。" if applied else "")
             )
             return
 
@@ -181,10 +196,16 @@ class SocialCommandMixin:
                 detail=f"收到【{sender_name}】的邀约：{req.param_full}",
                 force=True,
             )
+        invite_text = req.param_full
+        pending_alternative = str(
+            (data.meta or {}).get("pending_invite_alternative") or ""
+        ).strip()
+        if pending_alternative:
+            invite_text += f"；最近尚待确认的改约方案：{pending_alternative}"
         reply, new_timeline, decision = await self.runtime.composer.handle_invite(
             req.target_date_str,
             data.timeline,
-            req.param_full,
+            invite_text,
             req.now,
             sender_name,
             current_state=data.state,
@@ -205,6 +226,7 @@ class SocialCommandMixin:
             else ""
         )
         if new_timeline:
+            data.meta.pop("pending_invite_alternative", None)
             data.timeline = new_timeline
             audited_places = (
                 decision.get("_audited_places") if isinstance(decision, dict) else None
@@ -255,6 +277,25 @@ class SocialCommandMixin:
             )
             self.runtime.schedule_invite_outfit_sync(req.target_date_str, req.now)
         else:
+            if (
+                isinstance(decision, dict)
+                and decision.get("decision") == "propose_alternative"
+                and alt_time
+            ):
+                data.meta["pending_invite_alternative"] = json.dumps(
+                    {
+                        "date": req.target_date_str,
+                        "person": sender_name,
+                        "activity": req.param_full,
+                        "alternative_time": alt_time,
+                        "reason": reply,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            else:
+                data.meta.pop("pending_invite_alternative", None)
+            await self.runtime.archive.save_day(data)
             await self.runtime.archive.add_events(
                 req.target_date_str,
                 [

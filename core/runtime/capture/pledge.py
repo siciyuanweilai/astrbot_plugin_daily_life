@@ -208,6 +208,16 @@ JSON 输出要求：
             if self.event_was_recalled(event, log_skip=True):
                 return None
             saved = await self.archive.save_commitment(commitment)
+            apply_to_day = getattr(self, "apply_commitment_to_current_day", None)
+            if callable(apply_to_day):
+                try:
+                    await apply_to_day(
+                        saved,
+                        now=now,
+                        owner_hint=str(payload.get("owner") or "").strip(),
+                    )
+                except Exception as exc:
+                    logger.warning(f"{LOG_PREFIX} 当天承诺合并失败：{exc}")
             domain_settings = getattr(self.config, "domains", None)
             save_action_item = getattr(
                 self.archive, "save_conversation_action_item", None

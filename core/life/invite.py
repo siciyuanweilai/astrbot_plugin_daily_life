@@ -4,7 +4,7 @@ import uuid
 
 from astrbot.api import logger
 
-from ..models import LifeState, TimelineItem
+from ..models import CommitmentRecord, LifeState, TimelineItem
 from ..prompts import (
     CORE_AUTONOMY_RULES,
     CORE_JSON_OUTPUT_RULES,
@@ -18,18 +18,24 @@ from .tools import extract_json_from_text
 
 
 class InviteMixin:
-    async def handle_invite(
-        self,
-        date_str,
+    @staticmethod
+    def _split_timeline_at(
         current_timeline: list,
-        invite_text: str,
         current_time: datetime.datetime,
-        user_name: str = "用户",
-        current_state: LifeState | None = None,
-    ):
+    ) -> tuple[list[TimelineItem], list[TimelineItem]]:
+        """按当前时间拆分已经发生和尚未发生的时间轴。
+
+        Args:
+            current_timeline: 当天完整时间轴。
+            current_time: 用于划分时间轴的当前时间。
+
+        Returns:
+            已发生节点和未来节点组成的二元组。
+        """
+
         now_mins = current_time.hour * 60 + current_time.minute
-        past_timeline = []
-        future_timeline = []
+        past_timeline: list[TimelineItem] = []
+        future_timeline: list[TimelineItem] = []
         for item in current_timeline:
             timeline_item = TimelineItem.from_value(item)
             try:
@@ -40,6 +46,20 @@ class InviteMixin:
                     future_timeline.append(timeline_item)
             except (TypeError, ValueError):
                 future_timeline.append(timeline_item)
+        return past_timeline, future_timeline
+
+    async def handle_invite(
+        self,
+        date_str,
+        current_timeline: list,
+        invite_text: str,
+        current_time: datetime.datetime,
+        user_name: str = "用户",
+        current_state: LifeState | None = None,
+    ):
+        past_timeline, future_timeline = self._split_timeline_at(
+            current_timeline, current_time
+        )
 
         persona = await self._get_persona()
         person_facts = await self._build_person_fact_context(
@@ -200,3 +220,157 @@ JSON 输出要求：
             if session_id:
                 await self._cleanup_conversation(session_id)
         return "感觉脑子有点乱，目前不想改变计划。", None, {}
+
+    async def reconcile_commitment_with_timeline(
+        self,
+        date_str: str,
+        current_timeline: list,
+        commitment: CommitmentRecord,
+        current_time: datetime.datetime,
+        *,
+        owner_hint: str = "",
+        current_state: LifeState | None = None,
+    ) -> tuple[list[TimelineItem] | None, dict]:
+        """判断新承诺是否需要合并到已经生成的当天时间轴。
+
+        Args:
+            date_str: 当前生活日日期。
+            current_timeline: 已生成的当天时间轴。
+            commitment: 刚保存的结构化承诺。
+            current_time: 进行协调判断的当前时间。
+            owner_hint: 保存入口提供的人物归属判断。
+            current_state: 当前角色的实时生活状态。
+
+        Returns:
+            合并后的完整时间轴和结构化协调结果；无需调整时，时间轴为空。
+        """
+
+        past_timeline, future_timeline = self._split_timeline_at(
+            current_timeline, current_time
+        )
+        persona = await self._get_persona()
+        person_facts = await self._build_person_fact_context(
+            persona=persona,
+            explicit_instruction=commitment.content,
+        )
+        autonomy_context = await self._build_autonomous_life_context(current_time)
+        fixed = f"""一条聊天中已经保存的未来约定或承诺刚刚出现。请判断它是否属于当前角色、是否已经确认，以及是否应当修改今天尚未发生的生活安排。
+
+通用自主原则：
+{CORE_AUTONOMY_RULES}
+
+通用状态行为原则：
+{CORE_STATE_BEHAVIOR_RULES}
+
+裁定要求：
+1. 只有当前角色承担或双方共同承担、已经确认且今天仍可执行的安排，才设置 should_apply=true。
+2. 说话人自己的单方计划、随口设想、未确认提议、纯偏好或无法确定日期的内容，不得写入当前角色日程。
+3. 不得修改已经发生或正在发生的节点；只返回完整的 new_future_timeline。不要为了写入承诺而复制近义节点。
+4. 若承诺包含同行、地点、交通或准备事项，应自然合并到后续节点，并保留必要的出发、移动和返回过程。
+5. 若承诺明确包含穿搭要求，输出 outfit_instruction，并给出适合开始换装的 outfit_effective_time；没有明确要求则留空。穿搭要求不能凭空扩写。
+6. 地点字段规则与全天日程一致：place_kind 只能是 home、poi、generic、transit、online 或 none；跨城才使用 place_scope=travel；发生移动时填写 travel_mode。
+
+严格返回 JSON：
+{{
+  "should_apply": true/false,
+  "reason": "是否进入当天生活的依据",
+  "new_future_timeline": [{{"time": "HH:MM", "activity": "...", "status": "...", "place": "地点或空字符串", "place_kind": "home | poi | generic | transit | online | none", "place_scope": "local | travel", "place_city": "跨城目标城市或空字符串", "place_hint": "消歧信息或空字符串", "travel_mode": "walking | cycling | driving | transit 或空字符串"}}],
+  "outfit_instruction": "承诺中明确确认的穿搭要求或空字符串",
+  "outfit_effective_time": "HH:MM 或空字符串",
+  "impact": "这项安排对当天生活的实际影响"
+}}
+
+JSON 输出要求：
+{CORE_JSON_OUTPUT_RULES}
+"""
+        dynamic = f"""我的性格设定：
+{persona}
+
+当前日期时间：{current_time.strftime("%Y-%m-%d %H:%M")}
+当前身体和情绪状态：{format_state_prompt(current_state)}
+承诺记录：{json.dumps(commitment.as_dict(), ensure_ascii=False)}
+保存时的归属判断：{owner_hint or "未提供，由证据判断"}
+
+今天尚未发生的原计划：
+{json.dumps([item.as_dict() for item in future_timeline], ensure_ascii=False)}
+
+短期目标、修正和近期决策参考：
+{autonomy_context or "暂无"}"""
+        if person_facts.has_external_people:
+            dynamic += "\n\n" + person_facts.format_for_generation()
+        prompt = cache_friendly_prompt(fixed, dynamic, dynamic_title="承诺执行协调")
+        session_id = ""
+        try:
+            provider_id = self._task_provider_id(self.config.commitments.provider)
+            provider = await self._get_provider(provider_id)
+            if not provider:
+                return None, {}
+            session_id = f"daily_life_commitment_reconcile_{uuid.uuid4().hex[:8]}"
+            completion_text = await self._call_llm_text(
+                provider,
+                prompt,
+                session_id,
+                primary_provider_id=provider_id,
+            )
+            result = extract_json_from_text(completion_text)
+            if not isinstance(result, dict) or result.get("should_apply") is not True:
+                return None, result if isinstance(result, dict) else {}
+            audit = await self._audit_person_payload(
+                result,
+                context=person_facts,
+                patterns=INVITE_PERSON_TEXT_PATHS,
+                provider=provider,
+                provider_id=provider_id,
+                subject="当天承诺与日程协调",
+            )
+            if audit.unresolved:
+                logger.warning("[承诺协调] 人物事实存在未解决冲突，保持原日程。")
+                return None, {}
+            result = audit.payload
+            raw_future = result.get("new_future_timeline")
+            if not isinstance(raw_future, list) or not raw_future:
+                return None, result
+            candidate_timeline = past_timeline + [
+                TimelineItem.from_value(item) for item in raw_future
+            ]
+            location_auditor = getattr(
+                getattr(self, "domains", None),
+                "audit_daily_locations",
+                None,
+            )
+            if callable(location_auditor):
+                audited, location_reason = await location_auditor(
+                    {
+                        "timeline": [item.as_dict() for item in candidate_timeline],
+                        "planned_actions": [],
+                        "places": [],
+                    }
+                )
+                if location_reason:
+                    result["should_apply"] = False
+                    result["reason"] = f"地点安排暂时无法确认：{location_reason}"
+                    result["location_issue"] = location_reason
+                    return None, result
+                candidate_timeline = [
+                    TimelineItem.from_value(item)
+                    for item in audited.get("timeline", [])
+                ]
+                result["_audited_places"] = audited.get("places", [])
+                result["_location_audit"] = audited.get("location_audit", {})
+            await self._save_life_decision_record(
+                kind="commitment_reconcile",
+                date=date_str,
+                subject=str(commitment.id or commitment.content[:80]),
+                decision="apply",
+                reason=str(result.get("reason") or "").strip(),
+                evidence=commitment.content,
+                outcome=str(result.get("impact") or "").strip(),
+                source="commitment",
+            )
+            return candidate_timeline, result
+        except Exception as exc:
+            logger.warning(f"[承诺协调] 处理失败：{exc}")
+            return None, {}
+        finally:
+            if session_id:
+                await self._cleanup_conversation(session_id)

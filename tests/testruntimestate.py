@@ -7,6 +7,7 @@ from runtimehelpers import (
     BackgroundTaskScheduler,
     Context,
     CORE_INTERNAL_SYSTEM_PROMPT,
+    CommitmentRecord,
     DailyLifeRuntime,
     DataManager,
     DayRecord,
@@ -1347,6 +1348,157 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertIsInstance(runtime.composer.outfit_calls[0][2], datetime.datetime)
         self.assertEqual(runtime.composer.outfit_calls[0][3], "和阿林去书店闲逛")
         self.assertEqual(page_reasons, ["invite_outfit_update"])
+
+    async def test_same_day_commitment_updates_schedule_and_defers_outfit(self):
+        today = "2026-08-06"
+        now = datetime.datetime(2026, 8, 6, 14, 0)
+        archive = DataManager()
+        await archive.save_day(
+            DayRecord(
+                date=today,
+                outfit="下午居家穿搭",
+                timeline=[
+                    TimelineItem(time="13:00", activity="在家休息", status="放松"),
+                    TimelineItem(time="17:30", activity="独自散步", status="平静"),
+                ],
+            )
+        )
+        commitment = await archive.save_commitment(
+            CommitmentRecord(
+                content="傍晚一起去老街，换上适合同行的外出穿搭",
+                trigger_date=today,
+                people=["测试对象"],
+            )
+        )
+
+        class Composer:
+            async def reconcile_commitment_with_timeline(self, *args, **kwargs):
+                return (
+                    [
+                        TimelineItem(time="13:00", activity="在家休息", status="放松"),
+                        TimelineItem(
+                            time="17:10", activity="换好衣服准备出门", status="准备"
+                        ),
+                        TimelineItem(
+                            time="17:40",
+                            activity="和测试对象一起去老街散步",
+                            status="期待",
+                        ),
+                    ],
+                    {
+                        "should_apply": True,
+                        "reason": "双方已经确认同行",
+                        "outfit_instruction": "适合傍晚同行的外出穿搭",
+                        "outfit_effective_time": "17:10",
+                    },
+                )
+
+        scheduled = []
+        page_reasons = []
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.archive = archive
+        runtime.composer = Composer()
+        runtime._schedule_background_task = lambda coro, label="", key="": (
+            scheduled.append((coro, label, key)) or True
+        )
+        runtime.mark_page_status_changed = lambda reason="": (
+            page_reasons.append(reason) or async_return(1)
+        )
+
+        applied = await runtime.apply_commitment_to_current_day(
+            commitment, now=now, owner_hint="共同"
+        )
+
+        self.assertTrue(applied)
+        stored = await archive.get_day(today)
+        self.assertEqual(stored.timeline[-1].activity, "和测试对象一起去老街散步")
+        pending = json.loads(stored.meta["pending_commitment_outfit"])
+        self.assertEqual(pending["effective_time"], "17:10")
+        self.assertEqual(
+            (await archive.get_commitment(commitment.id)).status, "scheduled"
+        )
+        self.assertEqual(scheduled, [])
+        self.assertIn("commitment_schedule_update", page_reasons)
+
+    async def test_confirmation_reuses_pending_invite_alternative(self):
+        now = datetime.datetime(2026, 8, 6, 14, 0)
+        today = now.strftime("%Y-%m-%d")
+        archive = DataManager()
+        await archive.save_day(
+            DayRecord(
+                date=today,
+                timeline=[
+                    TimelineItem(time="13:00", activity="在家休息", status="放松"),
+                    TimelineItem(time="18:00", activity="独自散步", status="平静"),
+                ],
+            )
+        )
+
+        class Composer:
+            def __init__(self):
+                self.invite_texts = []
+
+            async def handle_invite(self, *args, **kwargs):
+                self.invite_texts.append(args[2])
+                if len(self.invite_texts) == 1:
+                    return (
+                        "下午想先休息，傍晚更合适",
+                        None,
+                        {
+                            "decision": "propose_alternative",
+                            "accept": False,
+                            "alternative_time": "傍晚五点半一起出门",
+                        },
+                    )
+                return (
+                    "改约方案已经得到确认",
+                    [
+                        TimelineItem(time="13:00", activity="在家休息", status="放松"),
+                        TimelineItem(
+                            time="17:30", activity="和测试对象一起出门", status="期待"
+                        ),
+                    ],
+                    {"decision": "accept", "accept": True},
+                )
+
+            async def learn_preferences_from_payload(self, *args, **kwargs):
+                return None
+
+            async def persist_life_events_from_payload(self, *args, **kwargs):
+                return None
+
+        scheduled = []
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.config = LifeSettings.from_dict({"state_config": {"enabled": False}})
+        runtime.memos = runtime._create_memos_service()
+        runtime.archive = archive
+        runtime.composer = Composer()
+        runtime.contact_resolver = types.SimpleNamespace(
+            resolve_event_sender=lambda event: async_return("测试对象")
+        )
+        runtime.remember_interaction = lambda *args, **kwargs: async_return(None)
+        runtime.mark_page_status_changed = lambda reason="": async_return(1)
+        runtime._schedule_background_task = lambda coro, label="", key="": (
+            scheduled.append(coro) or True
+        )
+
+        first = Event()
+        first.message_str = "现在一起出去吗"
+        second = Event()
+        second.message_str = "好，安排上"
+        with patch("core.runtime.spine.rsvp.life_now", return_value=now):
+            await runtime.accept_user_invite(first, "现在一起出去")
+            stored = await archive.get_day(today)
+            self.assertIn("pending_invite_alternative", stored.meta)
+            reply = await runtime.accept_user_invite(second, "确认刚才的改约方案")
+
+        self.assertIn("傍晚五点半一起出门", runtime.composer.invite_texts[-1])
+        self.assertEqual(json.loads(reply)["decision"], "accept")
+        stored = await archive.get_day(today)
+        self.assertNotIn("pending_invite_alternative", stored.meta)
+        self.assertEqual(stored.timeline[-1].activity, "和测试对象一起出门")
+        for coro in scheduled:
+            coro.close()
 
     async def test_apply_config_rebuilds_runtime_and_saves_config(self):
         class Config(dict):

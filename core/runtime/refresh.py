@@ -144,6 +144,44 @@ class RefreshMixin:
             str(getattr(sleep, "depth", "") or ""),
         )
 
+    @staticmethod
+    def _pending_commitment_outfit(
+        data: DayRecord,
+        now: datetime.datetime,
+    ) -> tuple[str, datetime.datetime | None]:
+        """读取已经进入临近换装窗口的承诺穿搭要求。
+
+        Args:
+            data: 当前日记录。
+            now: 当前巡检时间。
+
+        Returns:
+            当前可生效的穿搭要求及其计划生效时间。
+        """
+
+        raw = str((data.meta or {}).get("pending_commitment_outfit") or "")
+        try:
+            payload = json.loads(raw) if raw else {}
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return "", None
+        if not isinstance(payload, dict):
+            return "", None
+        instruction = str(payload.get("instruction") or "").strip()
+        if not instruction or str(payload.get("date") or data.date) != data.date:
+            return "", None
+        effective_time = str(payload.get("effective_time") or "").strip()
+        if not effective_time:
+            return instruction, None
+        try:
+            effective_at = datetime.datetime.strptime(
+                f"{data.date} {effective_time}", "%Y-%m-%d %H:%M"
+            )
+        except (TypeError, ValueError):
+            return instruction, None
+        if effective_at <= now + datetime.timedelta(minutes=90):
+            return instruction, effective_at
+        return "", effective_at
+
     def _outfit_context_signature(
         self, data: DayRecord, now: datetime.datetime, period: str
     ) -> str:
@@ -167,6 +205,7 @@ class RefreshMixin:
         except (TypeError, ValueError):
             outgoing_bucket = ""
         sleep = getattr(state, "sleep", None) if state else None
+        pending_outfit, _ = self._pending_commitment_outfit(data, now)
         values = (
             data.date,
             period,
@@ -176,6 +215,7 @@ class RefreshMixin:
             str(temperature_bucket),
             str(outgoing_bucket),
             str(getattr(sleep, "depth", "") or ""),
+            pending_outfit,
         )
         return "|".join(values)
 
@@ -197,6 +237,14 @@ class RefreshMixin:
                 1, math.ceil((next_transition - now).total_seconds() / 60)
             )
             delay_minutes = min(delay_minutes, transition_minutes)
+        _, outfit_effective_at = self._pending_commitment_outfit(data, now)
+        if outfit_effective_at is not None:
+            outfit_check_at = outfit_effective_at - datetime.timedelta(minutes=90)
+            if outfit_check_at > now:
+                outfit_minutes = max(
+                    1, math.ceil((outfit_check_at - now).total_seconds() / 60)
+                )
+                delay_minutes = min(delay_minutes, outfit_minutes)
         return now + datetime.timedelta(minutes=delay_minutes)
 
     def _state_refresh_in_quiet_hours(self, now: datetime.datetime) -> bool:
@@ -254,6 +302,11 @@ class RefreshMixin:
         data = await self.archive.get_day(target_date_str)
         if not data:
             return None
+        commitment_changed = await self.reconcile_due_commitments_for_day(
+            target_date_str, now
+        )
+        if commitment_changed:
+            data = await self.archive.get_day(target_date_str) or data
         execution_source = {
             "auto": "后台巡检",
             "chat": "聊天触发",
@@ -267,6 +320,7 @@ class RefreshMixin:
         ) != self._outfit_context_signature(data, now, current_period)
         if (
             not self._auto_life_check_due(data, now)
+            and not commitment_changed
             and not execution_changed
             and not outfit_context_changed
             and not self._has_legacy_outfit_expiration(data)
@@ -330,6 +384,11 @@ class RefreshMixin:
             if outfit_context_changed:
                 outfit_before = (data.outfit, data.time_period)
                 outfit_kwargs: dict[str, Any] = {"current_time": now}
+                pending_outfit_instruction, _ = self._pending_commitment_outfit(
+                    data, now
+                )
+                if pending_outfit_instruction:
+                    outfit_kwargs["instruction"] = pending_outfit_instruction
                 if source_event is not None and self._event_message_id(source_event):
                     outfit_kwargs["should_abort"] = lambda: self.event_was_recalled(
                         source_event, log_skip=True
@@ -341,6 +400,8 @@ class RefreshMixin:
                 outfit_changed = bool(
                     data and (data.outfit, data.time_period) != outfit_before
                 )
+                if data and updated and pending_outfit_instruction:
+                    data.meta.pop("pending_commitment_outfit", None)
             else:
                 logger.debug(f"{LOG_PREFIX} 穿搭上下文未变化，跳过本次穿搭模型判断")
             if source_event is not None and self.event_was_recalled(
@@ -348,7 +409,7 @@ class RefreshMixin:
             ):
                 return data
             if not state_due and not outfit_context_changed:
-                if execution_changed:
+                if execution_changed or commitment_changed:
                     await self.mark_page_status_changed("timeline_execution")
                 return data
             if data:
@@ -366,6 +427,7 @@ class RefreshMixin:
                 stable = not any(
                     (
                         execution_changed,
+                        commitment_changed,
                         planning_changed,
                         state_changed,
                         outfit_context_changed,

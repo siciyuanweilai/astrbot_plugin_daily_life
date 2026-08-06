@@ -9,7 +9,7 @@ from astrbot.api import logger
 from astrbot.api.event import MessageChain
 from astrbot.api.message_components import Image, Node, Nodes, Plain
 
-from ..sources.platforms import is_onebot_event
+from ..sources.platforms import call_bot_action, get_onebot_client, is_onebot_event
 from .markers import LOG_PREFIX
 
 
@@ -139,7 +139,7 @@ class TextForwardMixin:
         )
         self._t2i_forward_store()[scope] = records[-self._T2I_FORWARD_MAX_RECORDS :]
         logger.debug(
-            f"{LOG_PREFIX} 文本转图像原文已暂存：会话记录={len(records[-self._T2I_FORWARD_MAX_RECORDS:])}；长度={len(source)}"
+            f"{LOG_PREFIX} 文本转图像原文已暂存：会话记录={len(records[-self._T2I_FORWARD_MAX_RECORDS :])}；长度={len(source)}"
         )
 
     def note_t2i_image_sent(self, event: Any) -> bool:
@@ -176,8 +176,7 @@ class TextForwardMixin:
             return None
         return records[-index]
 
-    @staticmethod
-    def _t2i_forward_bot_name(event: Any) -> str:
+    async def _t2i_forward_bot_name(self, event: Any) -> str:
         getter = getattr(event, "get_self_name", None)
         if callable(getter):
             try:
@@ -186,7 +185,30 @@ class TextForwardMixin:
                     return name
             except (AttributeError, TypeError, ValueError):
                 pass
-        return "Bot"
+
+        bot = get_onebot_client(getattr(self, "context", None), event=event)
+        if bot:
+            try:
+                result = await call_bot_action(
+                    bot,
+                    "get_login_info",
+                    raise_missing=True,
+                )
+                if isinstance(result, dict):
+                    nested = result.get("data")
+                    candidates = (
+                        [nested, result] if isinstance(nested, dict) else [result]
+                    )
+                    for candidate in candidates:
+                        for key in ("nickname", "nick", "name"):
+                            name = str(candidate.get(key) or "").strip()
+                            if name:
+                                return name
+            except Exception as exc:
+                logger.debug(
+                    f"{LOG_PREFIX} 获取机器人昵称失败：{type(exc).__name__}: {exc}"
+                )
+        return "机器人"
 
     @staticmethod
     def _t2i_forward_bot_id(event: Any) -> str:
@@ -231,7 +253,7 @@ class TextForwardMixin:
 
         node = Node(
             uin=self._t2i_forward_bot_id(event),
-            name=self._t2i_forward_bot_name(event),
+            name=await self._t2i_forward_bot_name(event),
             content=[Plain(record.text)],
         )
         message = MessageChain()

@@ -388,6 +388,46 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    async def test_confirmed_same_day_commitment_replans_only_future_timeline(self):
+        composer, _, _, _ = make_composer(
+            [
+                '{"should_apply":true,"reason":"双方已经确认傍晚同行",'
+                '"new_future_timeline":['
+                '{"time":"17:10","activity":"换好外出衣服并确认随身物品","status":"准备",'
+                '"place":"家","place_kind":"home","place_scope":"local","place_city":"",'
+                '"place_hint":"","travel_mode":""},'
+                '{"time":"17:40","activity":"和朋友一起去老街散步拍照","status":"期待",'
+                '"place":"老街","place_kind":"poi","place_scope":"local","place_city":"",'
+                '"place_hint":"适合步行拍照的街区","travel_mode":"transit"}],'
+                '"outfit_instruction":"清爽利落、适合傍晚同行的外出穿搭",'
+                '"outfit_effective_time":"17:10","impact":"傍晚改为共同外出"}'
+            ]
+        )
+        current = [
+            TimelineItem(time="13:00", activity="在家吃午饭", status="放松"),
+            TimelineItem(time="17:30", activity="独自去附近散步", status="平静"),
+        ]
+
+        timeline, result = await composer.reconcile_commitment_with_timeline(
+            "2026-08-06",
+            current,
+            CommitmentRecord(
+                id=7,
+                content="傍晚五点多一起去老街，出门时穿得清爽利落些",
+                trigger_date="2026-08-06",
+                kind="plan",
+            ),
+            datetime.datetime(2026, 8, 6, 14, 0),
+            owner_hint="共同",
+        )
+
+        self.assertIsNotNone(timeline)
+        self.assertEqual(timeline[0].activity, "在家吃午饭")
+        self.assertEqual(timeline[-1].activity, "和朋友一起去老街散步拍照")
+        self.assertEqual(
+            result["outfit_instruction"], "清爽利落、适合傍晚同行的外出穿搭"
+        )
+
     async def test_daily_prompt_uses_default_persona_prompt(self):
         composer, provider, _, archive = make_composer(
             [
