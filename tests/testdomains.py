@@ -18,6 +18,7 @@ from core.life.baidu_map import (
 from core.life.domains import LifeDomainService
 from core.life.tencent_map import TencentMapWebServiceClient
 from core.models import (
+    CommitmentRecord,
     DayRecord,
     EventRecord,
     LifeState,
@@ -599,6 +600,127 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(receipts[0].status, "simulated")
 
+    async def test_domain_payload_enums_and_short_item_lists_are_normalized(self):
+        chore_day = self._day(
+            {
+                "action_id": "2026-08-03:chore:text-level",
+                "action_type": "chore",
+                "target": "整理测试书桌",
+                "timeline_index": 0,
+                "duration_minutes": 15,
+                "payload": {"effort": "light", "cadence_days": "7"},
+                "source": "daily_plan",
+            }
+        )
+        await self.harness.settle_completed_planned_actions(chore_day)
+
+        exercise_day = self._day(
+            {
+                "action_id": "2026-08-03:exercise:text-level",
+                "action_type": "exercise",
+                "target": "室内舒展",
+                "timeline_index": 0,
+                "duration_minutes": 20,
+                "payload": {"intensity": "moderate"},
+                "source": "daily_plan",
+            }
+        )
+        await self.harness.settle_completed_planned_actions(exercise_day)
+
+        purchase_day = self._day(
+            {
+                "action_id": "2026-08-03:purchase:short-list",
+                "action_type": "purchase",
+                "target": "补充测试食材",
+                "timeline_index": 0,
+                "duration_minutes": 10,
+                "payload": {"items": ["测试食材"]},
+                "source": "daily_plan",
+            }
+        )
+        await self.harness.settle_completed_planned_actions(purchase_day)
+
+        chores = await self.archive.get_chores(limit=0)
+        fitness = await self.archive.get_fitness_records(limit=0)
+        pantry = await self.archive.get_pantry_items(limit=0)
+        self.assertEqual(chores[0]["effort"], 1)
+        self.assertEqual(chores[0]["cadence_days"], 7)
+        self.assertEqual(fitness[0]["intensity"], 3)
+        self.assertEqual(pantry[0]["name"], "测试食材")
+        self.assertEqual(pantry[0]["quantity"], 1)
+
+    async def test_replayed_action_retries_missing_domain_write(self):
+        day = self._day(
+            {
+                "action_id": "2026-08-03:chore:retry",
+                "action_type": "chore",
+                "target": "整理测试资料",
+                "timeline_index": 0,
+                "duration_minutes": 10,
+                "payload": {"effort": 2},
+                "source": "daily_plan",
+            }
+        )
+        original_apply_action = self.domains.apply_action
+        self.domains.apply_action = AsyncMock(side_effect=RuntimeError("测试写入失败"))
+
+        first = await self.harness.settle_completed_planned_actions(day)
+
+        self.assertEqual(first[0].status, "committed")
+        self.assertEqual(await self.archive.get_chore_records(limit=0), [])
+        self.domains.apply_action = original_apply_action
+
+        second = await self.harness.settle_completed_planned_actions(day)
+
+        self.assertTrue(second[0].replayed)
+        self.assertEqual(len(await self.archive.get_chore_records(limit=0)), 1)
+
+    async def test_domain_initialize_repairs_legacy_records_idempotently(self):
+        action_id = "2026-08-03:chore:legacy"
+        day = self._day(
+            {
+                "action_id": action_id,
+                "action_type": "chore",
+                "target": "收好测试物品",
+                "timeline_index": 0,
+                "duration_minutes": 12,
+                "payload": {"effort": "light"},
+                "source": "daily_plan",
+            }
+        )
+        await self.archive.save_day(day, replace=True)
+        await self.archive.save_life_action_outcome(
+            {
+                "action_id": action_id,
+                "date": day.date,
+                "action_type": "chore",
+                "target": "收好测试物品",
+                "status": "committed",
+                "evidence": ["测试时间轴已完成"],
+                "committed_at": "2026-08-03 12:30:00",
+            }
+        )
+        commitment = await self.archive.save_commitment(
+            CommitmentRecord(
+                content="明天确认测试安排",
+                trigger_date="2026-08-04",
+                confidence=0.95,
+                source="test",
+                source_session="private:test",
+                source_message="测试会话中的未来安排",
+            )
+        )
+
+        await self.domains.initialize()
+        await self.domains.initialize()
+
+        records = await self.archive.get_chore_records(limit=0)
+        actions = await self.archive.get_conversation_action_items(limit=0)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0]["commitment_id"], commitment.id)
+        self.assertEqual(actions[0]["status"], "open")
+
     async def test_internal_outfit_change_completes_without_external_receipt(self):
         outfit = "薄荷绿棉质上衣配浅色牛仔短裤"
         day = self._day(
@@ -648,7 +770,9 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
         )
         day.outfit = detailed_outfit
         day.timeline[0].execution_state = "expired"
-        day.timeline[0].execution_reason = "计划时间已经结束，但没有收到可验证的执行回执"
+        day.timeline[
+            0
+        ].execution_reason = "计划时间已经结束，但没有收到可验证的执行回执"
         day.meta["life_action_expirations"] = json.dumps(
             {
                 action_id: {

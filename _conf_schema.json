@@ -482,7 +482,7 @@
         "description": "启用聊天表达",
         "type": "bool",
         "default": true,
-        "hint": "统一控制短句风格、四项参考长度、模型语义分段、自然分段兜底、标点清洗、分段随机间隔和未发送后续分段取消；关闭后保留模型原文并单条发送。"
+        "hint": "统一控制短句风格、四项参考长度、连续消息收束、模型语义分段、自然分段兜底、标点清洗、分段随机间隔和未发送后续分段取消；关闭后恢复每条消息独立处理，并保留模型原文单条发送。"
       },
       "casual_short_prompt": {
         "description": "短句风格",
@@ -533,6 +533,46 @@
           "step": 5
         },
         "hint": "闲时回复生成和模型语义分段的参考长度；发送前按完整意念自然分段，不硬性截断。"
+      },
+      "continuous_turn_enabled": {
+        "description": "连续消息统一回复",
+        "type": "bool",
+        "default": true,
+        "hint": "同一用户短时间连续发送普通文字时，先收束成一个话轮，只保留最新有效话轮生成统一回复；关闭后每条消息恢复独立处理。"
+      },
+      "continuous_turn_wait_seconds": {
+        "description": "连续消息等待（秒）",
+        "type": "float",
+        "default": 1.5,
+        "slider": {
+          "min": 0,
+          "max": 3,
+          "step": 0.1
+        },
+        "hint": "收到普通文字后等待用户继续补充的基础时间；期间有新消息会由最新消息接管当前话轮。"
+      },
+      "continuous_turn_max_wait_seconds": {
+        "description": "最长收束等待（秒）",
+        "type": "float",
+        "default": 4,
+        "slider": {
+          "min": 1,
+          "max": 8,
+          "step": 0.5
+        },
+        "hint": "从本轮第一条消息开始计算的最长等待时间；到达上限后不再继续等待。"
+      },
+      "continuous_turn_group_enabled": {
+        "description": "群聊连续消息收束",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后群聊也会按同一发送者收束连续普通文字；默认只在私聊生效。"
+      },
+      "continuous_turn_semantic_enabled": {
+        "description": "语义判断是否继续等待",
+        "type": "bool",
+        "default": true,
+        "hint": "让随心回复语义裁定结合完整话轮决定立即回复或等待到收束上限；关闭后只使用基础时间窗口。"
       },
       "semantic_provider": {
         "description": "语义分段",

@@ -74,6 +74,7 @@ class SpineBootMixin:
         self._page_status_changed = asyncio.Condition()
         self._init_background_tasks()
         self._init_response_gate_state()
+        self._init_continuous_turn_state()
         self._semantic_segment_init_state()
         self._init_t2i_forward_cache()
         self.reply_delivery = ReplyDeliveryService(self)

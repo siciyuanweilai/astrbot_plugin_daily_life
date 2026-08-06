@@ -628,6 +628,39 @@ class ChatMemoryBatchMixin:
                     )
                 except Exception as exc:
                     logger.warning(f"{LOG_PREFIX} 批次承诺合并到当天日程失败：{exc}")
+            domain_settings = getattr(self.config, "domains", None)
+            save_action_item = getattr(
+                self.archive, "save_conversation_action_item", None
+            )
+            if (
+                bool(getattr(domain_settings, "enabled", False))
+                and bool(
+                    getattr(domain_settings, "conversation_actions_enabled", False)
+                )
+                and callable(save_action_item)
+            ):
+                due_at = (
+                    " ".join(
+                        part
+                        for part in (stored.trigger_date, stored.trigger_time)
+                        if part
+                    )
+                    or stored.time_window
+                )
+                await save_action_item(
+                    {
+                        "commitment_id": stored.id,
+                        "title": stored.content,
+                        "owner": str(raw.get("owner") or "未定").strip(),
+                        "due_at": due_at,
+                        "status": "open",
+                        "source_session": stored.source_session,
+                        "source_message": stored.source_message,
+                        "evidence": [stored.source_message]
+                        if stored.source_message
+                        else [],
+                    }
+                )
         return saved
 
     async def _save_batch_temporal_facts(
@@ -818,9 +851,9 @@ class ChatMemoryBatchMixin:
         role_getter = getattr(self, "_current_role_label", None)
         if callable(role_getter):
             try:
-                meta["current_role_label"] = self._str_payload(
-                    await role_getter()
-                ) or "我"
+                meta["current_role_label"] = (
+                    self._str_payload(await role_getter()) or "我"
+                )
             except Exception as exc:
                 logger.debug(f"{LOG_PREFIX} 读取当前角色称呼失败：{exc}")
                 meta["current_role_label"] = "我"

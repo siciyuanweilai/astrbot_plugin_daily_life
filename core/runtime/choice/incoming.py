@@ -71,6 +71,11 @@ class ResponseGateEventMixin:
         )
 
     def _response_gate_visible_text(self, event: Any) -> str:
+        turn_getter = getattr(self, "continuous_turn_messages", None)
+        if callable(turn_getter):
+            turn_messages = turn_getter(event)
+            if turn_messages:
+                return "\n".join(turn_messages)
         return str(getattr(event, "message_str", "") or "").strip()
 
     def _response_gate_has_media(self, event: Any) -> bool:

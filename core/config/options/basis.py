@@ -177,6 +177,11 @@ class ChatStyleSettings:
     group_casual_max_chars: int = 30
     private_casual_max_chars: int = 15
     proactive_max_chars: int = 15
+    continuous_turn_enabled: bool = True
+    continuous_turn_wait_seconds: float = 1.5
+    continuous_turn_max_wait_seconds: float = 4.0
+    continuous_turn_group_enabled: bool = False
+    continuous_turn_semantic_enabled: bool = True
     punctuation_cleanup_enabled: bool = True
     punctuation_cleanup_chars: str = DEFAULT_PUNCTUATION_CLEANUP_CHARS
     semantic_provider: str = ""
@@ -203,6 +208,18 @@ class ChatStyleSettings:
             minimum = maximum = 0.0
         else:
             minimum, maximum = sorted((minimum, maximum))
+        continuous_wait = as_float(
+            data.get("continuous_turn_wait_seconds", 1.5), 1.5, 0.0, 3.0
+        )
+        continuous_max_wait = max(
+            continuous_wait,
+            as_float(
+                data.get("continuous_turn_max_wait_seconds", 4.0),
+                4.0,
+                1.0,
+                8.0,
+            ),
+        )
         return ChatStyleSettings(
             enabled=as_bool(data.get("enabled", True), True),
             casual_short_prompt=as_str(
@@ -218,6 +235,17 @@ class ChatStyleSettings:
                 data.get("private_casual_max_chars", 15), 15, 10, 30
             ),
             proactive_max_chars=as_int(data.get("proactive_max_chars", 15), 15, 10, 30),
+            continuous_turn_enabled=as_bool(
+                data.get("continuous_turn_enabled", True), True
+            ),
+            continuous_turn_wait_seconds=continuous_wait,
+            continuous_turn_max_wait_seconds=continuous_max_wait,
+            continuous_turn_group_enabled=as_bool(
+                data.get("continuous_turn_group_enabled", False), False
+            ),
+            continuous_turn_semantic_enabled=as_bool(
+                data.get("continuous_turn_semantic_enabled", True), True
+            ),
             punctuation_cleanup_enabled=as_bool(
                 data.get("punctuation_cleanup_enabled", True), True
             ),
@@ -441,22 +469,16 @@ class SearchSettings:
             ),
             cache_ttl_seconds=as_int(data.get("cache_ttl_seconds", 300), 300, 0, 86400),
             cache_max_items=as_int(data.get("cache_max_items", 128), 128, 16, 512),
-            deep_max_followups=as_int(
-                data.get("deep_max_followups", 2), 2, 0, 3
-            ),
+            deep_max_followups=as_int(data.get("deep_max_followups", 2), 2, 0, 3),
             max_page_chars=as_int(
                 data.get("max_page_chars", 12000), 12000, 2000, 30000
             ),
             map_max_results=as_int(data.get("map_max_results", 100), 100, 1, 500),
             map_max_depth=as_int(data.get("map_max_depth", 3), 3, 1, 5),
             map_max_breadth=as_int(data.get("map_max_breadth", 50), 50, 1, 500),
-            crawl_max_results=as_int(
-                data.get("crawl_max_results", 50), 50, 1, 500
-            ),
+            crawl_max_results=as_int(data.get("crawl_max_results", 50), 50, 1, 500),
             crawl_max_depth=as_int(data.get("crawl_max_depth", 3), 3, 1, 5),
-            crawl_max_breadth=as_int(
-                data.get("crawl_max_breadth", 20), 20, 1, 500
-            ),
+            crawl_max_breadth=as_int(data.get("crawl_max_breadth", 20), 20, 1, 500),
             inspiration_enabled=as_bool(data.get("inspiration_enabled", False), False),
             today_prompt=(
                 as_str(
@@ -507,9 +529,7 @@ class StorageSettings:
         if not isinstance(data, dict):
             return StorageSettings()
         return StorageSettings(
-            domains_keep_days=as_int(
-                data.get("domains_keep_days", 180), 180, 0, 3650
-            ),
+            domains_keep_days=as_int(data.get("domains_keep_days", 180), 180, 0, 3650),
             cognition_keep_days=as_int(
                 data.get("cognition_keep_days", 30), 30, 0, 3650
             ),

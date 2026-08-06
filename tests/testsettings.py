@@ -656,6 +656,31 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertFalse(config.chat_style.punctuation_cleanup_enabled)
         self.assertEqual(config.chat_style.punctuation_cleanup_chars, "，。")
 
+    def test_chat_style_continuous_turn_settings(self):
+        defaults = LifeSettings.from_dict({}).chat_style
+        self.assertTrue(defaults.continuous_turn_enabled)
+        self.assertEqual(defaults.continuous_turn_wait_seconds, 1.5)
+        self.assertEqual(defaults.continuous_turn_max_wait_seconds, 4.0)
+        self.assertFalse(defaults.continuous_turn_group_enabled)
+        self.assertTrue(defaults.continuous_turn_semantic_enabled)
+
+        configured = LifeSettings.from_dict(
+            {
+                "chat_style_config": {
+                    "continuous_turn_enabled": False,
+                    "continuous_turn_wait_seconds": 2.5,
+                    "continuous_turn_max_wait_seconds": 2.0,
+                    "continuous_turn_group_enabled": True,
+                    "continuous_turn_semantic_enabled": False,
+                }
+            }
+        ).chat_style
+        self.assertFalse(configured.continuous_turn_enabled)
+        self.assertEqual(configured.continuous_turn_wait_seconds, 2.5)
+        self.assertEqual(configured.continuous_turn_max_wait_seconds, 2.5)
+        self.assertTrue(configured.continuous_turn_group_enabled)
+        self.assertFalse(configured.continuous_turn_semantic_enabled)
+
     def test_chat_style_semantic_segmentation_hints(self):
         schema = json.loads(
             (PLUGIN_ROOT / "_conf_schema.json").read_text(encoding="utf-8")
@@ -1411,9 +1436,11 @@ class LifeSettingsTest(unittest.TestCase):
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertIn("version: 1.1.7", metadata)
-        self.assertIn("version-1.1.7", readme)
-        self.assertIn("v1.1.7 · 2026-08-06", changelog)
+        self.assertIn("version: 1.1.9", metadata)
+        self.assertIn("version-1.1.9", readme)
+        self.assertIn("v1.1.9 · 2026-08-07", changelog)
+        self.assertLess(changelog.index("v1.1.9"), changelog.index("v1.1.8"))
+        self.assertLess(changelog.index("v1.1.8"), changelog.index("v1.1.7"))
         self.assertLess(changelog.index("v1.1.7"), changelog.index("v1.1.6"))
         self.assertLess(changelog.index("v1.1.6"), changelog.index("v1.1.5"))
         self.assertIn("v1.0.4 · 2026-08-01", changelog)

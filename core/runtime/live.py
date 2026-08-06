@@ -6,30 +6,31 @@ from astrbot.api import logger
 from ..labels import page_status_reason_label
 from ..memos import MemosMixin
 from ..sight import SightMixin
+from .action import RuntimeActionReceiptMixin
+from .addressing import ChatAddressingMixin
+from .background import BackgroundTaskMixin
 from .capture import CaptureMixin
-from .past import RuntimeHistoryMixin
-from .markers import LOG_PREFIX
+from .forward import TextForwardMixin
+from .gate import ResponseGateMixin
 from .gateway import ModelCallOptions, ModelGateway
-from .remember import RuntimeMemoryMixin
-from .messenger import RuntimeMediaMixin
+from .generation import DailyGenerationMixin
 from .inject import InjectMixin
 from .integration import ExternalIntegrationMixin
+from .markers import LOG_PREFIX
+from .meaning import MeaningRuntimeMixin
+from .messenger import RuntimeMediaMixin
+from .past import RuntimeHistoryMixin
 from .proactive import ProactiveMixin
-from .status import StatusMixin
-from .structured import StructuredContextMixin
-from .gate import ResponseGateMixin
+from .reaction import ToolReactionMixin
 from .recall import RecallMixin
 from .refresh import RefreshMixin
-from .reaction import ToolReactionMixin
-from .style import ChatStyleRuntimeMixin
+from .remember import RuntimeMemoryMixin
 from .reply import SemanticSegmentRuntimeMixin
-from .addressing import ChatAddressingMixin
-from .action import RuntimeActionReceiptMixin
-from .background import BackgroundTaskMixin
-from .generation import DailyGenerationMixin
-from .meaning import MeaningRuntimeMixin
-from .forward import TextForwardMixin
 from .spine import SpineMixin
+from .status import StatusMixin
+from .structured import StructuredContextMixin
+from .style import ChatStyleRuntimeMixin
+from .turns import ContinuousTurnMixin
 
 
 class DailyLifeRuntime(
@@ -42,6 +43,7 @@ class DailyLifeRuntime(
     RecallMixin,
     ToolReactionMixin,
     SightMixin,
+    ContinuousTurnMixin,
     ResponseGateMixin,
     RefreshMixin,
     RuntimeActionReceiptMixin,

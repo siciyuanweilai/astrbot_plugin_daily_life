@@ -77,6 +77,11 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         + (
             "note_recalled_message",
             "note_runtime_scope_activity",
+            "note_continuous_turn_incoming",
+            "settle_continuous_turn",
+            "prepare_continuous_turn_llm_request",
+            "stop_stale_continuous_turn_event",
+            "complete_continuous_turn",
             "note_semantic_segment_incoming_message",
             "capture_chat_memory_message",
             "capture_chat_memory_bot_reply",
@@ -1430,6 +1435,9 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
     @filter.on_llm_request()
     @_runtime_guard
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
+        prepare_turn = self._runtime_hook("prepare_continuous_turn_llm_request")
+        if prepare_turn and not prepare_turn(event, req):
+            return
         self.runtime.search.prepare_tools(
             req,
             WEB_SEARCH_TOOL_NAMES,
@@ -1475,6 +1483,8 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
     @filter.on_llm_response()
     @_runtime_guard
     async def on_llm_response(self, event: AstrMessageEvent, response):
+        if self._runtime_hook_bool("stop_stale_continuous_turn_event", event):
+            return
         if self._response_is_agent_error(response):
             setattr(event, self._AGENT_ERROR_SEEN_ATTR, True)
         else:
@@ -1687,6 +1697,8 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
     @filter.on_decorating_result(priority=-900)
     @_runtime_guard
     async def on_decorating_result(self, event: AstrMessageEvent):
+        if self._runtime_hook_bool("stop_stale_continuous_turn_event", event):
+            return
         if self._send_pipeline_should_stop(event):
             return
         if self._send_pipeline_should_passthrough_command_result(event):
@@ -1696,10 +1708,13 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             logger.debug(f"{LOG_PREFIX} 非聊天模型结果保持原样发送，跳过表达加工。")
             return
         await self._send_pipeline_apply(event)
+        if getattr(event, "get_result", lambda: None)() is None:
+            self._runtime_hook_call("complete_continuous_turn", event)
 
     @filter.after_message_sent()
     @_runtime_guard
     async def after_message_sent(self, event: AstrMessageEvent):
+        self._runtime_hook_call("complete_continuous_turn", event)
         reaction = getattr(self.runtime, "note_tool_reaction_message_sent", None)
         if callable(reaction):
             await reaction(event)
@@ -1727,6 +1742,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         if self._runtime_hook_call("note_recalled_message", event):
             return
         self._runtime_hook_call("note_runtime_scope_activity", event)
+        self._runtime_hook_call("note_continuous_turn_incoming", event)
         await self._runtime_hook_apply(
             "prepare_visual_media_from_event", event, is_async=True
         )
@@ -1735,6 +1751,10 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         self._runtime_hook_call("note_semantic_segment_incoming_message", event)
         await self._capture_chat_memory(event)
         if self._runtime_hook_call("schedule_bili_summary_from_event", event):
+            self._runtime_hook_call("complete_continuous_turn", event)
+            return
+        settle_turn = self._runtime_hook("settle_continuous_turn")
+        if settle_turn and not await settle_turn(event):
             return
         self._runtime_hook_call("mark_alias_directed_event_as_wake", event)
         self.runtime.note_proactive_activity(event)

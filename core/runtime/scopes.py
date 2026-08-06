@@ -28,6 +28,8 @@ class RuntimeScopeState:
         "_response_gate_no_reply_count",
         "_response_gate_backoff_until",
         "_response_gate_continuation",
+        "_continuous_turn_batches",
+        "_continuous_turn_revisions",
         "_structured_messages",
         "_structured_sequence_counters",
         "_semantic_segment_revisions",

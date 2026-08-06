@@ -137,6 +137,18 @@ const CONFIG_SECTION_FIELD_GROUPS = new Map([
       ],
     },
     {
+      key: "continuous_turn",
+      label: "连续话轮",
+      hint: "控制同一用户连续消息的收束范围、基础等待和最长等待。",
+      fields: [
+        "chat_style_config.continuous_turn_enabled",
+        "chat_style_config.continuous_turn_wait_seconds",
+        "chat_style_config.continuous_turn_max_wait_seconds",
+        "chat_style_config.continuous_turn_group_enabled",
+        "chat_style_config.continuous_turn_semantic_enabled",
+      ],
+    },
+    {
       key: "semantic",
       label: "语义与发送",
       hint: "控制语义分段模型、分段数量、等待上限和分段发送间隔。",

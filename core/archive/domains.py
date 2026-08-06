@@ -552,6 +552,31 @@ class DomainArchiveMixin:
             json_fields={"evidence_json": "evidence"},
         )
 
+    async def has_domain_action_record(self, action_type: str, action_id: str) -> bool:
+        """检查可派生领域副作用是否已经完成持久化。"""
+
+        normalized_type = self._text(action_type).lower()
+        table = {
+            "meal": "meal_records",
+            "cook": "meal_records",
+            "order_food": "meal_records",
+            "purchase": "pantry_movements",
+            "chore": "chore_records",
+            "exercise": "fitness_records",
+        }.get(normalized_type)
+        normalized_id = self._text(action_id)
+        if not table or not normalized_id:
+            return False
+
+        def dbwork() -> bool:
+            row = self._conn.execute(
+                f"SELECT 1 FROM {table} WHERE action_id = ? LIMIT 1",
+                (normalized_id,),
+            ).fetchone()
+            return row is not None
+
+        return await self._run_db(dbwork)
+
     async def _save_domain_action_record(
         self,
         table: str,

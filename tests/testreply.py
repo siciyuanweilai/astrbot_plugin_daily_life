@@ -608,6 +608,74 @@ class SemanticSegmentTest(unittest.TestCase):
 
         self.assertEqual(cleaned, "看看 https://example.com/a?x=1")
 
+    def test_punctuation_cleaning_preserves_ascii_pause_runs(self):
+        cleanup_chars = LifeSettings.from_dict({}).chat_style.punctuation_cleanup_chars
+
+        self.assertEqual(
+            DailyLifeRuntime._semantic_segment_clean_punctuation(
+                "嗯...睡吧。", cleanup_chars
+            ),
+            "嗯...睡吧",
+        )
+        self.assertEqual(
+            DailyLifeRuntime._semantic_segment_clean_punctuation(
+                "wait...", cleanup_chars
+            ),
+            "wait...",
+        )
+
+    def test_punctuation_cleaning_removes_explicit_ascii_pause_runs(self):
+        self.assertEqual(
+            DailyLifeRuntime._semantic_segment_clean_punctuation(
+                "嗯...睡吧。", "...。"
+            ),
+            "嗯 睡吧",
+        )
+        self.assertEqual(
+            DailyLifeRuntime._semantic_segment_clean_punctuation("嗯...", "..."),
+            "嗯",
+        )
+        self.assertEqual(
+            DailyLifeRuntime._semantic_segment_clean_punctuation("嗯.", "..."),
+            "嗯.",
+        )
+
+    def test_semantic_segments_preserve_ascii_pause_runs_before_send(self):
+        runtime = self._runtime(
+            json.dumps(
+                {
+                    "segments": [
+                        {"text": "嗯...", "relation": "lead", "pause": "short"},
+                        {
+                            "text": "mua睡吧。",
+                            "relation": "closing",
+                            "pause": "normal",
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        )
+        runtime.context = Context(
+            Provider([]), config={"t2i": False, "t2i_word_threshold": 120}
+        )
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:13")
+        event.set_result(
+            event.chain_result(
+                [types.SimpleNamespace(text="嗯...\n\nmua\n\n睡吧。")]
+            )
+        )
+
+        changed = asyncio.run(runtime.apply_semantic_segment_before_send(event))
+        sent = asyncio.run(runtime.send_semantic_segments_if_needed(event))
+
+        self.assertTrue(changed)
+        self.assertTrue(sent)
+        self.assertEqual(
+            [message.chain for message in event.sent_messages],
+            [["嗯..."], ["mua睡吧"]],
+        )
+
     def test_punctuation_cleaning_uses_custom_character_set(self):
         self.assertEqual(
             DailyLifeRuntime._semantic_segment_clean_punctuation(

@@ -6,12 +6,11 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from support import *  # noqa: F401,F403
-
 from core.archive import LifeArchive
 from core.config.options import LifeSettings
 from core.models import DayRecord
 from core.runtime.live import DailyLifeRuntime
+from support import *  # noqa: F401,F403
 
 
 class ChatMemoryArchiveTest(unittest.IsolatedAsyncioTestCase):
@@ -448,8 +447,12 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(saved)
         commitments = await self.runtime.archive.get_commitments(limit=10)
+        action_items = await self.runtime.archive.get_conversation_action_items(10)
         self.assertEqual(len(commitments), 1)
         self.assertEqual(commitments[0].content, "周六一起去看展")
+        self.assertEqual(len(action_items), 1)
+        self.assertEqual(action_items[0]["commitment_id"], commitments[0].id)
+        self.assertEqual(action_items[0]["title"], "周六一起去看展")
 
     async def test_batch_payload_saves_awareness_without_long_term_summary(self):
         message = ChatMemoryArchiveTest.snapshot(

@@ -28,6 +28,21 @@ LIFE_ACTION_TYPES = frozenset(
 EXTERNAL_RECEIPT_ACTION_TYPES = frozenset({"social", "chat", "photo", "video"})
 INTERNAL_SIMULATED_ACTION_TYPES = LIFE_ACTION_TYPES - EXTERNAL_RECEIPT_ACTION_TYPES
 
+_ACTION_LEVELS = {
+    "light": 1,
+    "low": 1,
+    "轻": 1,
+    "轻量": 1,
+    "medium": 3,
+    "moderate": 3,
+    "normal": 3,
+    "中等": 3,
+    "heavy": 5,
+    "high": 5,
+    "重": 5,
+    "高": 5,
+}
+
 
 def _text(value: Any, limit: int = 160) -> str:
     """压缩模型文本字段。
@@ -56,6 +71,16 @@ def _score(value: Any) -> float:
     except (TypeError, ValueError):
         number = 0.0
     return round(max(0.0, min(100.0, number)), 2)
+
+
+def _action_level(value: Any, default: int, minimum: int, maximum: int) -> int:
+    """把动作领域的数字或等级枚举转换成有界整数。"""
+
+    try:
+        number = int(float(value))
+    except (TypeError, ValueError):
+        number = _ACTION_LEVELS.get(str(value or "").strip().lower(), default)
+    return max(minimum, min(maximum, number))
 
 
 @dataclass(slots=True)
@@ -183,6 +208,31 @@ class LifeActionIntent:
         if isinstance(value, LifeActionIntent):
             return value
         raw = value if isinstance(value, dict) else {}
+        action_type = _text(raw.get("action_type"), 32).lower()
+        payload = (
+            dict(raw.get("payload")) if isinstance(raw.get("payload"), dict) else {}
+        )
+        for payload_field in ("ingredients", "items"):
+            values = payload.get(payload_field)
+            if not isinstance(values, list):
+                continue
+            normalized = []
+            for item in values:
+                if isinstance(item, dict):
+                    normalized.append(dict(item))
+                    continue
+                name = _text(item, 120)
+                if name:
+                    normalized.append({"name": name, "quantity": 1})
+            payload[payload_field] = normalized
+        if "cadence_days" in payload:
+            payload["cadence_days"] = _action_level(
+                payload.get("cadence_days"), 0, 0, 3650
+            )
+        if "effort" in payload:
+            payload["effort"] = _action_level(payload.get("effort"), 1, 1, 5)
+        if "intensity" in payload:
+            payload["intensity"] = _action_level(payload.get("intensity"), 2, 1, 5)
         timeline_index = raw.get("timeline_index")
         try:
             timeline_index = int(timeline_index) if timeline_index is not None else None
@@ -204,16 +254,14 @@ class LifeActionIntent:
                 effects.append(effect)
         return LifeActionIntent(
             action_id=_text(raw.get("action_id"), 80),
-            action_type=_text(raw.get("action_type"), 32).lower(),
+            action_type=action_type,
             target=_text(raw.get("target"), 200),
             timeline_index=timeline_index,
             requested_at=_text(raw.get("requested_at"), 32),
             duration_minutes=max(0, min(1440, duration_minutes)),
             preconditions=conditions[:12],
             effects=effects[:12],
-            payload=dict(raw.get("payload"))
-            if isinstance(raw.get("payload"), dict)
-            else {},
+            payload=payload,
             evidence=_text(raw.get("evidence"), 240),
             source=_text(raw.get("source"), 60),
         )

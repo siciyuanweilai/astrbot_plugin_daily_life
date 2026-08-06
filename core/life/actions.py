@@ -4,6 +4,8 @@ import datetime
 import json
 from typing import Any
 
+from astrbot.api import logger
+
 from ..clock import now as life_now
 from ..models import (
     LIFE_ACTION_TYPES,
@@ -222,9 +224,7 @@ class LifeActionMixin:
         }:
             field_name = field.removeprefix("day.")
             if field_name == "current_place":
-                return True, str(
-                    (day.meta or {}).get("current_place") or ""
-                ).strip()
+                return True, str((day.meta or {}).get("current_place") or "").strip()
             return True, getattr(day, field_name, None)
         if field.startswith("weather."):
             field_name = field.removeprefix("weather.")
@@ -275,9 +275,7 @@ class LifeActionMixin:
                 operator=condition.operator,
                 expected=condition.expected,
             ):
-                return (
-                    f"前置条件未满足：{condition.field} {condition.operator}"
-                )
+                return f"前置条件未满足：{condition.field} {condition.operator}"
         return ""
 
     @staticmethod
@@ -317,9 +315,7 @@ class LifeActionMixin:
             previous = getattr(state, effect.field, None)
             base_value = float(previous) if previous is not None else 50.0
             updated = (
-                base_value + effect.value
-                if effect.operation == "add"
-                else effect.value
+                base_value + effect.value if effect.operation == "add" else effect.value
             )
             updated = round(max(0.0, min(100.0, updated)), 2)
             normalized: int | float = int(updated) if updated.is_integer() else updated
@@ -404,9 +400,7 @@ class LifeActionMixin:
             evidence=action.evidence,
         )
         if not reason:
-            self._commit_action_effects(
-                day, action, effects, outcome, committed_at
-            )
+            self._commit_action_effects(day, action, effects, outcome, committed_at)
 
         if action.action_id:
             settlements[action.action_id] = outcome.as_dict()
@@ -801,14 +795,20 @@ class LifeActionMixin:
         if outcome.status == "committed":
             domain_service = getattr(self, "domains", None)
             apply_domain = getattr(domain_service, "apply_action", None)
-            if callable(apply_domain) and not outcome.replayed:
-                await apply_domain(
-                    day,
-                    action,
-                    outcome,
-                    receipt_status=receipt_status,
-                )
-                await self.archive.save_day(day)
+            if callable(apply_domain):
+                try:
+                    await apply_domain(
+                        day,
+                        action,
+                        outcome,
+                        receipt_status=receipt_status,
+                    )
+                    await self.archive.save_day(day)
+                except Exception as exc:
+                    logger.warning(
+                        "[日常生活] 生活动作已结算，但领域记录暂未写入，"
+                        f"后续巡检会自动补写：{action.action_type}；{exc}"
+                    )
             await self.sync_day_world_facts(
                 day,
                 observed_at=outcome.committed_at,

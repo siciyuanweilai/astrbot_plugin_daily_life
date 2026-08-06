@@ -67,6 +67,11 @@ class SpineAdaptMixin:
         try:
             previous.rhythm.stop()
             self._install_runtime_services(candidate)
+            domain_initializer = getattr(
+                getattr(candidate, "domains", None), "initialize", None
+            )
+            if callable(domain_initializer):
+                await domain_initializer()
             restore_research = getattr(
                 getattr(candidate, "search", None), "restore_research_tasks", None
             )
@@ -123,10 +128,10 @@ class SpineAdaptMixin:
         if callable(notifier):
             await notifier("residence_changed")
 
-    async def _refresh_after_residence_change(
-        self, target: datetime.datetime
-    ) -> None:
-        resolver = getattr(getattr(self, "domains", None), "resolve_home_location", None)
+    async def _refresh_after_residence_change(self, target: datetime.datetime) -> None:
+        resolver = getattr(
+            getattr(self, "domains", None), "resolve_home_location", None
+        )
         if callable(resolver):
             await resolver()
         try:

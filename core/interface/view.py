@@ -221,6 +221,7 @@ class PageViewMixin:
         domain_snapshot_getter = getattr(domain_service, "snapshot", None)
         if callable(domain_snapshot_getter):
             domain_snapshot = await domain_snapshot_getter(limit=20)
+            domain_snapshot = await self._page_domain_snapshot(domain_snapshot)
         health = await self.runtime.archive.get_life_health_report(
             self.runtime.config.storage
         )
@@ -241,9 +242,7 @@ class PageViewMixin:
             except Exception:
                 background_tasks = {}
         semantic_segments = {}
-        semantic_status_getter = getattr(
-            self.runtime, "semantic_segment_status", None
-        )
+        semantic_status_getter = getattr(self.runtime, "semantic_segment_status", None)
         if callable(semantic_status_getter):
             semantic_segments = semantic_status_getter()
         return {
@@ -613,6 +612,76 @@ class PageViewMixin:
                 )
             result.append(data)
         return result
+
+    async def _page_domain_snapshot(self, snapshot: dict) -> dict:
+        """为生活实况中的内部会话标识补充用户可读名称。"""
+
+        if not isinstance(snapshot, dict):
+            return {}
+        result = dict(snapshot)
+        labels: dict[str, str] = {}
+        action_items = []
+        for item in snapshot.get("conversation_actions") or []:
+            if not isinstance(item, dict):
+                continue
+            data = dict(item)
+            source_session = str(data.get("source_session") or "").strip()
+            if source_session:
+                if source_session not in labels:
+                    labels[source_session] = await self._page_session_display_name(
+                        source_session
+                    )
+                data["source_session_label"] = labels[source_session]
+            action_items.append(data)
+        result["conversation_actions"] = action_items
+        return result
+
+    async def _page_session_display_name(self, source_session: str) -> str:
+        """把统一会话标识解析为昵称、备注或群名。"""
+
+        scope = str(source_session or "").strip()
+        parts = scope.split(":")
+        message_type = parts[1].casefold() if len(parts) >= 3 else ""
+        target_id = ":".join(parts[2:]).strip() if len(parts) >= 3 else ""
+        compact_scope = scope.casefold()
+        is_group = "group" in message_type or compact_scope.startswith("group:")
+        is_private = (
+            "friend" in message_type
+            or "private" in message_type
+            or compact_scope.startswith("private:")
+        )
+        fallback = "群聊会话" if is_group else "私聊会话" if is_private else "会话"
+        resolver = getattr(self.runtime, "contact_resolver", None)
+        if not resolver:
+            return fallback
+
+        async def resolved(method_name: str, *args, **kwargs) -> str:
+            method = getattr(resolver, method_name, None)
+            if not callable(method):
+                return ""
+            try:
+                value = method(*args, **kwargs)
+                if inspect.isawaitable(value):
+                    value = await value
+            except Exception:
+                return ""
+            text = str(value or "").strip()
+            if text in {scope, target_id}:
+                return ""
+            return text
+
+        if is_group:
+            return (
+                await resolved("resolve_group_name", target_id, target_umo=scope)
+                or fallback
+            )
+        if is_private:
+            return (
+                await resolved("get_relationship_alias", scope)
+                or await resolved("get_onebot_nickname", scope)
+                or fallback
+            )
+        return fallback
 
     @staticmethod
     def _page_action_decisions(

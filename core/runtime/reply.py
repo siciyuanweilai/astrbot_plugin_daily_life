@@ -193,12 +193,57 @@ class SemanticSegmentRuntimeMixin:
     @staticmethod
     def _semantic_segment_clean_punctuation(text: str, cleanup_chars: str = "") -> str:
         source = str(text or "")
-        cleanup_set = set(str(cleanup_chars or ""))
+        cleanup_text = str(cleanup_chars or "")
+        single_cleanup_set: set[str] = set()
+        sequence_cleanup_set: set[str] = set()
+        cleanup_index = 0
+        while cleanup_index < len(cleanup_text):
+            cleanup_end = cleanup_index + 1
+            while (
+                cleanup_end < len(cleanup_text)
+                and cleanup_text[cleanup_end] == cleanup_text[cleanup_index]
+            ):
+                cleanup_end += 1
+            target = (
+                sequence_cleanup_set
+                if cleanup_end - cleanup_index >= 2
+                else single_cleanup_set
+            )
+            target.add(cleanup_text[cleanup_index])
+            cleanup_index = cleanup_end
+        cleanup_set = single_cleanup_set | sequence_cleanup_set
         if not cleanup_set:
             return source.strip()
+        clean_ascii_pause_runs = "." in sequence_cleanup_set
         cleaned: list[str] = []
         pending_space = False
-        for index, char in enumerate(source):
+        index = 0
+        while index < len(source):
+            char = source[index]
+            if char == "." and char in cleanup_set:
+                run_end = index + 1
+                while run_end < len(source) and source[run_end] == char:
+                    run_end += 1
+                if run_end - index >= 2:
+                    if clean_ascii_pause_runs:
+                        following = source[run_end] if run_end < len(source) else ""
+                        pending_space = bool(
+                            cleaned and not cleaned[-1].isspace() and following.strip()
+                        )
+                    else:
+                        if pending_space and cleaned and not cleaned[-1].isspace():
+                            cleaned.append(" ")
+                        cleaned.extend(source[index:run_end])
+                        pending_space = False
+                    index = run_end
+                    continue
+            if char == "." and char not in single_cleanup_set:
+                if pending_space and cleaned and not cleaned[-1].isspace():
+                    cleaned.append(" ")
+                cleaned.append(char)
+                pending_space = False
+                index += 1
+                continue
             if char in cleanup_set:
                 previous = source[index - 1] if index > 0 else ""
                 following = source[index + 1] if index + 1 < len(source) else ""
@@ -213,18 +258,22 @@ class SemanticSegmentRuntimeMixin:
                         cleaned.append(" ")
                     cleaned.append(char)
                     pending_space = False
+                    index += 1
                     continue
                 pending_space = bool(
                     cleaned and not cleaned[-1].isspace() and following.strip()
                 )
+                index += 1
                 continue
             if char.isspace():
                 pending_space = bool(cleaned)
+                index += 1
                 continue
             if pending_space and cleaned and not cleaned[-1].isspace():
                 cleaned.append(" ")
             cleaned.append(char)
             pending_space = False
+            index += 1
         return "".join(cleaned).strip()
 
     def _semantic_segment_clean_plan_punctuation(

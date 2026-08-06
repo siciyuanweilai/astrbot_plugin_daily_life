@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import json
 import math
 from typing import Any
 
@@ -64,6 +65,143 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
         self.map_provider = normalize_map_provider(settings.map_provider)
         self.map_provider_label = map_provider_label(self.map_provider)
         self._map = create_map_client(settings)
+
+    async def initialize(self) -> None:
+        """补齐旧版本中已提交但未派生成功的生活领域记录。"""
+
+        if not self.settings.enabled:
+            return
+        repaired_actions = await self._repair_committed_action_records()
+        repaired_items = await self._repair_conversation_action_items()
+        if repaired_actions or repaired_items:
+            logger.debug(
+                "[日常生活] 生活实况记录已自愈："
+                f"动作={repaired_actions}；行动项={repaired_items}"
+            )
+
+    async def _repair_committed_action_records(self) -> int:
+        getter = getattr(self.archive, "get_life_action_outcomes", None)
+        day_getter = getattr(self.archive, "get_day", None)
+        checker = getattr(self.archive, "has_domain_action_record", None)
+        if not all(callable(item) for item in (getter, day_getter, checker)):
+            return 0
+        repaired = 0
+        outcomes = await getter(status="committed", limit=500)
+        for stored in outcomes:
+            if stored.action_type not in {
+                "meal",
+                "cook",
+                "order_food",
+                "purchase",
+                "chore",
+                "exercise",
+            } or await checker(stored.action_type, stored.action_id):
+                continue
+            day = await day_getter(stored.date)
+            if day is None:
+                continue
+            raw = (day.meta or {}).get("planned_life_actions")
+            if isinstance(raw, list):
+                values = raw
+            else:
+                try:
+                    values = json.loads(str(raw)) if raw else []
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    values = []
+            action = next(
+                (
+                    LifeActionIntent.from_value(item)
+                    for item in values
+                    if isinstance(item, dict)
+                    and str(item.get("action_id") or "").strip() == stored.action_id
+                ),
+                None,
+            )
+            if action is None:
+                continue
+            stored_evidence = (
+                stored.evidence if isinstance(stored.evidence, list) else []
+            )
+            evidence = next(
+                (str(item).strip() for item in stored_evidence if str(item).strip()),
+                action.evidence,
+            )
+            receipt_status = "simulated"
+            receipt_getter = getattr(self.archive, "get_life_action_receipts", None)
+            if callable(receipt_getter):
+                receipts = await receipt_getter(action_id=stored.action_id, limit=1)
+                if receipts:
+                    receipt_status = receipts[0].status
+            try:
+                await self.apply_action(
+                    day,
+                    action,
+                    LifeActionOutcome(
+                        action_id=stored.action_id,
+                        action_type=stored.action_type,
+                        status="committed",
+                        committed_at=stored.committed_at,
+                        evidence=evidence,
+                        replayed=True,
+                    ),
+                    receipt_status=receipt_status,
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"[日常生活] 生活实况动作补写失败：{stored.action_type}；{exc}"
+                )
+                continue
+            if await checker(stored.action_type, stored.action_id):
+                repaired += 1
+        return repaired
+
+    async def _repair_conversation_action_items(self) -> int:
+        if not self.settings.conversation_actions_enabled:
+            return 0
+        commitment_getter = getattr(self.archive, "get_commitments", None)
+        item_getter = getattr(self.archive, "get_conversation_action_items", None)
+        saver = getattr(self.archive, "save_conversation_action_item", None)
+        if not all(callable(item) for item in (commitment_getter, item_getter, saver)):
+            return 0
+        existing_ids = {
+            int(item.get("commitment_id") or 0) for item in await item_getter(limit=0)
+        }
+        repaired = 0
+        status_map = {
+            "active": "open",
+            "scheduled": "pending",
+            "pending": "pending",
+            "done": "done",
+            "cancelled": "cancelled",
+            "expired": "expired",
+        }
+        for commitment in await commitment_getter(status="", limit=0):
+            if commitment.id in existing_ids:
+                continue
+            due_at = (
+                " ".join(
+                    part
+                    for part in (commitment.trigger_date, commitment.trigger_time)
+                    if part
+                )
+                or commitment.time_window
+            )
+            await saver(
+                {
+                    "commitment_id": commitment.id,
+                    "title": commitment.content,
+                    "owner": "未定",
+                    "due_at": due_at,
+                    "status": status_map.get(commitment.status, "open"),
+                    "source_session": commitment.source_session,
+                    "source_message": commitment.source_message,
+                    "evidence": [commitment.source_message]
+                    if commitment.source_message
+                    else [],
+                }
+            )
+            repaired += 1
+        return repaired
 
     async def resolve_home_location(self) -> dict[str, Any] | None:
         """使用居住地解析唯一的居住城市和“家”坐标。"""
@@ -343,6 +481,9 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
 
         if not self.settings.enabled or outcome.status != "committed":
             return
+        checker = getattr(self.archive, "has_domain_action_record", None)
+        if callable(checker) and await checker(action.action_type, action.action_id):
+            return
         occurred_at = outcome.committed_at
         evidence = [outcome.evidence] if outcome.evidence else []
         source = (
@@ -455,11 +596,17 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
             except (TypeError, ValueError):
                 continue
             if name and quantity:
+                try:
+                    minimum_quantity = max(
+                        0.0, float(item.get("minimum_quantity") or 0)
+                    )
+                except (TypeError, ValueError):
+                    minimum_quantity = 0.0
                 await adjust(
                     name,
                     quantity,
                     unit=str(item.get("unit") or ""),
-                    minimum_quantity=float(item.get("minimum_quantity") or 0),
+                    minimum_quantity=minimum_quantity,
                     expires_at=str(item.get("expires_at") or ""),
                     reason="采购入库",
                     action_id=action.action_id,
@@ -479,7 +626,14 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
             return
         chore_id = str(action.payload.get("chore_id") or action.action_id)
         name = action.target or str(action.payload.get("name") or "家务")
-        cadence_days = max(0, int(action.payload.get("cadence_days") or 0))
+        try:
+            cadence_days = max(0, int(float(action.payload.get("cadence_days") or 0)))
+        except (TypeError, ValueError):
+            cadence_days = 0
+        try:
+            effort = max(1, min(5, int(float(action.payload.get("effort") or 1))))
+        except (TypeError, ValueError):
+            effort = 1
         try:
             finished = datetime.datetime.strptime(occurred_at, "%Y-%m-%d %H:%M:%S")
         except (TypeError, ValueError):
@@ -498,7 +652,7 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
                     "id": chore_id,
                     "name": name,
                     "cadence_days": cadence_days,
-                    "effort": int(action.payload.get("effort") or 1),
+                    "effort": effort,
                     "last_completed_at": occurred_at,
                     "next_due_at": next_due_at,
                     "enabled": True,
@@ -531,7 +685,10 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
     ) -> None:
         if not self.settings.fitness_enabled:
             return
-        intensity = max(1, min(5, int(action.payload.get("intensity") or 2)))
+        try:
+            intensity = max(1, min(5, int(float(action.payload.get("intensity") or 2))))
+        except (TypeError, ValueError):
+            intensity = 2
         duration = max(0, action.duration_minutes)
         saver = getattr(self.archive, "save_fitness_record", None)
         if callable(saver):

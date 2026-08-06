@@ -1112,7 +1112,7 @@ function renderDomainActions(domains = {}) {
     [
       `负责人：${enumLabelOrReadableText(item.owner, ACTION_OWNER_LABELS, "未定")}`,
       item.due_at ? `截止：${clean(item.due_at)}` : "",
-      item.source_session ? `来源会话：${clean(item.source_session)}` : "",
+      item.source_session_label ? `来源会话：${clean(item.source_session_label)}` : "",
     ]
   ));
 }

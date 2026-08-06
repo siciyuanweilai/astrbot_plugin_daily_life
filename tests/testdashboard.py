@@ -682,12 +682,8 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved_episode.correction, "修正后的测试片段")
         self.assertFalse(saved_episode.protected)
         self.assertEqual(focused["data"]["focus"]["target_id"], "test-focus")
-        self.assertEqual(
-            bounded["data"]["boundary"]["target_scope"], "test:target"
-        )
-        self.assertEqual(
-            feedback["data"]["feedback"]["target_id"], "test-action"
-        )
+        self.assertEqual(bounded["data"]["boundary"]["target_scope"], "test:target")
+        self.assertEqual(feedback["data"]["feedback"]["target_id"], "test-action")
 
     def test_page_error_messages_hide_internal_english_exceptions(self):
         self.assertEqual(
@@ -1404,6 +1400,53 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
         health_labels = [item["label"] for item in health_checks]
         self.assertEqual(len(health_labels), len(set(health_labels)))
 
+    async def test_page_domain_actions_use_contact_and_group_display_names(self):
+        class Resolver:
+            @staticmethod
+            def get_relationship_alias(target):
+                return "测试备注" if target.endswith(":10001") else ""
+
+            @staticmethod
+            async def get_onebot_nickname(_target):
+                return "测试昵称"
+
+            @staticmethod
+            async def resolve_group_name(_group_id, *, target_umo=""):
+                return "测试群聊" if target_umo else ""
+
+        self.plugin.runtime.contact_resolver = Resolver()
+        snapshot = await self.plugin._page_domain_snapshot(
+            {
+                "conversation_actions": [
+                    {
+                        "title": "确认测试安排",
+                        "source_session": "test-adapter:FriendMessage:10001",
+                    },
+                    {
+                        "title": "确认昵称解析",
+                        "source_session": "test-adapter:FriendMessage:10002",
+                    },
+                    {
+                        "title": "查看群聊安排",
+                        "source_session": "test-adapter:GroupMessage:20001",
+                    },
+                    {
+                        "title": "检查未知来源",
+                        "source_session": "custom-session",
+                    },
+                ]
+            }
+        )
+
+        actions = snapshot["conversation_actions"]
+        self.assertEqual(actions[0]["source_session_label"], "测试备注")
+        self.assertEqual(actions[1]["source_session_label"], "测试昵称")
+        self.assertEqual(actions[2]["source_session_label"], "测试群聊")
+        self.assertEqual(actions[3]["source_session_label"], "会话")
+        self.assertEqual(
+            actions[0]["source_session"], "test-adapter:FriendMessage:10001"
+        )
+
     async def test_page_status_embeds_compact_today_decision_sources(self):
         long_reason = (
             "全天宅家，阴天闷热，睡裙穿得正舒服，没必要换。当前：10:30 把吃完的碗碟冲洗了，"
@@ -1886,6 +1929,16 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
 
 
 class DailyLifeDashboardStaticTest(unittest.TestCase):
+    def test_domain_actions_only_render_resolved_session_names(self):
+        from pathlib import Path
+
+        app = (
+            Path(__file__).resolve().parents[1] / "pages" / "dashboard" / "app.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("item.source_session_label", app)
+        self.assertNotIn("clean(item.source_session)", app)
+
     def test_page_evidence_hides_internal_references(self):
         self.assertEqual(
             PagePlugin._page_readable_evidence("251880291"),
@@ -3023,6 +3076,7 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
 
         expected_groups = [
             "基础节奏",
+            "连续话轮",
             "语义与发送",
             "标点处理",
             "随心回复",
