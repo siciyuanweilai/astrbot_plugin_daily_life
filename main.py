@@ -20,6 +20,7 @@ except (AttributeError, ImportError):  # AstrBot 精简运行时可能没有完�
 from .core.interface import DailyLifeCommandCenter, DailyLifeDashboardMixin
 from .core.runtime import PLUGIN_ID, DailyLifeRuntime
 from .core.runtime.markers import LOG_PREFIX
+from .core.runtime.send_message_tool import install_expressive_send_message_tool
 
 EXTERNAL_LEASE_SHUTDOWN_TIMEOUT_SECONDS = 10.0
 MAP_LLM_TOOL_NAMES = (
@@ -79,6 +80,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             "note_runtime_scope_activity",
             "note_continuous_turn_incoming",
             "settle_continuous_turn",
+            "continuous_turn_intentional_wait_seconds",
             "prepare_continuous_turn_llm_request",
             "stop_stale_continuous_turn_event",
             "complete_continuous_turn",
@@ -1438,6 +1440,9 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         prepare_turn = self._runtime_hook("prepare_continuous_turn_llm_request")
         if prepare_turn and not prepare_turn(event, req):
             return
+        gif_bridge = self._runtime_hook("bridge_animated_visual_for_llm_request")
+        if gif_bridge:
+            await gif_bridge(event, req)
         self.runtime.search.prepare_tools(
             req,
             WEB_SEARCH_TOOL_NAMES,
@@ -1446,6 +1451,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         toolset = getattr(req, "func_tool", None)
         life_config = getattr(self.runtime, "config", None)
         if toolset is not None and life_config is not None:
+            install_expressive_send_message_tool(toolset, self.runtime)
             image_enabled = bool(
                 getattr(
                     getattr(life_config, "image_generation", None), "enabled", False
@@ -1582,6 +1588,30 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
                 logger.debug(
                     f"{LOG_PREFIX} 消息阶段耗时：阶段={stage_label}；耗时={elapsed:.2f} 秒"
                 )
+
+    def _log_message_entry_timing(
+        self, event: AstrMessageEvent, started_at: float
+    ) -> None:
+        total_elapsed = max(0.0, time.monotonic() - started_at)
+        intentional_wait = self._runtime_hook_call(
+            "continuous_turn_intentional_wait_seconds", event
+        )
+        try:
+            intentional_wait = max(0.0, float(intentional_wait or 0.0))
+        except (TypeError, ValueError):
+            intentional_wait = 0.0
+        active_elapsed = max(0.0, total_elapsed - intentional_wait)
+        if intentional_wait > 0:
+            message = (
+                f"{LOG_PREFIX} 消息入口处理耗时：有效耗时={active_elapsed:.2f} 秒；"
+                f"总耗时={total_elapsed:.2f} 秒；连续消息等待={intentional_wait:.2f} 秒"
+            )
+        else:
+            message = f"{LOG_PREFIX} 消息入口处理耗时：{total_elapsed:.2f} 秒"
+        if active_elapsed >= self._SLOW_STAGE_SECONDS:
+            logger.warning(message)
+        elif total_elapsed >= 0.1:
+            logger.debug(message)
 
     async def _capture_chat_memory(self, event: AstrMessageEvent) -> None:
         hook = self._runtime_hook("capture_chat_memory_message")
@@ -1759,11 +1789,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         self._runtime_hook_call("mark_alias_directed_event_as_wake", event)
         self.runtime.note_proactive_activity(event)
         await self.runtime.apply_response_gate_for_event(event)
-        elapsed = time.monotonic() - started_at
-        if elapsed >= self._SLOW_STAGE_SECONDS:
-            logger.warning(f"{LOG_PREFIX} 消息入口处理耗时：{elapsed:.2f} 秒")
-        elif elapsed >= 0.1:
-            logger.debug(f"{LOG_PREFIX} 消息入口处理耗时：{elapsed:.2f} 秒")
+        self._log_message_entry_timing(event, started_at)
 
     @filter.event_message_type(
         getattr(

@@ -96,6 +96,30 @@ class SpineInviteMixin:
         )
 
     @staticmethod
+    def _commitment_reconcile_marker_value(outcome: str, signature: str) -> str:
+        """生成带处理结果的承诺协调标记。"""
+
+        return f"v2:{outcome}:{signature}"
+
+    @classmethod
+    def _store_commitment_reconcile_marker(
+        cls,
+        data: DayRecord,
+        markers: dict[str, str],
+        marker_key: str,
+        signature: str,
+        outcome: str,
+    ) -> None:
+        markers[marker_key] = cls._commitment_reconcile_marker_value(
+            outcome, signature
+        )
+        while len(markers) > 48:
+            markers.pop(next(iter(markers)))
+        data.meta["commitment_reconcile_markers"] = json.dumps(
+            markers, ensure_ascii=False, separators=(",", ":")
+        )
+
+    @staticmethod
     def _outfit_instruction_is_due(
         date_str: str,
         effective_time: str,
@@ -146,7 +170,11 @@ class SpineInviteMixin:
             signature = self._commitment_reconcile_signature(data, item)
             markers = self._commitment_reconcile_markers(data)
             marker_key = str(item.id or f"content:{item.content[:80]}")
-            if markers.get(marker_key) == signature:
+            handled_markers = {
+                self._commitment_reconcile_marker_value("applied", signature),
+                self._commitment_reconcile_marker_value("skipped", signature),
+            }
+            if markers.get(marker_key) in handled_markers:
                 return False
             (
                 new_timeline,
@@ -158,20 +186,24 @@ class SpineInviteMixin:
                 now,
                 owner_hint=owner_hint,
                 current_state=data.state,
+                current_places=data.places,
             )
             if not isinstance(decision, dict) or not decision:
                 return False
-            markers[marker_key] = signature
-            while len(markers) > 48:
-                markers.pop(next(iter(markers)))
-            data.meta["commitment_reconcile_markers"] = json.dumps(
-                markers, ensure_ascii=False, separators=(",", ":")
-            )
             if not new_timeline:
+                if decision.get("_retryable") is True:
+                    return False
+                self._store_commitment_reconcile_marker(
+                    data, markers, marker_key, signature, "skipped"
+                )
                 await self.archive.save_day(data)
                 return False
 
             data.timeline = new_timeline
+            applied_signature = self._commitment_reconcile_signature(data, item)
+            self._store_commitment_reconcile_marker(
+                data, markers, marker_key, applied_signature, "applied"
+            )
             audited_places = decision.get("_audited_places")
             if isinstance(audited_places, list):
                 data.places = [
@@ -468,6 +500,7 @@ class SpineInviteMixin:
                 now,
                 sender_name,
                 current_state=data.state,
+                current_places=data.places,
             )
             await self.composer.learn_preferences_from_payload(
                 decision,

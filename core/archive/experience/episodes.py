@@ -2,6 +2,7 @@ import sqlite3
 from typing import Any
 
 from ...models import LifeEpisodeRecord
+from ...models.coerce import compact_explanation_text
 
 
 class EpisodeArchiveMixin:
@@ -19,7 +20,7 @@ class EpisodeArchiveMixin:
             related_places=self._get_ordered_texts_unlocked(
                 "life_episode_places", "episode_id", row["id"], "place"
             ),
-            impact=self._text(row["impact"]),
+            impact=compact_explanation_text(row["impact"]),
             confidence=float(row["confidence"] or 0.0),
             status=row["status"],
             protected=bool(row["protected"]),

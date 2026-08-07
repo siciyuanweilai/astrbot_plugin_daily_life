@@ -15,6 +15,7 @@ from core.models import ActionDecisionRecord, EmojiAssetRecord, MessageVisibilit
 from core.runtime.generation import DailyGenerationMixin
 from support import (
     BehaviorFeedbackRecord,
+    ChatSummaryRecord,
     DailyLifeDashboardMixin,
     DataManager,
     DayRecord,
@@ -1447,6 +1448,92 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
             actions[0]["source_session"], "test-adapter:FriendMessage:10001"
         )
 
+    async def test_page_domain_snapshot_only_exposes_current_day_activity(self):
+        snapshot = await self.plugin._page_domain_snapshot(
+            {
+                "activity_sessions": [
+                    {"date": "2026-06-10", "title": "昨天的活动"},
+                    {"date": "2026-06-11", "title": "今天的活动"},
+                ],
+                "pantry": [{"name": "测试库存"}],
+                "recipes": [{"name": "测试食谱"}],
+                "meals": [
+                    {"date": "2026-06-10", "name": "昨天的餐食"},
+                    {"date": "2026-06-11", "name": "今天的餐食"},
+                ],
+                "chores": [{"name": "测试家务轮换", "enabled": True}],
+                "chore_records": [
+                    {
+                        "occurred_at": "2026-06-10 09:00:00",
+                        "name": "昨天执行的家务",
+                    },
+                    {
+                        "occurred_at": "2026-06-11 09:00:00",
+                        "name": "今天执行的家务",
+                    },
+                ],
+                "fitness": [
+                    {"date": "2026-06-10", "activity": "昨天的运动"},
+                    {"date": "2026-06-11", "activity": "今天的运动"},
+                ],
+                "conversation_actions": [
+                    {
+                        "title": "仍待完成的行动项",
+                        "status": "open",
+                        "created_at": "2026-06-10 08:00:00",
+                    },
+                    {
+                        "title": "昨天已完成的行动项",
+                        "status": "completed",
+                        "updated_at": "2026-06-10 18:00:00",
+                    },
+                    {
+                        "title": "今天已完成的行动项",
+                        "status": "completed",
+                        "updated_at": "2026-06-11 18:00:00",
+                    },
+                ],
+                "timeline": [
+                    {
+                        "title": "昨天的总览记录",
+                        "occurred_at": "2026-06-10 12:00:00",
+                    },
+                    {
+                        "title": "今天的总览记录",
+                        "occurred_at": "2026-06-11 12:00:00",
+                    },
+                ],
+            },
+            "2026-06-11",
+        )
+
+        self.assertEqual(
+            [item["title"] for item in snapshot["activity_sessions"]],
+            ["今天的活动"],
+        )
+        self.assertEqual(
+            [item["name"] for item in snapshot["meals"]], ["今天的餐食"]
+        )
+        self.assertEqual(
+            [item["name"] for item in snapshot["chore_records"]],
+            ["今天执行的家务"],
+        )
+        self.assertEqual(
+            [item["activity"] for item in snapshot["fitness"]],
+            ["今天的运动"],
+        )
+        self.assertEqual(
+            [item["title"] for item in snapshot["timeline"]],
+            ["今天的总览记录"],
+        )
+        self.assertEqual(
+            [item["title"] for item in snapshot["conversation_actions"]],
+            ["仍待完成的行动项", "今天已完成的行动项"],
+        )
+        self.assertEqual(snapshot["pantry"][0]["name"], "测试库存")
+        self.assertEqual(snapshot["recipes"][0]["name"], "测试食谱")
+        self.assertEqual(snapshot["chores"][0]["name"], "测试家务轮换")
+
     async def test_page_status_embeds_compact_today_decision_sources(self):
         long_reason = (
             "全天宅家，阴天闷热，睡裙穿得正舒服，没必要换。当前：10:30 把吃完的碗碟冲洗了，"
@@ -1659,6 +1746,7 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
                 sender_profile_id="u1",
                 sender_name="小林",
                 group_id="100",
+                date="2026-06-11",
                 visibility="seen_but_ignored",
                 reason="扫到了但当时不想接普通闲聊",
             )
@@ -1669,8 +1757,9 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
                 sender_profile_id="u1",
                 sender_name="小林",
                 group_id="100",
+                date="2026-06-11",
                 action="observe",
-                reason="先观察，不急着接话",
+                reason="深夜02:40高度困倦，先观察，不急着接话",
             )
         )
         await self.plugin.runtime.archive.save_action_decision(
@@ -1679,8 +1768,9 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
                 sender_profile_id="u1",
                 sender_name="小林",
                 group_id="100",
+                date="2026-06-11",
                 action="reply",
-                reason="后续有自然接话点",
+                reason="约好16:40碰头，后续有自然接话点",
             )
         )
         await self.plugin.runtime.archive.save_action_decision(
@@ -1689,6 +1779,7 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
                 sender_profile_id="u1",
                 sender_name="小林",
                 group_id="100",
+                date="2026-06-11",
                 action="observe",
                 reason="",
                 scene_type="普通闲聊",
@@ -1704,10 +1795,12 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(len(status["world"]["action_decisions"]), 2)
         self.assertEqual(
-            status["world"]["action_decisions"][0]["reason"], "后续有自然接话点"
+            status["world"]["action_decisions"][0]["reason"],
+            "约好碰头，后续有自然接话点",
         )
         self.assertEqual(
-            status["world"]["action_decisions"][1]["reason"], "先观察，不急着接话"
+            status["world"]["action_decisions"][1]["reason"],
+            "深夜高度困倦，先观察，不急着接话",
         )
         self.assertEqual(status["world"]["action_decisions"][0]["sender_name"], "小林")
         self.assertNotIn("decision_category", status["world"]["action_decisions"][0])
@@ -1719,6 +1812,7 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
                 session_id="aiocqhttp:GroupMessage:100",
                 group_id="100",
                 group_name="测试群",
+                date="2026-06-11",
                 atmosphere="平稳",
                 topic="旧话题",
                 summary="第一轮群聊氛围",
@@ -1729,6 +1823,7 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
                 session_id="aiocqhttp:GroupMessage:100",
                 group_id="100",
                 group_name="测试群",
+                date="2026-06-11",
                 atmosphere="活跃",
                 topic="新话题",
                 summary="第二轮群聊氛围",
@@ -1741,6 +1836,101 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(len(environments), 2)
         self.assertEqual(environments[0]["topic"], "新话题")
         self.assertEqual(environments[1]["topic"], "旧话题")
+
+    async def test_page_status_only_exposes_current_day_process_records(self):
+        await self.plugin.runtime.archive.save_chat_summary(
+            ChatSummaryRecord(
+                session_id="test-adapter:FriendMessage:10001",
+                date="2026-06-10",
+                brief="昨天的会话",
+                long_summary="昨天留下的会话摘要",
+            )
+        )
+        await self.plugin.runtime.archive.save_chat_summary(
+            ChatSummaryRecord(
+                session_id="test-adapter:FriendMessage:10001",
+                date="2026-06-11",
+                brief="今天的会话",
+                long_summary="今天形成的会话摘要",
+            )
+        )
+        await self.plugin.runtime.archive.add_events(
+            "2026-06-11",
+            [
+                EventRecord(
+                    date="2026-06-11",
+                    summary="今天完成测试安排",
+                    place="测试地点",
+                )
+            ],
+        )
+        await self.plugin.runtime.archive.save_message_visibility(
+            MessageVisibilityRecord(
+                session_id="test-adapter:FriendMessage:10001",
+                sender_profile_id="u1",
+                date="2026-06-10",
+                visibility="seen",
+                reason="昨天的消息留意记录",
+            )
+        )
+        await self.plugin.runtime.archive.save_action_decision(
+            ActionDecisionRecord(
+                session_id="test-adapter:FriendMessage:10001",
+                sender_profile_id="u1",
+                date="2026-06-10",
+                action="observe",
+                reason="昨天的裁定记录",
+            )
+        )
+        await self.plugin.runtime.archive.save_life_episode(
+            LifeEpisodeRecord(
+                date="2026-06-10",
+                title="昨天的生活经历",
+                summary="不应继续显示在今天的体验层。",
+            )
+        )
+
+        status = await self.plugin._build_page_status()
+
+        self.assertEqual(
+            [item["brief"] for item in status["world"]["summaries"]],
+            ["今天的会话"],
+        )
+        self.assertEqual(
+            [item["summary"] for item in status["world"]["events"]],
+            ["今天完成测试安排"],
+        )
+        self.assertFalse(status["world"]["message_visibility"])
+        self.assertFalse(status["world"]["action_decisions"])
+        self.assertNotIn(
+            "昨天的生活经历",
+            [item["title"] for item in status["experience"]["episodes"]],
+        )
+        self.assertTrue(status["world"]["relationships"])
+        self.assertTrue(status["world"]["places"])
+        self.assertTrue(status["experience"]["long_term_memories"])
+
+    def test_page_date_filter_prefers_explicit_business_date(self):
+        records = [
+            {
+                "date": "2026-06-10",
+                "created_at": "2026-06-11 08:00:00",
+                "summary": "昨天的业务记录",
+            },
+            {
+                "date": "2026-06-11",
+                "created_at": "2026-06-10 23:59:59",
+                "summary": "今天的业务记录",
+            },
+        ]
+
+        filtered = self.plugin._page_records_for_date(
+            records, "2026-06-11", "date", "created_at"
+        )
+
+        self.assertEqual(
+            [item["summary"] for item in filtered], ["今天的业务记录"]
+        )
 
     async def test_timeline_save_replaces_day_timeline(self):
         self.plugin.body = {
@@ -2804,6 +2994,23 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertIn('[data-template-field="api_url"]', style)
         self.assertIn('[data-template-field="resolution"]', style)
         self.assertNotIn("min-width: 1420px", style)
+
+    def test_dashboard_mobile_sliders_do_not_capture_vertical_scroll(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1] / "pages" / "dashboard"
+        config = (root / "ui" / "settings.js").read_text(encoding="utf-8")
+        style = self._dashboard_style(root)
+
+        self.assertIn('event.pointerType === "mouse"', config)
+        self.assertIn(
+            'touchGesture.intent = deltaX > deltaY * 1.25 ? "adjust" : "scroll";',
+            config,
+        )
+        self.assertIn('slider.addEventListener("pointercancel"', config)
+        self.assertIn('if (touchGesture?.intent === "scroll")', config)
+        self.assertIn("@media (pointer: coarse)", style)
+        self.assertIn("touch-action: pan-y;", style)
 
     def test_dashboard_settings_use_explicit_section_order(self):
         from pathlib import Path

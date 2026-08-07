@@ -191,6 +191,124 @@ class SemanticSegmentRuntimeMixin:
         return "".join(line.strip() for line in lines if line.strip())
 
     @staticmethod
+    def _semantic_segment_source_lines(text: str) -> tuple[str, ...]:
+        return tuple(
+            line.strip() for line in str(text or "").strip().splitlines() if line.strip()
+        )
+
+    @staticmethod
+    def _semantic_segment_replace_parts(
+        plan: SemanticSegmentPlan,
+        segments: tuple[SegmentPart, ...],
+    ) -> SemanticSegmentPlan:
+        return SemanticSegmentPlan(
+            segments,
+            source=plan.source,
+            valid=plan.valid,
+            channel=plan.channel,
+            emotion=plan.emotion,
+            emotion_category=plan.emotion_category,
+            emoji_intent=plan.emoji_intent,
+            send_emoji=plan.send_emoji,
+            stance=plan.stance,
+            confidence=plan.confidence,
+            reason=plan.reason,
+        )
+
+    @classmethod
+    def _semantic_segment_respect_source_lines(
+        cls,
+        plan: SemanticSegmentPlan,
+        raw_text: str,
+        source_text: str,
+        *,
+        length_hint: int,
+        max_segments: int,
+    ) -> SemanticSegmentPlan:
+        lines = cls._semantic_segment_source_lines(raw_text)
+        if (
+            len(lines) <= 1
+            or len(lines) > max_segments
+            or "".join(lines) != source_text
+        ):
+            return plan
+
+        segment_spans: list[tuple[int, int, SegmentPart]] = []
+        cursor = 0
+        for segment in plan.segments:
+            end = cursor + len(segment.text)
+            segment_spans.append((cursor, end, segment))
+            cursor = end
+
+        short_line_limit = max(12, min(60, int(length_hint or 0)))
+        aligned: list[tuple[int, SegmentPart]] = []
+        line_start = 0
+        for line_index, line in enumerate(lines):
+            line_end = line_start + len(line)
+            line_parts: list[SegmentPart] = []
+            for segment_start, segment_end, segment in segment_spans:
+                overlap_start = max(line_start, segment_start)
+                overlap_end = min(line_end, segment_end)
+                if overlap_start >= overlap_end:
+                    continue
+                line_parts.append(
+                    SegmentPart(
+                        source_text[overlap_start:overlap_end],
+                        relation=segment.relation,
+                        pause=segment.pause,
+                    )
+                )
+            if not line_parts:
+                return plan
+            if len("".join(line.split())) <= short_line_limit:
+                line_parts = [
+                    SegmentPart(
+                        "".join(part.text for part in line_parts),
+                        relation=line_parts[0].relation,
+                        pause=line_parts[-1].pause,
+                    )
+                ]
+            if line_index < len(lines) - 1 and line_parts[-1].pause == "none":
+                last = line_parts[-1]
+                line_parts[-1] = SegmentPart(
+                    last.text,
+                    relation=last.relation,
+                    pause="short",
+                )
+            aligned.extend((line_index, part) for part in line_parts)
+            line_start = line_end
+
+        while len(aligned) > max_segments:
+            candidates = [
+                (
+                    len(aligned[index][1].text) + len(aligned[index + 1][1].text),
+                    index,
+                )
+                for index in range(len(aligned) - 1)
+                if aligned[index][0] == aligned[index + 1][0]
+            ]
+            if not candidates:
+                return plan
+            _, merge_index = min(candidates)
+            line_index, first = aligned[merge_index]
+            _, second = aligned[merge_index + 1]
+            aligned[merge_index : merge_index + 2] = [
+                (
+                    line_index,
+                    SegmentPart(
+                        first.text + second.text,
+                        relation=first.relation,
+                        pause=second.pause,
+                    ),
+                )
+            ]
+
+        segments = tuple(part for _, part in aligned)
+        if "".join(segment.text for segment in segments) != source_text:
+            return plan
+        return cls._semantic_segment_replace_parts(plan, segments)
+
+    @staticmethod
     def _semantic_segment_clean_punctuation(text: str, cleanup_chars: str = "") -> str:
         source = str(text or "")
         cleanup_text = str(cleanup_chars or "")
@@ -417,6 +535,7 @@ class SemanticSegmentRuntimeMixin:
         settings = getattr(self.config, "chat_style", None)
         provider_id = str(getattr(settings, "semantic_provider", "") or "").strip()
         max_segments = max(1, int(getattr(settings, "semantic_max_segments", 10) or 10))
+        source_lines = self._semantic_segment_source_lines(raw_text)
         try:
             provider = await self.get_text_provider(provider_id)
             if not provider:
@@ -437,6 +556,13 @@ class SemanticSegmentRuntimeMixin:
                 )
                 + "channel、情绪、表情和姿态必须根据整轮语义判断；列表、代码、链接、参数和需要回看的信息应选择文字。没有明显必要时不选择语音或表情。\n"
                 + f"当前对方消息：{user_message}\n"
+                + (
+                    "原文中的非空换行是已经确定的表达边界，分段不能跨行；"
+                    "短行保持完整，较长行仍可在行内继续划分，返回的 text 不包含换行字符。\n"
+                    f"原文行布局：{json.dumps(source_lines, ensure_ascii=False)}\n"
+                    if len(source_lines) > 1
+                    else ""
+                )
                 + f"回复原文：{source_text}"
             )
             timeout = max(
@@ -470,6 +596,13 @@ class SemanticSegmentRuntimeMixin:
                 else None
             )
             if plan:
+                plan = self._semantic_segment_respect_source_lines(
+                    plan,
+                    raw_text,
+                    source_text,
+                    length_hint=length_hint,
+                    max_segments=max_segments,
+                )
                 self._semantic_segment_metrics["segmented"] = (
                     self._semantic_segment_metrics.get("segmented", 0) + 1
                 )
@@ -870,7 +1003,7 @@ class SemanticSegmentRuntimeMixin:
                     int(limit_getter(scope) or 0) if callable(limit_getter) else 0
                 )
         plan = await self._semantic_segment_plan_text(
-            source_text,
+            raw_text,
             scope=scope,
             user_message=str(user_message or "").strip(),
             source=source,
@@ -896,7 +1029,7 @@ class SemanticSegmentRuntimeMixin:
         settings = getattr(self.config, "chat_style", None)
         max_segments = max(1, int(getattr(settings, "semantic_max_segments", 10) or 10))
         natural_segments = (
-            splitter(source_text, int(length_hint or 0), max_segments_cap=max_segments)
+            splitter(raw_text, int(length_hint or 0), max_segments_cap=max_segments)
             if callable(splitter)
             else []
         )

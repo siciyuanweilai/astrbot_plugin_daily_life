@@ -68,6 +68,56 @@ def compact_text(value: Any, limit: int = 240) -> str:
     return text[:limit]
 
 
+def _clock_reference_end(text: str, index: int) -> int:
+    if index + 4 >= len(text) or not text[index].isdigit():
+        return -1
+    if index > 0 and text[index - 1].isdigit():
+        return -1
+    colon = index + 2
+    if not text[index + 1].isdigit() or text[colon] != ":":
+        return -1
+    hour_text = text[index:colon]
+    minute_end = colon + 3
+    if minute_end > len(text):
+        return -1
+    minute_text = text[colon + 1 : minute_end]
+    if not minute_text.isdigit():
+        return -1
+    if minute_end < len(text) and text[minute_end].isdigit():
+        return -1
+    hour = int(hour_text)
+    minute = int(minute_text)
+    return minute_end if 0 <= hour <= 23 and 0 <= minute <= 59 else -1
+
+
+def strip_exact_clock_references(value: Any) -> str:
+    """移除说明文本中重复复述的 ``HH:MM`` 钟点，保留其他语义。"""
+
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    result: list[str] = []
+    index = 0
+    while index < len(text):
+        end = _clock_reference_end(text, index)
+        if end < 0:
+            result.append(text[index])
+            index += 1
+            continue
+        while result and result[-1].isspace():
+            result.pop()
+        index = end
+        while index < len(text) and text[index].isspace():
+            index += 1
+    return "".join(result).strip()
+
+
+def compact_explanation_text(value: Any, limit: int = 240) -> str:
+    """压缩面向展示的说明文字，并移除冗余的具体钟点。"""
+
+    return strip_exact_clock_references(compact_text(value, limit * 2))[:limit]
+
+
 def compact_texts(value: Any, limit: int = 12, item_limit: int = 80) -> list[str]:
     if isinstance(value, str):
         value = [value]

@@ -30,6 +30,7 @@ class ContinuousTurnMixin:
     _CONTINUOUS_TURN_MESSAGES_ATTR = "_daily_life_continuous_turn_messages"
     _CONTINUOUS_TURN_DEADLINE_ATTR = "_daily_life_continuous_turn_deadline"
     _CONTINUOUS_TURN_STOPPED_ATTR = "_daily_life_continuous_turn_stopped"
+    _CONTINUOUS_TURN_WAIT_ATTR = "_daily_life_continuous_turn_wait_seconds"
     _CONTINUOUS_TURN_MAX_MESSAGES = 12
     _CONTINUOUS_TURN_MAX_CHARS = 4000
     _CONTINUOUS_TURN_ACTIVE_SECONDS = 90.0
@@ -130,6 +131,32 @@ class ContinuousTurnMixin:
             store = self._continuous_turn_revisions
         bucket = store.setdefault(scope, {})
         return int(bucket.get(participant, 0))
+
+    async def _continuous_turn_wait(self, event: Any, delay: float) -> None:
+        delay = max(0.0, float(delay or 0.0))
+        if delay <= 0:
+            return
+        started_at = time.monotonic()
+        try:
+            await asyncio.sleep(delay)
+        finally:
+            elapsed = max(0.0, time.monotonic() - started_at)
+            intentional_wait = min(delay, elapsed)
+            previous = self.continuous_turn_intentional_wait_seconds(event)
+            setattr(
+                event,
+                self._CONTINUOUS_TURN_WAIT_ATTR,
+                previous + intentional_wait,
+            )
+
+    def continuous_turn_intentional_wait_seconds(self, event: Any) -> float:
+        try:
+            return max(
+                0.0,
+                float(getattr(event, self._CONTINUOUS_TURN_WAIT_ATTR, 0.0) or 0.0),
+            )
+        except (TypeError, ValueError):
+            return 0.0
 
     def _continuous_turn_batch(
         self, scope: str, participant: str
@@ -279,7 +306,7 @@ class ContinuousTurnMixin:
         remaining = max(0.0, batch.deadline - time.monotonic())
         delay = min(wait_seconds, remaining)
         if delay > 0:
-            await asyncio.sleep(delay)
+            await self._continuous_turn_wait(event, delay)
         if not self.continuous_turn_event_is_current(event):
             self.stop_stale_continuous_turn_event(event)
             return False
@@ -336,7 +363,7 @@ class ContinuousTurnMixin:
         if batch is not None:
             batch.phase = "waiting"
         if remaining > 0:
-            await asyncio.sleep(remaining)
+            await self._continuous_turn_wait(event, remaining)
         if not self.continuous_turn_event_is_current(event):
             self.stop_stale_continuous_turn_event(event)
             return "superseded"

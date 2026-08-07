@@ -11,6 +11,7 @@ from astrbot.api import logger
 
 from ...clock import now as life_now
 from ...models import ChatSummaryRecord, CommitmentRecord
+from ...models.coerce import compact_explanation_text
 from ...prompts import CORE_PERSONA_PRONOUN_RULES
 from ..markers import LOG_PREFIX
 from .jsonclean import call_pure_json
@@ -415,6 +416,7 @@ class ChatMemoryBatchMixin:
             "所有面向用户展示的自然语言字段必须使用简体中文；没有内容时字段留空，不要用任何语言解释为什么没有内容。"
             "自然语言字段必须写可读的事实摘要，不得复制 row_id、message_id、target_id 或其他内部编号；"
             "内部编号只能填写到名称明确的专用 ID 字段。"
+            "visibility.reason、action_decision.reason 和生活片段 impact 只写相对场景与判断依据，不复述输入中的具体日期、钟点或时间轴编号；具体时间只进入专用时间字段或证据字段。"
             "输出一个严格 JSON 对象，不要解释，不要 Markdown。没有长期信息时输出 worth_saving=false，其他数组可为空；"
             "即使没有长期摘要，也要保留证据明确的 commitments。brief 是简短主题，long_summary 是忠于证据的批次摘要。"
             "visibility、group_environment、action_decision 只记录批次中有明确依据的实际感知，不生成空壳；私聊不填写 group_environment。"
@@ -453,6 +455,7 @@ class ChatMemoryBatchMixin:
         )
         for field in ("reason", "reactivation_hint"):
             visibility[field] = self._chinese_text_payload(visibility.get(field))
+        visibility["reason"] = compact_explanation_text(visibility.get("reason"))
         visibility["is_directed_at_bot"] = any(
             self._bool_payload(row.get("is_directed"))
             for row in batch.get("messages", [])
@@ -482,6 +485,7 @@ class ChatMemoryBatchMixin:
         )
         for field in ("reason", "scene_type", "inner_monologue", "reply_strategy"):
             decision[field] = self._chinese_text_payload(decision.get(field))
+        decision["reason"] = compact_explanation_text(decision.get("reason"))
         normalized["action_decision"] = decision
         return normalized
 

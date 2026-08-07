@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from .coerce import compact_explanation_text
 from .primitive import optional_bool, optional_float, optional_int
 
 
@@ -458,12 +459,11 @@ class MessageVisibilityRecord:
 
     @staticmethod
     def from_value(value: Any) -> MessageVisibilityRecord | None:
-        if isinstance(value, MessageVisibilityRecord):
-            return value
-        raw = value if isinstance(value, dict) else {}
+        raw = value.as_dict() if isinstance(value, MessageVisibilityRecord) else value
+        raw = raw if isinstance(raw, dict) else {}
         session_id = str(raw.get("session_id") or "").strip()
         sender = str(raw.get("sender_profile_id") or "").strip()
-        reason = str(raw.get("reason") or "").strip()
+        reason = compact_explanation_text(raw.get("reason"))
         if not (session_id or sender or reason):
             return None
         return MessageVisibilityRecord(
@@ -534,11 +534,10 @@ class ActionDecisionRecord:
 
     @staticmethod
     def from_value(value: Any) -> ActionDecisionRecord | None:
-        if isinstance(value, ActionDecisionRecord):
-            return value
-        raw = value if isinstance(value, dict) else {}
+        raw = value.as_dict() if isinstance(value, ActionDecisionRecord) else value
+        raw = raw if isinstance(raw, dict) else {}
         action = str(raw.get("action") or "").strip()
-        reason = str(raw.get("reason") or "").strip()
+        reason = compact_explanation_text(raw.get("reason"))
         if not (action or reason):
             return None
         confidence = optional_float(raw.get("confidence"))

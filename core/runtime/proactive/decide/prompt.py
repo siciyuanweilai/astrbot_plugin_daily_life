@@ -320,6 +320,7 @@ JSON 输出要求：
 - benefit、timeliness、continuity、disruption、uncertainty 必须分别填写 0 至 100 的整数；前三项是主动回复收益，后两项是打扰与不确定风险。
 - 只有主动收益确实高于风险时才设 should_reply=true；不值得打扰时选择 observe 或 wait。
 - reply_text 只写一句自然短文本；口吻跟随角色人设和本轮表达约束。
+- reason 只写相对场景和判断依据，不复述具体日期、钟点或时间轴编号；具体时间只保留在内部证据中。
 - 只输出上面列出的字段，不添加内部过程或发送控制字段。
 """
 

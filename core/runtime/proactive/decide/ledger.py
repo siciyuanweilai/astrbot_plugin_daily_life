@@ -2,6 +2,7 @@ import datetime
 from typing import Any
 
 from ....models import ActionDecisionRecord, LifeEpisodeRecord, MemoryEvidenceRecord
+from ....models.coerce import compact_explanation_text
 
 
 class ProactiveStoreMixin:
@@ -87,7 +88,7 @@ class ProactiveStoreMixin:
             "decision": self._str_payload(payload.get("decision"), "observe"),
             "scores": scores,
             "evidence": evidence,
-            "outcome": str(outcome or "").strip(),
+            "outcome": compact_explanation_text(outcome),
         }
         try:
             saved = await saver(trace_payload)
@@ -126,7 +127,7 @@ class ProactiveStoreMixin:
         source = self._str_payload(payload.get("source"), "proactive_reply")
         decision_name = self._str_payload(payload.get("decision"), "observe")
         action = "proactive_reply" if sent else f"proactive_{stage}_{decision_name}"
-        reason = self._str_payload(payload.get("reason"))
+        reason = compact_explanation_text(payload.get("reason"))
         strategy = self._str_payload(payload.get("reply_strategy"))
         saved = await self.archive.save_action_decision(
             ActionDecisionRecord(

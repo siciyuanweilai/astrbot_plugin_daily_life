@@ -1720,7 +1720,7 @@ function experienceGroups(status) {
       rhythmTrend.average_body_intensity !== undefined ? `身体 ${Number(rhythmTrend.average_body_intensity || 0)}/100` : "",
       rhythmTrend.average_social_battery !== undefined ? `社交 ${Number(rhythmTrend.average_social_battery || 0)}/100` : "",
     ].filter(Boolean).join(" · ");
-    title.append(node("span", "", "生理节律趋势"), node("span", "muted", subtitle || "近期"));
+    title.append(node("span", "", "生理节律趋势"), node("span", "muted", subtitle || "今日"));
     const recentLines = rhythmLogs.slice(0, 3).map((item) => {
       const marker = enumLabel(item.lifecycle_kind, RHYTHM_LIFECYCLE_LABELS);
       const body = [
@@ -1728,7 +1728,7 @@ function experienceGroups(status) {
         item.body_intensity !== undefined ? `身体负荷：${Number(item.body_intensity || 0)}/100` : "",
         item.social_battery !== undefined ? `社交电量：${Number(item.social_battery || 0)}/100` : "",
       ].filter(Boolean).join("；");
-      return body ? [marker || "近期", body] : "";
+      return body ? [marker || "今日", body] : "";
     }).filter(Boolean);
     record.append(title, recordLines([
       clean(rhythmTrend.summary, ""),

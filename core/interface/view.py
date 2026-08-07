@@ -13,6 +13,7 @@ from ..life.tools import (
     resolve_daily_hint,
     resolve_daily_suggested,
 )
+from ..models.coerce import compact_explanation_text
 from ..models.coerce import compact_text as _compact_text
 
 CONF_SCHEMA_PATH = Path(__file__).resolve().parents[2] / "_conf_schema.json"
@@ -31,6 +32,27 @@ class PageViewMixin:
         except (AttributeError, KeyError, TypeError):
             return []
         return list(result or [])
+
+    @staticmethod
+    def _page_records_for_date(
+        records: list, target_date: str, *date_fields: str
+    ) -> list:
+        """仅保留属于当前生活日期的过程型面板记录。"""
+        date_text = str(target_date or "").strip()
+        if not date_text:
+            return []
+        fields = date_fields or ("date", "created_at")
+        result = []
+        for item in records:
+            data = item.as_dict() if hasattr(item, "as_dict") else dict(item or {})
+            for field in fields:
+                record_date = str(data.get(field) or "").strip()
+                if not record_date:
+                    continue
+                if record_date[:10] == date_text:
+                    result.append(item)
+                break
+        return result
 
     async def _build_page_config(self, saved: bool = False) -> dict:
         relationships = await self._page_reference_relationships()
@@ -139,47 +161,106 @@ class PageViewMixin:
         relationship_records = await self.runtime.archive.get_recent_relationships(PAGE_WORLD_RECORD_LIMIT)  # fmt: skip
         relationships = await self._page_relationships(relationship_records)
         places = await self.runtime.archive.get_recent_places(PAGE_WORLD_RECORD_LIMIT)
-        events = await self.runtime.archive.get_recent_events(PAGE_WORLD_RECORD_LIMIT)
-        summaries = await self.runtime.archive.get_recent_chat_summaries(PAGE_WORLD_RECORD_LIMIT)  # fmt: skip
-        group_environment_records = await self.runtime.archive.get_recent_group_environments(PAGE_WORLD_RECORD_LIMIT)  # fmt: skip
+        events = self._page_records_for_date(
+            await self.runtime.archive.get_recent_events(PAGE_WORLD_RECORD_LIMIT),
+            target_date,
+            "date",
+        )
+        summaries = self._page_records_for_date(
+            await self.runtime.archive.get_recent_chat_summaries(PAGE_WORLD_RECORD_LIMIT),
+            target_date,
+            "date",
+        )
+        group_environment_records = self._page_records_for_date(
+            await self.runtime.archive.get_recent_group_environments(PAGE_WORLD_RECORD_LIMIT),
+            target_date,
+            "date",
+            "created_at",
+        )
         group_environments = await self._page_group_environments(
             group_environment_records
         )
-        message_visibility = await self.runtime.archive.get_message_visibility_records(PAGE_WORLD_RECORD_LIMIT)  # fmt: skip
+        message_visibility_records = await self.runtime.archive.get_message_visibility_records(PAGE_WORLD_RECORD_LIMIT)  # fmt: skip
+        message_visibility = self._page_records_for_date(
+            message_visibility_records,
+            target_date,
+            "date",
+            "created_at",
+        )
         action_decisions = self._page_action_decisions(
-            await self._page_raw_action_decisions(),
+            self._page_records_for_date(
+                await self._page_raw_action_decisions(),
+                target_date,
+                "date",
+                "created_at",
+            ),
             limit=PAGE_WORLD_RECORD_LIMIT,
         )
         life_decisions = await self._page_daily_decision_candidates(target_date)
-        reviews = await self.runtime.archive.get_recent_daily_reviews(7)
+        reviews = self._page_records_for_date(
+            await self.runtime.archive.get_recent_daily_reviews(7),
+            target_date,
+            "date",
+        )
         preferences = await self.runtime.archive.get_preferences(20)
-        life_events = await self.runtime.archive.get_life_events(limit=20)
-        episodes = await self.runtime.archive.get_life_episodes(limit=20)
-        emotion_arcs = await self.runtime.archive.get_emotion_arcs(limit=20)
-        physiological_rhythm_logs = (
-            await self.runtime.archive.get_physiological_rhythm_logs(limit=20)
+        life_events = self._page_records_for_date(
+            await self.runtime.archive.get_life_events(limit=20),
+            target_date,
+            "date",
+        )
+        episodes = self._page_records_for_date(
+            await self.runtime.archive.get_life_episodes(limit=20),
+            target_date,
+            "date",
+        )
+        emotion_arcs = self._page_records_for_date(
+            await self.runtime.archive.get_emotion_arcs(limit=20),
+            target_date,
+            "date",
+        )
+        physiological_rhythm_logs = self._page_records_for_date(
+            await self.runtime.archive.get_physiological_rhythm_logs(limit=20),
+            target_date,
+            "date",
         )
         physiological_rhythm_trend = (
-            await self.runtime.archive.get_physiological_rhythm_trend(days=7, limit=20)
+            await self.runtime.archive.get_physiological_rhythm_trend(days=1, limit=20)
         )
         focus_targets = await self.runtime.archive.get_focus_targets(limit=20)
-        evidence = await self._page_memory_evidence(
+        memory_evidence = self._page_records_for_date(
             await self.runtime.archive.get_memory_evidence(limit=30),
+            target_date,
+            "date",
+        )
+        evidence = await self._page_memory_evidence(
+            memory_evidence,
             relationship_records,
             summaries=summaries,
             episodes=episodes,
             focus_targets=focus_targets,
         )
         feedback = self._page_feedback_records(
-            await self.runtime.archive.get_behavior_feedback(limit=20)
+            self._page_records_for_date(
+                await self.runtime.archive.get_behavior_feedback(limit=20),
+                target_date,
+                "date",
+            )
         )
         expression_profiles = await self.runtime.archive.get_expression_profiles(
             limit=20
         )
         behavior_patterns = await self.runtime.archive.get_behavior_patterns(limit=20)
-        mid_summaries = await self.runtime.archive.get_session_mid_summaries(limit=20)
-        temporary_expression_states = (
-            await self.runtime.archive.get_temporary_expression_states(limit=20)
+        mid_summaries = self._page_records_for_date(
+            await self.runtime.archive.get_session_mid_summaries(limit=20),
+            target_date,
+            "created_at",
+            "updated_at",
+        )
+        temporary_expression_states = self._page_records_for_date(
+            await self.runtime.archive.get_temporary_expression_states(limit=20),
+            target_date,
+            "created_at",
+            "updated_at",
         )
         life_terms = await self.runtime.archive.get_life_terms(limit=20)
         memory_boundaries = await self.runtime.archive.get_memory_boundaries(
@@ -196,24 +277,48 @@ class PageViewMixin:
         temporal_facts = await self._page_archive_records(
             "get_temporal_facts", limit=40
         )
-        reflections = await self._page_archive_records("get_reflections", limit=20)
+        reflections = self._page_records_for_date(
+            await self._page_archive_records("get_reflections", limit=20),
+            target_date,
+            "created_at",
+            "updated_at",
+        )
         persona_assertions = await self._page_archive_records(
             "get_persona_assertions", limit=20
         )
-        decision_traces = await self._page_archive_records(
-            "get_decision_traces", limit=30
+        decision_traces = self._page_records_for_date(
+            await self._page_archive_records("get_decision_traces", limit=30),
+            target_date,
+            "created_at",
+            "updated_at",
         )
-        action_outcomes = await self._page_archive_records(
-            "get_life_action_outcomes", limit=30
+        action_outcomes = self._page_records_for_date(
+            await self._page_archive_records("get_life_action_outcomes", limit=30),
+            target_date,
+            "date",
+            "started_at",
+            "committed_at",
+            "created_at",
+            "updated_at",
         )
-        action_receipts = await self._page_archive_records(
-            "get_life_action_receipts", limit=30
+        action_receipts = self._page_records_for_date(
+            await self._page_archive_records("get_life_action_receipts", limit=30),
+            target_date,
+            "date",
+            "occurred_at",
+            "created_at",
         )
-        affective_states = await self._page_archive_records(
-            "get_affective_states", limit=30
+        affective_states = self._page_records_for_date(
+            await self._page_archive_records("get_affective_states", limit=30),
+            target_date,
+            "valid_from",
+            "created_at",
+            "updated_at",
         )
-        grounded_diary = await self._page_archive_records(
-            "get_grounded_diary_entries", limit=20
+        grounded_diary = self._page_records_for_date(
+            await self._page_archive_records("get_grounded_diary_entries", limit=20),
+            target_date,
+            "date",
         )
         durable_tasks = await self._page_archive_records("get_durable_tasks", limit=20)
         domain_service = getattr(self.runtime, "domains", None)
@@ -221,7 +326,9 @@ class PageViewMixin:
         domain_snapshot_getter = getattr(domain_service, "snapshot", None)
         if callable(domain_snapshot_getter):
             domain_snapshot = await domain_snapshot_getter(limit=20)
-            domain_snapshot = await self._page_domain_snapshot(domain_snapshot)
+            domain_snapshot = await self._page_domain_snapshot(
+                domain_snapshot, target_date
+            )
         health = await self.runtime.archive.get_life_health_report(
             self.runtime.config.storage
         )
@@ -414,6 +521,7 @@ class PageViewMixin:
         result = dict(decision)
         for key in ("reason", "evidence", "outcome"):
             result[key] = cls._page_strip_same_day_prefix(result.get(key), target_date)
+        result["reason"] = compact_explanation_text(result.get("reason"), 360)
         result["evidence"] = cls._page_readable_evidence(result.get("evidence"))
         return result
 
@@ -613,18 +721,39 @@ class PageViewMixin:
             result.append(data)
         return result
 
-    async def _page_domain_snapshot(self, snapshot: dict) -> dict:
-        """为生活实况中的内部会话标识补充用户可读名称。"""
+    async def _page_domain_snapshot(
+        self, snapshot: dict, target_date: str = ""
+    ) -> dict:
+        """筛选当日生活流水，并补充行动项的可读会话名称。"""
 
         if not isinstance(snapshot, dict):
             return {}
         result = dict(snapshot)
+        date_text = str(target_date or "").strip()
+        if date_text:
+            for key, fields in (
+                ("activity_sessions", ("date", "started_at", "ended_at")),
+                ("meals", ("date", "occurred_at")),
+                ("chore_records", ("occurred_at",)),
+                ("fitness", ("date", "occurred_at")),
+                ("timeline", ("occurred_at",)),
+            ):
+                result[key] = self._page_records_for_date(
+                    list(snapshot.get(key) or []), date_text, *fields
+                )
+
         labels: dict[str, str] = {}
         action_items = []
         for item in snapshot.get("conversation_actions") or []:
             if not isinstance(item, dict):
                 continue
             data = dict(item)
+            status = str(data.get("status") or "").strip().lower()
+            if date_text and status not in {"open", "pending", "active"}:
+                if not self._page_records_for_date(
+                    [data], date_text, "updated_at", "created_at", "due_at"
+                ):
+                    continue
             source_session = str(data.get("source_session") or "").strip()
             if source_session:
                 if source_session not in labels:
@@ -690,9 +819,14 @@ class PageViewMixin:
         items = []
         coalesced = set()
         for item in decisions:
-            reason = str(getattr(item, "reason", "") or "").strip()
+            reason = compact_explanation_text(getattr(item, "reason", ""))
             if not reason:
                 continue
+            if reason != getattr(item, "reason", ""):
+                try:
+                    item.reason = reason
+                except (AttributeError, TypeError):
+                    pass
             key = (
                 str(getattr(item, "action", "") or "").strip(),
                 str(getattr(item, "scene_type", "") or "").strip(),
@@ -846,12 +980,17 @@ class PageViewMixin:
         current, next_item = get_current_timeline_status(data.timeline, now, data.date)
         if extended_night:
             current = None
+        meta = dict(data.meta)
+        if meta.get("outfit_reason"):
+            meta["outfit_reason"] = compact_explanation_text(
+                meta.get("outfit_reason"), 360
+            )
         return {
             "date": data.date,
             "outfit": data.outfit,
             "weather": data.weather,
             "weather_info": data.weather_info.as_dict(),
-            "meta": dict(data.meta),
+            "meta": meta,
             "state": data.state.as_dict() if data.state else {},
             "timeline": [item.as_dict() for item in data.timeline],
             "places": [item.as_dict() for item in data.places],

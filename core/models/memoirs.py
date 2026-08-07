@@ -3,8 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from .coerce import (
+    compact_explanation_text,
+)
+from .coerce import (
+    compact_text as _text,
+)
+from .coerce import (
+    compact_texts as _texts,
+)
 from .primitive import optional_bool, optional_float, optional_int
-from .coerce import compact_text as _text, compact_texts as _texts
 
 
 @dataclass(slots=True)
@@ -30,7 +38,7 @@ class LifeEpisodeRecord:
         value: Any, *, date: str = "", source: str = "daily"
     ) -> "LifeEpisodeRecord | None":
         if isinstance(value, LifeEpisodeRecord):
-            return value
+            value = value.as_dict()
         if not isinstance(value, dict):
             return None
         raw = value
@@ -48,7 +56,7 @@ class LifeEpisodeRecord:
             source=_text(raw.get("source") or source, 40) or source,
             related_people=_texts(raw.get("related_people"), 10, 40),
             related_places=_texts(raw.get("related_places"), 8, 40),
-            impact=_text(raw.get("impact"), 240),
+            impact=compact_explanation_text(raw.get("impact"), 240),
             confidence=max(
                 0.0, min(confidence if confidence is not None else 1.0, 1.0)
             ),

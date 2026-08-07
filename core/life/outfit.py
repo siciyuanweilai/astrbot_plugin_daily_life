@@ -14,6 +14,7 @@ from ..labels import (
     schedule_tone_label,
     sleep_mode_label,
 )
+from ..models.coerce import compact_explanation_text
 from ..prompts import cache_friendly_prompt
 from .appearance import (
     APPEARANCE_PREFERENCE_CATEGORIES,
@@ -33,7 +34,10 @@ from .tools import (
 )
 from .wardrobe import (
     OUTFIT_CONTINUITY_RULES,
+    OUTFIT_CURRENT_BASIS_ENUM,
     OUTFIT_SCENE_CATEGORY_ENUM,
+    decision_for_occurred_outfit,
+    normalize_outfit_current_basis,
     normalize_outfit_decision,
     normalize_outfit_scene_category,
     outfit_scene_category_label,
@@ -81,7 +85,7 @@ class OutfitMixin:
 
     @classmethod
     def _localize_outfit_reason(cls, value: object) -> str:
-        text = str(value or "").strip()
+        text = compact_explanation_text(value, 360)
         if not text:
             return ""
         labels = {}
@@ -322,16 +326,19 @@ class OutfitMixin:
 1. 只围绕当前实际时间、当前日程位置、实时生活状态和下一项安排判断；全天日程只作为背景。
 2. 未发生的未来安排只能作为预告，不能提前覆盖当前穿搭；等对应时间/场景实际到达后再换装。
 3. 当前或下一项安排需要外出时，先判断现有穿搭是否适合场景和天气；明显不合适时不能直接 keep。
-4. keep 原样返回当前 outfit、style、hair_style、hair；partial_change 只写局部调整后的最终状态。
-5. outfit/style/hair_style/hair 只写最终视觉状态；新换装或局部调整时遵循以下描述要求，keep 仍须原样返回已有状态：
+4. current_outfit_basis 用于说明最终穿搭依据：stored 表示数据库中的当前穿搭仍有效；occurred_schedule 表示当前或已发生日程明确完成了换装；live_state 表示实时状态明确确认已经换装。未发生日程不能作为依据。
+5. keep 只能与 stored 搭配，并原样返回当前 outfit、style、hair_style、hair；已经换装则选择 change、partial_change、sleepwear 或 outdoor，不能用 keep 表示“换装后继续穿着”。
+6. partial_change 只写局部调整后的最终状态。
+7. outfit/style/hair_style/hair 只写最终视觉状态；新换装或局部调整时遵循以下描述要求，keep 仍须原样返回已有状态：
 {CURRENT_APPEARANCE_GENERATION_RULES}
-reason 使用自然中文，不写内部枚举。
-6. 用户明确提出穿搭要求时，在不违背当前真实场景和天气的前提下优先执行，不能用 keep 回避。
-7. 只返回穿搭决策，不得改写时间轴、实时状态、主题、地点、事件或睡眠信息。
+reason 使用自然中文，不写内部枚举，也不复述具体日期、钟点或时间轴编号。
+8. 用户明确提出穿搭要求时，在不违背当前真实场景和天气的前提下优先执行，不能用 keep 回避。
+9. 只返回穿搭决策，不得改写时间轴、实时状态、主题、地点、事件或睡眠信息。
 
 返回JSON格式：
 {{
   "outfit_decision": "keep | change | partial_change | sleepwear | outdoor",
+  "current_outfit_basis": "{OUTFIT_CURRENT_BASIS_ENUM}",
   "scene_category": "{OUTFIT_SCENE_CATEGORY_ENUM}",
   "style_pool": "sleep_styles | outfit_styles | mixed",
   "outfit": "当前实际可见的详细穿搭；keep 时必须原样返回当前穿搭",
@@ -381,12 +388,40 @@ reason 使用自然中文，不写内部枚举。
         decision = normalize_outfit_decision(
             result.get("outfit_decision") or result.get("decision")
         )
+        current_basis = normalize_outfit_current_basis(
+            result.get("current_outfit_basis")
+        )
         generated_outfit = str(result.get("outfit") or "").strip()
         generated_style = str(result.get("style") or "").strip()
         generated_hair_style = str(result.get("hair_style") or "").strip()
         generated_hair = str(result.get("hair") or "").strip()
+        scene_category = normalize_outfit_scene_category(
+            result.get("scene_category"), default=""
+        ) or normalize_outfit_scene_category(
+            old_meta.get("outfit_scene_category"), default="mixed"
+        )
+        old_outfit = str(old_data.outfit or "").strip()
+        occurred_outfit_change = (
+            decision == "keep"
+            and current_basis in {"occurred_schedule", "live_state"}
+            and bool(generated_outfit)
+            and generated_outfit != old_outfit
+        )
+        if occurred_outfit_change:
+            decision = decision_for_occurred_outfit(
+                scene_category,
+                result.get("style_pool"),
+            )
+            basis_label = {
+                "occurred_schedule": "已发生日程",
+                "live_state": "实时状态",
+            }.get(current_basis, "当前记录")
+            logger.debug(
+                "[穿搭更新] 已按发生后的生活状态校正穿搭决定："
+                f"依据={basis_label}；决定={outfit_decision_label(decision)}"
+            )
         if decision == "keep":
-            new_outfit = str(old_data.outfit or "").strip()
+            new_outfit = old_outfit
             model_kept_outfit = not generated_outfit or generated_outfit == new_outfit
             final_style = str(
                 old_meta.get("style") or (generated_style if model_kept_outfit else "")
@@ -410,11 +445,6 @@ reason 使用自然中文，不写内部枚举。
         )
         if not new_outfit:
             return None
-        scene_category = normalize_outfit_scene_category(
-            result.get("scene_category"), default=""
-        ) or normalize_outfit_scene_category(
-            old_meta.get("outfit_scene_category"), default="mixed"
-        )
         style_pool = resolve_outfit_style_pool(
             scene_category,
             decision=decision,

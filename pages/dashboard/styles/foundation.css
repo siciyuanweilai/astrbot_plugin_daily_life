@@ -135,6 +135,12 @@ input[type="range"] {
   box-shadow: none;
 }
 
+@media (pointer: coarse) {
+  input[type="range"] {
+    touch-action: pan-y;
+  }
+}
+
 textarea {
   resize: vertical;
 }

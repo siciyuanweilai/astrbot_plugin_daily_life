@@ -28,16 +28,21 @@ PLUGIN_PARENT = Path(__file__).resolve().parents[2]
 if str(PLUGIN_PARENT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_PARENT))
 
-from astrbot_plugin_daily_life.main import DailyLifePlugin  # noqa: E402
 from astrbot_plugin_daily_life import main as plugin_module  # noqa: E402
-from astrbot_plugin_daily_life.core.runtime.voice import VoiceSwitchMixin  # noqa: E402
 from astrbot_plugin_daily_life.core.runtime.reply import (  # noqa: E402
     SemanticSegmentRuntimeMixin,
 )
-from astrbot_plugin_daily_life.core.runtime.voice import preface as voice_preface_module  # noqa: E402
+from astrbot_plugin_daily_life.core.runtime.send_message_tool import (  # noqa: E402
+    ExpressiveSendMessageTool,
+)
+from astrbot_plugin_daily_life.core.runtime.voice import VoiceSwitchMixin  # noqa: E402
+from astrbot_plugin_daily_life.core.runtime.voice import (  # noqa: E402
+    preface as voice_preface_module,
+)
 from astrbot_plugin_daily_life.core.runtime.voice.preface import (  # noqa: E402
     SILENT_TOOL_PREFACE_NAMES,
 )  # noqa: E402
+from astrbot_plugin_daily_life.main import DailyLifePlugin  # noqa: E402
 
 
 @contextmanager
@@ -52,6 +57,119 @@ def patched_follow_up_runners(runners):
 
 
 class PluginLifecycleTest(unittest.IsolatedAsyncioTestCase):
+    async def test_expressive_send_tool_routes_current_session_plain_text(self):
+        calls = []
+
+        class OriginalTool:
+            name = "send_message_to_user"
+            description = "发送消息"
+            parameters = {"type": "object", "properties": {}}
+            active = True
+            handler_module_path = None
+            is_background_task = False
+
+            async def call(self, context, **kwargs):
+                calls.append(("original", context, kwargs))
+                return "original"
+
+        async def send_background_text(scope, text, **kwargs):
+            calls.append(("expressive", scope, text, kwargs))
+            return True
+
+        runtime = types.SimpleNamespace(
+            _semantic_segment_enabled=lambda: True,
+            _chat_style_text_is_structural=lambda _text: False,
+            send_background_text=send_background_text,
+        )
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
+        event.message_str = "拍套图看看"
+        context = types.SimpleNamespace(context=types.SimpleNamespace(event=event))
+        tool = ExpressiveSendMessageTool(OriginalTool(), runtime)
+
+        result = await tool.call(
+            context,
+            messages=[
+                {"type": "plain", "text": "江边这套\n对岸灯挺好看。"}
+            ],
+        )
+
+        self.assertEqual(result, f"Message sent to session {event.unified_msg_origin}")
+        self.assertEqual(calls[0][0:3], ("expressive", event.unified_msg_origin, "江边这套\n对岸灯挺好看。"))
+        self.assertTrue(event._has_send_oper)
+        self.assertEqual(
+            event.get_extra("_send_message_to_user_current_session_plain_texts"),
+            ["江边这套\n对岸灯挺好看。"],
+        )
+
+    async def test_expressive_send_tool_keeps_media_on_original_tool(self):
+        calls = []
+
+        class OriginalTool:
+            name = "send_message_to_user"
+            description = "发送消息"
+            parameters = {"type": "object", "properties": {}}
+            active = True
+            handler_module_path = None
+            is_background_task = False
+
+            async def call(self, context, **kwargs):
+                calls.append((context, kwargs))
+                return "original"
+
+        runtime = types.SimpleNamespace(
+            _semantic_segment_enabled=lambda: True,
+            _chat_style_text_is_structural=lambda _text: False,
+        )
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
+        context = types.SimpleNamespace(context=types.SimpleNamespace(event=event))
+        tool = ExpressiveSendMessageTool(OriginalTool(), runtime)
+        messages = [{"type": "image", "path": "/tmp/test.png"}]
+
+        result = await tool.call(context, messages=messages)
+
+        self.assertEqual(result, "original")
+        self.assertEqual(calls, [(context, {"messages": messages})])
+
+    def test_message_entry_timing_does_not_warn_for_intentional_wait(self):
+        plugin = DailyLifePlugin.__new__(DailyLifePlugin)
+        plugin.runtime = types.SimpleNamespace(
+            continuous_turn_intentional_wait_seconds=lambda _event: 1.5
+        )
+        event = Event()
+
+        with (
+            patch.object(plugin_module.time, "monotonic", return_value=101.5),
+            patch.object(plugin_module.logger, "warning") as warning,
+            patch.object(plugin_module.logger, "debug") as debug,
+        ):
+            plugin._log_message_entry_timing(event, 100.0)
+
+        warning.assert_not_called()
+        debug.assert_called_once_with(
+            "[日常生活] 消息入口处理耗时：有效耗时=0.00 秒；"
+            "总耗时=1.50 秒；连续消息等待=1.50 秒"
+        )
+
+    def test_message_entry_timing_warns_for_real_processing_delay(self):
+        plugin = DailyLifePlugin.__new__(DailyLifePlugin)
+        plugin.runtime = types.SimpleNamespace(
+            continuous_turn_intentional_wait_seconds=lambda _event: 0.4
+        )
+        event = Event()
+
+        with (
+            patch.object(plugin_module.time, "monotonic", return_value=101.6),
+            patch.object(plugin_module.logger, "warning") as warning,
+            patch.object(plugin_module.logger, "debug") as debug,
+        ):
+            plugin._log_message_entry_timing(event, 100.0)
+
+        warning.assert_called_once_with(
+            "[日常生活] 消息入口处理耗时：有效耗时=1.20 秒；"
+            "总耗时=1.60 秒；连续消息等待=0.40 秒"
+        )
+        debug.assert_not_called()
+
     def test_constructor_defers_runtime_and_database_creation(self):
         context = types.SimpleNamespace()
 

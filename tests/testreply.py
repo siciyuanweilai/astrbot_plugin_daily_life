@@ -114,6 +114,79 @@ class SemanticSegmentTest(unittest.TestCase):
             [["先这样。"], ["后面再说。"]],
         )
 
+    def test_background_text_respects_explicit_reply_lines(self):
+        runtime = self._background_runtime(
+            json.dumps(
+                {
+                    "segments": [
+                        {
+                            "text": "好像是有点好呀，",
+                            "relation": "lead",
+                            "pause": "short",
+                        },
+                        {
+                            "text": "拍六张。",
+                            "relation": "closing",
+                            "pause": "none",
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        )
+
+        sent = asyncio.run(
+            runtime.send_background_text(
+                "aiocqhttp:FriendMessage:10001",
+                "好像是有点\n好呀，拍六张。\n",
+                mode=BackgroundTextMode.EXPRESSIVE,
+                source="proactive",
+            )
+        )
+
+        self.assertTrue(sent)
+        self.assertEqual(
+            [chain.items for _, chain in runtime.context.sent_messages],
+            [["好像是有点"], ["好呀，拍六张。"]],
+        )
+        self.assertIn("原文行布局", runtime.composer.prompts[0])
+
+    def test_background_tool_text_respects_lines_and_cleans_punctuation(self):
+        runtime = self._background_runtime(
+            json.dumps(
+                {
+                    "segments": [
+                        {
+                            "text": "江边这套对岸灯挺好看。",
+                            "relation": "standalone",
+                            "pause": "none",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        )
+        runtime.context = Context(
+            Provider([]), config={"t2i": False, "t2i_word_threshold": 120}
+        )
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
+
+        sent = asyncio.run(
+            runtime.send_background_text(
+                event.unified_msg_origin,
+                "江边这套\n对岸灯挺好看。",
+                mode=BackgroundTextMode.EXPRESSIVE,
+                source_event=event,
+                source="send_message_to_user",
+            )
+        )
+
+        self.assertTrue(sent)
+        self.assertEqual(
+            [chain.items for _, chain in runtime.context.sent_messages],
+            [["江边这套"], ["对岸灯挺好看"]],
+        )
+
     def test_background_text_falls_back_to_natural_segments(self):
         runtime = self._background_runtime("not json")
         text = "窝被窝里呢，头发还半干。刚在翻今天拍的那些照片，灯下看着还挺好看。"
@@ -470,6 +543,47 @@ class SemanticSegmentTest(unittest.TestCase):
         self.assertNotIn("\n", runtime.composer.prompts[0].split("回复原文：", 1)[1])
         self.assertIsNone(event.get_result())
 
+    def test_explicit_reply_lines_prevent_cross_line_semantic_split(self):
+        runtime = self._runtime(
+            json.dumps(
+                {
+                    "segments": [
+                        {
+                            "text": "好像是有点好呀，",
+                            "relation": "lead",
+                            "pause": "short",
+                        },
+                        {
+                            "text": "拍六张。",
+                            "relation": "closing",
+                            "pause": "none",
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        )
+        runtime.context = Context(
+            Provider([]), config={"t2i": False, "t2i_word_threshold": 120}
+        )
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10002")
+        event.set_result(
+            event.chain_result(
+                [types.SimpleNamespace(text="好像是有点\n好呀，拍六张。\n")]
+            )
+        )
+
+        changed = asyncio.run(runtime.apply_semantic_segment_before_send(event))
+        sent = asyncio.run(runtime.send_semantic_segments_if_needed(event))
+
+        self.assertTrue(changed)
+        self.assertTrue(sent)
+        self.assertEqual(
+            [message.chain for message in event.sent_messages],
+            [["好像是有点"], ["好呀 拍六张"]],
+        )
+        self.assertIn("原文行布局", runtime.composer.prompts[0])
+
     def test_long_reply_keeps_default_result_for_astrbot_t2i(self):
         runtime = self._runtime("{}")
         runtime.context = Context(
@@ -673,7 +787,7 @@ class SemanticSegmentTest(unittest.TestCase):
         self.assertTrue(sent)
         self.assertEqual(
             [message.chain for message in event.sent_messages],
-            [["嗯..."], ["mua睡吧"]],
+            [["嗯..."], ["mua"], ["睡吧"]],
         )
 
     def test_punctuation_cleaning_uses_custom_character_set(self):

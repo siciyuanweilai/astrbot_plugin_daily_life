@@ -4,7 +4,7 @@ import uuid
 
 from astrbot.api import logger
 
-from ..models import CommitmentRecord, LifeState, TimelineItem
+from ..models import CommitmentRecord, LifeState, PlaceRecord, TimelineItem
 from ..prompts import (
     CORE_AUTONOMY_RULES,
     CORE_JSON_OUTPUT_RULES,
@@ -18,6 +18,44 @@ from .tools import extract_json_from_text
 
 
 class InviteMixin:
+    @staticmethod
+    def _serialized_current_places(current_places: list | None) -> list[dict]:
+        """序列化当天已有地点，避免地图校正跳过时丢失记录。"""
+
+        return [
+            place.as_dict()
+            for place in (
+                PlaceRecord.from_value(value) for value in current_places or []
+            )
+            if place is not None
+        ]
+
+    @staticmethod
+    def _reusable_location_candidates(current_places: list | None) -> list[dict]:
+        """把当天已确认的地点转换为地图审计可复用的候选项。"""
+
+        candidates: list[dict] = []
+        for value in current_places or []:
+            place = PlaceRecord.from_value(value)
+            if (
+                place is None
+                or place.latitude is None
+                or place.longitude is None
+                or place.type == "home"
+                or place.name == "家"
+            ):
+                continue
+            candidates.append(
+                {
+                    "name": place.name,
+                    "address": place.hint,
+                    "place_hint": place.hint,
+                    "category": place.type,
+                    "coordinate": (float(place.latitude), float(place.longitude)),
+                }
+            )
+        return candidates
+
     @staticmethod
     def _split_timeline_at(
         current_timeline: list,
@@ -56,6 +94,7 @@ class InviteMixin:
         current_time: datetime.datetime,
         user_name: str = "用户",
         current_state: LifeState | None = None,
+        current_places: list | None = None,
     ):
         past_timeline, future_timeline = self._split_timeline_at(
             current_timeline, current_time
@@ -162,14 +201,23 @@ JSON 输出要求：
                         None,
                     )
                     if callable(location_auditor):
+                        audit_kwargs = {"allow_safe_corrections": True}
+                        reusable_places = self._reusable_location_candidates(
+                            current_places
+                        )
+                        if reusable_places:
+                            audit_kwargs["preselected_places"] = reusable_places
                         audited, location_reason = await location_auditor(
                             {
                                 "timeline": [
                                     item.as_dict() for item in candidate_timeline
                                 ],
                                 "planned_actions": [],
-                                "places": [],
-                            }
+                                "places": self._serialized_current_places(
+                                    current_places
+                                ),
+                            },
+                            **audit_kwargs,
                         )
                         if location_reason:
                             accepted = False
@@ -230,6 +278,7 @@ JSON 输出要求：
         *,
         owner_hint: str = "",
         current_state: LifeState | None = None,
+        current_places: list | None = None,
     ) -> tuple[list[TimelineItem] | None, dict]:
         """判断新承诺是否需要合并到已经生成的当天时间轴。
 
@@ -240,6 +289,7 @@ JSON 输出要求：
             current_time: 进行协调判断的当前时间。
             owner_hint: 保存入口提供的人物归属判断。
             current_state: 当前角色的实时生活状态。
+            current_places: 当天已经由地图确认的地点。
 
         Returns:
             合并后的完整时间轴和结构化协调结果；无需调整时，时间轴为空。
@@ -329,6 +379,8 @@ JSON 输出要求：
             result = audit.payload
             raw_future = result.get("new_future_timeline")
             if not isinstance(raw_future, list) or not raw_future:
+                result["_retryable"] = True
+                result["reconcile_issue"] = "模型没有返回可用的未来时间轴"
                 return None, result
             candidate_timeline = past_timeline + [
                 TimelineItem.from_value(item) for item in raw_future
@@ -339,17 +391,22 @@ JSON 输出要求：
                 None,
             )
             if callable(location_auditor):
+                audit_kwargs = {"allow_safe_corrections": True}
+                reusable_places = self._reusable_location_candidates(current_places)
+                if reusable_places:
+                    audit_kwargs["preselected_places"] = reusable_places
                 audited, location_reason = await location_auditor(
                     {
                         "timeline": [item.as_dict() for item in candidate_timeline],
                         "planned_actions": [],
-                        "places": [],
-                    }
+                        "places": self._serialized_current_places(current_places),
+                    },
+                    **audit_kwargs,
                 )
                 if location_reason:
-                    result["should_apply"] = False
                     result["reason"] = f"地点安排暂时无法确认：{location_reason}"
                     result["location_issue"] = location_reason
+                    result["_retryable"] = True
                     return None, result
                 candidate_timeline = [
                     TimelineItem.from_value(item)

@@ -428,6 +428,80 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
             result["outfit_instruction"], "清爽利落、适合傍晚同行的外出穿搭"
         )
 
+    async def test_commitment_reconcile_reuses_places_and_repairs_route_fields(self):
+        composer, _, _, _ = make_composer(
+            [
+                '{"should_apply":true,"reason":"已确认傍晚同行",'
+                '"new_future_timeline":['
+                '{"time":"17:30","activity":"和测试对象去测试书店","status":"期待",'
+                '"place":"测试书店","place_kind":"poi","place_scope":"local",'
+                '"place_city":"","place_hint":"测试路1号","travel_mode":"walking"},'
+                '{"time":"20:00","activity":"回家休息","status":"放松",'
+                '"place":"家","place_kind":"home","place_scope":"local",'
+                '"place_city":"","place_hint":"","travel_mode":""}],'
+                '"outfit_instruction":"","outfit_effective_time":"",'
+                '"impact":"傍晚改为共同外出"}'
+            ]
+        )
+        audit_calls = []
+
+        async def audit(
+            payload,
+            *,
+            allow_safe_corrections=False,
+            preselected_places=None,
+        ):
+            audit_calls.append(
+                (allow_safe_corrections, preselected_places, payload)
+            )
+            payload["timeline"][-1]["travel_mode"] = "transit"
+            payload["places"] = list(preselected_places or [])
+            return payload, ""
+
+        composer.domains.audit_daily_locations = AsyncMock(side_effect=audit)
+        current_places = [
+            PlaceRecord(
+                name="测试书店",
+                type="bookstore",
+                hint="测试路1号",
+                latitude=23.01,
+                longitude=113.01,
+                coordinate_source="test_map_poi",
+            )
+        ]
+
+        timeline, result = await composer.reconcile_commitment_with_timeline(
+            "2026-08-06",
+            [
+                TimelineItem(
+                    time="13:00",
+                    activity="在家休息",
+                    status="放松",
+                    place="家",
+                    place_kind="home",
+                    place_scope="local",
+                )
+            ],
+            CommitmentRecord(
+                id=8,
+                content="傍晚和测试对象去测试书店再回家",
+                trigger_date="2026-08-06",
+                kind="plan",
+            ),
+            datetime.datetime(2026, 8, 6, 14, 0),
+            owner_hint="共同",
+            current_places=current_places,
+        )
+
+        self.assertIsNotNone(timeline)
+        self.assertEqual(timeline[-1].travel_mode, "transit")
+        self.assertTrue(audit_calls[0][0])
+        self.assertEqual(audit_calls[0][1][0]["name"], "测试书店")
+        self.assertEqual(
+            audit_calls[0][1][0]["coordinate"], (23.01, 113.01)
+        )
+        self.assertNotIn("_retryable", result)
+
     async def test_daily_prompt_uses_default_persona_prompt(self):
         composer, provider, _, archive = make_composer(
             [
@@ -1691,6 +1765,68 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("回家、进入室内或时段变化不等于已经换衣", provider.prompts[0])
         self.assertIn("之后还要出门", provider.prompts[0])
 
+    async def test_update_outfit_applies_sleepwear_already_confirmed_by_live_state(self):
+        composer, provider, _, archive = make_composer(
+            [
+                '{"outfit_decision":"keep","current_outfit_basis":"live_state",'
+                '"scene_category":"home","style_pool":"sleep_styles",'
+                '"outfit":"浅薄荷绿吊带睡裙，宽松轻盈，裙摆垂顺，赤足放松",'
+                '"style":"清爽居家睡裙风","hair_style":"高马尾",'
+                '"hair":"黑色长发高高扎成马尾",'
+                '"reason":"21:10到家冲完澡换上睡裙，在家准备睡前节奏，无需再换"}'
+            ]
+        )
+        await archive.save_day(
+            DayRecord(
+                date="2026-08-07",
+                outfit="白色短袖T恤配浅蓝牛仔短裤",
+                timeline=[
+                    TimelineItem(
+                        time="21:10",
+                        activity="到家冲完澡，已经换上睡裙翻看照片",
+                        status="清爽松弛",
+                    )
+                ],
+                meta={
+                    "outfit_decision": "outdoor",
+                    "outfit_scene_category": "public",
+                    "outfit_style_pool": "outfit_styles",
+                    "style": "清爽白日外出风",
+                    "hair_style": "高马尾",
+                    "hair": "黑色长发高高扎成马尾",
+                },
+                state=LifeState(summary="回家冲澡后已经换上睡裙，正在放松"),
+            )
+        )
+
+        result = await composer.update_outfit(
+            "2026-08-07",
+            "night",
+            current_time=datetime.datetime(2026, 8, 7, 21, 12),
+        )
+
+        self.assertIsNotNone(result)
+        stored = await archive.get_day("2026-08-07")
+        self.assertEqual(
+            stored.outfit,
+            "浅薄荷绿吊带睡裙，宽松轻盈，裙摆垂顺，赤足放松",
+        )
+        self.assertEqual(stored.meta["outfit_decision"], "sleepwear")
+        self.assertEqual(stored.meta["outfit_style_pool"], "sleep_styles")
+        self.assertEqual(stored.meta["style"], "清爽居家睡裙风")
+        self.assertEqual(
+            stored.meta["outfit_reason"],
+            "到家冲完澡换上睡裙，在家准备睡前节奏，无需再换",
+        )
+        decisions = await archive.get_life_decisions(limit=5, kind="outfit")
+        self.assertNotIn("21:10", decisions[0].reason)
+        self.assertIn(
+            '"current_outfit_basis": "stored | occurred_schedule | live_state"',
+            provider.prompts[0],
+        )
+        self.assertIn("已经换装则选择", provider.prompts[0])
+        self.assertIn("不复述具体日期、钟点或时间轴编号", provider.prompts[0])
+
     async def test_update_outfit_partially_adjusts_outdoor_clothes_at_home(self):
         composer, _, _, archive = make_composer(
             [
@@ -2368,7 +2504,12 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
             ]
         )
 
-        async def audit(payload):
+        audit_kwargs = []
+        audit_payloads = []
+
+        async def audit(payload, **kwargs):
+            audit_kwargs.append(kwargs)
+            audit_payloads.append(payload)
             payload["timeline"][-1].update(
                 {
                     "place_city": "测试市",
@@ -2411,12 +2552,24 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
             "下午一起去书店吗",
             datetime.datetime(2026, 5, 24, 15, 0),
             user_name="阿林",
+            current_places=[
+                PlaceRecord(
+                    name="测试书店",
+                    type="bookstore",
+                    hint="测试区测试路1号",
+                    latitude=23.01,
+                    longitude=113.01,
+                    coordinate_source="test_map_poi",
+                )
+            ],
         )
 
         self.assertIsNotNone(new_timeline)
         self.assertEqual(new_timeline[-1].place_address, "测试区测试路1号")
         self.assertEqual(result["_audited_places"][0]["name"], "测试书店")
         self.assertEqual(result["_location_audit"]["map_provider"], "高德地图")
+        self.assertTrue(audit_kwargs[0]["allow_safe_corrections"])
+        self.assertEqual(audit_payloads[0]["places"][0]["name"], "测试书店")
 
     async def test_invite_prompt_keeps_static_rules_before_dynamic_context(self):
         composer, provider, _, _ = make_composer(

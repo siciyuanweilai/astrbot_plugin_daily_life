@@ -55,6 +55,7 @@ def _install_stubs():
         "astrbot.core": types.ModuleType("astrbot.core"),
         "astrbot.core.agent": types.ModuleType("astrbot.core.agent"),
         "astrbot.core.agent.message": types.ModuleType("astrbot.core.agent.message"),
+        "astrbot.core.agent.tool": types.ModuleType("astrbot.core.agent.tool"),
         "astrbot.core.provider": types.ModuleType("astrbot.core.provider"),
         "astrbot.core.provider.entities": types.ModuleType(
             "astrbot.core.provider.entities"
@@ -218,6 +219,26 @@ def _install_stubs():
                 data["_no_save"] = True
             return data
 
+    class _FunctionTool:
+        def __init__(
+            self,
+            name="",
+            description="",
+            parameters=None,
+            handler=None,
+            **kwargs,
+        ):
+            self.name = str(name or "")
+            self.description = str(description or "")
+            self.parameters = parameters or {}
+            self.handler = handler
+            self.active = bool(kwargs.get("active", True))
+            self.handler_module_path = kwargs.get("handler_module_path")
+            self.is_background_task = bool(kwargs.get("is_background_task", False))
+
+        async def call(self, context, **kwargs):
+            raise NotImplementedError
+
     class _HtmlRenderer:
         def __init__(self):
             self.calls = []
@@ -265,6 +286,7 @@ def _install_stubs():
     modules["astrbot.core"].html_renderer = _HtmlRenderer()
     modules["astrbot.api.event.filter"].EventMessageType = _EventMessageType
     modules["astrbot.core.agent.message"].TextPart = _TextPart
+    modules["astrbot.core.agent.tool"].FunctionTool = _FunctionTool
     modules["astrbot.core.provider.entities"].ProviderRequest = _ProviderRequest
     modules["astrbot.core.star.context"].Context = object
     modules["astrbot.core.star.star_tools"].StarTools = types.SimpleNamespace(

@@ -6,7 +6,7 @@ from ..models import (
     GroupEnvironmentRecord,
     MessageVisibilityRecord,
 )
-
+from ..models.coerce import compact_explanation_text
 
 _COALESCED_ACTION_DECISION_KEYS = frozenset(
     {
@@ -161,7 +161,7 @@ class PerceptionArchiveMixin:
             psychological_freshness=int(row["psychological_freshness"] or 0),
             reactivated_from_id=int(row["reactivated_from_id"] or 0),
             reactivation_hint=self._text(row["reactivation_hint"]),
-            reason=self._text(row["reason"]),
+            reason=compact_explanation_text(row["reason"]),
             created_at=row["created_at"],
         )
 
@@ -247,7 +247,7 @@ class PerceptionArchiveMixin:
             group_name=row["group_name"],
             date=row["date"],
             action=row["action"],
-            reason=self._text(row["reason"]),
+            reason=compact_explanation_text(row["reason"]),
             confidence=float(row["confidence"] or 0.0),
             scene_type=row["scene_type"],
             topic_owner=row["topic_owner"],

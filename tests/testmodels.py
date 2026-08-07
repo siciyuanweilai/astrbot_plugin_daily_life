@@ -1,45 +1,65 @@
+# ruff: noqa: I001
+
 import unittest
 
 from support import (  # noqa: F401
     ActionDecisionRecord,
     BehaviorFeedbackRecord,
+    BehaviorPatternRecord,
+    BehaviorSceneRecord,
     ChatSummaryRecord,
     CommitmentRecord,
     DailyReviewRecord,
-    LifeDecisionRecord,
+    EmojiAssetRecord,
     EventRecord,
+    ExpressionIntentRecord,
+    ExpressionProfileRecord,
+    ExpressionReviewRecord,
+    FocusSlotRecord,
     GroupEnvironmentRecord,
+    LifeDecisionRecord,
     LifeEpisodeRecord,
     LifeEventRecord,
     LifeTermRecord,
     MemoryBoundaryRecord,
+    MemoryCorrectionRecord,
     MemoryEvidenceRecord,
     MessageVisibilityRecord,
+    PhysiologicalRhythmLogRecord,
     PlaceRecord,
     PreferenceRecord,
     RelationshipNote,
     RelationshipRecord,
-    BehaviorPatternRecord,
-    BehaviorSceneRecord,
-    ExpressionProfileRecord,
-    ExpressionReviewRecord,
-    FocusSlotRecord,
-    MemoryCorrectionRecord,
     ReplyEffectRecord,
     SessionMidSummaryRecord,
     TemporaryExpressionStateRecord,
-    ExpressionIntentRecord,
-    EmojiAssetRecord,
-    PhysiologicalRhythmLogRecord,
 )
 
-from core.models.coerce import compact_text
+from core.models.coerce import compact_explanation_text, compact_text
 
 
 class ModelContractTest(unittest.TestCase):
     def test_compact_text_flattens_list_like_payloads(self):
         self.assertEqual(
             compact_text(["避免每天宅家一整天不出门"]), "避免每天宅家一整天不出门"
+        )
+
+    def test_compact_explanation_text_removes_clock_references(self):
+        self.assertEqual(
+            compact_explanation_text("深夜02:40高度困倦，不适合再打扰"),
+            "深夜高度困倦，不适合再打扰",
+        )
+        self.assertEqual(
+            compact_explanation_text("约好 16:40 碰头，此刻自然报到"),
+            "约好碰头，此刻自然报到",
+        )
+        self.assertEqual(
+            compact_explanation_text("21:10到家冲澡后已经换上睡裙"),
+            "到家冲澡后已经换上睡裙",
+        )
+        self.assertEqual(
+            compact_explanation_text("使用9:16画幅生成竖图"),
+            "使用9:16画幅生成竖图",
         )
         self.assertEqual(
             compact_text(
@@ -141,12 +161,14 @@ class ModelContractTest(unittest.TestCase):
                 "summary": "扫到群聊但选择观察",
                 "related_people": ["阿林"],
                 "related_places": ["测试群"],
+                "impact": "21:10之后决定保持安静",
                 "confidence": 2,
                 "protected": True,
             }
         )
         self.assertEqual(episode.related_people, ["阿林"])
         self.assertEqual(episode.related_places, ["测试群"])
+        self.assertEqual(episode.impact, "之后决定保持安静")
         self.assertEqual(episode.confidence, 1.0)
         self.assertTrue(episode.protected)
 
@@ -323,11 +345,14 @@ class ModelContractTest(unittest.TestCase):
             {
                 "kind": "daily_plan",
                 "decision": "宅家恢复",
-                "reason": "睡眠债偏高",
+                "reason": "21:10睡眠债仍然偏高",
+                "evidence": "时间轴记录为21:10",
                 "confidence": 2,
             }
         )
         self.assertEqual(decision.kind, "daily_plan")
+        self.assertEqual(decision.reason, "睡眠债仍然偏高")
+        self.assertEqual(decision.evidence, "时间轴记录为21:10")
         self.assertEqual(decision.confidence, 1.0)
         self.assertIsNone(
             MemoryCorrectionRecord.from_value(

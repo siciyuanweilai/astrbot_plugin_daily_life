@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from .coerce import compact_explanation_text
 from .coerce import compact_text as _text
 from .primitive import optional_float, optional_int
 
@@ -26,12 +27,12 @@ class LifeDecisionRecord:
         value: Any, *, date: str = "", source: str = "autonomous_life"
     ) -> "LifeDecisionRecord | None":
         if isinstance(value, LifeDecisionRecord):
-            return value
+            value = value.as_dict()
         if not isinstance(value, dict):
             return None
         raw = value
         decision = _text(raw.get("decision"), 300)
-        reason = _text(raw.get("reason"), 360)
+        reason = compact_explanation_text(raw.get("reason"), 360)
         if not (decision or reason):
             return None
         confidence = optional_float(raw.get("confidence"))

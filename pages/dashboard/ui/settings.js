@@ -894,7 +894,56 @@ export function createConfigPanel({
       slider.type = "range";
       applySliderBounds(slider, spec);
       slider.value = text(normalized);
-      slider.addEventListener("input", () => update(slider, slider));
+      let touchGesture = null;
+      const restoreTouchValue = () => {
+        if (!touchGesture) return;
+        slider.value = touchGesture.startValue;
+        number.value = touchGesture.startValue;
+      };
+      slider.addEventListener("pointerdown", (event) => {
+        if (event.pointerType === "mouse") return;
+        touchGesture = {
+          pointerId: event.pointerId,
+          startX: event.clientX,
+          startY: event.clientY,
+          startValue: slider.value,
+          intent: "",
+        };
+      });
+      slider.addEventListener("pointermove", (event) => {
+        if (
+          !touchGesture
+          || event.pointerId !== touchGesture.pointerId
+          || touchGesture.intent
+        ) return;
+        const deltaX = Math.abs(event.clientX - touchGesture.startX);
+        const deltaY = Math.abs(event.clientY - touchGesture.startY);
+        if (Math.max(deltaX, deltaY) < 8) return;
+        touchGesture.intent = deltaX > deltaY * 1.25 ? "adjust" : "scroll";
+        if (touchGesture.intent === "scroll") restoreTouchValue();
+      });
+      slider.addEventListener("input", () => {
+        if (touchGesture?.intent === "scroll") {
+          restoreTouchValue();
+          return;
+        }
+        if (touchGesture && !touchGesture.intent) {
+          number.value = text(numberValue(slider.value, spec));
+          return;
+        }
+        update(slider, slider);
+      });
+      const finishTouchGesture = (event, cancelled = false) => {
+        if (!touchGesture || event.pointerId !== touchGesture.pointerId) return;
+        const shouldRestore = cancelled || touchGesture.intent === "scroll";
+        if (shouldRestore) restoreTouchValue();
+        touchGesture = null;
+        if (!shouldRestore) update(slider, slider);
+      };
+      slider.addEventListener("pointerup", (event) => finishTouchGesture(event));
+      slider.addEventListener("pointercancel", (event) => {
+        finishTouchGesture(event, true);
+      });
       number.addEventListener("change", () => update(number, slider));
       wrap.append(slider, number);
       return wrap;

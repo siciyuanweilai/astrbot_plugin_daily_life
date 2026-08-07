@@ -2,6 +2,7 @@ import sqlite3
 from typing import Any
 
 from ...models import LifeDecisionRecord
+from ...models.coerce import compact_explanation_text
 
 
 class LifeDecisionArchiveMixin:
@@ -12,7 +13,7 @@ class LifeDecisionArchiveMixin:
             kind=row["kind"],
             subject=self._text(row["subject"]),
             decision=self._text(row["decision"]),
-            reason=self._text(row["reason"]),
+            reason=compact_explanation_text(row["reason"], 360),
             evidence=self._text(row["evidence"]),
             outcome=self._text(row["outcome"]),
             confidence=float(row["confidence"] or 0.0),

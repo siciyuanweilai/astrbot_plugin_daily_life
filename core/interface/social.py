@@ -209,6 +209,7 @@ class SocialCommandMixin:
             req.now,
             sender_name,
             current_state=data.state,
+            current_places=data.places,
         )
         await self.runtime.composer.learn_preferences_from_payload(
             decision,

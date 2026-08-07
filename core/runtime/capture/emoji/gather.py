@@ -4,8 +4,10 @@ import inspect
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from astrbot.api import logger
+from astrbot.core.agent.message import TextPart
 
 from ....clock import now as life_now
 from ....models import EmojiAssetRecord
@@ -14,7 +16,9 @@ from ...markers import LOG_PREFIX
 
 class EmojiGatherMixin:
     _PREPARED_VISUAL_MEDIA_ATTR = "_daily_life_prepared_visual_media"
+    _VISUAL_CONTEXT_FUTURE_ATTR = "_daily_life_visual_context_future"
     _VISUAL_MEDIA_PREPARE_TIMEOUT_SECONDS = 5.0
+    _GIF_VISION_BRIDGE_TIMEOUT_SECONDS = 45.0
 
     @staticmethod
     def _visual_media_sources(payload: dict[str, str]) -> list[str]:
@@ -25,9 +29,7 @@ class EmojiGatherMixin:
                 sources.append(value)
         return sources
 
-    async def _first_existing_visual_media_path(
-        self, sources: list[str]
-    ) -> str:
+    async def _first_existing_visual_media_path(self, sources: list[str]) -> str:
         for source in sources:
             value = str(source or "").strip()
             if not value or value.startswith(
@@ -44,9 +46,9 @@ class EmojiGatherMixin:
     @staticmethod
     def _visual_media_has_durable_source(sources: list[str]) -> bool:
         return any(
-            str(source or "").strip().startswith(
-                ("http://", "https://", "data:image/", "base64://")
-            )
+            str(source or "")
+            .strip()
+            .startswith(("http://", "https://", "data:image/", "base64://"))
             for source in sources
         )
 
@@ -74,7 +76,11 @@ class EmojiGatherMixin:
                 continue
 
             stable_path = ""
-            state = "deferred" if self._visual_media_has_durable_source(sources) else "failed"
+            state = (
+                "deferred"
+                if self._visual_media_has_durable_source(sources)
+                else "failed"
+            )
             if local_source:
                 cached_path = await self._cache_emoji_asset_path(
                     {"path": local_source},
@@ -115,8 +121,7 @@ class EmojiGatherMixin:
         if event is None or self.event_was_recalled(event, log_skip=True):
             return False
         if not any(
-            self._emoji_asset_is_image_item(item)
-            or self._emoji_asset_source_kind(item)
+            self._emoji_asset_is_image_item(item) or self._emoji_asset_source_kind(item)
             for item in self._event_message_items(event)
         ):
             setattr(event, self._PREPARED_VISUAL_MEDIA_ATTR, [])
@@ -148,6 +153,203 @@ class EmojiGatherMixin:
         prepared = await self._build_prepared_visual_media(event)
         setattr(event, self._PREPARED_VISUAL_MEDIA_ATTR, prepared)
         return prepared
+
+    @staticmethod
+    def _visual_media_source_looks_like_gif(source: str) -> bool:
+        value = str(source or "").strip()
+        if not value:
+            return False
+        if value.lower().startswith("data:image/gif"):
+            return True
+        parsed = urlparse(value)
+        path = parsed.path if parsed.scheme else value.split("?", 1)[0]
+        return Path(path).suffix.lower() == ".gif"
+
+    async def _prepared_visual_media_is_gif(self, entry: dict[str, Any]) -> bool:
+        payload = dict(entry.get("payload") or {})
+        sources = [
+            str(entry.get("path") or ""),
+            *(str(item or "") for item in list(entry.get("cache_sources") or [])),
+            *(str(payload.get(key) or "") for key in ("path", "file", "url", "image")),
+        ]
+        for source in dict.fromkeys(sources):
+            if await self._visual_media_source_is_gif(source):
+                return True
+        return False
+
+    async def _visual_media_source_is_gif(self, source: str) -> bool:
+        value = str(source or "").strip()
+        if self._visual_media_source_looks_like_gif(value):
+            return True
+        if not value or value.startswith(("http://", "https://", "base64://")):
+            return False
+        if value.startswith("file://"):
+            value = self._local_path_from_file_uri(value)
+        path = Path(value).expanduser()
+        try:
+            header = await asyncio.to_thread(self._read_visual_media_header, path)
+        except (OSError, ValueError):
+            return False
+        return header.startswith((b"GIF87a", b"GIF89a"))
+
+    @staticmethod
+    def _read_visual_media_header(path: Path) -> bytes:
+        with path.open("rb") as handle:
+            return handle.read(6)
+
+    async def _run_visual_context_task(
+        self,
+        event: Any,
+        completion: asyncio.Future,
+    ) -> None:
+        try:
+            await self._collect_visual_context_background(event)
+        except asyncio.CancelledError:
+            if not completion.done():
+                completion.set_result(False)
+            raise
+        except Exception:
+            if not completion.done():
+                completion.set_result(False)
+            raise
+        else:
+            if not completion.done():
+                completion.set_result(True)
+
+    async def _remove_gif_inputs_from_provider_request(
+        self,
+        req: Any,
+        *,
+        remove_all_images: bool = False,
+    ) -> int:
+        image_urls = list(getattr(req, "image_urls", []) or [])
+        removed_sources: list[str] = []
+        kept_sources: list[str] = []
+        for source in image_urls:
+            if remove_all_images or await self._visual_media_source_is_gif(
+                str(source or "")
+            ):
+                removed_sources.append(str(source or ""))
+            else:
+                kept_sources.append(source)
+        setattr(req, "image_urls", kept_sources)
+
+        parts = list(getattr(req, "extra_user_content_parts", []) or [])
+        kept_parts: list[Any] = []
+        for part in parts:
+            part_type = (
+                str(
+                    getattr(part, "type", "")
+                    or (part.get("type", "") if isinstance(part, dict) else "")
+                )
+                .strip()
+                .lower()
+            )
+            if part_type == "image_url":
+                image_url = getattr(part, "image_url", None)
+                direct_image_url = (
+                    part.get("image_url", "") if isinstance(part, dict) else ""
+                )
+                source = getattr(image_url, "url", "") or (
+                    image_url.get("url", "") if isinstance(image_url, dict) else ""
+                )
+                if not source and isinstance(direct_image_url, dict):
+                    source = direct_image_url.get("url", "")
+                elif not source:
+                    source = direct_image_url
+                if remove_all_images or await self._visual_media_source_is_gif(
+                    str(source or "")
+                ):
+                    continue
+            text = str(
+                getattr(part, "text", "")
+                or (part.get("text", "") if isinstance(part, dict) else "")
+            )
+            if removed_sources and any(
+                source and source in text for source in removed_sources
+            ):
+                continue
+            kept_parts.append(part)
+        setattr(req, "extra_user_content_parts", kept_parts)
+        return len(removed_sources)
+
+    @staticmethod
+    def _append_gif_visual_summary(req: Any, summaries: list[str]) -> None:
+        parts = getattr(req, "extra_user_content_parts", None)
+        if not isinstance(parts, list):
+            parts = []
+            setattr(req, "extra_user_content_parts", parts)
+        unique = list(
+            dict.fromkeys(
+                str(item or "").strip() for item in summaries if str(item or "").strip()
+            )
+        )
+        if unique:
+            body = "；".join(unique)
+            text = (
+                "<animated_image_caption>本轮用户发送了 GIF 动图。"
+                f"视觉模型识别结果：{body}。"
+                "请把这段描述作为本轮视觉事实回应，不要补充描述之外的画面细节。"
+                "</animated_image_caption>"
+            )
+        else:
+            text = (
+                "<animated_image_caption>本轮用户发送了 GIF 动图，"
+                "但视觉模型未能确认其内容。请自然说明暂时看不清动图内容，"
+                "不要猜测画面。</animated_image_caption>"
+            )
+        part = TextPart(text=text)
+        marker = getattr(part, "mark_as_temp", None)
+        parts.append(marker() if callable(marker) else part)
+
+    async def bridge_animated_visual_for_llm_request(
+        self,
+        event: Any,
+        req: Any,
+    ) -> bool:
+        """将 GIF 先交给视觉模型识别，再以文字摘要交给主对话模型。"""
+
+        entries = await self._prepared_visual_media_from_event(event)
+        gif_entries = [
+            entry
+            for entry in entries
+            if await self._prepared_visual_media_is_gif(entry)
+        ]
+        if not gif_entries:
+            return False
+
+        completion = getattr(event, self._VISUAL_CONTEXT_FUTURE_ATTR, None)
+        if isinstance(completion, asyncio.Future):
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(completion),
+                    timeout=self._GIF_VISION_BRIDGE_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.debug(
+                    f"{LOG_PREFIX} GIF 视觉转写等待超时，已移除原始动图并继续文本对话"
+                )
+            except Exception as exc:
+                logger.debug(f"{LOG_PREFIX} GIF 视觉转写未完成：{exc}")
+        else:
+            await self._collect_visual_context_background(event)
+
+        cache = self._visual_context_summary_cache()
+        summaries = [
+            str(cache.get(str(entry.get("fingerprint") or ""), "") or "").strip()
+            for entry in gif_entries
+        ]
+        removed = await self._remove_gif_inputs_from_provider_request(
+            req,
+            remove_all_images=len(gif_entries) == len(entries),
+        )
+        self._append_gif_visual_summary(req, summaries)
+        logger.debug(
+            f"{LOG_PREFIX} GIF 已转为视觉文字上下文："
+            f"动图={len(gif_entries)}；移除原始输入={removed}；"
+            f"识别={'成功' if any(summaries) else '未完成'}"
+        )
+        return True
 
     async def _cache_and_describe_emoji_asset(
         self,
@@ -308,11 +510,16 @@ class EmojiGatherMixin:
         if not scope:
             return False
         key = f"visual_context:{scope}:{message_id or id(event)}"
-        return self._schedule_background_task(
-            self._collect_visual_context_background(event),
+        completion = asyncio.get_running_loop().create_future()
+        setattr(event, self._VISUAL_CONTEXT_FUTURE_ATTR, completion)
+        scheduled = self._schedule_background_task(
+            self._run_visual_context_task(event, completion),
             label="图片上下文识别",
             key=key,
         )
+        if not scheduled and not completion.done():
+            completion.set_result(False)
+        return scheduled
 
     async def _collect_visual_context_background(self, event: Any) -> None:
         if self.event_was_recalled(event, log_skip=True):

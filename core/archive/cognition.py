@@ -20,6 +20,7 @@ from ..models import (
     ReflectionRecord,
     TemporalFactRecord,
 )
+from ..models.coerce import compact_explanation_text
 
 
 class CognitionArchiveMixin:
@@ -1130,7 +1131,7 @@ class CognitionArchiveMixin:
             decision=self._text(row["decision"]),
             scores=self._cognition_value(row["score_json"], default={}),
             evidence=self._cognition_value(row["evidence_json"], default=[]),
-            outcome=self._text(row["outcome"]),
+            outcome=compact_explanation_text(row["outcome"]),
             created_at=self._text(row["created_at"]),
             updated_at=self._text(row["updated_at"]),
         )
@@ -1177,7 +1178,7 @@ class CognitionArchiveMixin:
                     self._text(raw.get("decision")),
                     self._cognition_json(raw.get("scores"), default={}),
                     self._cognition_json(raw.get("evidence"), default=[]),
-                    self._text(raw.get("outcome")),
+                    compact_explanation_text(raw.get("outcome")),
                 ),
             )
             self._conn.commit()

@@ -1,9 +1,10 @@
 import unittest
 
+from core.runtime.spine.boot import SpineBootMixin
 from runtimehelpers import (
+    CORE_INTERNAL_SYSTEM_PROMPT,
     BackgroundTaskScheduler,
     Context,
-    CORE_INTERNAL_SYSTEM_PROMPT,
     DailyLifeRuntime,
     DataManager,
     DayRecord,
@@ -31,7 +32,6 @@ from runtimehelpers import (
     time,
     types,
 )
-from core.runtime.spine.boot import SpineBootMixin
 
 
 class RuntimeMediaTest(unittest.TestCase):
@@ -3526,6 +3526,103 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
                 vision_provider.vision_prompts[0]["image"], str(cached_path)
             )
             self.assertTrue(cached_path.is_file())
+
+    async def test_gif_visual_bridge_replaces_provider_image_with_text_summary(self):
+        vision_provider = Provider(
+            ['{"summary":"小猫伸出双爪比心","is_emoji_asset":true,"status":"ready"}'],
+            provider_id="vision-model",
+        )
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.context = Context(
+            vision_provider, providers={"vision-model": vision_provider}
+        )
+        runtime.config = LifeSettings.from_dict(
+            {"vision_config": {"provider": "vision-model"}}
+        )
+        runtime.archive = DataManager()
+
+        class Composer:
+            async def _get_provider(self, provider_id=""):
+                return runtime.context.providers.get(provider_id)
+
+            async def _cleanup_conversation(self, session_id):
+                return None
+
+        runtime.composer = Composer()
+        scheduled = []
+        runtime._schedule_background_task = lambda coro, label="", key="": (
+            scheduled.append((label, key, coro)) or True
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_root = Path(tmpdir)
+            runtime.data_path = tmp_root / "daily_life.db"
+            source_path = tmp_root / "incoming-animation.jpg"
+            source_path.write_bytes(b"GIF89a-animated-image")
+            event = Event(
+                sender_name="测试用户",
+                sender_id="10001",
+                unified_msg_origin="aiocqhttp:FriendMessage:10001",
+                message_id="m-gif-bridge",
+            )
+            event.message_str = "看看这个"
+            event.message_items = [{"type": "image", "path": str(source_path)}]
+            event.message_obj.message = event.message_items
+
+            runtime.note_structured_incoming_message(event)
+            await runtime.prepare_visual_media_from_event(event)
+            self.assertTrue(runtime.schedule_visual_context_from_event(event))
+            provider_copy = tmp_root / "provider-copy.png"
+            provider_copy.write_bytes(b"\x89PNG\r\n\x1a\nconverted-first-frame")
+            request = ProviderRequest(
+                prompt="<attachment>",
+                image_urls=[str(provider_copy)],
+                extra_user_content_parts=[
+                    types.SimpleNamespace(
+                        type="text",
+                        text=f"[Image Attachment: path {provider_copy}]",
+                    )
+                ],
+            )
+            visual_task = asyncio.create_task(scheduled[0][2])
+
+            bridged = await runtime.bridge_animated_visual_for_llm_request(
+                event, request
+            )
+            await visual_task
+
+            self.assertTrue(bridged)
+            self.assertEqual(request.image_urls, [])
+            texts = [
+                str(getattr(part, "text", ""))
+                for part in request.extra_user_content_parts
+            ]
+            self.assertEqual(len(texts), 1)
+            self.assertIn("小猫伸出双爪比心", texts[0])
+            self.assertNotIn("Image Attachment", texts[0])
+            self.assertEqual(len(vision_provider.vision_prompts), 1)
+
+    async def test_static_image_does_not_use_gif_visual_bridge(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.config = LifeSettings.from_dict({})
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_root = Path(tmpdir)
+            runtime.data_path = tmp_root / "daily_life.db"
+            source_path = tmp_root / "incoming.png"
+            source_path.write_bytes(b"\x89PNG\r\n\x1a\nplain-image")
+            event = Event(message_id="m-static-bridge")
+            event.message_items = [{"type": "image", "path": str(source_path)}]
+            event.message_obj.message = event.message_items
+            await runtime.prepare_visual_media_from_event(event)
+            request = ProviderRequest(image_urls=[str(source_path)])
+
+            bridged = await runtime.bridge_animated_visual_for_llm_request(
+                event, request
+            )
+
+            self.assertFalse(bridged)
+            self.assertEqual(request.image_urls, [str(source_path)])
 
     async def test_file_component_uses_async_get_file_without_reading_file_property(
         self,

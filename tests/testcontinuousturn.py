@@ -48,6 +48,9 @@ class ContinuousTurnTest(unittest.IsolatedAsyncioTestCase):
             runtime.continuous_turn_messages(second),
             ("明天下雨", "记得带伞出门"),
         )
+        self.assertGreaterEqual(
+            runtime.continuous_turn_intentional_wait_seconds(second), 0.04
+        )
 
         request = ProviderRequest(prompt=second.message_str)
         self.assertTrue(runtime.prepare_continuous_turn_llm_request(second, request))
@@ -97,6 +100,9 @@ class ContinuousTurnTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertGreaterEqual(elapsed, 0.04)
         self.assertLess(elapsed, 0.2)
+        self.assertGreaterEqual(
+            runtime.continuous_turn_intentional_wait_seconds(event), 0.04
+        )
 
     async def test_response_gate_wait_becomes_one_reply_at_the_deadline(self):
         runtime = self._runtime(continuous_turn_wait_seconds=0)

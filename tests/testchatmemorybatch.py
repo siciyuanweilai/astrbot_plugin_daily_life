@@ -328,6 +328,7 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("不能通过词面替换推断主体", prompt)
         self.assertIn("没有内容时字段留空", prompt)
         self.assertIn("不得复制 row_id、message_id、target_id", prompt)
+        self.assertIn("不复述输入中的具体日期、钟点或时间轴编号", prompt)
 
     def test_batch_payload_hides_internal_ids_only_from_readable_fields(self):
         batch = {

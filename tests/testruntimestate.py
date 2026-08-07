@@ -1412,6 +1412,8 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertTrue(applied)
         stored = await archive.get_day(today)
         self.assertEqual(stored.timeline[-1].activity, "和测试对象一起去老街散步")
+        markers = json.loads(stored.meta["commitment_reconcile_markers"])
+        self.assertTrue(markers[str(commitment.id)].startswith("v2:applied:"))
         pending = json.loads(stored.meta["pending_commitment_outfit"])
         self.assertEqual(pending["effective_time"], "17:10")
         self.assertEqual(
@@ -1419,6 +1421,119 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         )
         self.assertEqual(scheduled, [])
         self.assertIn("commitment_schedule_update", page_reasons)
+
+    async def test_retryable_commitment_failure_does_not_block_background_retry(self):
+        today = "2026-08-06"
+        now = datetime.datetime(2026, 8, 6, 14, 0)
+        archive = DataManager()
+        await archive.save_day(
+            DayRecord(
+                date=today,
+                timeline=[
+                    TimelineItem(time="13:00", activity="在家休息", status="放松"),
+                    TimelineItem(time="18:00", activity="独自散步", status="平静"),
+                ],
+            )
+        )
+        commitment = await archive.save_commitment(
+            CommitmentRecord(
+                content="傍晚和测试对象一起出门",
+                trigger_date=today,
+                people=["测试对象"],
+            )
+        )
+
+        class Composer:
+            def __init__(self):
+                self.calls = 0
+
+            async def reconcile_commitment_with_timeline(self, *args, **kwargs):
+                self.calls += 1
+                return None, {
+                    "should_apply": True,
+                    "_retryable": True,
+                    "location_issue": "地图服务暂时不可用",
+                }
+
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.archive = archive
+        runtime.composer = Composer()
+
+        first = await runtime.apply_commitment_to_current_day(commitment, now=now)
+        second = await runtime.apply_commitment_to_current_day(commitment, now=now)
+
+        self.assertFalse(first)
+        self.assertFalse(second)
+        self.assertEqual(runtime.composer.calls, 2)
+        stored = await archive.get_day(today)
+        self.assertNotIn("commitment_reconcile_markers", stored.meta)
+        self.assertEqual((await archive.get_commitment(commitment.id)).status, "active")
+
+    async def test_legacy_commitment_marker_is_reconciled_once(self):
+        today = "2026-08-06"
+        now = datetime.datetime(2026, 8, 6, 14, 0)
+        archive = DataManager()
+        commitment = await archive.save_commitment(
+            CommitmentRecord(
+                content="傍晚和测试对象一起出门",
+                trigger_date=today,
+                people=["测试对象"],
+            )
+        )
+        day = DayRecord(
+            date=today,
+            timeline=[
+                TimelineItem(time="13:00", activity="在家休息", status="放松"),
+                TimelineItem(time="18:00", activity="独自散步", status="平静"),
+            ],
+        )
+        legacy_signature = DailyLifeRuntime._commitment_reconcile_signature(
+            day, commitment
+        )
+        day.meta["commitment_reconcile_markers"] = json.dumps(
+            {str(commitment.id): legacy_signature},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        await archive.save_day(day)
+
+        class Composer:
+            def __init__(self):
+                self.calls = 0
+
+            async def reconcile_commitment_with_timeline(self, *args, **kwargs):
+                self.calls += 1
+                return (
+                    [
+                        TimelineItem(
+                            time="13:00", activity="在家休息", status="放松"
+                        ),
+                        TimelineItem(
+                            time="18:00",
+                            activity="和测试对象一起出门",
+                            status="期待",
+                        ),
+                    ],
+                    {
+                        "should_apply": True,
+                        "outfit_instruction": "适合同行的外出穿搭",
+                        "outfit_effective_time": "20:00",
+                    },
+                )
+
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.archive = archive
+        runtime.composer = Composer()
+        runtime.mark_page_status_changed = lambda reason="": async_return(1)
+
+        applied = await runtime.apply_commitment_to_current_day(commitment, now=now)
+
+        self.assertTrue(applied)
+        self.assertEqual(runtime.composer.calls, 1)
+        stored = await archive.get_day(today)
+        self.assertEqual(stored.timeline[-1].activity, "和测试对象一起出门")
+        markers = json.loads(stored.meta["commitment_reconcile_markers"])
+        self.assertTrue(markers[str(commitment.id)].startswith("v2:applied:"))
 
     async def test_confirmation_reuses_pending_invite_alternative(self):
         now = datetime.datetime(2026, 8, 6, 14, 0)
