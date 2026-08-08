@@ -3,13 +3,6 @@ import datetime
 import types
 import unittest
 
-from support import (
-    Event,
-    LifeSettings,
-    DailyLifeCommandCenter,
-    DataManager,
-    async_return,
-)
 from core.models import (
     DayRecord,
     EventRecord,
@@ -18,6 +11,13 @@ from core.models import (
     RelationshipNote,
     RelationshipRecord,
     TimelineItem,
+)
+from support import (
+    DailyLifeCommandCenter,
+    DataManager,
+    Event,
+    LifeSettings,
+    async_return,
 )
 
 
@@ -94,6 +94,65 @@ class LifeCommandsTest(unittest.IsolatedAsyncioTestCase):
         done = await center.manage_commitment(event, action="done", commitment_id=1)
         self.assertIn("已更新", done)
         self.assertEqual((await archive.get_commitment(1)).status, "done")
+
+    async def test_command_invite_saves_authoritative_commitment_before_day(self):
+        archive = DataManager()
+        await archive.save_day(
+            DayRecord(
+                date="2026-05-24",
+                timeline=[TimelineItem(time="15:00", activity="整理测试资料")],
+            )
+        )
+
+        class Composer:
+            async def handle_invite(self, *args, **kwargs):
+                return (
+                    "可以，一起去走走。",
+                    [
+                        TimelineItem(time="15:00", activity="整理测试资料"),
+                        TimelineItem(time="18:00", activity="去测试公园散步"),
+                    ],
+                    {"decision": "accept", "accept": True},
+                )
+
+            async def learn_preferences_from_payload(self, *args, **kwargs):
+                return None
+
+            async def persist_life_events_from_payload(self, *args, **kwargs):
+                return None
+
+        runtime = types.SimpleNamespace(
+            config=LifeSettings.from_dict({"state_config": {"enabled": False}}),
+            archive=archive,
+            composer=Composer(),
+            contact_resolver=types.SimpleNamespace(
+                resolve_event_sender=lambda event: async_return("测试对象")
+            ),
+            remember_interaction=lambda *args, **kwargs: async_return(None),
+            schedule_invite_outfit_sync=lambda *args, **kwargs: None,
+            _get_curr_period=lambda: "afternoon",
+            _resolve_command_target_date=lambda now: async_return(
+                ("2026-05-24", False)
+            ),
+        )
+        center = DailyLifeCommandCenter(runtime)
+        event = Event(message_id="command-invite-1")
+        event.message_str = "/生活 邀约 傍晚一起去测试公园"
+        req = await center._make_request(
+            ["/生活", "邀约", "傍晚一起去测试公园"],
+            target_date="2026-05-24",
+        )
+
+        results = [item async for item in center._invite(event, req)]
+
+        self.assertIn("稍等", results[0])
+        commitments = await archive.get_commitments(status="scheduled", limit=10)
+        self.assertEqual(len(commitments), 1)
+        self.assertEqual(commitments[0].source, "invite")
+        self.assertEqual(commitments[0].source_message_id, "command-invite-1")
+        self.assertEqual(commitments[0].content, "傍晚一起去测试公园")
+        day = await archive.get_day("2026-05-24")
+        self.assertEqual(day.timeline[-1].activity, "去测试公园散步")
 
     async def test_template_commands_are_removed(self):
         runtime = types.SimpleNamespace(

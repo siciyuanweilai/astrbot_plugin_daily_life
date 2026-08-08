@@ -236,7 +236,7 @@ const TODAY_FACT_EMPTY_TEXT = {
   moodColorText: "暂无心情色彩",
   scheduleTypeText: "暂无日程类型",
   scheduleToneText: "暂无日程基调",
-  scheduleIntentText: "暂无活动倾向",
+  scheduleIntentText: "暂无活动状态",
   currentOutfitText: "暂无穿搭",
   outfitDecisionText: "暂无判断",
 };
@@ -1276,17 +1276,49 @@ export function currentTimelinePair(day = {}, clock = currentClockDate(), option
     .map((item) => ({ minutes: parseTimeMinutes(item?.time), item }))
     .filter((entry) => entry.minutes !== null)
     .sort((left, right) => left.minutes - right.minutes);
+  const available = items.filter((entry) => {
+    const executionState = clean(entry.item?.execution_state, "planned");
+    return !["cancelled", "skipped", "expired"].includes(executionState);
+  });
+  const activeIndex = available.findIndex(
+    (entry) => clean(entry.item?.execution_state, "planned") === "active"
+  );
+  if (activeIndex >= 0) {
+    const nextEntry = available.slice(activeIndex + 1).find((entry) => {
+      const executionState = clean(entry.item?.execution_state, "planned");
+      return executionState !== "completed";
+    });
+    return {
+      current: available[activeIndex].item,
+      next: nextEntry?.item || null,
+    };
+  }
   let current = null;
   let next = null;
-  for (const entry of items) {
+  for (const entry of available) {
+    const executionState = clean(entry.item?.execution_state, "planned");
     if (entry.minutes <= nowMinutes) {
-      current = entry.item;
+      if (executionState !== "completed") current = entry.item;
       continue;
     }
-    next = entry.item;
-    break;
+    if (executionState !== "completed") {
+      next = entry.item;
+      break;
+    }
   }
   return { current, next };
+}
+
+function currentTimelineFactText(item = {}) {
+  if (!item || typeof item !== "object") return "";
+  const placeKind = clean(item.place_kind, "none");
+  const placeScope = clean(item.place_scope, "local");
+  if (placeKind === "transit") return placeScope === "travel" ? "旅行途中" : "途中";
+  if (placeKind === "home") return "居家";
+  if (placeScope === "travel" && ["poi", "generic"].includes(placeKind)) return "旅行中";
+  if (["poi", "generic"].includes(placeKind)) return "外出中";
+  if (placeKind === "online") return "线上活动";
+  return "";
 }
 
 export function currentScheduleIntentText(day = {}, clock = currentClockDate()) {
@@ -1308,6 +1340,8 @@ export function currentScheduleIntentText(day = {}, clock = currentClockDate()) 
   const lateNight = hour >= 23 || hour < 7;
 
   if (sleepDepth === "deep_sleep" || sleepDepth === "light_sleep") return "睡眠";
+  const timelineFact = currentTimelineFactText(current);
+  if (timelineFact) return timelineFact;
   if (sleepiness !== null && sleepiness >= 70 && energy !== null && energy <= 35) return "睡眠";
   if (lateNight || extendedNight) {
     if (beforeFirstItem || (extendedNight && afterLastItem)) return "居家";

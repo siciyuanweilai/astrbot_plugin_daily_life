@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from core.prompts import DEFAULT_WEB_TODAY_PROMPT
+from core.prompts import DEFAULT_TIMELINE_PROMPT, DEFAULT_WEB_TODAY_PROMPT
 from support import PLUGIN_ROOT, LifeSettings
 
 
@@ -86,6 +86,16 @@ class LifeSettingsTest(unittest.TestCase):
             for path in _schema_leaf_paths(schema[root], root)
         }
         self.assertEqual(expected - seen, set())
+
+    def test_timeline_schema_default_matches_runtime_default(self):
+        schema = json.loads(
+            (PLUGIN_ROOT / "_conf_schema.json").read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(
+            schema["story_engine_config"]["items"]["timeline_rules"]["default"],
+            DEFAULT_TIMELINE_PROMPT,
+        )
 
     def test_config_parsing_tolerates_bad_types(self):
         config = LifeSettings.from_dict(
@@ -1436,10 +1446,10 @@ class LifeSettingsTest(unittest.TestCase):
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertIn("version: 1.1.9", metadata)
-        self.assertIn("version-1.1.9", readme)
-        self.assertIn("v1.1.9 · 2026-08-07", changelog)
-        self.assertLess(changelog.index("v1.1.9"), changelog.index("v1.1.8"))
+        self.assertIn("version: 1.2.1", metadata)
+        self.assertIn("version-1.2.1", readme)
+        self.assertIn("v1.2.1 · 2026-08-08", changelog)
+        self.assertLess(changelog.index("v1.2.1"), changelog.index("v1.2.0"))
         self.assertLess(changelog.index("v1.1.8"), changelog.index("v1.1.7"))
         self.assertLess(changelog.index("v1.1.7"), changelog.index("v1.1.6"))
         self.assertLess(changelog.index("v1.1.6"), changelog.index("v1.1.5"))

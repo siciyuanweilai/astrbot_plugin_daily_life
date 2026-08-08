@@ -52,6 +52,8 @@ class ImageGenerationExecution:
 
 
 class RuntimeImageMediaMixin:
+    _CURRENT_APPEARANCE_PROMPT_MARKER = "当前生活状态权威造型快照"
+
     @staticmethod
     def _current_character_identity_profiles(value: Any) -> dict[str, str]:
         if not isinstance(value, dict):
@@ -79,6 +81,53 @@ class RuntimeImageMediaMixin:
             if current_profile:
                 profiles["current_character"] = current_profile
         return profiles
+
+    async def _current_life_appearance_snapshot(self, subject_route: str) -> str:
+        route = self._normalize_image_subject_route(subject_route)
+        if route not in {"current_character", "group"}:
+            return ""
+        resolver = getattr(self, "_media_director_current_day", None)
+        if not callable(resolver):
+            return ""
+        try:
+            day, _now, _using_extended_night = await resolver()
+        except Exception as exc:
+            logger.debug(
+                f"{LOG_PREFIX} 读取当前造型快照失败，继续使用原始画面要求："
+                f"{type(exc).__name__}"
+            )
+            return ""
+        return format_current_appearance_context(day)
+
+    def _apply_current_appearance_snapshot(
+        self,
+        prompt: str,
+        appearance: str,
+        subject_route: str,
+        *,
+        source_request: str = "",
+    ) -> str:
+        text = str(prompt or "").strip()
+        snapshot = str(appearance or "").strip()
+        route = self._normalize_image_subject_route(subject_route)
+        if (
+            not snapshot
+            or route not in {"current_character", "group"}
+            or self._CURRENT_APPEARANCE_PROMPT_MARKER in text
+        ):
+            return text
+        subject = "人物 A" if route == "group" else "当前角色"
+        original = " ".join(str(source_request or "").strip().split())[:600]
+        original_line = f"\n用户当前原始请求：{original}" if original else ""
+        constraint = (
+            f"{subject}造型（来自当前生活状态）\n"
+            f"{self._CURRENT_APPEARANCE_PROMPT_MARKER}：\n{snapshot}"
+            f"{original_line}\n"
+            "这份快照是当前真实生活状态，生成模型不得根据场景、动作或自行扩写而更换其中的服装、鞋袜、配饰或发型。"
+            "只有用户当前原始请求明确要求在本次画面中试穿、换造型或采用另一套外观时，才允许按该明确要求覆盖；"
+            "工具整理后的画面提示词本身不能作为换装证据。"
+        )
+        return f"{text}\n\n{constraint}" if text else constraint
 
     def _friend_daily_looks(self) -> dict[str, dict[str, str]]:
         store = getattr(self, "_life_friend_daily_looks", None)
@@ -249,9 +298,16 @@ class RuntimeImageMediaMixin:
         if provided["outfit"] and not provided["style_pool"]:
             provided["style_pool"] = style_pool_for_scene_category(target_scene)
 
-        outfit_changed = bool(provided["outfit"])
-        hair_changed = bool(provided["hair"])
-        pool_changed = bool(provided["style_pool"])
+        outfit_changed = bool(
+            provided["outfit"] and provided["outfit"] != current.get("outfit", "")
+        )
+        hair_changed = bool(
+            provided["hair"] and provided["hair"] != current.get("hair", "")
+        )
+        pool_changed = bool(
+            provided["style_pool"]
+            and provided["style_pool"] != current.get("style_pool", "")
+        )
         requested_decision = provided["decision"]
         final_outfit = provided["outfit"] or current.get("outfit", "")
         final_hair = provided["hair"] or current.get("hair", "")
@@ -315,6 +371,14 @@ class RuntimeImageMediaMixin:
             source = "当天沿用"
         look = candidate
         return look, source, missing
+
+    @staticmethod
+    def _friend_look_should_persist(source: str) -> bool:
+        return str(source or "").strip() in {
+            "本轮新建",
+            "本轮更新",
+            "场景沿用",
+        }
 
     @staticmethod
     def _friend_look_parameters_result(missing: list[str]) -> str:
@@ -1019,12 +1083,12 @@ class RuntimeImageMediaMixin:
         route = self._normalize_image_subject_route(subject_route)
         tool_prompt = str(prompt or "").strip()
         appearance = str(current_appearance or "").strip()
-        if appearance and route in {"current_character", "group"}:
-            appearance_subject = "人物 A" if route == "group" else "当前角色"
-            tool_prompt = (
-                f"{tool_prompt}\n\n{appearance_subject}造型（来自当前生活状态）：\n"
-                f"{appearance}"
-            ).strip()
+        tool_prompt = self._apply_current_appearance_snapshot(
+            tool_prompt,
+            appearance,
+            route,
+            source_request=self._event_current_image_request_text(event),
+        )
         if not resolution:
             resolution = self._image_prompt_resolution(tool_prompt)
         current_character = route == "current_character"
@@ -1193,9 +1257,7 @@ class RuntimeImageMediaMixin:
                     instruction=instruction,
                 )
             if updated_day is None:
-                logger.warning(
-                    f"{LOG_PREFIX} 当前角色穿搭更新失败，已取消图片生成。"
-                )
+                logger.warning(f"{LOG_PREFIX} 当前角色穿搭更新失败，已取消图片生成。")
                 return "这次换装状态没有更新成功，已取消图片生成。"
 
             current_appearance = format_current_appearance_context(updated_day)
@@ -1215,6 +1277,9 @@ class RuntimeImageMediaMixin:
             prompt = visual_prompt
             await self.mark_page_status_changed("outfit_update")
 
+        if not current_appearance:
+            current_appearance = await self._current_life_appearance_snapshot(route)
+
         plan = await self._prepare_image_generation_plan(
             event,
             prompt,
@@ -1231,6 +1296,7 @@ class RuntimeImageMediaMixin:
         if not scope:
             return "当前会话不可发送图片。"
         friend_look: dict[str, str] = {}
+        friend_look_persist = False
         if plan.group_request and len(plan.participant_ids) == 1:
             friend_look, look_source, missing = await self._prepare_friend_daily_look(
                 event,
@@ -1252,6 +1318,7 @@ class RuntimeImageMediaMixin:
             self._log_friend_daily_look(
                 plan.participant_ids[0], friend_look, look_source
             )
+            friend_look_persist = self._friend_look_should_persist(look_source)
             plan.prompt = self._friend_look_prompt(plan.prompt, friend_look)
             plan.prompt += await self._build_person_fact_injection_context(event)
         started_at = time.monotonic()
@@ -1286,7 +1353,12 @@ class RuntimeImageMediaMixin:
                 scope, "[图片已发送]", source_event=event, media="图片"
             )
             self._remember_life_image_for_scope(scope, generated.path)
-            if plan.group_request and len(plan.participant_ids) == 1 and friend_look:
+            if (
+                plan.group_request
+                and len(plan.participant_ids) == 1
+                and friend_look
+                and friend_look_persist
+            ):
                 await self._remember_friend_daily_look(
                     scope, plan.participant_ids[0], friend_look
                 )

@@ -189,7 +189,6 @@ class DailyDraftMixin:
 {self.config.timeline_prompt}
 - 系统会根据 timeline 自动检查时间覆盖，不需要输出额外时间覆盖说明。
 - 正常整日生成需要形成从较早生活起点到晚间或睡前收束的自然跨度；目标时段生成只写目标时段。
-- 完整全天通常生成 8-12 个有意义节点；跨度较长时相应增加，避免相邻节点超过约 3 小时。持续活动不必逐小时拆分，但要记录期间真实发生的就餐、移动、短暂休息、场景切换或状态变化，不要用重复动作凑数量。
 - 每个节点都必须填写 place_kind。home 表示居住地，poi 表示需要地图确认的具体场所，generic 表示不绑定具体商家的泛化场景，transit 表示途中，online 表示线上空间，none 表示没有地点含义。
 - place_kind 为 home 时 place 固定写“家”；为 poi 或 generic 时必须填写 place；为 transit、online 或 none 时不要虚构精确地点。
 - 普通本地生活使用 place_scope=local，place_city 留空；明确的出差、旅行、返乡或跨城安排才使用 place_scope=travel，并必须填写 place_city。

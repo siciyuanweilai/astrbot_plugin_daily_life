@@ -10,7 +10,7 @@ from .tables.domains import DOMAIN_INDEX_SQL, DOMAIN_SQL
 
 SCHEMA_VERSION_KEY = "schema_version"
 BASELINE_SCHEMA_VERSION = 1
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 10
 LEGACY_BASELINE_SCHEMA_FINGERPRINT = (
     "9e6243276bf6bd509f6019502e30192310da4197838bd0f7d478f0100f8750a5"
 )
@@ -29,8 +29,14 @@ PREVIOUS_V5_SCHEMA_FINGERPRINT = (
 PREVIOUS_V6_SCHEMA_FINGERPRINT = (
     "d23b0eb16fa2075c6dbf92a6b277e2101dc3e7607cf6ef53073cd61d2e8f653a"
 )
-CURRENT_SCHEMA_FINGERPRINT = (
+PREVIOUS_V8_SCHEMA_FINGERPRINT = (
     "62d201bcf9bc94f896bc1a30c014c18c0dac6ec11c11adfedf8e09cba429f140"
+)
+PREVIOUS_V9_SCHEMA_FINGERPRINT = (
+    "5648fde30660641f6ef5582ac778a1449b489923673d9e4f655aa76e1b88dbbd"
+)
+CURRENT_SCHEMA_FINGERPRINT = (
+    "188abaade1aace99b29cae4322db76a02dd738f77a284fea50e480ead88081f3"
 )
 
 MigrationStep = Callable[[sqlite3.Connection], None]
@@ -252,6 +258,46 @@ def _migrate_activity_session_status_semantics(conn: sqlite3.Connection) -> None
             )
 
 
+def _migrate_commitment_source_message_id(conn: sqlite3.Connection) -> None:
+    """为承诺补充稳定的来源消息标识。"""
+
+    columns = {
+        str(row[1]) for row in conn.execute("PRAGMA table_info(commitments)").fetchall()
+    }
+    if "source_message_id" not in columns:
+        conn.execute(
+            "ALTER TABLE commitments "
+            "ADD COLUMN source_message_id TEXT NOT NULL DEFAULT ''"
+        )
+
+
+def _migrate_timeline_location_facts(conn: sqlite3.Connection) -> None:
+    """为时间轴补齐地点、坐标和交通事实，避免刷新后丢失当前活动状态。"""
+
+    columns = {
+        str(row[1]) for row in conn.execute("PRAGMA table_info(timelines)").fetchall()
+    }
+    additions = {
+        "place": "TEXT NOT NULL DEFAULT ''",
+        "place_kind": "TEXT NOT NULL DEFAULT 'none'",
+        "place_scope": "TEXT NOT NULL DEFAULT 'local'",
+        "place_city": "TEXT NOT NULL DEFAULT ''",
+        "place_hint": "TEXT NOT NULL DEFAULT ''",
+        "travel_mode": "TEXT NOT NULL DEFAULT ''",
+        "place_address": "TEXT NOT NULL DEFAULT ''",
+        "place_latitude": "REAL",
+        "place_longitude": "REAL",
+        "place_coordinate_source": "TEXT NOT NULL DEFAULT ''",
+        "travel_origin": "TEXT NOT NULL DEFAULT ''",
+        "travel_provider": "TEXT NOT NULL DEFAULT ''",
+        "travel_minutes": "INTEGER NOT NULL DEFAULT 0",
+        "travel_distance_meters": "REAL NOT NULL DEFAULT 0",
+    }
+    for name, definition in additions.items():
+        if name not in columns:
+            conn.execute(f"ALTER TABLE timelines ADD COLUMN {name} {definition}")
+
+
 # 键是迁移完成后的目标版本；每个步骤只负责从前一版本升级一次。
 MIGRATIONS: dict[int, MigrationStep] = {
     2: _migrate_timeline_execution_state,
@@ -261,6 +307,8 @@ MIGRATIONS: dict[int, MigrationStep] = {
     6: _migrate_action_decision_dimensions,
     7: _migrate_day_revisions,
     8: _migrate_activity_session_status_semantics,
+    9: _migrate_commitment_source_message_id,
+    10: _migrate_timeline_location_facts,
 }
 
 
@@ -304,6 +352,8 @@ def is_baseline_schema(conn: sqlite3.Connection) -> bool:
         PREVIOUS_CURRENT_SCHEMA_FINGERPRINT,
         PREVIOUS_V5_SCHEMA_FINGERPRINT,
         PREVIOUS_V6_SCHEMA_FINGERPRINT,
+        PREVIOUS_V8_SCHEMA_FINGERPRINT,
+        PREVIOUS_V9_SCHEMA_FINGERPRINT,
         LEGACY_BASELINE_SCHEMA_FINGERPRINT,
         CURRENT_SCHEMA_FINGERPRINT,
     }
@@ -396,6 +446,8 @@ __all__ = [
     "PREVIOUS_BASELINE_SCHEMA_FINGERPRINT",
     "PREVIOUS_V5_SCHEMA_FINGERPRINT",
     "PREVIOUS_V6_SCHEMA_FINGERPRINT",
+    "PREVIOUS_V8_SCHEMA_FINGERPRINT",
+    "PREVIOUS_V9_SCHEMA_FINGERPRINT",
     "SCHEMA_VERSION",
     "SCHEMA_VERSION_KEY",
     "MigrationStep",

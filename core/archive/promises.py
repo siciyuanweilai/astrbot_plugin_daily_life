@@ -3,6 +3,13 @@ from typing import Any
 
 from ..models import CommitmentRecord
 
+_COMMITMENT_SOURCE_PRIORITY = {
+    "invite": 400,
+    "manual": 300,
+    "chat": 200,
+    "chat_batch": 100,
+}
+
 
 class CommitmentArchiveMixin:
     def _compose_commitment(self, row: sqlite3.Row) -> CommitmentRecord:
@@ -21,6 +28,7 @@ class CommitmentArchiveMixin:
             confidence=float(row["confidence"] or 0.0),
             source=row["source"],
             source_session=row["source_session"],
+            source_message_id=row["source_message_id"],
             source_message=row["source_message"],
             created_at=row["created_at"],
             activated_at=row["activated_at"],
@@ -40,13 +48,77 @@ class CommitmentArchiveMixin:
         item.confidence = max(min(float(item.confidence or 0.0), 1.0), 0.0)
 
         def dbwork():
+            if (
+                not item.id
+                and _COMMITMENT_SOURCE_PRIORITY.get(item.source, 0) > 0
+                and item.source_session
+                and item.source_message_id
+            ):
+                evidence_rows = self._conn.execute(
+                    """
+                    SELECT *
+                    FROM commitments
+                    WHERE source IN ('invite', 'manual', 'chat', 'chat_batch')
+                      AND source_session = ?
+                      AND source_message_id = ?
+                    ORDER BY id
+                    """,
+                    (item.source_session, item.source_message_id),
+                ).fetchall()
+                evidence_matches = []
+                for row in evidence_rows:
+                    existing = self._compose_commitment(row)
+                    same_slot = True
+                    for field in (
+                        "kind",
+                        "trigger_date",
+                        "trigger_time",
+                        "time_window",
+                    ):
+                        old_value = str(getattr(existing, field, "") or "").strip()
+                        new_value = str(getattr(item, field, "") or "").strip()
+                        if old_value and new_value and old_value != new_value:
+                            same_slot = False
+                            break
+                    if same_slot:
+                        evidence_matches.append(existing)
+                evidence_matches.sort(
+                    key=lambda existing: (
+                        -_COMMITMENT_SOURCE_PRIORITY.get(existing.source, 0),
+                        existing.id,
+                    )
+                )
+                if evidence_matches:
+                    existing = evidence_matches[0]
+                    incoming_priority = _COMMITMENT_SOURCE_PRIORITY.get(item.source, 0)
+                    existing_priority = _COMMITMENT_SOURCE_PRIORITY.get(
+                        existing.source, 0
+                    )
+                    if incoming_priority < existing_priority:
+                        return existing
+                    if incoming_priority > existing_priority:
+                        item.id = existing.id
+                    elif item.source != "chat_batch" or all(
+                        str(getattr(existing, field, "") or "").strip()
+                        == str(getattr(item, field, "") or "").strip()
+                        for field in (
+                            "content",
+                            "kind",
+                            "trigger_date",
+                            "trigger_time",
+                            "time_window",
+                            "place",
+                        )
+                    ):
+                        return existing
             if item.id:
                 self._conn.execute(
                     """
                     UPDATE commitments
                     SET content = ?, kind = ?, trigger_date = ?, trigger_time = ?,
                         time_window = ?, place = ?, status = ?, confidence = ?,
-                        source = ?, source_session = ?, source_message = ?,
+                        source = ?, source_session = ?, source_message_id = ?,
+                        source_message = ?,
                         activated_at = ?, completed_at = ?
                     WHERE id = ?
                     """,
@@ -61,6 +133,7 @@ class CommitmentArchiveMixin:
                         item.confidence,
                         item.source,
                         item.source_session,
+                        item.source_message_id,
                         item.source_message,
                         item.activated_at,
                         item.completed_at,
@@ -73,10 +146,11 @@ class CommitmentArchiveMixin:
                     """
                     INSERT INTO commitments(
                         content, kind, trigger_date, trigger_time, time_window, place,
-                        status, confidence, source, source_session, source_message,
+                        status, confidence, source, source_session,
+                        source_message_id, source_message,
                         activated_at, completed_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         item.content,
@@ -89,6 +163,7 @@ class CommitmentArchiveMixin:
                         item.confidence,
                         item.source,
                         item.source_session,
+                        item.source_message_id,
                         item.source_message,
                         item.activated_at,
                         item.completed_at,

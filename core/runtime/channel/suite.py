@@ -260,6 +260,7 @@ class RuntimePhotoSuiteMediaMixin:
             if route == "group" and len(participant_ids) != 1:
                 return "请明确选择一位已配置参考图的好友再生成合影套图。"
             friend_look: dict[str, str] = {}
+            friend_look_persist = False
             if route == "group":
                 (
                     friend_look,
@@ -287,6 +288,10 @@ class RuntimePhotoSuiteMediaMixin:
                 self._log_friend_daily_look(
                     participant_ids[0], friend_look, look_source
                 )
+                friend_look_persist = self._friend_look_should_persist(look_source)
+            current_appearance = ""
+            if not reference_image and not continue_last_result:
+                current_appearance = await self._current_life_appearance_snapshot(route)
             task_id = uuid.uuid4().hex
             task_dir = self._photo_suite_root() / task_id
             manifest_path = task_dir / "manifest.json"
@@ -309,7 +314,10 @@ class RuntimePhotoSuiteMediaMixin:
                 "identity_profiles": await self._resolve_life_identity_profiles(
                     event, route
                 ),
+                "current_appearance": current_appearance,
+                "source_request": self._event_current_image_request_text(event),
                 "friend_look": friend_look,
+                "friend_look_persist": friend_look_persist,
                 "reference_path": "",
                 "status": "pending",
                 "shots": [],
@@ -373,6 +381,12 @@ class RuntimePhotoSuiteMediaMixin:
                 reference, manifest_path.parent
             )
             planning_prompt = str(manifest.get("prompt") or "")
+            planning_prompt = self._apply_current_appearance_snapshot(
+                planning_prompt,
+                str(manifest.get("current_appearance") or ""),
+                str(manifest.get("subject_route") or "free"),
+                source_request=str(manifest.get("source_request") or ""),
+            )
             if (
                 self._normalize_image_subject_route(manifest.get("subject_route"))
                 == "group"
@@ -520,6 +534,7 @@ class RuntimePhotoSuiteMediaMixin:
             == "group"
             and len(participants) == 1
             and (friend_look["outfit"] or friend_look["hair"])
+            and bool(manifest.get("friend_look_persist", True))
         ):
             await self._remember_friend_daily_look(scope, participants[0], friend_look)
         self.note_life_media_sent(event or scope, "图片")
@@ -725,6 +740,12 @@ class RuntimePhotoSuiteMediaMixin:
         self, event: Any, manifest: dict[str, Any], prompt: str
     ) -> Any:
         route = self._normalize_image_subject_route(manifest.get("subject_route"))
+        prompt = self._apply_current_appearance_snapshot(
+            prompt,
+            str(manifest.get("current_appearance") or ""),
+            route,
+            source_request=str(manifest.get("source_request") or ""),
+        )
         participants = self._normalize_image_participants(manifest.get("participants"))
         aspect_ratio = str(manifest.get("aspect_ratio") or "").strip()
         resolution = str(manifest.get("resolution") or "").strip().upper()

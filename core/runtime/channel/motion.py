@@ -28,7 +28,10 @@ class LifeVideoRequest:
     participants: tuple[str, ...]
     identity_profiles: dict[str, str]
     person_fact_context: str
+    current_appearance: str
+    source_request: str
     friend_look: dict[str, str]
+    friend_look_persist: bool
     continue_last_result: bool
     initial_reference_image: str
 
@@ -39,6 +42,7 @@ class LifeVideoExecution:
     route: str
     participants: tuple[str, ...]
     friend_look: dict[str, str]
+    friend_look_persist: bool
     first_frame: str
     reference_image: str
 
@@ -269,6 +273,7 @@ class RuntimeVideoMediaMixin:
             prefer_last_generated=bool(continue_last_result),
         )
         friend_look: dict[str, str] = {}
+        friend_look_persist = False
         if route == "group" and not initial_reference_image:
             if len(participant_ids) != 1:
                 return "没有现成合影首帧，请选择一位已配置参考图的好友。"
@@ -290,6 +295,10 @@ class RuntimeVideoMediaMixin:
                 )
                 return self._friend_look_parameters_result(required)
             self._log_friend_daily_look(participant_ids[0], friend_look, look_source)
+            friend_look_persist = self._friend_look_should_persist(look_source)
+        current_appearance = ""
+        if not initial_reference_image:
+            current_appearance = await self._current_life_appearance_snapshot(route)
         request_id = self._register_life_video_request(scope, prompt, event)
         request = LifeVideoRequest(
             scope=scope,
@@ -299,15 +308,16 @@ class RuntimeVideoMediaMixin:
             direct_prompt=direct_prompt,
             subject_route=route,
             participants=tuple(participant_ids),
-            identity_profiles=await self._resolve_life_identity_profiles(
-                event, route
-            ),
+            identity_profiles=await self._resolve_life_identity_profiles(event, route),
             person_fact_context=(
                 await self._build_person_fact_injection_context(event)
                 if route == "group" and participant_ids
                 else ""
             ),
+            current_appearance=current_appearance,
+            source_request=self._event_current_image_request_text(event),
             friend_look=dict(friend_look),
+            friend_look_persist=friend_look_persist,
             continue_last_result=bool(continue_last_result),
             initial_reference_image=str(initial_reference_image or "").strip(),
         )
@@ -370,7 +380,13 @@ class RuntimeVideoMediaMixin:
                 prefer_last_generated=request.continue_last_result,
             )
         first_frame = ""
-        generation_prompt = request.prompt + request.person_fact_context
+        generation_prompt = self._apply_current_appearance_snapshot(
+            request.prompt,
+            request.current_appearance,
+            route,
+            source_request=request.source_request,
+        )
+        generation_prompt += request.person_fact_context
         if not reference_image:
             if route == "group":
                 if len(participant_ids) != 1:
@@ -404,6 +420,7 @@ class RuntimeVideoMediaMixin:
             route=route,
             participants=participant_ids,
             friend_look=request.friend_look,
+            friend_look_persist=request.friend_look_persist,
             first_frame=first_frame,
             reference_image=reference_image,
         )
@@ -453,6 +470,7 @@ class RuntimeVideoMediaMixin:
             execution.route == "group"
             and len(execution.participants) == 1
             and execution.friend_look
+            and execution.friend_look_persist
         ):
             await self._remember_friend_daily_look(
                 request.scope,

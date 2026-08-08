@@ -443,7 +443,13 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
             return cleaned
         head = cleaned[: max_segments - 1]
         tail_parts = cleaned[max_segments - 1 :]
-        tail_raw = "".join(segment.raw_text for segment in tail_parts).strip()
+        tail_raw = tail_parts[0].raw_text.strip()
+        previous = tail_parts[0]
+        for segment in tail_parts[1:]:
+            if previous.break_kind == "strong" and not previous.separator:
+                tail_raw += " "
+            tail_raw += segment.raw_text.strip()
+            previous = segment
         if not tail_raw:
             return head
         tail_last = tail_parts[-1]
@@ -629,7 +635,10 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
                     )
                 current = unit_text
             else:
-                current = f"{current}{unit_text}"
+                if current and current_break == "strong" and not current_separator:
+                    current = f"{current} {unit_text}"
+                else:
+                    current = f"{current}{unit_text}"
             current_break = unit.break_kind
             current_separator = unit.separator
         segment_raw = current.strip()

@@ -1924,6 +1924,47 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(json.loads(result)["status"], "sent")
         self.assertEqual(generate_calls, [(prompt, {})])
 
+    async def test_life_image_generate_current_character_locks_current_appearance(
+        self,
+    ):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.context = Context(Provider([]))
+        runtime.config = LifeSettings.from_dict({})
+        runtime.archive = DataManager()
+        generate_calls = []
+        runtime._current_life_appearance_snapshot = lambda route: async_return(
+            "当前穿搭：浅杏色吊带搭配白色高腰短裤和米白厚底凉鞋\n"
+            "当前发型细节：黑色长发自然披肩"
+        )
+
+        class ImageService:
+            def can_edit_image(self):
+                return False
+
+            def first_character_reference_image(self):
+                return ""
+
+            async def generate_image(self, prompt, **kwargs):
+                generate_calls.append((prompt, kwargs))
+                return types.SimpleNamespace(path=Path("life.png"))
+
+        runtime.media = types.SimpleNamespace(image=ImageService())
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
+        event.message_str = "拍张现在的照片"
+
+        result = await runtime.life_image_generate(
+            event,
+            "公园长椅上的生活照，穿浅蓝色衬衫和帆布鞋",
+            subject_route="current_character",
+        )
+
+        self.assertEqual(json.loads(result)["status"], "sent")
+        generated_prompt = generate_calls[0][0]
+        self.assertIn("当前生活状态权威造型快照", generated_prompt)
+        self.assertIn("浅杏色吊带搭配白色高腰短裤", generated_prompt)
+        self.assertIn("用户当前原始请求：拍张现在的照片", generated_prompt)
+        self.assertIn("工具整理后的画面提示词本身不能作为换装证据", generated_prompt)
+
     async def test_life_image_generate_group_uses_structured_friend_profile(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.context = Context(Provider([]))
@@ -3076,6 +3117,39 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             {"current_character": "整体纤细匀称，上半身曲线自然丰满"},
         )
         self.assertEqual(len(profile_calls), 1)
+        for coro in scheduled:
+            coro.close()
+
+    async def test_photo_suite_snapshots_current_appearance_for_new_character_suite(
+        self,
+    ):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        root = Path(tempfile.mkdtemp())
+        runtime.data_path = root / "daily_life.db"
+        runtime._current_life_appearance_snapshot = lambda route: async_return(
+            "当前穿搭：白色短袖搭配深蓝色长裤\n当前发型名称：低马尾"
+        )
+        scheduled = []
+        runtime._schedule_background_task = lambda coro, label="", key="": (
+            scheduled.append(coro) or True
+        )
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
+        event.message_str = "拍三张现在的生活照"
+
+        result = await runtime.life_photo_suite_generate(
+            event,
+            "公园里不同角度的生活套图",
+            count=3,
+            subject_route="current_character",
+        )
+
+        self.assertEqual(json.loads(result)["status"], "pending")
+        manifests = list(
+            (root / "generated" / "images" / "suites").glob("*/manifest.json")
+        )
+        manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+        self.assertIn("白色短袖搭配深蓝色长裤", manifest["current_appearance"])
+        self.assertEqual(manifest["source_request"], "拍三张现在的生活照")
         for coro in scheduled:
             coro.close()
 

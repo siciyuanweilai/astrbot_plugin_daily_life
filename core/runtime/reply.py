@@ -193,7 +193,9 @@ class SemanticSegmentRuntimeMixin:
     @staticmethod
     def _semantic_segment_source_lines(text: str) -> tuple[str, ...]:
         return tuple(
-            line.strip() for line in str(text or "").strip().splitlines() if line.strip()
+            line.strip()
+            for line in str(text or "").strip().splitlines()
+            if line.strip()
         )
 
     @staticmethod
@@ -216,6 +218,47 @@ class SemanticSegmentRuntimeMixin:
         )
 
     @classmethod
+    def _semantic_segment_limit_delivery_count(
+        cls,
+        plan: SemanticSegmentPlan,
+        max_segments: int,
+    ) -> SemanticSegmentPlan:
+        """Bundle overflow semantic parts into the final outgoing message.
+
+        Args:
+            plan: Valid semantic plan before delivery limiting.
+            max_segments: Maximum number of outgoing text messages.
+
+        Returns:
+            A plan capped to the delivery limit with readable boundaries.
+        """
+        limit = max(1, int(max_segments or 1))
+        if len(plan.segments) <= limit:
+            return plan
+        head = list(plan.segments[: limit - 1])
+        tail = list(plan.segments[limit - 1 :])
+        merged_text = tail[0].text
+        for segment in tail[1:]:
+            right_text = str(segment.text or "")
+            if (
+                merged_text
+                and right_text
+                and not merged_text[-1].isspace()
+                and not right_text[0].isspace()
+                and merged_text[-1] not in "，。！？；、：,.!?;:~～…—-"
+            ):
+                merged_text += " "
+            merged_text += segment.text
+        head.append(
+            SegmentPart(
+                merged_text,
+                relation=tail[0].relation,
+                pause=tail[-1].pause,
+            )
+        )
+        return cls._semantic_segment_replace_parts(plan, tuple(head))
+
+    @classmethod
     def _semantic_segment_respect_source_lines(
         cls,
         plan: SemanticSegmentPlan,
@@ -226,11 +269,7 @@ class SemanticSegmentRuntimeMixin:
         max_segments: int,
     ) -> SemanticSegmentPlan:
         lines = cls._semantic_segment_source_lines(raw_text)
-        if (
-            len(lines) <= 1
-            or len(lines) > max_segments
-            or "".join(lines) != source_text
-        ):
+        if len(lines) <= 1 or "".join(lines) != source_text:
             return plan
 
         segment_spans: list[tuple[int, int, SegmentPart]] = []
@@ -288,7 +327,7 @@ class SemanticSegmentRuntimeMixin:
                 if aligned[index][0] == aligned[index + 1][0]
             ]
             if not candidates:
-                return plan
+                break
             _, merge_index = min(candidates)
             line_index, first = aligned[merge_index]
             _, second = aligned[merge_index + 1]
@@ -449,9 +488,7 @@ class SemanticSegmentRuntimeMixin:
         raw_segments = payload.get("segments")
         if not isinstance(raw_segments, list):
             return None
-        settings = getattr(self.config, "chat_style", None)
-        max_segments = max(1, int(getattr(settings, "semantic_max_segments", 10) or 10))
-        if not raw_segments or len(raw_segments) > max_segments:
+        if not raw_segments:
             return None
         segments: list[SegmentPart] = []
         for raw in raw_segments:
@@ -603,6 +640,7 @@ class SemanticSegmentRuntimeMixin:
                     length_hint=length_hint,
                     max_segments=max_segments,
                 )
+                plan = self._semantic_segment_limit_delivery_count(plan, max_segments)
                 self._semantic_segment_metrics["segmented"] = (
                     self._semantic_segment_metrics.get("segmented", 0) + 1
                 )
@@ -867,6 +905,62 @@ class SemanticSegmentRuntimeMixin:
             return True
         if outcome.status == "failed":
             self._semantic_segment_metrics["failed"] += 1
+            if outcome.sent_count > 0:
+                logger.debug(
+                    f"{LOG_PREFIX} 模型语义分段发送中断：已发送 "
+                    f"{outcome.sent_count}/{len(pending)} 条；为避免重复发送，"
+                    "不再回退整段回复。"
+                )
+                return True
+
+            try:
+                from .style import _ChatStyleSegmentPlan
+
+                source_text = "".join(segment.text for segment in pending)
+                natural_segments = [
+                    _ChatStyleSegmentPlan(
+                        raw_text=segment.text,
+                        text=segment.text,
+                        separator="",
+                        break_kind=("tail" if index == len(pending) - 1 else "strong"),
+                    )
+                    for index, segment in enumerate(pending)
+                ]
+                restored = self._replace_text_result(event, source_text)
+                fallback_ready = restored and self._replace_text_result_with_segments(
+                    event, natural_segments
+                )
+            except Exception as exc:
+                logger.debug(
+                    f"{LOG_PREFIX} 语义发送失败后的自然分段准备失败："
+                    f"{type(exc).__name__}",
+                    exc_info=True,
+                )
+                fallback_ready = False
+
+            if fallback_ready:
+                try:
+                    delattr(event, self._SEMANTIC_SEGMENT_PLAN_ATTR)
+                except AttributeError:
+                    pass
+                setattr(event, self._SEMANTIC_SEGMENT_PENDING_ATTR, [])
+                setattr(event, "_daily_life_natural_fallback_active", True)
+                self._semantic_segment_metrics["fallback_natural"] = (
+                    self._semantic_segment_metrics.get("fallback_natural", 0) + 1
+                )
+                logger.debug(
+                    f"{LOG_PREFIX} 模型语义分段发送失败，已改用自然分段："
+                    f"{outcome.error}"
+                )
+                natural_sender = getattr(
+                    self, "send_chat_style_segments_if_needed", None
+                )
+                if callable(natural_sender) and await natural_sender(event):
+                    return True
+                self._replace_text_result(
+                    event, "\n".join(segment.text for segment in pending)
+                )
+
             logger.debug(
                 f"{LOG_PREFIX} 模型语义分段发送失败，保留默认发送：{outcome.error}"
             )

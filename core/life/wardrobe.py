@@ -103,8 +103,12 @@ def decision_for_occurred_outfit(
 OUTFIT_CONTINUITY_RULES = (
     f"scene_category 只能写 {OUTFIT_SCENE_CATEGORY_ENUM}，只描述当前真实场景；"
     f"style_pool 只能写 {OUTFIT_STYLE_POOL_ENUM}，描述身上实际穿着，地点与衣着不能强制绑定。\n"
+    "决定 keep 前分别审视主体服装、鞋履、外层和随身配饰是否适合当前活动；"
+    "不能因为主体衣物仍舒适，就忽略局部组成对居住、家务、休息、睡眠、天气或公共场景的不适配。\n"
     "回家、进入室内或时段变化不等于已经换衣；衣服仍舒适干净或之后还要出门时可以继续穿。\n"
-    "keep 延续当前 outfit、style、hair_style、hair；partial_change 只调整外层、鞋履、配饰或发型，主体衣物保持连续。\n"
+    "短暂停留且很快再次外出时可以保持合理的外出组成；进入持续居家、家务、休息或睡眠节奏时，"
+    "应按实际舒适度和活动需要局部调整，不得仅因之后还有外出安排就忽略眼前状态。\n"
+    "keep 延续当前 outfit、style、hair_style、hair；partial_change 只调整不适配的外层、鞋履、配饰或发型，主体衣物保持连续。\n"
     "淋雨、出汗、弄脏、明显不舒服或准备长时间放松/做家务时才考虑 change；"
     "洗澡或明确进入睡前状态时使用 sleepwear，转向外出且当前穿搭不合适时使用 outdoor。"
 )

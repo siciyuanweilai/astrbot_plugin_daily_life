@@ -74,7 +74,7 @@ class TemporalMemoryIntegrationTest(unittest.IsolatedAsyncioTestCase):
                         "predicate": "favorite_food",
                         "object_value": "窝蛋牛肉煲仔饭",
                         "confidence": 0.9,
-                        "source_message_id": "m11",
+                        "source_message_id": "11",
                         "evidence_signal": "reinforce",
                         "evidence_summary": "对方明确补充了口味。",
                     },
@@ -98,6 +98,39 @@ class TemporalMemoryIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(runtime.archive.signals), 1)
         self.assertEqual(runtime.archive.signals[0]["signal"], "reinforce")
         json.dumps(fact["provenance"])
+
+    async def test_stale_batch_fact_does_not_attach_signal_to_current_fact(self):
+        runtime = Runtime()
+
+        async def keep_current_fact(operation, payload):
+            runtime.archive.writes.append((operation, payload))
+            return SimpleNamespace(
+                id=9,
+                source="life_action_receipt",
+                source_id="receipt-1",
+            )
+
+        runtime.archive.write_temporal_fact = keep_current_fact
+        saved = await runtime._save_batch_temporal_facts(
+            {
+                "temporal_facts": [
+                    {
+                        "operation": "UPDATE",
+                        "subject": "self",
+                        "predicate": "current_place",
+                        "object_value": "旧测试地点",
+                        "confidence": 0.9,
+                        "source_message_id": "11",
+                        "evidence_signal": "dispute",
+                        "evidence_summary": "较早消息中的地点描述。",
+                    }
+                ]
+            },
+            self.batch(),
+        )
+
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(runtime.archive.signals, [])
 
 
 if __name__ == "__main__":

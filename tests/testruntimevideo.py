@@ -159,6 +159,60 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             )
         )
 
+    async def test_life_video_new_first_frame_locks_current_appearance(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.context = Context(Provider([]))
+        runtime.config = LifeSettings.from_dict({})
+        runtime.archive = DataManager()
+        self._stub_media_director(runtime)
+        runtime._current_life_appearance_snapshot = lambda route: async_return(
+            "当前穿搭：浅杏色吊带搭配白色高腰短裤和米白厚底凉鞋\n"
+            "当前发型名称：自然披肩长发"
+        )
+        image_path = Path(tempfile.mkdtemp()) / "first-frame.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\nimage")
+        image_calls = []
+        video_calls = []
+
+        async def generate_image(prompt, **kwargs):
+            image_calls.append((prompt, kwargs))
+            return types.SimpleNamespace(path=image_path)
+
+        runtime.media = types.SimpleNamespace(
+            image=types.SimpleNamespace(
+                generate_image=generate_image,
+                _load_reference_image=lambda reference: async_return(
+                    (b"first-frame", "image/png")
+                ),
+            ),
+            video=types.SimpleNamespace(
+                generate_video=lambda prompt, image_bytes=None, **kwargs: (
+                    video_calls.append((prompt, image_bytes, kwargs))
+                    or async_return(
+                        types.SimpleNamespace(url="https://example.com/life.mp4")
+                    )
+                )
+            ),
+        )
+        scheduled = []
+        runtime._schedule_background_task = lambda coro, label="", key="": (
+            scheduled.append(coro) or True
+        )
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
+        event.message_str = "拍段现在的视频"
+
+        result = await runtime.life_video_generate(
+            event,
+            "公园里挥手，穿浅蓝色衬衫和白色帆布鞋",
+            subject_route="current_character",
+        )
+
+        self.assertEqual(json.loads(result)["status"], "pending")
+        await scheduled[0]
+        self.assertIn("当前生活状态权威造型快照", image_calls[0][0])
+        self.assertIn("浅杏色吊带搭配白色高腰短裤", image_calls[0][0])
+        self.assertIn("工具整理后的画面提示词本身不能作为换装证据", video_calls[0][0])
+
     async def test_life_video_generate_resolves_agent_context_event(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.context = Context(Provider([]))

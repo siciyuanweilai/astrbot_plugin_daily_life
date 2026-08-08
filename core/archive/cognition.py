@@ -26,9 +26,39 @@ from ..models.coerce import compact_explanation_text
 class CognitionArchiveMixin:
     """持久化时间化认知、任务、情绪和动作结算。"""
 
+    _TEMPORAL_SOURCE_PRIORITY = {
+        "life_action_receipt": 500,
+        "life_action": 450,
+        "state_refresh": 400,
+        "daily_state": 350,
+        "invite": 300,
+        "manual": 300,
+        "chat": 200,
+        "chat_batch": 100,
+    }
+
     @staticmethod
     def _cognition_now() -> str:
         return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    @staticmethod
+    def _cognition_timestamp(value: Any) -> datetime.datetime | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = f"{text[:-1]}+00:00"
+        try:
+            parsed = datetime.datetime.fromisoformat(text)
+        except ValueError:
+            return None
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+        return parsed
+
+    @classmethod
+    def _temporal_source_priority(cls, source: Any) -> int:
+        return cls._TEMPORAL_SOURCE_PRIORITY.get(str(source or "").strip(), 250)
 
     @staticmethod
     def _cognition_json(value: Any, *, default: Any) -> str:
@@ -115,6 +145,27 @@ class CognitionArchiveMixin:
             ).fetchone()
             if action == "NONE":
                 return self._compose_temporal_fact(current) if current else None
+            if current is not None:
+                incoming_time = self._cognition_timestamp(effective_at)
+                current_time = self._cognition_timestamp(
+                    current["valid_from"]
+                    or current["observed_at"]
+                    or current["created_at"]
+                )
+                is_older = (
+                    incoming_time is not None
+                    and current_time is not None
+                    and incoming_time < current_time
+                )
+                is_lower_at_same_time = (
+                    incoming_time is not None
+                    and current_time is not None
+                    and incoming_time == current_time
+                    and self._temporal_source_priority(item.source)
+                    < self._temporal_source_priority(current["source"])
+                )
+                if is_older or is_lower_at_same_time:
+                    return self._compose_temporal_fact(current)
             if action == "INVALIDATE":
                 if not current:
                     return None
@@ -325,7 +376,10 @@ class CognitionArchiveMixin:
                 "provenance": provenance or {},
             },
         )
-        if fact and operation != "NONE" and evidence_summary:
+        wrote_new_version = bool(
+            fact and operation != "NONE" and (current is None or fact.id != current.id)
+        )
+        if wrote_new_version and evidence_summary:
             await self.add_fact_evidence_signal(
                 {
                     "fact_id": fact.id,
@@ -1041,9 +1095,7 @@ class CognitionArchiveMixin:
 
         return await self._run_db(dbwork)
 
-    async def finalize_durable_task(
-        self, task_id: int, result: dict[str, Any]
-    ) -> bool:
+    async def finalize_durable_task(self, task_id: int, result: dict[str, Any]) -> bool:
         """收束尚未被工作器租用的已完成任务。
 
         适用于“产物已生成，当前请求正在投递”的短窗口。任务先入库以便
@@ -1343,9 +1395,7 @@ class CognitionArchiveMixin:
 
         return await self._run_db(dbwork)
 
-    def _compose_life_action_receipt(
-        self, row: sqlite3.Row
-    ) -> LifeActionReceiptRecord:
+    def _compose_life_action_receipt(self, row: sqlite3.Row) -> LifeActionReceiptRecord:
         return LifeActionReceiptRecord(
             id=int(row["id"] or 0),
             receipt_id=self._text(row["receipt_id"]),

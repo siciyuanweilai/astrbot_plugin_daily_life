@@ -453,6 +453,150 @@ class SemanticSegmentTest(unittest.TestCase):
         self.assertIsNone(event.get_result())
         self.assertEqual(refresh_calls, [event])
 
+    def test_semantic_send_failure_falls_back_to_natural_segment_delivery(self):
+        runtime = self._runtime(
+            json.dumps(
+                {
+                    "segments": [
+                        {
+                            "text": "出门前拍的",
+                            "relation": "lead",
+                            "pause": "short",
+                        },
+                        {
+                            "text": "帽子已经戴上了",
+                            "relation": "add",
+                            "pause": "short",
+                        },
+                        {
+                            "text": "你那边到了没",
+                            "relation": "question",
+                            "pause": "none",
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        )
+        runtime.context = Context(
+            Provider([]), config={"t2i": False, "t2i_word_threshold": 120}
+        )
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10004")
+        event.set_result(
+            event.chain_result(
+                [types.SimpleNamespace(text="出门前拍的\n帽子已经戴上了\n你那边到了没")]
+            )
+        )
+        self.assertTrue(asyncio.run(runtime.apply_semantic_segment_before_send(event)))
+
+        original_send = event.send
+        attempts = 0
+
+        async def fail_first_send(message):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("首次分段发送失败")
+            await original_send(message)
+
+        event.send = fail_first_send
+        sent = asyncio.run(runtime.send_semantic_segments_if_needed(event))
+
+        self.assertTrue(sent)
+        self.assertEqual(attempts, 4)
+        self.assertEqual(
+            [message.chain[0].text for message in event.sent_messages],
+            ["出门前拍的", "帽子已经戴上了", "你那边到了没"],
+        )
+        self.assertIsNone(event.get_result())
+        metrics = runtime.semantic_segment_status()["metrics"]
+        self.assertEqual(metrics["failed"], 1)
+        self.assertEqual(metrics["fallback_natural"], 1)
+
+    def test_partial_semantic_send_failure_does_not_repeat_sent_segments(self):
+        runtime = self._runtime(
+            json.dumps(
+                {
+                    "segments": [
+                        {"text": "第一段", "relation": "lead", "pause": "short"},
+                        {"text": "第二段", "relation": "add", "pause": "short"},
+                        {
+                            "text": "第三段",
+                            "relation": "closing",
+                            "pause": "none",
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        )
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10005")
+        event.set_result(
+            event.chain_result([types.SimpleNamespace(text="第一段第二段第三段")])
+        )
+        self.assertTrue(asyncio.run(runtime.apply_semantic_segment_before_send(event)))
+
+        original_send = event.send
+        attempts = 0
+
+        async def fail_second_send(message):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 2:
+                raise RuntimeError("第二段发送失败")
+            await original_send(message)
+
+        event.send = fail_second_send
+        sent = asyncio.run(runtime.send_semantic_segments_if_needed(event))
+
+        self.assertTrue(sent)
+        self.assertEqual(attempts, 2)
+        self.assertEqual(
+            [message.chain for message in event.sent_messages],
+            [["第一段"]],
+        )
+        self.assertIsNone(event.get_result())
+        metrics = runtime.semantic_segment_status()["metrics"]
+        self.assertEqual(metrics["failed"], 1)
+        self.assertEqual(metrics["fallback_natural"], 0)
+
+    def test_failed_natural_retry_keeps_readable_default_reply(self):
+        runtime = self._runtime(
+            json.dumps(
+                {
+                    "segments": [
+                        {"text": "第一段", "relation": "lead", "pause": "short"},
+                        {
+                            "text": "第二段",
+                            "relation": "closing",
+                            "pause": "none",
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        )
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10006")
+        event.set_result(
+            event.chain_result([types.SimpleNamespace(text="第一段\n第二段")])
+        )
+        self.assertTrue(asyncio.run(runtime.apply_semantic_segment_before_send(event)))
+
+        attempts = 0
+
+        async def always_fail(_message):
+            nonlocal attempts
+            attempts += 1
+            raise RuntimeError("发送失败")
+
+        event.send = always_fail
+        sent = asyncio.run(runtime.send_semantic_segments_if_needed(event))
+
+        self.assertFalse(sent)
+        self.assertEqual(attempts, 2)
+        self.assertEqual(len(event.get_result().chain), 1)
+        self.assertEqual(event.get_result().chain[0].text, "第一段\n第二段")
+
     def test_inline_markdown_is_cleaned_before_semantic_model(self):
         cleaned = "5 月 8 日已经复服了。现在还在运营。"
         runtime = self._runtime(
@@ -583,6 +727,65 @@ class SemanticSegmentTest(unittest.TestCase):
             [["好像是有点"], ["好呀 拍六张"]],
         )
         self.assertIn("原文行布局", runtime.composer.prompts[0])
+
+    def test_semantic_segments_over_send_cap_are_bundled_with_spaces(self):
+        source = (
+            "喜欢吗\n\n"
+            "不喜欢\n\n"
+            "别发那个\n\n"
+            "一起睡也不代表什么都能拍、都能发\n\n"
+            "边界还在\n\n"
+            "困了，先睡了"
+        )
+        runtime = self._runtime(
+            json.dumps(
+                {
+                    "segments": [
+                        {"text": "喜欢吗", "relation": "question", "pause": "short"},
+                        {"text": "不喜欢", "relation": "correction", "pause": "short"},
+                        {"text": "别发那个", "relation": "turn", "pause": "short"},
+                        {
+                            "text": "一起睡也不代表什么都能拍、都能发",
+                            "relation": "continue",
+                            "pause": "normal",
+                        },
+                        {"text": "边界还在", "relation": "add", "pause": "short"},
+                        {
+                            "text": "困了，先睡了",
+                            "relation": "closing",
+                            "pause": "none",
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        )
+        runtime.config.chat_style.semantic_max_segments = 5
+        runtime.context = Context(
+            Provider([]), config={"t2i": False, "t2i_word_threshold": 120}
+        )
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10003")
+        event.set_result(event.chain_result([types.SimpleNamespace(text=source)]))
+
+        changed = asyncio.run(runtime.apply_semantic_segment_before_send(event))
+        sent = asyncio.run(runtime.send_semantic_segments_if_needed(event))
+
+        self.assertTrue(changed)
+        self.assertTrue(sent)
+        self.assertEqual(
+            [message.chain[0] for message in event.sent_messages],
+            [
+                "喜欢吗",
+                "不喜欢",
+                "别发那个",
+                "一起睡也不代表什么都能拍 都能发",
+                "边界还在 困了 先睡了",
+            ],
+        )
+        self.assertEqual(runtime.semantic_segment_status()["metrics"]["segmented"], 1)
+        self.assertEqual(
+            runtime.semantic_segment_status()["metrics"]["fallback_natural"], 0
+        )
 
     def test_long_reply_keeps_default_result_for_astrbot_t2i(self):
         runtime = self._runtime("{}")
@@ -775,9 +978,7 @@ class SemanticSegmentTest(unittest.TestCase):
         )
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:13")
         event.set_result(
-            event.chain_result(
-                [types.SimpleNamespace(text="嗯...\n\nmua\n\n睡吧。")]
-            )
+            event.chain_result([types.SimpleNamespace(text="嗯...\n\nmua\n\n睡吧。")])
         )
 
         changed = asyncio.run(runtime.apply_semantic_segment_before_send(event))
@@ -887,6 +1088,43 @@ class SemanticSegmentTest(unittest.TestCase):
                 "走过去也就一公里多 十几分钟就能到",
                 "我刚才懵了一下没反应过来",
                 "不过大半夜的你研究测试路线干嘛呀 明天打算去买菜下厨啦",
+            ],
+        )
+
+    def test_natural_fallback_preserves_space_when_explicit_lines_are_bundled(self):
+        runtime = self._runtime("{}")
+        runtime.config.chat_style.semantic_max_segments = 5
+        runtime.context = Context(
+            Provider([]), config={"t2i": False, "t2i_word_threshold": 120}
+        )
+        runtime.note_structured_sent_result = lambda event: None
+        runtime.note_media_source_event = lambda event: None
+        runtime.note_proactive_bot_reply = lambda event: None
+        runtime.note_voice_switch_text_result = lambda event: None
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10004")
+        source = (
+            "喜欢吗\n"
+            "不喜欢\n"
+            "别发那个\n"
+            "一起睡也不代表什么都能拍、都能发\n"
+            "边界还在\n"
+            "困了，先睡了"
+        )
+        event.set_result(event.chain_result([types.SimpleNamespace(text=source)]))
+
+        changed = asyncio.run(runtime.apply_semantic_segment_before_send(event))
+        sent = asyncio.run(runtime.send_chat_style_segments_if_needed(event))
+
+        self.assertTrue(changed)
+        self.assertTrue(sent)
+        self.assertEqual(
+            [message.chain[0].text for message in event.sent_messages],
+            [
+                "喜欢吗",
+                "不喜欢",
+                "别发那个",
+                "一起睡也不代表什么都能拍 都能发",
+                "边界还在 困了 先睡了",
             ],
         )
 

@@ -160,6 +160,74 @@ class CognitionArchiveTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 archive.close()
 
+    async def test_older_temporal_fact_cannot_replace_newer_current_state(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(Path(tmpdir) / "daily_life.db")
+            try:
+                current = await archive.write_temporal_fact(
+                    "ADD",
+                    {
+                        "scope": "global",
+                        "subject": "self",
+                        "predicate": "current_place",
+                        "object_value": "测试公园",
+                        "valid_from": "2026-08-08 18:30:00",
+                        "source": "life_action_receipt",
+                    },
+                )
+                delayed = await archive.write_temporal_fact(
+                    "UPDATE",
+                    {
+                        "scope": "global",
+                        "subject": "self",
+                        "predicate": "current_place",
+                        "object_value": "旧测试地点",
+                        "valid_from": "2026-08-08 18:00:00",
+                        "source": "chat_batch",
+                    },
+                )
+
+                self.assertEqual(delayed.id, current.id)
+                self.assertEqual(delayed.object_value, "测试公园")
+                facts = await archive.get_temporal_facts(
+                    scope="global", subject="self", predicate="current_place"
+                )
+                self.assertEqual(len(facts), 1)
+            finally:
+                archive.close()
+
+    async def test_lower_priority_fact_cannot_replace_same_time_receipt(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(Path(tmpdir) / "daily_life.db")
+            try:
+                current = await archive.write_temporal_fact(
+                    "ADD",
+                    {
+                        "scope": "global",
+                        "subject": "self",
+                        "predicate": "current_outfit",
+                        "object_value": "测试外出装",
+                        "valid_from": "2026-08-08T19:00:00",
+                        "source": "life_action_receipt",
+                    },
+                )
+                delayed = await archive.write_temporal_fact(
+                    "UPDATE",
+                    {
+                        "scope": "global",
+                        "subject": "self",
+                        "predicate": "current_outfit",
+                        "object_value": "旧测试居家装",
+                        "valid_from": "2026-08-08 19:00:00",
+                        "source": "chat_batch",
+                    },
+                )
+
+                self.assertEqual(delayed.id, current.id)
+                self.assertEqual(delayed.object_value, "测试外出装")
+            finally:
+                archive.close()
+
     async def test_reflection_promotes_only_with_threshold_and_evidence(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             archive = LifeArchive(Path(tmpdir) / "daily_life.db")

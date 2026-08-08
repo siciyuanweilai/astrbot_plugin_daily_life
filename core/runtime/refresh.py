@@ -207,6 +207,7 @@ class RefreshMixin:
         sleep = getattr(state, "sleep", None) if state else None
         pending_outfit, _ = self._pending_commitment_outfit(data, now)
         values = (
+            "component_review_v1",
             data.date,
             period,
             item_text(current),

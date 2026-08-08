@@ -228,8 +228,9 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
             '{"decision":"accept","accept":true,"reason":"愿意和她一起去",'
             '"response_stance":"开心答应她","response_tone":"自然",'
             '"alternative_time":"","impact":"和她见面",'
-            '"new_future_timeline":[{"time":"15:20","activity":"和她去看展",'
-            '"status":"期待"}],"preference_points":[],"life_events":[]}'
+            '"timeline_edits":[{"operation":"insert","target_time":"",'
+            '"item":{"time":"15:20","activity":"和她去看展",'
+            '"status":"期待"}}],"preference_points":[],"life_events":[]}'
         )
         audit = (
             '{"valid":false,"reason":"称谓与明确人设冲突",'
@@ -238,7 +239,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
             '{"path":["reason"],"value":"愿意和阿林一起去"},'
             '{"path":["response_stance"],"value":"开心答应阿林"},'
             '{"path":["impact"],"value":"和阿林见面"},'
-            '{"path":["new_future_timeline",0,"activity"],'
+            '{"path":["timeline_edits",0,"item","activity"],'
             '"value":"和阿林去看展"}]}'
         )
         composer, _, _, archive = make_composer(
@@ -451,9 +452,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
             allow_safe_corrections=False,
             preselected_places=None,
         ):
-            audit_calls.append(
-                (allow_safe_corrections, preselected_places, payload)
-            )
+            audit_calls.append((allow_safe_corrections, preselected_places, payload))
             payload["timeline"][-1]["travel_mode"] = "transit"
             payload["places"] = list(preselected_places or [])
             return payload, ""
@@ -497,10 +496,102 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(timeline[-1].travel_mode, "transit")
         self.assertTrue(audit_calls[0][0])
         self.assertEqual(audit_calls[0][1][0]["name"], "测试书店")
-        self.assertEqual(
-            audit_calls[0][1][0]["coordinate"], (23.01, 113.01)
-        )
+        self.assertEqual(audit_calls[0][1][0]["coordinate"], (23.01, 113.01))
         self.assertNotIn("_retryable", result)
+
+    async def test_commitment_edits_preserve_unrelated_later_schedule(self):
+        composer, provider, _, _ = make_composer(
+            [
+                '{"should_apply":true,"reason":"地点改约已经确认",'
+                '"timeline_edits":['
+                '{"operation":"replace","target_time":"15:30","item":'
+                '{"time":"15:30","activity":"步行去测试湖滨公园","status":"轻快",'
+                '"place":"去测试湖滨公园的路上","place_kind":"transit",'
+                '"place_scope":"local","place_city":"测试市",'
+                '"place_hint":"","travel_mode":"walking"}},'
+                '{"operation":"replace","target_time":"15:45","item":'
+                '{"time":"15:45","activity":"和测试对象在测试湖滨公园碰头",'
+                '"status":"开心","place":"测试湖滨公园","place_kind":"poi",'
+                '"place_scope":"local","place_city":"测试市",'
+                '"place_hint":"测试湖畔","travel_mode":""}}],'
+                '"outfit_instruction":"","outfit_effective_time":"",'
+                '"impact":"只调整下午碰头地点"}'
+            ]
+        )
+
+        async def audit(payload, **kwargs):
+            del kwargs
+            for item in payload["timeline"]:
+                item["place_city"] = ""
+                item["place_address"] = ""
+                if item["time"] == "21:00":
+                    item["activity"] = "不应写入的审计改写"
+            return payload, ""
+
+        composer.domains.audit_daily_locations = AsyncMock(side_effect=audit)
+        current = [
+            TimelineItem(time="13:00", activity="在家吃午饭", status="满足"),
+            TimelineItem(
+                time="15:30",
+                activity="步行去旧公园",
+                status="轻快",
+                place="去旧公园的路上",
+                place_kind="transit",
+                place_city="测试市",
+                travel_mode="walking",
+            ),
+            TimelineItem(
+                time="15:45",
+                activity="和测试对象在旧公园碰头",
+                status="开心",
+                place="旧公园",
+                place_kind="poi",
+                place_city="测试市",
+                place_address="测试旧路1号",
+            ),
+            TimelineItem(
+                time="20:00",
+                activity="到家洗澡并整理照片",
+                status="安宁",
+                place="家",
+                place_kind="home",
+                place_city="测试市",
+                place_address="测试住宅",
+            ),
+            TimelineItem(
+                time="21:00",
+                activity="挑一张照片发给测试对象",
+                status="满足",
+                place="家",
+                place_kind="home",
+                place_city="测试市",
+                place_address="测试住宅",
+            ),
+        ]
+
+        timeline, result = await composer.reconcile_commitment_with_timeline(
+            "2026-08-08",
+            current,
+            CommitmentRecord(
+                id=9,
+                content="下午改去测试湖滨公园",
+                trigger_date="2026-08-08",
+                kind="plan",
+            ),
+            datetime.datetime(2026, 8, 8, 14, 0),
+            owner_hint="共同",
+        )
+
+        self.assertIsNotNone(timeline)
+        by_time = {item.time: item for item in timeline}
+        self.assertEqual(by_time["15:45"].place, "测试湖滨公园")
+        self.assertEqual(by_time["20:00"].activity, "到家洗澡并整理照片")
+        self.assertEqual(by_time["20:00"].place_address, "测试住宅")
+        self.assertEqual(by_time["21:00"].activity, "挑一张照片发给测试对象")
+        self.assertEqual(by_time["21:00"].place_city, "测试市")
+        self.assertNotIn("_retryable", result)
+        self.assertIn("只返回 timeline_edits", provider.prompts[0])
+        self.assertIn("不得重写完整未来时间轴", provider.prompts[0])
 
     async def test_daily_prompt_uses_default_persona_prompt(self):
         composer, provider, _, archive = make_composer(
@@ -629,6 +720,28 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("状态规则：今天要有一点困倦感", provider.prompts[0])
         self.assertIn("时间轴规则：多写室内生活片段", provider.prompts[0])
         self.assertIn("地点事件规则：只记录真实出现地点", provider.prompts[0])
+        self.assertNotIn("8-12 个有意义节点", provider.prompts[0])
+        self.assertNotIn("约 3 小时", provider.prompts[0])
+
+    async def test_daily_prompt_does_not_add_fixed_timeline_density_rules(self):
+        composer, provider, _, _ = make_composer(
+            [
+                '{"outfit":"浅蓝外出裙",'
+                '"timeline":[{"time":"12:10","activity":"在家整理照片","status":"专注"}]}'
+            ]
+        )
+
+        await composer.generate_daily(datetime.datetime(2026, 5, 24, 10, 0))
+
+        prompt = provider.prompts[0]
+        self.assertIn(
+            "节点数量随生活跨度和活动复杂度自然增加；只有发生真实生活变化时才增加节点",
+            prompt,
+        )
+        self.assertIn("不设固定上限", prompt)
+        self.assertNotIn("至少安排 8 个", prompt)
+        self.assertNotIn("8-12 个有意义节点", prompt)
+        self.assertNotIn("约 3 小时", prompt)
 
     async def test_daily_prompt_does_not_use_provider_system_prompt_as_persona(self):
         composer, provider, _, _ = make_composer(
@@ -1695,6 +1808,9 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("style_pool", provider.prompts[0])
         self.assertIn("地点与衣着不能强制绑定", provider.prompts[0])
         self.assertIn("时段变化不等于已经换衣", provider.prompts[0])
+        self.assertIn("分别审视主体服装、鞋履、外层和随身配饰", provider.prompts[0])
+        self.assertIn("进入持续居家、家务、休息或睡眠节奏", provider.prompts[0])
+        self.assertIn('"component_review"', provider.prompts[0])
         self.assertIn("长期审美偏好", provider.prompts[0])
         self.assertNotIn("近期生活惯性", provider.prompts[0])
         self.assertNotIn("重复抑制参考", provider.prompts[0])
@@ -1765,7 +1881,9 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("回家、进入室内或时段变化不等于已经换衣", provider.prompts[0])
         self.assertIn("之后还要出门", provider.prompts[0])
 
-    async def test_update_outfit_applies_sleepwear_already_confirmed_by_live_state(self):
+    async def test_update_outfit_applies_sleepwear_already_confirmed_by_live_state(
+        self,
+    ):
         composer, provider, _, archive = make_composer(
             [
                 '{"outfit_decision":"keep","current_outfit_basis":"live_state",'
@@ -1878,6 +1996,54 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
             stored.meta["hair"],
             "黑色长发在脑后松松扎成低马尾，额前留有几缕碎发",
         )
+
+    async def test_update_outfit_honors_structured_component_adjustment(self):
+        composer, _, _, archive = make_composer(
+            [
+                '{"outfit_decision":"keep","current_outfit_basis":"stored",'
+                '"scene_category":"home","style_pool":"mixed",'
+                '"component_review":{"main_clothing":"keep","footwear":"adjust",'
+                '"outer_layer":"not_present","carried_accessories":"not_present"},'
+                '"outfit":"浅色棉质短袖配休闲短裤，换成柔软室内拖鞋",'
+                '"style":"清爽居家日常风","hair_style":"低马尾",'
+                '"hair":"黑色长发松松扎成低马尾",'
+                '"reason":"主体衣物继续穿着，只调整当前活动不便的局部组成"}'
+            ]
+        )
+        await archive.save_day(
+            DayRecord(
+                date="2026-07-17",
+                outfit="浅色棉质短袖配休闲短裤，脚穿外出凉鞋",
+                timeline=[
+                    TimelineItem(
+                        time="12:10", activity="在家吃过午饭后准备休息", status="放松"
+                    ),
+                    TimelineItem(
+                        time="15:30", activity="午休后再准备出门", status="从容"
+                    ),
+                ],
+                meta={
+                    "outfit_scene_category": "home",
+                    "outfit_style_pool": "outfit_styles",
+                    "style": "清爽日常外出风",
+                    "hair_style": "低马尾",
+                    "hair": "黑色长发松松扎成低马尾",
+                },
+            )
+        )
+
+        result = await composer.update_outfit(
+            "2026-07-17",
+            "noon",
+            current_time=datetime.datetime(2026, 7, 17, 12, 20),
+        )
+
+        self.assertIsNotNone(result)
+        stored = await archive.get_day("2026-07-17")
+        self.assertEqual(stored.outfit, "浅色棉质短袖配休闲短裤，换成柔软室内拖鞋")
+        self.assertEqual(stored.meta["outfit_decision"], "partial_change")
+        self.assertEqual(stored.meta["outfit_scene_category"], "home")
+        self.assertEqual(stored.meta["outfit_style_pool"], "mixed")
 
     async def test_update_outfit_clears_replaced_optional_appearance_fields(self):
         composer, _, _, archive = make_composer(
@@ -2570,6 +2736,64 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["_location_audit"]["map_provider"], "高德地图")
         self.assertTrue(audit_kwargs[0]["allow_safe_corrections"])
         self.assertEqual(audit_payloads[0]["places"][0]["name"], "测试书店")
+
+    async def test_invite_edits_preserve_unrelated_later_schedule(self):
+        composer, _, _, _ = make_composer(
+            [
+                '{"decision":"accept","accept":true,"reason":"愿意一起去",'
+                '"response_stance":"自然答应","response_tone":"轻松",'
+                '"timeline_edits":[{"operation":"replace","target_time":"16:00",'
+                '"item":{"time":"16:00","activity":"和测试对象去测试书店",'
+                '"status":"期待","place":"测试书店","place_kind":"poi",'
+                '"place_scope":"local","place_city":"测试市",'
+                '"place_hint":"测试区","travel_mode":"walking"}}]}'
+            ]
+        )
+
+        async def audit(payload, **kwargs):
+            del kwargs
+            for item in payload["timeline"]:
+                if item["time"] == "21:00":
+                    item["activity"] = "不应写入的审计改写"
+                    item["place_city"] = ""
+                    item["place_address"] = ""
+            return payload, ""
+
+        composer.domains.audit_daily_locations = AsyncMock(side_effect=audit)
+        _, new_timeline, result = await composer.handle_invite(
+            "2026-05-24",
+            [
+                TimelineItem(time="15:00", activity="在家整理书桌", status="平静"),
+                TimelineItem(
+                    time="16:00",
+                    activity="独自去附近散步",
+                    status="平静",
+                    place="附近街道",
+                    place_kind="generic",
+                    place_city="测试市",
+                ),
+                TimelineItem(
+                    time="21:00",
+                    activity="洗漱后看一会儿书",
+                    status="安宁",
+                    place="家",
+                    place_kind="home",
+                    place_city="测试市",
+                    place_address="测试住宅",
+                ),
+            ],
+            "下午一起去书店吗",
+            datetime.datetime(2026, 5, 24, 15, 0),
+            user_name="测试对象",
+        )
+
+        self.assertTrue(result["accept"])
+        self.assertIsNotNone(new_timeline)
+        by_time = {item.time: item for item in new_timeline}
+        self.assertEqual(by_time["16:00"].place, "测试书店")
+        self.assertEqual(by_time["21:00"].activity, "洗漱后看一会儿书")
+        self.assertEqual(by_time["21:00"].place_city, "测试市")
+        self.assertEqual(by_time["21:00"].place_address, "测试住宅")
 
     async def test_invite_prompt_keeps_static_rules_before_dynamic_context(self):
         composer, provider, _, _ = make_composer(

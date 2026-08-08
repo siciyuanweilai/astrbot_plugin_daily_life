@@ -601,17 +601,31 @@ class ChatMemoryBatchMixin:
         ):
             if not isinstance(raw, dict):
                 continue
+            source_rows: list[dict[str, Any]] = []
+            seen_row_ids: set[int] = set()
+            for value in raw.get("source_message_ids", []):
+                source_row = message_by_id.get(str(value).strip())
+                if source_row is None:
+                    continue
+                row_id = int(source_row.get("id") or 0)
+                if row_id in seen_row_ids:
+                    continue
+                seen_row_ids.add(row_id)
+                source_rows.append(source_row)
+            source_message_ids = [
+                str(row.get("message_id") or row.get("id") or "").strip()
+                for row in source_rows
+            ]
             commitment = CommitmentRecord.from_value(
                 {
                     **raw,
                     "source": "chat_batch",
                     "source_session": batch["session_id"],
+                    "source_message_id": (
+                        source_message_ids[0] if len(source_message_ids) == 1 else ""
+                    ),
                     "source_message": "\n".join(
-                        str(message_by_id[item].get("message_text") or "")
-                        for item in [
-                            str(value) for value in raw.get("source_message_ids", [])
-                        ]
-                        if item in message_by_id
+                        str(row.get("message_text") or "") for row in source_rows
                     )[:1000],
                 }
             )
@@ -621,7 +635,6 @@ class ChatMemoryBatchMixin:
             ):
                 continue
             stored = await self.archive.save_commitment(commitment)
-            saved.append(stored)
             apply_to_day = getattr(self, "apply_commitment_to_current_day", None)
             if callable(apply_to_day):
                 try:
@@ -632,6 +645,12 @@ class ChatMemoryBatchMixin:
                     )
                 except Exception as exc:
                     logger.warning(f"{LOG_PREFIX} 批次承诺合并到当天日程失败：{exc}")
+            get_commitment = getattr(self.archive, "get_commitment", None)
+            if callable(get_commitment):
+                final_commitment = await get_commitment(stored.id)
+                if final_commitment is not None:
+                    stored = final_commitment
+            saved.append(stored)
             domain_settings = getattr(self.config, "domains", None)
             save_action_item = getattr(
                 self.archive, "save_conversation_action_item", None
@@ -657,7 +676,14 @@ class ChatMemoryBatchMixin:
                         "title": stored.content,
                         "owner": str(raw.get("owner") or "未定").strip(),
                         "due_at": due_at,
-                        "status": "open",
+                        "status": {
+                            "active": "open",
+                            "scheduled": "pending",
+                            "pending": "pending",
+                            "done": "done",
+                            "cancelled": "cancelled",
+                            "expired": "expired",
+                        }.get(stored.status, "open"),
                         "source_session": stored.source_session,
                         "source_message": stored.source_message,
                         "evidence": [stored.source_message]
@@ -709,6 +735,9 @@ class ChatMemoryBatchMixin:
             source_row = rows_by_message_id.get(source_message_id)
             if source_row is None:
                 continue
+            source_message_id = str(
+                source_row.get("message_id") or source_row.get("id") or ""
+            ).strip()
             observed_at = str(source_row.get("occurred_at") or "").strip()
             try:
                 confidence = max(0.0, min(float(raw.get("confidence") or 0.0), 1.0))
@@ -750,6 +779,8 @@ class ChatMemoryBatchMixin:
                 and signal in {"reinforce", "dispute"}
                 and callable(evidence_saver)
                 and int(getattr(fact, "id", 0) or 0) > 0
+                and str(getattr(fact, "source", "") or "") == "chat_batch"
+                and str(getattr(fact, "source_id", "") or "") == source_message_id
             ):
                 await evidence_saver(
                     {

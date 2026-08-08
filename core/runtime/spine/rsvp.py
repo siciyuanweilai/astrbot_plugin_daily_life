@@ -110,9 +110,7 @@ class SpineInviteMixin:
         signature: str,
         outcome: str,
     ) -> None:
-        markers[marker_key] = cls._commitment_reconcile_marker_value(
-            outcome, signature
-        )
+        markers[marker_key] = cls._commitment_reconcile_marker_value(outcome, signature)
         while len(markers) > 48:
             markers.pop(next(iter(markers)))
         data.meta["commitment_reconcile_markers"] = json.dumps(
@@ -327,6 +325,25 @@ class SpineInviteMixin:
                 detail=f"已接受【{sender_name}】的邀约：{invite_details}",
                 force=True,
             )
+        accepted_commitment = await self.archive.save_commitment(
+            CommitmentRecord(
+                content=invite_details,
+                trigger_date=today_str,
+                people=[sender_name],
+                status="active",
+                confidence=1.0,
+                source="invite",
+                source_session=str(context_meta.get("session_id") or ""),
+                source_message_id=str(context_meta.get("message_id") or ""),
+                source_message=raw_message,
+            )
+        )
+        if accepted_commitment.id:
+            await self.archive.link_commitments_to_day(
+                today_str, [accepted_commitment.id]
+            )
+        # 先登记已确认的邀请证据，再提交日程。这样聊天记忆后台即使同时
+        # 提炼同一条消息，也会看到权威的 invite 记录，不会把地点改回旧候选。
         await self.archive.save_day(data)
         await self.archive.add_events(
             today_str,

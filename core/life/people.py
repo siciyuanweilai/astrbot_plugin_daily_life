@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any
 
 from astrbot.api import logger
 
@@ -18,7 +19,6 @@ from ..facts import (
     person_fact_context_from_relationships,
 )
 from .tools import extract_json_from_text
-
 
 DAILY_PERSON_TEXT_PATHS: tuple[PathPattern, ...] = (
     ("timeline", "*", "activity"),
@@ -46,6 +46,8 @@ INVITE_PERSON_TEXT_PATHS: tuple[PathPattern, ...] = (
     ("response_tone",),
     ("alternative_time",),
     ("impact",),
+    ("timeline_edits", "*", "item", "activity"),
+    ("timeline_edits", "*", "item", "status"),
     ("new_future_timeline", "*", "activity"),
     ("new_future_timeline", "*", "status"),
     ("life_events", "*", "title"),

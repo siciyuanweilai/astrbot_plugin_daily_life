@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS commitments (
             confidence REAL NOT NULL DEFAULT 1.0,
             source TEXT NOT NULL DEFAULT 'manual',
             source_session TEXT NOT NULL DEFAULT '',
+            source_message_id TEXT NOT NULL DEFAULT '',
             source_message TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             activated_at TEXT NOT NULL DEFAULT '',

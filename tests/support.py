@@ -328,6 +328,7 @@ _install_stubs()
 from core.interface import DailyLifeCommandCenter, DailyLifeDashboardMixin  # noqa: E402
 from core.sources import ContactNameResolver  # noqa: E402
 from core.clock import today as life_today  # noqa: E402
+from core.archive.promises import _COMMITMENT_SOURCE_PRIORITY  # noqa: E402
 from astrbot.core.provider.entities import ProviderRequest  # noqa: E402
 from core.models import (  # noqa: E402
     ActionDecisionRecord,
@@ -799,6 +800,61 @@ class DataManager:
         )
         if not item:
             raise ValueError("承诺内容不能为空")
+        if (
+            not item.id
+            and _COMMITMENT_SOURCE_PRIORITY.get(item.source, 0) > 0
+            and item.source_session
+            and item.source_message_id
+        ):
+            evidence_matches = []
+            for existing in self.commitments.values():
+                if (
+                    _COMMITMENT_SOURCE_PRIORITY.get(existing.source, 0) <= 0
+                    or existing.source_session != item.source_session
+                    or existing.source_message_id != item.source_message_id
+                ):
+                    continue
+                same_slot = True
+                for field in (
+                    "kind",
+                    "trigger_date",
+                    "trigger_time",
+                    "time_window",
+                ):
+                    old_value = str(getattr(existing, field, "") or "").strip()
+                    new_value = str(getattr(item, field, "") or "").strip()
+                    if old_value and new_value and old_value != new_value:
+                        same_slot = False
+                        break
+                if same_slot:
+                    evidence_matches.append(existing)
+            evidence_matches.sort(
+                key=lambda existing: (
+                    -_COMMITMENT_SOURCE_PRIORITY.get(existing.source, 0),
+                    existing.id,
+                )
+            )
+            if evidence_matches:
+                existing = evidence_matches[0]
+                incoming_priority = _COMMITMENT_SOURCE_PRIORITY.get(item.source, 0)
+                existing_priority = _COMMITMENT_SOURCE_PRIORITY.get(existing.source, 0)
+                if incoming_priority < existing_priority:
+                    return existing
+                if incoming_priority > existing_priority:
+                    item.id = existing.id
+                elif item.source != "chat_batch" or all(
+                    str(getattr(existing, field, "") or "").strip()
+                    == str(getattr(item, field, "") or "").strip()
+                    for field in (
+                        "content",
+                        "kind",
+                        "trigger_date",
+                        "trigger_time",
+                        "time_window",
+                        "place",
+                    )
+                ):
+                    return existing
         if not item.id:
             item.id = self.next_commitment_id
             self.next_commitment_id += 1

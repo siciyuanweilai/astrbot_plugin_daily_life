@@ -195,6 +195,7 @@ JSON 输出要求：
                     **payload,
                     "source": "chat",
                     "source_session": self._event_session_id(event),
+                    "source_message_id": self._event_message_id(event),
                     "source_message": message,
                 }
             )
@@ -218,6 +219,11 @@ JSON 输出要求：
                     )
                 except Exception as exc:
                     logger.warning(f"{LOG_PREFIX} 当天承诺合并失败：{exc}")
+            get_commitment = getattr(self.archive, "get_commitment", None)
+            if callable(get_commitment):
+                final_commitment = await get_commitment(saved.id)
+                if final_commitment is not None:
+                    saved = final_commitment
             domain_settings = getattr(self.config, "domains", None)
             save_action_item = getattr(
                 self.archive, "save_conversation_action_item", None
@@ -240,7 +246,14 @@ JSON 输出要求：
                         "title": saved.content,
                         "owner": str(payload.get("owner") or "未定").strip(),
                         "due_at": due_at,
-                        "status": "open",
+                        "status": {
+                            "active": "open",
+                            "scheduled": "pending",
+                            "pending": "pending",
+                            "done": "done",
+                            "cancelled": "cancelled",
+                            "expired": "expired",
+                        }.get(saved.status, "open"),
                         "source_session": saved.source_session,
                         "source_message": saved.source_message,
                         "evidence": [message],

@@ -4345,7 +4345,8 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertIn('<dd id="moodColorText">暂无心情色彩</dd>', html)
         self.assertIn('<dd id="scheduleTypeText">暂无日程类型</dd>', html)
         self.assertIn('<dd id="scheduleToneText">暂无日程基调</dd>', html)
-        self.assertIn('<dd id="scheduleIntentText">暂无活动倾向</dd>', html)
+        self.assertIn("<dt>🚪 活动状态</dt>", html)
+        self.assertIn('<dd id="scheduleIntentText">暂无活动状态</dd>', html)
         self.assertIn('<dd id="currentOutfitText">暂无穿搭</dd>', html)
         self.assertIn('<dd id="outfitDecisionText">暂无判断</dd>', html)
         self.assertIn("function memoDisplayText(status = {})", app)
@@ -5047,6 +5048,95 @@ const day = {
 const value = mod.currentScheduleIntentText(day, new Date(2026, 5, 26, 1, 30));
 if (value !== "居家") {
   throw new Error(`凌晨当天日程未开始不应显示外出：${value}`);
+}
+"""
+        )
+        result = subprocess.run(
+            ["node", "--input-type=module"],
+            cwd=root,
+            input=script,
+            text=True,
+            encoding="utf-8",
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+
+    def test_dashboard_realtime_activity_prefers_current_place_over_outgoing_intent(
+        self,
+    ):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        script = (
+            self._dashboard_dom_mock_script()
+            + """
+const mod = await import("./pages/dashboard/app.js");
+const day = {
+  date: "2026-06-26",
+  timeline: [
+    {
+      time: "15:00",
+      activity: "在测试公园散步",
+      place: "测试公园",
+      place_kind: "poi",
+      execution_state: "active",
+    },
+    { time: "17:00", activity: "回家", place: "家", place_kind: "home" },
+  ],
+  state: {
+    energy: 55,
+    outgoing: 20,
+    social: 20,
+    busyness: 20,
+    focus: 20,
+    interaction_capacity: 20,
+    sleepiness: 20,
+    sleep: { depth: "awake" },
+  },
+};
+const value = mod.currentScheduleIntentText(day, new Date(2026, 5, 26, 15, 30));
+if (value !== "外出中") {
+  throw new Error(`当前地点事实应优先于外出意愿：${value}`);
+}
+"""
+        )
+        result = subprocess.run(
+            ["node", "--input-type=module"],
+            cwd=root,
+            input=script,
+            text=True,
+            encoding="utf-8",
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+
+    def test_dashboard_current_timeline_prefers_active_and_ignores_terminal_items(
+        self,
+    ):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        script = (
+            self._dashboard_dom_mock_script()
+            + """
+const mod = await import("./pages/dashboard/app.js");
+const day = {
+  date: "2026-06-26",
+  timeline: [
+    { time: "14:00", activity: "已取消安排", execution_state: "cancelled" },
+    { time: "14:30", activity: "已经完成的安排", execution_state: "completed" },
+    { time: "15:00", activity: "正在进行的安排", execution_state: "active" },
+    { time: "16:30", activity: "下一项安排", execution_state: "planned" },
+  ],
+};
+const pair = mod.currentTimelinePair(day, new Date(2026, 5, 26, 15, 20));
+if (pair.current?.activity !== "正在进行的安排") {
+  throw new Error(`没有优先显示实际进行中的节点：${pair.current?.activity || "空"}`);
+}
+if (pair.next?.activity !== "下一项安排") {
+  throw new Error(`没有跳过终态节点寻找下一项：${pair.next?.activity || "空"}`);
 }
 """
         )

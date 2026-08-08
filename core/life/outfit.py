@@ -328,12 +328,13 @@ class OutfitMixin:
 3. 当前或下一项安排需要外出时，先判断现有穿搭是否适合场景和天气；明显不合适时不能直接 keep。
 4. current_outfit_basis 用于说明最终穿搭依据：stored 表示数据库中的当前穿搭仍有效；occurred_schedule 表示当前或已发生日程明确完成了换装；live_state 表示实时状态明确确认已经换装。未发生日程不能作为依据。
 5. keep 只能与 stored 搭配，并原样返回当前 outfit、style、hair_style、hair；已经换装则选择 change、partial_change、sleepwear 或 outdoor，不能用 keep 表示“换装后继续穿着”。
-6. partial_change 只写局部调整后的最终状态。
-7. outfit/style/hair_style/hair 只写最终视觉状态；新换装或局部调整时遵循以下描述要求，keep 仍须原样返回已有状态：
+6. component_review 必须分别审视主体服装、鞋履、外层和随身配饰；不存在的组成写 not_present，无法确认写 unknown。任一组成需要调整时，不能返回 keep。
+7. partial_change 只写局部调整后的最终状态；component_review 标记 adjust 时，outfit 必须写调整后实际可见的完整穿搭。
+8. outfit/style/hair_style/hair 只写最终视觉状态；新换装或局部调整时遵循以下描述要求，keep 仍须原样返回已有状态：
 {CURRENT_APPEARANCE_GENERATION_RULES}
 reason 使用自然中文，不写内部枚举，也不复述具体日期、钟点或时间轴编号。
-8. 用户明确提出穿搭要求时，在不违背当前真实场景和天气的前提下优先执行，不能用 keep 回避。
-9. 只返回穿搭决策，不得改写时间轴、实时状态、主题、地点、事件或睡眠信息。
+9. 用户明确提出穿搭要求时，在不违背当前真实场景和天气的前提下优先执行，不能用 keep 回避。
+10. 只返回穿搭决策，不得改写时间轴、实时状态、主题、地点、事件或睡眠信息。
 
 返回JSON格式：
 {{
@@ -341,6 +342,7 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
   "current_outfit_basis": "{OUTFIT_CURRENT_BASIS_ENUM}",
   "scene_category": "{OUTFIT_SCENE_CATEGORY_ENUM}",
   "style_pool": "sleep_styles | outfit_styles | mixed",
+  "component_review": {{"main_clothing": "keep | adjust | not_present | unknown", "footwear": "keep | adjust | not_present | unknown", "outer_layer": "keep | adjust | not_present | unknown", "carried_accessories": "keep | adjust | not_present | unknown"}},
   "outfit": "当前实际可见的详细穿搭；keep 时必须原样返回当前穿搭",
   "style": "简短的最终风格",
   "hair_style": "简短发型名称",
@@ -395,6 +397,11 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
         generated_style = str(result.get("style") or "").strip()
         generated_hair_style = str(result.get("hair_style") or "").strip()
         generated_hair = str(result.get("hair") or "").strip()
+        component_review = (
+            result.get("component_review")
+            if isinstance(result.get("component_review"), dict)
+            else {}
+        )
         scene_category = normalize_outfit_scene_category(
             result.get("scene_category"), default=""
         ) or normalize_outfit_scene_category(
@@ -420,6 +427,18 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
                 "[穿搭更新] 已按发生后的生活状态校正穿搭决定："
                 f"依据={basis_label}；决定={outfit_decision_label(decision)}"
             )
+        reviewed_partial_change = (
+            decision == "keep"
+            and any(
+                str(value or "").strip().lower() == "adjust"
+                for value in component_review.values()
+            )
+            and bool(generated_outfit)
+            and generated_outfit != old_outfit
+        )
+        if reviewed_partial_change:
+            decision = "partial_change"
+            logger.debug("[穿搭更新] 已按组成部分审视结果校正穿搭决定：决定=局部调整")
         if decision == "keep":
             new_outfit = old_outfit
             model_kept_outfit = not generated_outfit or generated_outfit == new_outfit

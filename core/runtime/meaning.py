@@ -210,6 +210,10 @@ JSON 输出要求：
                 return None
             result: dict[str, list[Any]] = {}
             for kind, values in groups.items():
+                limit = max(0, limits.get(kind, 0))
+                if limit == 0:
+                    result[kind] = []
+                    continue
                 indexes = selected.get(kind) if isinstance(selected.get(kind), list) else []
                 valid: list[Any] = []
                 seen: set[int] = set()
@@ -222,7 +226,7 @@ JSON 输出要求：
                         continue
                     seen.add(index)
                     valid.append(values[index][2])
-                    if len(valid) >= max(0, limits.get(kind, 0)):
+                    if len(valid) >= limit:
                         break
                 result[kind] = valid
             return result

@@ -82,6 +82,14 @@ class SocialCommandMixin:
                     people=[sender_name] if sender_name else [],
                     source="manual",
                     source_session=str(getattr(event, "unified_msg_origin", "") or ""),
+                    source_message_id=str(
+                        (
+                            event.get_message_id()
+                            if callable(getattr(event, "get_message_id", None))
+                            else getattr(event, "message_id", "")
+                        )
+                        or ""
+                    ),
                     source_message=str(getattr(event, "message_str", "") or ""),
                     confidence=1.0,
                 )
@@ -262,6 +270,30 @@ class SocialCommandMixin:
                     source="invite",
                     detail=f"已接受【{sender_name}】的邀约：{req.param_full}",
                     force=True,
+                )
+            message_id = (
+                event.get_message_id()
+                if callable(getattr(event, "get_message_id", None))
+                else getattr(event, "message_id", "")
+            )
+            accepted_commitment = await self.runtime.archive.save_commitment(
+                CommitmentRecord(
+                    content=req.param_full,
+                    trigger_date=req.target_date_str,
+                    people=[sender_name] if sender_name else [],
+                    status="active",
+                    confidence=1.0,
+                    source="invite",
+                    source_session=str(getattr(event, "unified_msg_origin", "") or ""),
+                    source_message_id=str(message_id or ""),
+                    source_message=str(
+                        getattr(event, "message_str", "") or req.param_full
+                    ),
+                )
+            )
+            if accepted_commitment.id:
+                await self.runtime.archive.link_commitments_to_day(
+                    req.target_date_str, [accepted_commitment.id]
                 )
             await self.runtime.archive.save_day(data)
             await self.runtime.archive.add_events(

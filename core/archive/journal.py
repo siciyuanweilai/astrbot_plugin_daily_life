@@ -59,6 +59,20 @@ class DayArchiveMixin:
                 time=item["time"],
                 activity=item["activity"],
                 status=item["status"],
+                place=item["place"],
+                place_kind=item["place_kind"],
+                place_scope=item["place_scope"],
+                place_city=item["place_city"],
+                place_hint=item["place_hint"],
+                travel_mode=item["travel_mode"],
+                place_address=item["place_address"],
+                place_latitude=item["place_latitude"],
+                place_longitude=item["place_longitude"],
+                place_coordinate_source=item["place_coordinate_source"],
+                travel_origin=item["travel_origin"],
+                travel_provider=item["travel_provider"],
+                travel_minutes=item["travel_minutes"],
+                travel_distance_meters=item["travel_distance_meters"],
                 execution_state=item["execution_state"],
                 execution_reason=item["execution_reason"],
                 execution_evidence=item["execution_evidence"],
@@ -66,7 +80,11 @@ class DayArchiveMixin:
             )
             for item in self._conn.execute(
                 """
-                SELECT time, activity, status, execution_state, execution_reason,
+                SELECT time, activity, status, place, place_kind, place_scope,
+                       place_city, place_hint, travel_mode, place_address,
+                       place_latitude, place_longitude, place_coordinate_source,
+                       travel_origin, travel_provider, travel_minutes,
+                       travel_distance_meters, execution_state, execution_reason,
                        execution_evidence, execution_updated_at
                 FROM timelines WHERE date = ? ORDER BY sort_order
                 """,
@@ -317,9 +335,13 @@ class DayArchiveMixin:
             self._conn.execute(
                 """
                 INSERT INTO timelines(
-                    date, sort_order, time, activity, status, execution_state,
-                    execution_reason, execution_evidence, execution_updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    date, sort_order, time, activity, status, place, place_kind,
+                    place_scope, place_city, place_hint, travel_mode, place_address,
+                    place_latitude, place_longitude, place_coordinate_source,
+                    travel_origin, travel_provider, travel_minutes,
+                    travel_distance_meters, execution_state, execution_reason,
+                    execution_evidence, execution_updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     date_str,
@@ -327,6 +349,20 @@ class DayArchiveMixin:
                     item.time,
                     item.activity,
                     item.status,
+                    item.place,
+                    item.place_kind,
+                    item.place_scope,
+                    item.place_city,
+                    item.place_hint,
+                    item.travel_mode,
+                    item.place_address,
+                    item.place_latitude,
+                    item.place_longitude,
+                    item.place_coordinate_source,
+                    item.travel_origin,
+                    item.travel_provider,
+                    item.travel_minutes,
+                    item.travel_distance_meters,
                     item.execution_state,
                     item.execution_reason,
                     item.execution_evidence,

@@ -4,8 +4,8 @@ import types
 import unittest
 from unittest.mock import patch
 
-from support import Context, DailyLifeRuntime, Event, LifeSettings, Provider
 from core.models import DayRecord, TimelineItem
+from support import Context, DailyLifeRuntime, Event, LifeSettings, Provider
 
 
 class RuntimeChatStyleTest(unittest.TestCase):

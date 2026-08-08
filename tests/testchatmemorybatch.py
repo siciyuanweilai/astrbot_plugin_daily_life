@@ -451,9 +451,57 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
         action_items = await self.runtime.archive.get_conversation_action_items(10)
         self.assertEqual(len(commitments), 1)
         self.assertEqual(commitments[0].content, "周六一起去看展")
+        self.assertEqual(commitments[0].source_message_id, "m1")
         self.assertEqual(len(action_items), 1)
         self.assertEqual(action_items[0]["commitment_id"], commitments[0].id)
         self.assertEqual(action_items[0]["title"], "周六一起去看展")
+
+    async def test_batch_reuses_scheduled_invite_without_regressing_action_item(self):
+        message = ChatMemoryArchiveTest.snapshot(
+            session_id="private:1",
+            message_id="m-invite",
+            text="傍晚一起去测试公园",
+        )
+        message["id"] = 1
+        accepted = await self.runtime.archive.save_commitment(
+            {
+                "content": "傍晚一起去测试公园",
+                "trigger_date": "2026-07-10",
+                "time_window": "evening",
+                "source": "invite",
+                "source_session": "private:1",
+                "source_message_id": "m-invite",
+                "source_message": "傍晚一起去测试公园",
+            }
+        )
+        await self.runtime.archive.link_commitments_to_day("2026-07-10", [accepted.id])
+
+        await self.runtime._save_chat_memory_batch_payload(
+            {
+                "worth_saving": False,
+                "commitments": [
+                    {
+                        "content": "傍晚一起去旧测试地点",
+                        "kind": "plan",
+                        "trigger_date": "2026-07-10",
+                        "time_window": "evening",
+                        "confidence": 0.95,
+                        "source_message_ids": ["1"],
+                    }
+                ],
+            },
+            {"session_id": "private:1", "messages": [message]},
+        )
+
+        commitments = await self.runtime.archive.get_commitments(status="", limit=10)
+        action_items = await self.runtime.archive.get_conversation_action_items(10)
+        self.assertEqual(len(commitments), 1)
+        self.assertEqual(commitments[0].source, "invite")
+        self.assertEqual(commitments[0].content, "傍晚一起去测试公园")
+        self.assertEqual(commitments[0].status, "scheduled")
+        self.assertEqual(len(action_items), 1)
+        self.assertEqual(action_items[0]["status"], "pending")
+        self.assertEqual(action_items[0]["title"], "傍晚一起去测试公园")
 
     async def test_batch_payload_saves_awareness_without_long_term_summary(self):
         message = ChatMemoryArchiveTest.snapshot(

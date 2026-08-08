@@ -385,6 +385,40 @@ class RuntimeStateTest(unittest.TestCase):
 
 
 class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTestCase):
+    async def test_model_semantic_memory_ranking_honors_zero_limit(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.config = LifeSettings.from_dict(
+            {"memory_config": {"provider": "memory-model"}}
+        )
+        provider = Provider([])
+        closed_sessions = []
+
+        runtime._get_memory_provider = lambda: async_return(provider)
+
+        async def call_text_model(*args, **kwargs):
+            return '{"selected":{"summaries":[0],"events":[1,0]}}'
+
+        async def close_text_session(session_id):
+            closed_sessions.append(session_id)
+
+        runtime.call_text_model = call_text_model
+        runtime.close_text_session = close_text_session
+
+        selected = await runtime._meaning_rank_with_model(
+            "今天准备做什么？",
+            {
+                "summaries": [("summary:1", "在家休息", "摘要一")],
+                "events": [
+                    ("event:1", "整理照片", "事件一"),
+                    ("event:2", "傍晚散步", "事件二"),
+                ],
+            },
+            {"summaries": 0, "events": 1},
+        )
+
+        self.assertEqual(selected, {"summaries": [], "events": ["事件二"]})
+        self.assertEqual(len(closed_sessions), 1)
+
     async def test_life_memory_context_uses_one_semantic_ranking_call(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.config = LifeSettings.from_dict({})
@@ -816,9 +850,7 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             DayRecord(
                 date="2026-08-04",
                 weather="旧城市 晴 30°C",
-                timeline=[
-                    TimelineItem(time="10:00", activity="在旧城市公园散步")
-                ],
+                timeline=[TimelineItem(time="10:00", activity="在旧城市公园散步")],
             )
         )
         runtime.resolve_injection_target = lambda now: async_return(
@@ -835,9 +867,7 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         runtime._prepare_residence_change = prepare
         runtime._refresh_after_residence_change = refresh
 
-        await runtime.ensure_startup_day_data(
-            datetime.datetime(2026, 8, 4, 10, 0)
-        )
+        await runtime.ensure_startup_day_data(datetime.datetime(2026, 8, 4, 10, 0))
 
         self.assertEqual([item[0] for item in calls], ["prepare", "refresh"])
         self.assertEqual(calls[0][1], datetime.datetime(2026, 8, 4, 10, 0))
@@ -880,9 +910,7 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         )
         now = datetime.datetime(2026, 7, 31, 14, 20)
 
-        with patch(
-            "core.runtime.spine.boot._PLATFORM_READY_POLL_SECONDS", 0.01
-        ):
+        with patch("core.runtime.spine.boot._PLATFORM_READY_POLL_SECONDS", 0.01):
             task = asyncio.create_task(runtime.ensure_startup_day_data(now))
             await asyncio.sleep(0.03)
             self.assertEqual(calls, [])
@@ -1324,7 +1352,7 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             scheduled.append((label, key, coro)) or True
         )
 
-        event = Event()
+        event = Event(message_id="invite-message-1")
         event.message_str = "下午一起出门闲逛"
         reply = await runtime.accept_user_invite(event, "下午一起出门闲逛")
 
@@ -1337,6 +1365,12 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(outfit_tasks[0][:2], ("邀约穿搭判断", ""))
         stored = await archive.get_day(today)
         self.assertEqual(stored.timeline[-1].activity, "和阿林去书店闲逛")
+        commitments = await archive.get_commitments(status="scheduled")
+        self.assertEqual(len(commitments), 1)
+        self.assertEqual(commitments[0].content, "下午一起出门闲逛")
+        self.assertEqual(commitments[0].source, "invite")
+        self.assertEqual(commitments[0].source_message_id, "invite-message-1")
+        self.assertEqual(commitments[0].source_message, "下午一起出门闲逛")
 
         await outfit_tasks[0][2]
 
@@ -1505,9 +1539,7 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
                 self.calls += 1
                 return (
                     [
-                        TimelineItem(
-                            time="13:00", activity="在家休息", status="放松"
-                        ),
+                        TimelineItem(time="13:00", activity="在家休息", status="放松"),
                         TimelineItem(
                             time="18:00",
                             activity="和测试对象一起出门",
@@ -1645,9 +1677,7 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         runtime.raw_config = Config(
             {
                 "rhythm_config": {"schedule_time": "07:00"},
-                "life_domain_config": {
-                    "home_address": "测试省旧城市测试区旧路1号"
-                },
+                "life_domain_config": {"home_address": "测试省旧城市测试区旧路1号"},
             }
         )
         runtime.generation_lock = asyncio.Lock()
@@ -1685,9 +1715,7 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
                 "rhythm_config": {
                     "schedule_time": "08:25",
                 },
-                "life_domain_config": {
-                    "home_address": "测试省测试市测试区测试路1号"
-                },
+                "life_domain_config": {"home_address": "测试省测试市测试区测试路1号"},
                 "state_config": {"enabled": False, "refresh_minutes": 45},
             }
         )
@@ -1733,9 +1761,7 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
                 weather_info=WeatherInfo(condition="晴", temp=30),
                 weather_last_update=123,
                 places=[PlaceRecord(name="旧城市公园")],
-                timeline=[
-                    TimelineItem(time="18:00", activity="去旧城市公园散步")
-                ],
+                timeline=[TimelineItem(time="18:00", activity="去旧城市公园散步")],
             )
         )
         await runtime.archive.save_week_plan(

@@ -20,13 +20,14 @@ class CommitmentRecord:
     confidence: float = 1.0
     source: str = "manual"
     source_session: str = ""
+    source_message_id: str = ""
     source_message: str = ""
     created_at: str = ""
     activated_at: str = ""
     completed_at: str = ""
 
     @staticmethod
-    def from_value(value: Any) -> "CommitmentRecord | None":
+    def from_value(value: Any) -> CommitmentRecord | None:
         if isinstance(value, CommitmentRecord):
             return value
         raw = value if isinstance(value, dict) else {}
@@ -52,6 +53,7 @@ class CommitmentRecord:
             confidence=confidence if confidence is not None else 1.0,
             source=str(raw.get("source") or "manual").strip() or "manual",
             source_session=str(raw.get("source_session") or "").strip(),
+            source_message_id=str(raw.get("source_message_id") or "").strip(),
             source_message=str(raw.get("source_message") or "").strip(),
             created_at=str(raw.get("created_at") or "").strip(),
             activated_at=str(raw.get("activated_at") or "").strip(),
@@ -72,6 +74,7 @@ class CommitmentRecord:
             "confidence": self.confidence,
             "source": self.source,
             "source_session": self.source_session,
+            "source_message_id": self.source_message_id,
             "source_message": self.source_message,
             "created_at": self.created_at,
             "activated_at": self.activated_at,

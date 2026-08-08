@@ -498,6 +498,133 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 await migrated.aclose()
 
+    async def test_timeline_location_facts_survive_save_and_reload(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = f"{tmpdir}/daily_life.db"
+            archive = LifeArchive(db_path)
+            try:
+                await archive.save_day(
+                    DayRecord(
+                        date="2026-08-08",
+                        timeline=[
+                            TimelineItem(
+                                time="15:20",
+                                activity="前往测试公园散步",
+                                status="轻松",
+                                place="测试公园",
+                                place_kind="poi",
+                                place_scope="local",
+                                place_city="测试市",
+                                place_hint="测试区测试路",
+                                travel_mode="walking",
+                                place_address="测试市测试区测试路 8 号",
+                                place_latitude=23.1234,
+                                place_longitude=113.5678,
+                                place_coordinate_source="test_poi",
+                                travel_origin="家",
+                                travel_provider="test_map",
+                                travel_minutes=18,
+                                travel_distance_meters=1260.5,
+                                execution_state="active",
+                            )
+                        ],
+                    )
+                )
+            finally:
+                await archive.aclose()
+
+            reopened = LifeArchive(db_path)
+            try:
+                saved = await reopened.get_day("2026-08-08")
+                item = saved.timeline[0]
+                self.assertEqual(item.place, "测试公园")
+                self.assertEqual(item.place_kind, "poi")
+                self.assertEqual(item.place_scope, "local")
+                self.assertEqual(item.place_city, "测试市")
+                self.assertEqual(item.place_hint, "测试区测试路")
+                self.assertEqual(item.travel_mode, "walking")
+                self.assertEqual(item.place_address, "测试市测试区测试路 8 号")
+                self.assertEqual(item.place_latitude, 23.1234)
+                self.assertEqual(item.place_longitude, 113.5678)
+                self.assertEqual(item.place_coordinate_source, "test_poi")
+                self.assertEqual(item.travel_origin, "家")
+                self.assertEqual(item.travel_provider, "test_map")
+                self.assertEqual(item.travel_minutes, 18)
+                self.assertEqual(item.travel_distance_meters, 1260.5)
+                self.assertEqual(item.execution_state, "active")
+            finally:
+                await reopened.aclose()
+
+    async def test_v9_database_adds_timeline_location_fields_without_losing_nodes(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = f"{tmpdir}/daily_life.db"
+            archive = LifeArchive(db_path)
+            try:
+                await archive.save_day(
+                    DayRecord(
+                        date="2026-08-08",
+                        timeline=[
+                            TimelineItem(
+                                time="15:20",
+                                activity="保留的外出日程",
+                                status="轻松",
+                                execution_state="active",
+                            )
+                        ],
+                    )
+                )
+            finally:
+                await archive.aclose()
+
+            location_columns = (
+                "place",
+                "place_kind",
+                "place_scope",
+                "place_city",
+                "place_hint",
+                "travel_mode",
+                "place_address",
+                "place_latitude",
+                "place_longitude",
+                "place_coordinate_source",
+                "travel_origin",
+                "travel_provider",
+                "travel_minutes",
+                "travel_distance_meters",
+            )
+            connection = sqlite3.connect(db_path)
+            for column in location_columns:
+                connection.execute(f"ALTER TABLE timelines DROP COLUMN {column}")
+            connection.execute(
+                "UPDATE meta SET value = '9' WHERE key = 'schema_version'"
+            )
+            connection.commit()
+            connection.close()
+
+            migrated = LifeArchive(db_path)
+            try:
+                version = migrated._conn.execute(
+                    "SELECT value FROM meta WHERE key = 'schema_version'"
+                ).fetchone()[0]
+                columns = {
+                    row[1]
+                    for row in migrated._conn.execute(
+                        "PRAGMA table_info(timelines)"
+                    ).fetchall()
+                }
+                day = await migrated.get_day("2026-08-08")
+                item = day.timeline[0]
+                self.assertEqual(version, str(SCHEMA_VERSION))
+                self.assertTrue(set(location_columns) <= columns)
+                self.assertEqual(item.activity, "保留的外出日程")
+                self.assertEqual(item.execution_state, "active")
+                self.assertEqual(item.place, "")
+                self.assertEqual(item.place_kind, "none")
+            finally:
+                await migrated.aclose()
+
     async def test_existing_v7_action_decision_dimension_columns_stay_compatible(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = f"{tmpdir}/daily_life.db"
@@ -2877,3 +3004,138 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(due[0].people, ["阿林"])
             self.assertEqual(scheduled[0].id, saved.id)
             reopened.close()
+
+    async def test_invite_commitment_wins_for_the_same_source_message(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(f"{tmpdir}/daily_life.db")
+            source_session = "测试角色:FriendMessage:10001"
+
+            accepted = await archive.save_commitment(
+                CommitmentRecord(
+                    content="下午去测试河畔公园散步",
+                    trigger_date="2026-08-08",
+                    people=["测试对象"],
+                    source="invite",
+                    source_session=source_session,
+                    source_message_id="message-1",
+                    source_message="下午就去这里",
+                )
+            )
+            later_batch = await archive.save_commitment(
+                CommitmentRecord(
+                    content="下午去旧地点散步",
+                    trigger_date="2026-08-08",
+                    people=["测试对象"],
+                    source="chat_batch",
+                    source_session=source_session,
+                    source_message_id="message-1",
+                    source_message="下午就去这里",
+                )
+            )
+
+            self.assertEqual(later_batch.id, accepted.id)
+            self.assertEqual(later_batch.source, "invite")
+            self.assertEqual(later_batch.content, "下午去测试河畔公园散步")
+
+            early_batch = await archive.save_commitment(
+                CommitmentRecord(
+                    content="傍晚去旧地点散步",
+                    trigger_date="2026-08-08",
+                    people=["测试对象"],
+                    source="chat_batch",
+                    source_session=source_session,
+                    source_message_id="message-2",
+                    source_message="傍晚就去这里",
+                )
+            )
+            later_invite = await archive.save_commitment(
+                CommitmentRecord(
+                    content="傍晚去测试湖滨公园散步",
+                    trigger_date="2026-08-08",
+                    people=["测试对象"],
+                    source="invite",
+                    source_session=source_session,
+                    source_message_id="message-2",
+                    source_message="傍晚就去这里",
+                )
+            )
+
+            self.assertEqual(later_invite.id, early_batch.id)
+            self.assertEqual(later_invite.source, "invite")
+            self.assertEqual(later_invite.content, "傍晚去测试湖滨公园散步")
+            self.assertEqual(len(await archive.get_commitments(status="active")), 2)
+            archive.close()
+
+    async def test_commitment_sources_arbitrate_the_same_message_evidence(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(f"{tmpdir}/daily_life.db")
+            source_session = "测试角色:FriendMessage:10001"
+
+            immediate = await archive.save_commitment(
+                CommitmentRecord(
+                    content="傍晚去测试公园散步",
+                    trigger_date="2026-08-08",
+                    time_window="evening",
+                    source="chat",
+                    source_session=source_session,
+                    source_message_id="message-chat",
+                )
+            )
+            batch = await archive.save_commitment(
+                CommitmentRecord(
+                    content="傍晚去旧地点散步",
+                    trigger_date="2026-08-08",
+                    time_window="evening",
+                    source="chat_batch",
+                    source_session=source_session,
+                    source_message_id="message-chat",
+                )
+            )
+            self.assertEqual(batch.id, immediate.id)
+            self.assertEqual(batch.source, "chat")
+            self.assertEqual(batch.content, "傍晚去测试公园散步")
+
+            early_batch = await archive.save_commitment(
+                CommitmentRecord(
+                    content="周末整理测试资料",
+                    trigger_date="2026-08-09",
+                    source="chat_batch",
+                    source_session=source_session,
+                    source_message_id="message-manual",
+                )
+            )
+            manual = await archive.save_commitment(
+                CommitmentRecord(
+                    content="周末整理确认后的测试资料",
+                    trigger_date="2026-08-09",
+                    source="manual",
+                    source_session=source_session,
+                    source_message_id="message-manual",
+                )
+            )
+            self.assertEqual(manual.id, early_batch.id)
+            self.assertEqual(manual.source, "manual")
+            self.assertEqual(manual.content, "周末整理确认后的测试资料")
+
+            first_batch = await archive.save_commitment(
+                CommitmentRecord(
+                    content="上午领取测试材料",
+                    trigger_date="2026-08-10",
+                    time_window="morning",
+                    source="chat_batch",
+                    source_session=source_session,
+                    source_message_id="message-multiple",
+                )
+            )
+            second_batch = await archive.save_commitment(
+                CommitmentRecord(
+                    content="晚上归还测试材料",
+                    trigger_date="2026-08-10",
+                    time_window="evening",
+                    source="chat_batch",
+                    source_session=source_session,
+                    source_message_id="message-multiple",
+                )
+            )
+            self.assertNotEqual(first_batch.id, second_batch.id)
+            archive.close()

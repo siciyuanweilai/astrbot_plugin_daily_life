@@ -486,8 +486,6 @@ class StatusMixin:
         source_event: Any = None,
         notify_page: bool = True,
     ) -> DayRecord | None:
-        if not self.config.state.enabled:
-            return data or await self.archive.get_day(date_str)
         if self._state_refresh_recalled(source_event):
             return data or await self.archive.get_day(date_str)
 
@@ -495,6 +493,9 @@ class StatusMixin:
         data = data or await self.archive.get_day(date_str)
         if not data:
             return None
+
+        if not self.config.state.enabled:
+            return data
 
         if not force and not state_is_stale(
             data.state,
