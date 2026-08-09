@@ -118,6 +118,62 @@ class _Session:
 
 
 class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
+    async def test_generate_image_filters_channels_by_explicit_model(self):
+        output_bytes = b"\x89PNG\r\n\x1a\noutput"
+        calls = []
+
+        class _ImageSession:
+            closed = False
+
+            def post(self, url, json=None, data=None, headers=None, timeout=None):
+                calls.append((url, json or {}))
+                return _Response(
+                    payload={
+                        "data": [
+                            {"b64_json": base64.b64encode(output_bytes).decode("ascii")}
+                        ]
+                    }
+                )
+
+        settings = LifeSettings.from_dict(
+            {
+                "image_generation_config": {
+                    "enabled": True,
+                    "text_channels": [
+                        {
+                            "__template_key": "openai",
+                            "api_url": "https://first.example/v1",
+                            "api_key": "first-key",
+                            "model": "gpt-image-main",
+                        },
+                        {
+                            "__template_key": "openai",
+                            "api_url": "https://selected.example/v1",
+                            "api_key": "selected-key",
+                            "model": "gpt-image-selected",
+                        },
+                    ],
+                }
+            }
+        ).image_generation
+        service = GeminiImageService(settings, Path(tempfile.mkdtemp()))
+
+        async def get_session():
+            return _ImageSession()
+
+        service._get_session = get_session
+
+        await service.generate_image("雨夜生活照", model="gpt-image-selected")
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "https://selected.example/v1/images/generations")
+        self.assertEqual(calls[0][1]["model"], "gpt-image-selected")
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "指定的生图模型 missing-model 没有可用的文生图接口通道",
+        ):
+            await service.generate_image("雨夜生活照", model="missing-model")
+
     async def test_generate_image_filters_channels_by_explicit_protocol(self):
         output_bytes = b"\x89PNG\r\n\x1a\noutput"
         calls = []

@@ -236,6 +236,7 @@ class GeminiImageService:
         resolution: str = "",
         *,
         protocol: str = "",
+        model: str = "",
         identity_profile: str = "",
     ) -> GeneratedImage:
         if not self.settings.enabled:
@@ -244,7 +245,10 @@ class GeminiImageService:
         if not prompt:
             raise ValueError("缺少图片提示词")
         protocol = routes.normalize_image_provider(protocol)
-        if not routes.has_channel(self.settings, "text", protocol):
+        model = str(model or "").strip()
+        if not routes.has_channel(self.settings, "text", protocol, model):
+            if model:
+                raise RuntimeError(f"指定的生图模型 {model} 没有可用的文生图接口通道")
             if protocol:
                 raise RuntimeError(
                     f"本轮指定使用{self._protocol_label(protocol)}，但没有可用的文生图接口通道"
@@ -260,6 +264,7 @@ class GeminiImageService:
             resolution=resolution,
             mode="text",
             protocol=protocol,
+            model=model,
         )
         path = await self._save_image(image_bytes, prefix=route.protocol)
         logger.debug(f"{LOG_PREFIX} 图片生成文件已保存：{path.name}")
@@ -366,6 +371,7 @@ class GeminiImageService:
         *,
         preserve_reference_ratio: bool = True,
         protocol: str = "",
+        model: str = "",
         identity_profile: str = "",
     ) -> GeneratedImage:
         if not self.settings.enabled:
@@ -377,7 +383,10 @@ class GeminiImageService:
         if not reference_image:
             raise ValueError("缺少参考图片")
         protocol = routes.normalize_image_provider(protocol)
-        if not routes.has_channel(self.settings, "edit", protocol):
+        model = str(model or "").strip()
+        if not routes.has_channel(self.settings, "edit", protocol, model):
+            if model:
+                raise RuntimeError(f"指定的生图模型 {model} 没有可用的图生图接口通道")
             if protocol:
                 raise RuntimeError(
                     f"本轮指定使用{self._protocol_label(protocol)}，但没有可用的图生图接口通道"
@@ -421,6 +430,7 @@ class GeminiImageService:
             resolution=resolution,
             mode="edit",
             protocol=protocol,
+            model=model,
         )
         path = await self._save_image(output_bytes, prefix=route.protocol)
         logger.debug(f"{LOG_PREFIX} 图片编辑文件已保存：{path.name}")
@@ -721,13 +731,16 @@ class GeminiImageService:
         resolution: str = "",
         mode: str = "text",
         protocol: str = "",
+        model: str = "",
     ) -> tuple[bytes, ImageRoute]:
         requested_resolution = str(resolution or "").strip().upper()
         if requested_resolution and requested_resolution not in IMAGE_RESOLUTIONS:
             raise ValueError("图片输出分辨率只能是 1K、2K 或 4K")
         errors: list[str] = []
         protocol = routes.normalize_image_provider(protocol)
-        request_routes = await self._request_routes(mode, protocol=protocol)
+        request_routes = await self._request_routes(
+            mode, protocol=protocol, model=model
+        )
         if not request_routes:
             if protocol:
                 raise RuntimeError(
@@ -746,6 +759,7 @@ class GeminiImageService:
                 f"{LOG_PREFIX} 图片请求：通道={route_label}；"
                 f"模式={self._mode_label(mode)}；"
                 f"协议={self._protocol_label(route.protocol)}；"
+                f"模型={route.model}；"
                 f"来源={route.resolution_source}；分辨率={route.resolution}；"
                 f"比例={route.aspect_ratio}；请求尺寸={requested_size}"
             )
@@ -927,9 +941,10 @@ class GeminiImageService:
         )
 
     async def _request_routes(
-        self, mode: str, *, protocol: str = ""
+        self, mode: str, *, protocol: str = "", model: str = ""
     ) -> list[ImageRoute]:
         protocol = routes.normalize_image_provider(protocol)
+        model = str(model or "").strip()
         mode_label = self._mode_label(mode)
         return [
             routes.make_route(
@@ -951,6 +966,7 @@ class GeminiImageService:
                 ),
                 start=1,
             )
+            if not model or str(getattr(channel, "model", "") or "").strip() == model
         ]
 
     @staticmethod

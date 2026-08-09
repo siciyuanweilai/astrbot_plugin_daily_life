@@ -1033,7 +1033,7 @@
   "voice_generation_config": {
     "description": "语音",
     "type": "object",
-    "hint": "使用 SiliconFlow 语音合成，让角色可以按需发送语音。闲时回复可优先发送语音，语音失败时再改用文字。",
+    "hint": "使用火山引擎语音合成 2.0 发送语音。声音复刻仍在火山引擎控制台完成，插件只调用已生成的音色。",
     "items": {
       "enabled": {
         "description": "启用语音生成",
@@ -1075,41 +1075,53 @@
         },
         "hint": "开启闲时消息优先语音后，每次闲时回复或私聊回访尝试发送语音的概率。未命中时直接发送文字。"
       },
-      "api_url": {
-        "description": "接口地址",
-        "type": "string",
-        "default": "https://api.siliconflow.cn/v1",
-        "hint": "SiliconFlow API 地址。"
-      },
       "api_key": {
         "description": "接口密钥",
         "type": "string",
         "default": "",
-        "hint": "SiliconFlow 密钥。"
+        "hint": "火山引擎控制台中的 API Key。插件固定调用火山引擎语音合成 2.0，不需要填写接口地址。"
       },
-      "model": {
-        "description": "模型名称",
+      "speaker_source": {
+        "description": "音色类型",
         "type": "string",
-        "default": "FunAudioLLM/CosyVoice2-0.5B",
-        "hint": "SiliconFlow 语音模型。"
+        "default": "cloned",
+        "options": [
+          "cloned",
+          "preset"
+        ],
+        "option_labels": {
+          "cloned": "声音复刻音色",
+          "preset": "火山预置音色"
+        },
+        "hint": "声音复刻音色对应火山引擎 seed-icl-2.0；预置音色对应 seed-tts-2.0。"
       },
-      "voice": {
-        "description": "音色",
+      "speaker_id": {
+        "description": "音色 ID",
         "type": "string",
         "default": "",
-        "hint": "SiliconFlow 音色标识。"
+        "hint": "填写火山引擎控制台音色库中的 speaker ID。声音复刻完成后，将复刻音色 ID 填在这里。"
       },
-      "emotion_voice_map": {
-        "description": "情绪到音色映射",
-        "type": "text",
-        "default": "neutral:\nhappy:\nsad:\nangry:",
-        "hint": "每行一个情绪，格式：情绪: 音色ID。自然情绪短句优先精确匹配；neutral、happy、sad、angry 只在模型明确给出情绪分类时生效；都未命中则使用上方默认音色。"
+      "speech_rate": {
+        "description": "语速调整",
+        "type": "int",
+        "default": 0,
+        "slider": {
+          "min": -50,
+          "max": 100,
+          "step": 5
+        },
+        "hint": "火山引擎语速调整，0 为正常，范围 -50 到 100。"
       },
-      "emotion_speed_map": {
-        "description": "情绪到语速映射",
-        "type": "text",
-        "default": "neutral: 1.0\nhappy: 1.15\nsad: 0.9\nangry: 1.1",
-        "hint": "每行一个情绪，格式：情绪: 语速。自然情绪短句优先精确匹配；neutral、happy、sad、angry 只在模型明确给出情绪分类时生效；都未命中则使用默认语速。取值范围 0.25 到 4。"
+      "loudness_rate": {
+        "description": "音量调整",
+        "type": "int",
+        "default": 0,
+        "slider": {
+          "min": -50,
+          "max": 100,
+          "step": 5
+        },
+        "hint": "火山引擎音量调整，0 为正常，范围 -50 到 100。"
       },
       "timeout_seconds": {
         "description": "超时（秒）",

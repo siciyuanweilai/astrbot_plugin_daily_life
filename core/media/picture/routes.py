@@ -26,13 +26,19 @@ def requested_image_provider(value: str) -> str:
 
 def image_provider_label(provider: str) -> str:
     normalized = normalize_image_provider(provider)
-    return "GPT" if normalized == "openai" else "Gemini" if normalized == "gemini" else ""
+    return (
+        "GPT" if normalized == "openai" else "Gemini" if normalized == "gemini" else ""
+    )
 
 
 def has_channel(
-    settings: ImageGenerationSettings, mode: str = "text", protocol: str = ""
+    settings: ImageGenerationSettings,
+    mode: str = "text",
+    protocol: str = "",
+    model: str = "",
 ) -> bool:
     protocol = normalize_image_provider(protocol)
+    model = str(model or "").strip()
     channels = (
         getattr(settings, "edit_channels", []) or []
         if str(mode or "").strip().lower() == "edit"
@@ -41,7 +47,11 @@ def has_channel(
     return any(
         str(getattr(channel, "api_url", "") or "").strip()
         and str(getattr(channel, "api_key", "") or "").strip()
-        and (not protocol or str(getattr(channel, "protocol", "") or "").lower() == protocol)
+        and (
+            not protocol
+            or str(getattr(channel, "protocol", "") or "").lower() == protocol
+        )
+        and (not model or str(getattr(channel, "model", "") or "").strip() == model)
         for channel in channels
     )
 

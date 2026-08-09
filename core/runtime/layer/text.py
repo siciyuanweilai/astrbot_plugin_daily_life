@@ -4,6 +4,7 @@ from typing import Any
 from ...life.appearance import format_current_appearance_context
 from ...life.condition import format_physiological_rhythm_prompt
 from ...life.tools import (
+    format_timeline_travel,
     get_current_timeline_status,
     get_time_period_cn,
     parse_time_minutes,
@@ -138,12 +139,28 @@ class LayerTextMixin:
 
         return "[HiddenState]\n" + "\n".join(lines) if lines else ""
 
-    def _format_timeline_item_compact(self, item: Any, limit: int = 44) -> str:
+    def _format_timeline_item_compact(
+        self,
+        item: Any,
+        limit: int = 44,
+        *,
+        previous_place: str = "",
+        include_travel: bool = False,
+    ) -> str:
         time_text = self._hidden_text(getattr(item, "time", ""), 8)
         activity = self._hidden_text(getattr(item, "activity", ""), limit)
         status = self._hidden_text(getattr(item, "status", ""), 16)
         status_text = f" [{status}]" if status else ""
-        return f"{time_text} {activity}{status_text}".strip()
+        text = f"{time_text} {activity}{status_text}".strip()
+        if include_travel:
+            travel = format_timeline_travel(
+                item,
+                previous_place=previous_place,
+                include_provider=False,
+            )
+            if travel:
+                text += f"；出行：{travel}"
+        return text
 
     def _format_hidden_schedule_window(
         self, timeline: list[Any], now: datetime.datetime
@@ -188,8 +205,14 @@ class LayerTextMixin:
                 if pos == current_pos
                 else ("上一段" if pos < current_pos else "接下来")
             )
+            previous_item = timed[pos - 1][2] if pos > 0 else None
+            previous_place = (
+                str(getattr(previous_item, "place", "") or "").strip()
+                if previous_item is not None
+                else ""
+            )
             lines.append(
-                f"- {label}: {self._format_timeline_item_compact(timed[pos][2])}"
+                f"- {label}: {self._format_timeline_item_compact(timed[pos][2], previous_place=previous_place, include_travel=True)}"
             )
 
         return (

@@ -312,7 +312,7 @@ JSON 输出要求：
   "target_message_id": "如果回复，写最自然承接的消息ID；没有明确目标则空字符串",
   "target_topic": "如果回复，写自然承接的话题；没有明确目标则空字符串",
   "reply_text": "如果 should_reply=true，写一条自然短回复；否则空字符串",
-  "expression_intent": {{"emotion": "可选自然情绪", "emotion_category": "neutral|happy|sad|angry", "emoji_intent": "可选表情意图", "action_intent": "可选动作意图", "send_emoji": true/false, "reason": "可选理由"}}
+  "expression_intent": {{"emotion": "可选自然情绪", "emotion_category": "neutral|happy|sad|angry", "voice_style": "neutral|happy|light|sad|angry", "emoji_intent": "可选表情意图", "action_intent": "可选动作意图", "send_emoji": true/false, "reason": "可选理由"}}
 }}
 
 裁定方式：
@@ -320,6 +320,7 @@ JSON 输出要求：
 - benefit、timeliness、continuity、disruption、uncertainty 必须分别填写 0 至 100 的整数；前三项是主动回复收益，后两项是打扰与不确定风险。
 - 只有主动收益确实高于风险时才设 should_reply=true；不值得打扰时选择 observe 或 wait。
 - reply_text 只写一句自然短文本；口吻跟随角色人设和本轮表达约束。
+- voice_style 必须根据整轮语义直接选择枚举值，不要从 emotion 文本推导；没有明显情绪时使用 neutral。
 - reason 只写相对场景和判断依据，不复述具体日期、钟点或时间轴编号；具体时间只保留在内部证据中。
 - 只输出上面列出的字段，不添加内部过程或发送控制字段。
 """

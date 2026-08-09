@@ -14,6 +14,7 @@ class RuntimeVoiceMediaMixin:
         text: str,
         emotion: str = "",
         emotion_category: str = "",
+        voice_style: str = "",
         user_requested: bool = False,
         decision_reason: str = "",
     ) -> str | None:
@@ -69,9 +70,13 @@ class RuntimeVoiceMediaMixin:
             setattr(event, "_daily_life_chat_style_context", style_context)
             self.log_chat_style_trace(event, text, style_context, changed=False)
         try:
-            generated = await self.media.voice.synthesize(
-                text, emotion=emotion, emotion_category=emotion_category
-            )
+            voice_kwargs = {
+                "emotion": emotion,
+                "emotion_category": emotion_category,
+            }
+            if voice_style:
+                voice_kwargs["voice_style"] = voice_style
+            generated = await self.media.voice.synthesize(text, **voice_kwargs)
             if not await self.send_message_if_not_recalled(
                 scope,
                 self._record_message_chain(generated.path),

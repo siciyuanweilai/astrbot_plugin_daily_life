@@ -182,6 +182,7 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
                     "query": "书店",
                     "place_scope": "local",
                     "travel_mode": "walking",
+                    "travel_mode_locked": True,
                 }
             ]
         )
@@ -193,6 +194,55 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["candidates"][0]["travel_minutes"], 15)
         service._map.search_places.assert_awaited_once()
         service._map.route.assert_awaited_once()
+
+    async def test_daily_location_preselection_avoids_long_hot_weather_walk(self):
+        service = self._location_audit_service()
+        service._map.search_places = AsyncMock(
+            return_value=[
+                {
+                    "poi_id": "poi-hot-route",
+                    "name": "测试美食广场",
+                    "address": "测试区测试街8号",
+                    "district": "测试区",
+                    "category": "餐饮",
+                    "city": "测试市",
+                    "coordinate": (23.04, 113.02),
+                }
+            ]
+        )
+
+        async def route(_origin, _destination, mode, **_kwargs):
+            values = {
+                "walking": (4457, 3600),
+                "transit": (5000, 1200),
+            }
+            distance, duration = values[mode]
+            return {
+                "distance_meters": distance,
+                "duration_seconds": duration,
+                "provider": "amap",
+            }
+
+        service._map.route = AsyncMock(side_effect=route)
+
+        result = await service.prepare_daily_location_candidates(
+            [
+                {
+                    "purpose": "傍晚吃饭",
+                    "query": "美食广场",
+                    "place_scope": "local",
+                    "travel_mode": "auto",
+                }
+            ],
+            weather_info={"temp": 34, "is_hot": True},
+        )
+
+        self.assertEqual(result["candidates"][0]["travel_mode"], "transit")
+        self.assertEqual(result["candidates"][0]["travel_minutes"], 20)
+        self.assertEqual(
+            [call.args[2] for call in service._map.route.await_args_list],
+            ["walking", "transit"],
+        )
 
     async def test_daily_location_audit_reuses_preselected_candidate(self):
         service = self._location_audit_service()
@@ -487,6 +537,78 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
             revised["planned_actions"][0]["payload"]["travel_mode"],
             "transit",
         )
+
+    async def test_daily_location_audit_rechecks_impractical_walk_even_if_it_fits(self):
+        service = self._location_audit_service()
+        service._map.search_places = AsyncMock(
+            return_value=[
+                {
+                    "poi_id": "poi-hot-route",
+                    "name": "测试书店",
+                    "address": "测试区测试街8号",
+                    "city": "测试市",
+                    "coordinate": (23.04, 113.02),
+                }
+            ]
+        )
+
+        async def route(_origin, _destination, mode, **_kwargs):
+            values = {
+                "walking": (4457, 3600),
+                "transit": (5000, 1200),
+            }
+            distance, duration = values[mode]
+            return {
+                "distance_meters": distance,
+                "duration_seconds": duration,
+                "provider": "amap",
+            }
+
+        service._map.route = AsyncMock(side_effect=route)
+
+        revised, reason = await service.audit_daily_locations(
+            self._location_payload(destination_time="10:00"),
+            allow_safe_corrections=True,
+            weather_info={"temp": 34, "is_hot": True},
+        )
+
+        self.assertEqual(reason, "")
+        self.assertEqual(revised["timeline"][1]["travel_mode"], "transit")
+        self.assertEqual(revised["timeline"][1]["travel_minutes"], 20)
+        self.assertEqual(revised["timeline"][1]["time"], "10:00")
+
+    async def test_daily_location_audit_preserves_explicit_locked_walk(self):
+        service = self._location_audit_service()
+        service._map.search_places = AsyncMock(
+            return_value=[
+                {
+                    "poi_id": "poi-walk-purpose",
+                    "name": "测试书店",
+                    "address": "测试区测试街8号",
+                    "city": "测试市",
+                    "coordinate": (23.04, 113.02),
+                }
+            ]
+        )
+        service._map.route = AsyncMock(
+            return_value={
+                "distance_meters": 4457,
+                "duration_seconds": 3600,
+                "provider": "amap",
+            }
+        )
+        payload = self._location_payload(destination_time="10:00")
+        payload["timeline"][1]["travel_mode_locked"] = True
+
+        revised, reason = await service.audit_daily_locations(
+            payload,
+            allow_safe_corrections=True,
+            weather_info={"temp": 34, "is_hot": True},
+        )
+
+        self.assertEqual(reason, "")
+        self.assertEqual(revised["timeline"][1]["travel_mode"], "walking")
+        service._map.route.assert_awaited_once()
 
     async def test_daily_location_audit_final_correction_shifts_timeline_if_needed(
         self,

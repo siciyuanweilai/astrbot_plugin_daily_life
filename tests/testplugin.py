@@ -88,13 +88,14 @@ class PluginLifecycleTest(unittest.IsolatedAsyncioTestCase):
 
         result = await tool.call(
             context,
-            messages=[
-                {"type": "plain", "text": "江边这套\n对岸灯挺好看。"}
-            ],
+            messages=[{"type": "plain", "text": "江边这套\n对岸灯挺好看。"}],
         )
 
         self.assertEqual(result, f"Message sent to session {event.unified_msg_origin}")
-        self.assertEqual(calls[0][0:3], ("expressive", event.unified_msg_origin, "江边这套\n对岸灯挺好看。"))
+        self.assertEqual(
+            calls[0][0:3],
+            ("expressive", event.unified_msg_origin, "江边这套\n对岸灯挺好看。"),
+        )
         self.assertTrue(event._has_send_oper)
         self.assertEqual(
             event.get_extra("_send_message_to_user_current_session_plain_texts"),
@@ -1049,6 +1050,28 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(suppressed)
         self.assertIsNone(event.get_result())
+
+    def test_runtime_does_not_clear_next_turn_after_voice_tool_was_sent(self):
+        class Runtime(VoiceSwitchMixin):
+            @staticmethod
+            def _event_session_id(event):
+                return event.unified_msg_origin
+
+            @staticmethod
+            def _event_message_id(event):
+                return str(event.message_id or "")
+
+        runtime = Runtime()
+        voice_event = Event(message_id="voice-turn")
+        runtime.mark_tool_outcome(voice_event, "life_voice_generate", "sent")
+
+        text_event = Event(message_id="text-turn")
+        text_event.set_result(text_event.chain_result(["下一轮普通文字回复。\n"]))
+
+        self.assertFalse(runtime.suppress_final_silent_tool_result(text_event))
+        self.assertIsNotNone(text_event.get_result())
+        self.assertEqual(text_event.get_result().chain, ["下一轮普通文字回复。\n"])
+        self.assertEqual(runtime._tool_reply_round_store(), {})
 
     async def test_runtime_keeps_final_text_after_emoji_tool_is_used(self):
         class Runtime(VoiceSwitchMixin):

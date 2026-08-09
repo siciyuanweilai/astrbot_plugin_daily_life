@@ -82,8 +82,6 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             runtime._character_appearance_profile(event),
             runtime._character_appearance_profile(event),
         )
-        await asyncio.gather(*runtime._character_appearance_tasks().values())
-        await asyncio.sleep(0)
         cached = await runtime._character_appearance_profile(event)
         personas[0] = (
             "成年女性，  整体纤细匀称，\n上半身曲线自然丰满，与肩腰胯比例协调。"
@@ -91,15 +89,13 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         equivalent = await runtime._character_appearance_profile(event)
         personas[0] = "成年女性，身形高挑，体态自然舒展。"
         third = await runtime._character_appearance_profile(event)
-        await asyncio.gather(*runtime._character_appearance_tasks().values())
-        await asyncio.sleep(0)
         fourth = await runtime._character_appearance_profile(event)
 
         self.assertEqual(first, second)
-        self.assertEqual(first, "")
+        self.assertIn("上半身曲线自然丰满", first)
         self.assertIn("上半身曲线自然丰满", cached)
         self.assertEqual(equivalent, cached)
-        self.assertEqual(third, "")
+        self.assertEqual(third, "成年女性，身形高挑，体态自然舒展")
         self.assertEqual(fourth, "成年女性，身形高挑，体态自然舒展")
         self.assertEqual(len(prompts), 2)
         self.assertIn("不得根据性别、年龄、性格或审美推断", prompts[0])
@@ -124,13 +120,6 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         runtime._media_director_call = extract
 
         self.assertEqual(await runtime._character_appearance_profile(Event()), "")
-        await asyncio.gather(
-            *runtime._character_appearance_tasks().values(), return_exceptions=True
-        )
-        await asyncio.sleep(0)
-        self.assertEqual(await runtime._character_appearance_profile(Event()), "")
-        await asyncio.gather(*runtime._character_appearance_tasks().values())
-        await asyncio.sleep(0)
         self.assertEqual(
             await runtime._character_appearance_profile(Event()),
             "成年女性，体型匀称，体态自然",
@@ -347,7 +336,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
 
         result = await runtime.life_image_generate(
             event,
-            "站在门口准备出门",
+            "站在门口展示重新换好的清爽甜妹穿搭",
             subject_route="current_character",
             current_outfit_change=True,
             current_outfit_instruction="换甜妹穿搭",
@@ -363,6 +352,14 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertIn(updated_day.outfit, rendered_prompt)
         self.assertIn("当前穿搭风格：清爽甜妹风", rendered_prompt)
         self.assertIn("当前角色造型（来自当前生活状态）", rendered_prompt)
+        self.assertIn("本轮真实换装已经保存后的唯一最终造型", rendered_prompt)
+        self.assertIn("原始换装要求已经完成解析", rendered_prompt)
+        self.assertNotIn("用户当前原始请求：换甜妹穿搭", rendered_prompt)
+        self.assertNotIn("只有用户当前原始请求明确要求", rendered_prompt)
+        self.assertLess(
+            rendered_prompt.index("展示重新换好的清爽甜妹穿搭"),
+            rendered_prompt.index("当前生活状态权威造型快照"),
+        )
         self.assertEqual(status_changes, ["outfit_update"])
 
     async def test_life_image_generate_cancels_when_outfit_persistence_fails(self):
@@ -1964,6 +1961,22 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertIn("浅杏色吊带搭配白色高腰短裤", generated_prompt)
         self.assertIn("用户当前原始请求：拍张现在的照片", generated_prompt)
         self.assertIn("工具整理后的画面提示词本身不能作为换装证据", generated_prompt)
+
+    async def test_final_appearance_snapshot_also_locks_group_character(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+
+        prompt = runtime._apply_current_appearance_snapshot(
+            "人物 A 与人物 B 在老街合影",
+            "当前穿搭：白色方领短袖搭配浅蓝色牛仔短裤\n当前发型名称：高马尾",
+            "group",
+            source_request="重新换一套再合影",
+            final_snapshot=True,
+        )
+
+        self.assertIn("人物 A造型（来自当前生活状态）", prompt)
+        self.assertIn("本轮真实换装已经保存后的唯一最终造型", prompt)
+        self.assertNotIn("重新换一套再合影", prompt)
+        self.assertNotIn("只有用户当前原始请求明确要求", prompt)
 
     async def test_life_image_generate_group_uses_structured_friend_profile(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)

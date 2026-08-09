@@ -209,10 +209,17 @@ class SpineBootMixin:
         if platform_type in {"aiocqhttp", "onebot", "cqhttp"}:
             event_clients = getattr(client, "_wsr_event_clients", None)
             api_clients = getattr(client, "_wsr_api_clients", None)
-            if isinstance(event_clients, (set, list, tuple, dict)):
-                return bool(event_clients) or bool(api_clients)
             if isinstance(api_clients, (set, list, tuple, dict)):
                 return bool(api_clients)
+            if isinstance(event_clients, (set, list, tuple, dict)):
+                return bool(event_clients)
+            # 兼容旧版或测试替身客户端；只有客户端明确暴露了反向
+            # WebSocket 状态时，才按连接集合进行严格判断。
+            if event_clients is None and api_clients is None:
+                return bool(client)
+            # OneBot 的运行状态会先于反向 WebSocket 连接建立，不能回退到
+            # status=running，否则启动期联系人查询仍会抢跑。
+            return False
 
         for attr in ("is_ready", "ready", "is_connected", "connected"):
             value = getattr(client, attr, None)
@@ -257,7 +264,6 @@ class SpineBootMixin:
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + max(0.0, float(timeout))
-        waited = False
         while True:
             # 平台管理器可能在插件任务启动后才把已配置实例放入列表。
             instances = self._platform_instances()
@@ -277,9 +283,6 @@ class SpineBootMixin:
                     f"未就绪平台={pending_count}"
                 )
                 return False
-            if not waited:
-                logger.info("[日常生活] 首次生活初始化等待平台适配器连接……")
-                waited = True
             await asyncio.sleep(_PLATFORM_READY_POLL_SECONDS)
 
     def _runtime_data_path(self) -> Path:
@@ -294,6 +297,7 @@ class SpineBootMixin:
             self.context,
             self.raw_config if raw_config is None else raw_config,
             log_prefix=LOG_PREFIX,
+            platform_ready_waiter=getattr(self, "wait_for_platform_ready", None),
         )
         weather_client = WeatherClient(config.weather)
         search = SearchService(self.context, config.search, task_store=self.archive)

@@ -334,8 +334,14 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         event: AstrMessageEvent | None,
         prompt: str,
         *,
+        model: str = "",
+        text_model: str = "",
+        edit_model: str = "",
         contains_character: bool = False,
     ) -> str:
+        model = str(model or "").strip()
+        text_model = str(text_model or "").strip() or model
+        edit_model = str(edit_model or "").strip() or model
         async with self._external_runtime_lease() as runtime:
             result = await runtime.generate_life_image_asset(
                 event,
@@ -344,6 +350,8 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
                 contains_character=contains_character,
                 preserve_reference_ratio=False,
                 trusted_identity=contains_character,
+                text_model=text_model,
+                edit_model=edit_model,
             )
             return str(getattr(result, "path", "") or "").strip()
 
@@ -368,12 +376,17 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         *,
         emotion: str = "",
         emotion_category: str = "",
+        voice_style: str = "",
     ) -> str:
         async with self._external_runtime_lease() as runtime:
+            voice_kwargs = {
+                "emotion": emotion,
+                "emotion_category": emotion_category,
+            }
+            if voice_style:
+                voice_kwargs["voice_style"] = voice_style
             result = await runtime.media.voice.synthesize(
-                str(text or "").strip(),
-                emotion=emotion,
-                emotion_category=emotion_category,
+                str(text or "").strip(), **voice_kwargs
             )
             return str(getattr(result, "path", "") or "").strip()
 
@@ -1379,6 +1392,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         text: str = "",
         emotion: str = "",
         emotion_category: str = "",
+        voice_style: str = "",
         user_requested: bool = False,
         decision_reason: str = "",
     ):
@@ -1391,18 +1405,22 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
 
         Args:
             text(string): 本轮最终要说出口的回复文本。
-            emotion(string): 可选自然情绪描述，例如“困倦”“小声吐槽”“无奈中带点宠溺”。
+            emotion(string): 可选自然情绪描述，用于记录表达意图，不参与语音风格推断。
             emotion_category(string): 可选情绪分类，只能是 neutral、happy、sad、angry 之一。
+            voice_style(string): 可选语音风格枚举，只能是 neutral、happy、light、sad、angry 之一。
             user_requested(bool): 用户明确要求发送语音时必须填 true；false 会保持文字回复。
             decision_reason(string): 简要说明用户本轮为什么需要语音；用于后台裁定记录，不会发给用户。
         """
+        voice_kwargs = {
+            "emotion": emotion,
+            "emotion_category": emotion_category,
+            "user_requested": self._tool_bool(user_requested),
+            "decision_reason": str(decision_reason or "").strip(),
+        }
+        if voice_style:
+            voice_kwargs["voice_style"] = voice_style
         return await self.runtime.life_voice_generate(
-            event,
-            str(text or "").strip(),
-            emotion=emotion,
-            emotion_category=emotion_category,
-            user_requested=self._tool_bool(user_requested),
-            decision_reason=str(decision_reason or "").strip(),
+            event, str(text or "").strip(), **voice_kwargs
         )
 
     @filter.llm_tool(name="life_emoji_send")

@@ -73,6 +73,7 @@ JSON 字段：
         event: Any = None,
         *,
         schedule_extract: bool = True,
+        wait_for_extract: bool = False,
     ) -> tuple[str, str]:
         persona_getter = getattr(self, "get_persona_text", None)
         if not callable(persona_getter):
@@ -114,6 +115,14 @@ JSON 字段：
                 self._remember_character_appearance_profile(persona, profile)
 
             task.add_done_callback(store_result)
+        if wait_for_extract:
+            try:
+                return persona, await asyncio.shield(task)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # 完成回调统一记录异常，并保留下一次重新提取的机会。
+                pass
         return persona, ""
 
     async def _extract_character_appearance_profile(self, persona: str) -> str:
@@ -130,7 +139,9 @@ JSON 字段：
         ]
 
     async def _character_appearance_profile(self, event: Any = None) -> str:
-        _persona, profile = await self._character_appearance_context(event)
+        _persona, profile = await self._character_appearance_context(
+            event, wait_for_extract=True
+        )
         return profile
 
     async def _close_character_appearance_tasks(self) -> None:

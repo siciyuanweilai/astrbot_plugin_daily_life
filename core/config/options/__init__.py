@@ -13,9 +13,9 @@ from .basis import (
 )
 from .domains import LifeDomainSettings
 from .generate import (
-    DEFAULT_VOICE_FORMAT,
-    DEFAULT_VOICE_MODEL,
-    DEFAULT_VOICE_SPEED,
+    DEFAULT_VOLCENGINE_FORMAT,
+    DEFAULT_VOLCENGINE_SAMPLE_RATE,
+    DEFAULT_VOLCENGINE_TTS_MODEL,
     IMAGE_ASPECT_RATIOS,
     IMAGE_RESOLUTIONS,
     ImageGenerationSettings,
@@ -29,9 +29,9 @@ __all__ = [
     "CommitmentSettings",
     "ChatStyleSettings",
     "EmojiSettings",
-    "DEFAULT_VOICE_FORMAT",
-    "DEFAULT_VOICE_MODEL",
-    "DEFAULT_VOICE_SPEED",
+    "DEFAULT_VOLCENGINE_FORMAT",
+    "DEFAULT_VOLCENGINE_SAMPLE_RATE",
+    "DEFAULT_VOLCENGINE_TTS_MODEL",
     "IMAGE_ASPECT_RATIOS",
     "IMAGE_RESOLUTIONS",
     "ImageGenerationSettings",

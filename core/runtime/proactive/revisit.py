@@ -403,13 +403,14 @@ JSON 输出要求：
   "decision": "reply|observe|wait|skip",
   "reason": "为什么此刻适合或不适合发起私聊回访",
   "reply_text": "一句自然、短、像真人的私聊问候",
-  "expression_intent": {{"emotion": "可选自然情绪", "emotion_category": "neutral|happy|sad|angry", "emoji_intent": "可选表情意图", "action_intent": "可选动作意图", "send_emoji": true/false, "reason": "可选理由"}}
+  "expression_intent": {{"emotion": "可选自然情绪", "emotion_category": "neutral|happy|sad|angry", "voice_style": "neutral|happy|light|sad|angry", "emoji_intent": "可选表情意图", "action_intent": "可选动作意图", "send_emoji": true/false, "reason": "可选理由"}}
 }}
 裁定方式：
 - 先看“回访依据”，判断 reply、observe、wait 或 skip。
 - benefit、timeliness、continuity、disruption、uncertainty 必须分别填写 0 至 100 的整数；前三项是回访收益，后两项是打扰与不确定风险。
 - 只有回访收益确实高于风险时才设 should_reply=true；不值得打扰时选择 observe 或 wait。
 - reply_text 只写一句自然短问候，{expression_guidance}
+- voice_style 必须根据整轮语义直接选择枚举值，不要从 emotion 文本推导；没有明显情绪时使用 neutral。
 {expression_limit_line}
 - reason 只写相对场景和判断依据，不复述具体日期、钟点或时间轴编号；具体时间只保留在内部证据中。
 - 近期消息必须按其明确时间理解；旧照片、旧回复或未来约定不能表述成刚发生或已经完成。

@@ -8,6 +8,16 @@ from urllib.parse import urljoin, urlsplit
 
 LOG_PREFIX = "[日常生活]"
 REFERENCE_IMAGE_MAX_BYTES = 24 * 1024 * 1024
+VOICE_STYLE_KEYS = frozenset({"neutral", "happy", "light", "sad", "angry"})
+
+
+def normalize_voice_style(value: Any, fallback: str = "neutral") -> str:
+    """校验模型返回的语音风格枚举，拒绝自由文本推断。"""
+    style = str(value or "").strip().lower()
+    if style in VOICE_STYLE_KEYS:
+        return style
+    default = str(fallback or "neutral").strip().lower()
+    return default if default in VOICE_STYLE_KEYS else "neutral"
 GROUP_IDENTITY_CONTINUITY_RULE = (
     "人物 A 与人物 B 是两位既定且不同的人物；保持双方各自的身份、脸部、体态和整体辨识度。"
     "服装、发型、体态和性别呈现等个体属性必须分别绑定到人物 A 或人物 B，"

@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 import json
 import types
@@ -17,6 +18,34 @@ from support import (
 
 
 class LifeHistoryTest(unittest.IsolatedAsyncioTestCase):
+    async def test_fetch_deep_history_waits_for_platform_connection(self):
+        bot = ActionBot({"get_friend_msg_history": {"messages": []}})
+        release = asyncio.Event()
+
+        async def wait_for_platform():
+            await release.wait()
+            return True
+
+        composer, *_ = make_composer()
+        composer.context.platform_manager = PlatformManager(bot)
+        composer.contact_resolver = ContactNameResolver(
+            composer.context,
+            {"relationship_aliases": []},
+            platform_ready_waiter=wait_for_platform,
+        )
+
+        lookup = asyncio.create_task(
+            composer._fetch_deep_history(
+                123456, is_group=False, hours=1, max_count=10
+            )
+        )
+        await asyncio.sleep(0)
+        self.assertEqual(bot.calls, [])
+
+        release.set()
+        self.assertEqual(await lookup, [])
+        self.assertEqual(bot.calls[0][0], "get_friend_msg_history")
+
     async def test_fetch_deep_history_supports_direct_bot_call_action(self):
         now_ts = int(datetime.datetime.now().timestamp())
         bot = DirectActionBot(

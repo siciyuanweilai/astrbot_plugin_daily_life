@@ -5,8 +5,8 @@ from typing import Any
 from astrbot.api import logger
 
 from ..markers import LOG_PREFIX
-from .limit import VoiceSwitchGateMixin
 from .judge import VoiceSwitchJudgeMixin
+from .limit import VoiceSwitchGateMixin
 from .preface import SilentToolPrefaceMixin
 from .trace import VoiceSwitchRecordMixin
 
@@ -52,6 +52,7 @@ class VoiceSwitchMixin(
         reason = str(payload.get("reason") or "").strip()
         emotion = str(payload.get("emotion") or "").strip()
         emotion_category = str(payload.get("emotion_category") or "").strip()
+        voice_style = str(payload.get("voice_style") or "").strip().lower()
         try:
             confidence = float(payload.get("confidence", 1.0) or 1.0)
         except (TypeError, ValueError):
@@ -66,11 +67,13 @@ class VoiceSwitchMixin(
             item["text_reason"] = gate_reason
             return False
         try:
-            generated = await self.media.voice.synthesize(
-                reply_text,
-                emotion=emotion,
-                emotion_category=emotion_category,
-            )
+            voice_kwargs = {
+                "emotion": emotion,
+                "emotion_category": emotion_category,
+            }
+            if voice_style and voice_style != "neutral":
+                voice_kwargs["voice_style"] = voice_style
+            generated = await self.media.voice.synthesize(reply_text, **voice_kwargs)
             self.mark_structured_pending_bot_text(event, reply_text, media="语音")
             self._replace_result_with_voice(event, str(generated.path))
             setattr(event, self._SEMANTIC_SEGMENT_PENDING_ATTR, [])

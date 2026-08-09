@@ -38,6 +38,35 @@ class SilentToolPrefaceMixin:
                 pass
         return str(getattr(event, "unified_msg_origin", "") or "").strip()
 
+    def _tool_preface_event_key(self, event: Any) -> str:
+        """为工具状态绑定当前消息，避免同一会话的旧状态影响下一轮。"""
+
+        message_getter = getattr(self, "_event_message_id", None)
+        if callable(message_getter):
+            try:
+                message_id = str(message_getter(event) or "").strip()
+            except Exception:
+                message_id = ""
+            if message_id:
+                return f"message:{message_id}"
+        return f"event:{id(event)}"
+
+    def _tool_reply_state_for_event(self, event: Any) -> dict[str, Any] | None:
+        """读取当前事件的工具状态，并清理属于上一轮的残留状态。"""
+
+        scope = self._tool_preface_scope_key(event)
+        if not scope:
+            return None
+        state = self._tool_reply_round_store().get(scope)
+        if not isinstance(state, dict):
+            return None
+        expected_key = self._tool_preface_event_key(event)
+        if state.get("event_key") != expected_key:
+            self._tool_reply_round_store().pop(scope, None)
+            logger.debug(f"{LOG_PREFIX} 已清理上一话轮残留的媒体工具状态。")
+            return None
+        return state
+
     def _tool_reply_round_store(self) -> dict[str, dict[str, Any]]:
         store = getattr(self, "_tool_reply_rounds", None)
         if not isinstance(store, dict):
@@ -71,6 +100,7 @@ class SilentToolPrefaceMixin:
         if not scope or not isinstance(chain, list) or not chain:
             return False
         self._tool_reply_round_store()[scope] = {
+            "event_key": self._tool_preface_event_key(event),
             "preface": self._copy_result_chain(result),
             "tool_name": "",
             "outcome": "",
@@ -146,8 +176,8 @@ class SilentToolPrefaceMixin:
         scope = self._tool_preface_scope_key(event)
         if not scope:
             return
-        state = self._tool_reply_round_store().get(scope)
-        if not isinstance(state, dict):
+        state = self._tool_reply_state_for_event(event)
+        if state is None:
             return
         name = self._tool_name(tool)
         state["tool_name"] = name
@@ -186,25 +216,32 @@ class SilentToolPrefaceMixin:
 
         del tool_args, tool_result
         scope = self._tool_preface_scope_key(event)
-        state = self._tool_reply_round_store().get(scope)
-        if isinstance(state, dict):
-            state["tool_name"] = state.get("tool_name") or self._tool_name(tool)
-            state["tool_completed"] = True
-            state["final_response_pending"] = True
+        state = self._tool_reply_state_for_event(event)
+        if state is None:
+            return
+        state["tool_name"] = state.get("tool_name") or self._tool_name(tool)
+        state["tool_completed"] = True
+        state["final_response_pending"] = True
 
     def mark_tool_outcome(self, event: Any, tool_name: str, outcome: str) -> None:
         scope = self._tool_preface_scope_key(event)
         if not scope:
             return
-        state = self._tool_reply_round_store().setdefault(scope, {})
+        state = self._tool_reply_round_store().setdefault(
+            scope,
+            {"event_key": self._tool_preface_event_key(event)},
+        )
+        if state.get("event_key") != self._tool_preface_event_key(event):
+            state.clear()
+            state["event_key"] = self._tool_preface_event_key(event)
         state["tool_name"] = str(tool_name or "").strip()
         state["outcome"] = str(outcome or "").strip().lower()
         state["final_response_pending"] = True
 
     def note_tool_final_response(self, event: Any, llm_response: Any) -> None:
         scope = self._tool_preface_scope_key(event)
-        state = self._tool_reply_round_store().get(scope)
-        if not isinstance(state, dict):
+        state = self._tool_reply_state_for_event(event)
+        if state is None:
             return
         completion = str(getattr(llm_response, "completion_text", "") or "").strip()
         result_chain = getattr(llm_response, "result_chain", None)
@@ -218,8 +255,8 @@ class SilentToolPrefaceMixin:
         """语音成功后清除重复文字，表情成功后保留自然补话。"""
 
         scope = self._tool_preface_scope_key(event)
-        state = self._tool_reply_round_store().get(scope)
-        if not isinstance(state, dict):
+        state = self._tool_reply_state_for_event(event)
+        if state is None:
             return False
         name = str(state.get("tool_name") or "").strip()
         outcome = str(state.get("outcome") or "").strip().lower()

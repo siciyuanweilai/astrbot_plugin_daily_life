@@ -147,6 +147,44 @@ class TargetLifeContextTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ExternalLeaseTests(unittest.IsolatedAsyncioTestCase):
+    async def test_share_image_contract_passes_separate_and_legacy_models(self):
+        plugin = DailyLifePlugin(types.SimpleNamespace(), {})
+        calls = []
+
+        class Runtime:
+            async def generate_life_image_asset(self, event, prompt, *args, **kwargs):
+                calls.append((event, prompt, kwargs))
+                return types.SimpleNamespace(path="generated.png")
+
+        plugin.runtime = Runtime()
+        plugin.commands = object()
+
+        self.assertEqual(
+            await plugin.generate_share_image(
+                None,
+                "分别指定模型",
+                text_model="gpt-image-text",
+                edit_model="gpt-image-edit",
+                contains_character=True,
+            ),
+            "generated.png",
+        )
+        self.assertEqual(
+            await plugin.generate_share_image(
+                None,
+                "兼容单一模型",
+                model="gpt-image-legacy",
+            ),
+            "generated.png",
+        )
+        self.assertEqual(
+            calls[0][2]["text_model"],
+            "gpt-image-text",
+        )
+        self.assertEqual(calls[0][2]["edit_model"], "gpt-image-edit")
+        self.assertEqual(calls[1][2]["text_model"], "gpt-image-legacy")
+        self.assertEqual(calls[1][2]["edit_model"], "gpt-image-legacy")
+
     async def test_share_search_contract_delegates_to_runtime_search(self):
         plugin = DailyLifePlugin(types.SimpleNamespace(), {})
         calls = []

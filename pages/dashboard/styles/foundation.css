@@ -135,12 +135,6 @@ input[type="range"] {
   box-shadow: none;
 }
 
-@media (pointer: coarse) {
-  input[type="range"] {
-    touch-action: pan-y;
-  }
-}
-
 textarea {
   resize: vertical;
 }
@@ -1698,6 +1692,8 @@ h2::before {
   color: var(--muted);
   cursor: grab;
   user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
 }
 
 .template-list-drag:active {
@@ -1837,6 +1833,25 @@ h2::before {
 
 .number-line.single {
   grid-template-columns: 1fr;
+}
+
+.number-line.has-range > input[type="range"],
+.number-line.has-range > .range-pointer-guard {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.number-line.has-range > input[type="range"] {
+  pointer-events: none;
+}
+
+.range-pointer-guard {
+  z-index: 1;
+  align-self: stretch;
+  min-width: 0;
+  background: transparent;
+  cursor: pointer;
+  touch-action: pan-y;
 }
 
 .reference-gallery {

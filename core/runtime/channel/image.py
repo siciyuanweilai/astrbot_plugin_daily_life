@@ -106,6 +106,7 @@ class RuntimeImageMediaMixin:
         subject_route: str,
         *,
         source_request: str = "",
+        final_snapshot: bool = False,
     ) -> str:
         text = str(prompt or "").strip()
         snapshot = str(appearance or "").strip()
@@ -117,16 +118,26 @@ class RuntimeImageMediaMixin:
         ):
             return text
         subject = "人物 A" if route == "group" else "当前角色"
-        original = " ".join(str(source_request or "").strip().split())[:600]
-        original_line = f"\n用户当前原始请求：{original}" if original else ""
-        constraint = (
-            f"{subject}造型（来自当前生活状态）\n"
-            f"{self._CURRENT_APPEARANCE_PROMPT_MARKER}：\n{snapshot}"
-            f"{original_line}\n"
-            "这份快照是当前真实生活状态，生成模型不得根据场景、动作或自行扩写而更换其中的服装、鞋袜、配饰或发型。"
-            "只有用户当前原始请求明确要求在本次画面中试穿、换造型或采用另一套外观时，才允许按该明确要求覆盖；"
-            "工具整理后的画面提示词本身不能作为换装证据。"
-        )
+        if final_snapshot:
+            constraint = (
+                f"{subject}造型（来自当前生活状态）\n"
+                f"{self._CURRENT_APPEARANCE_PROMPT_MARKER}：\n{snapshot}\n"
+                "这份快照是本轮真实换装已经保存后的唯一最终造型。"
+                "原始换装要求已经完成解析，不得再次解读或另行设计造型；"
+                "生成模型必须逐项保持其中的服装、鞋袜、配饰和发型，"
+                "不得被场景、动作、构图、参考图或工具整理后的画面提示词覆盖。"
+            )
+        else:
+            original = " ".join(str(source_request or "").strip().split())[:600]
+            original_line = f"\n用户当前原始请求：{original}" if original else ""
+            constraint = (
+                f"{subject}造型（来自当前生活状态）\n"
+                f"{self._CURRENT_APPEARANCE_PROMPT_MARKER}：\n{snapshot}"
+                f"{original_line}\n"
+                "这份快照是当前真实生活状态，生成模型不得根据场景、动作或自行扩写而更换其中的服装、鞋袜、配饰或发型。"
+                "只有用户当前原始请求明确要求在本次画面中试穿、换造型或采用另一套外观时，才允许按该明确要求覆盖；"
+                "工具整理后的画面提示词本身不能作为换装证据。"
+            )
         return f"{text}\n\n{constraint}" if text else constraint
 
     def _friend_daily_looks(self) -> dict[str, dict[str, str]]:
@@ -611,6 +622,7 @@ class RuntimeImageMediaMixin:
         resolution: str = "",
         protocol: str = "",
         *,
+        model: str = "",
         identity_profile: str = "",
     ) -> Any:
         resolution = str(
@@ -625,6 +637,8 @@ class RuntimeImageMediaMixin:
                 options["resolution"] = resolution
             if protocol:
                 options["protocol"] = protocol
+            if model:
+                options["model"] = model
             if identity_profile:
                 options["identity_profile"] = identity_profile
             return await self.media.image.generate_image(safe_prompt, **options)
@@ -646,6 +660,7 @@ class RuntimeImageMediaMixin:
         *,
         preserve_reference_ratio: bool = True,
         protocol: str = "",
+        model: str = "",
         identity_profile: str = "",
     ) -> Any:
         resolution = str(
@@ -660,6 +675,8 @@ class RuntimeImageMediaMixin:
                 options["resolution"] = resolution
             if protocol:
                 options["protocol"] = protocol
+            if model:
+                options["model"] = model
             if identity_profile:
                 options["identity_profile"] = identity_profile
             return await self.media.image.edit_image(
@@ -969,6 +986,9 @@ class RuntimeImageMediaMixin:
         preserve_reference_ratio: bool = False,
         trusted_identity: bool = False,
         protocol: str = "",
+        model: str = "",
+        text_model: str = "",
+        edit_model: str = "",
         identity_profile: str | None = None,
     ) -> Any:
         prompt = str(prompt or "").strip()
@@ -980,6 +1000,9 @@ class RuntimeImageMediaMixin:
         resolution = str(
             resolution or ""
         ).strip().upper() or self._image_prompt_resolution(prompt)
+        model = str(model or "").strip()
+        text_model = str(text_model or "").strip() or model
+        edit_model = str(edit_model or "").strip() or model
         if trusted_identity and contains_character:
             directed_prompt = prompt
             character_reference = self._life_character_reference_image()
@@ -1027,6 +1050,7 @@ class RuntimeImageMediaMixin:
                 resolution,
                 preserve_reference_ratio=preserve_reference_ratio,
                 protocol=protocol,
+                model=edit_model,
                 identity_profile=identity_profile,
             )
         return await self._generate_life_image_with_policy_retry(
@@ -1035,6 +1059,7 @@ class RuntimeImageMediaMixin:
             aspect_ratio,
             resolution,
             protocol,
+            model=text_model,
             identity_profile=identity_profile,
         )
 
@@ -1049,6 +1074,7 @@ class RuntimeImageMediaMixin:
         resolution: str,
         provider: str,
         current_appearance: str = "",
+        final_appearance_snapshot: bool = False,
     ) -> ImageGenerationPlan:
         provider = requested_image_provider(provider)
         if provider:
@@ -1088,6 +1114,7 @@ class RuntimeImageMediaMixin:
             appearance,
             route,
             source_request=self._event_current_image_request_text(event),
+            final_snapshot=final_appearance_snapshot,
         )
         if not resolution:
             resolution = self._image_prompt_resolution(tool_prompt)
@@ -1289,6 +1316,7 @@ class RuntimeImageMediaMixin:
             resolution=resolution,
             provider=provider,
             current_appearance=current_appearance,
+            final_appearance_snapshot=bool(current_outfit_change),
         )
         if not plan.prompt:
             return "没有收到图片提示词。"

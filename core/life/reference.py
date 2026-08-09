@@ -236,6 +236,10 @@ class ReferenceMixin:
     async def _fetch_deep_history(
         self, target_id: int, is_group: bool, hours: int, max_count: int
     ) -> list:
+        resolver = self.contact_resolver
+        wait_for_platform = getattr(resolver, "wait_for_platform_ready", None)
+        if callable(wait_for_platform):
+            await wait_for_platform()
         bot = first_onebot_client(self.context)
         target_type = "群聊" if is_group else "私聊"
         if not bot:

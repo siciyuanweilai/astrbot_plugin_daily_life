@@ -27,6 +27,7 @@ from .fashion import outfit_style_contamination_reason
 from .future import future_outfit_timing_issue
 from .tools import (
     extract_json_from_text,
+    format_timeline_travel,
     get_current_timeline_status,
     get_time_period_cn,
     parse_time_minutes,
@@ -130,7 +131,7 @@ class OutfitMixin:
         return text
 
     @staticmethod
-    def _timeline_item_text(item: object) -> str:
+    def _timeline_item_text(item: object, *, previous_place: str = "") -> str:
         if not item:
             return "无"
         time = str(
@@ -148,7 +149,13 @@ class OutfitMixin:
         ).strip()
         prefix = f"{time} - " if time else ""
         suffix = f" [{status}]" if status else ""
-        return f"{prefix}{activity or '未记录'}{suffix}"
+        text = f"{prefix}{activity or '未记录'}{suffix}"
+        travel = format_timeline_travel(
+            item,
+            previous_place=previous_place,
+            include_provider=False,
+        )
+        return f"{text}；出行：{travel}" if travel else text
 
     @classmethod
     def _timeline_context_text(
@@ -163,6 +170,7 @@ class OutfitMixin:
         now_minutes = current_time.hour * 60 + current_time.minute
         past_lines: list[str] = []
         future_lines: list[str] = []
+        previous_place = ""
         for item in timeline:
             item_time = str(
                 getattr(item, "time", "")
@@ -170,7 +178,7 @@ class OutfitMixin:
                 else item.get("time", "")
             ).strip()
             item_minutes = parse_time_minutes(item_time)
-            line = cls._timeline_item_text(item)
+            line = cls._timeline_item_text(item, previous_place=previous_place)
             item_datetime = timeline_item_datetime(item, timeline_date)
             if item_datetime is not None:
                 if item_datetime <= current_time:
@@ -185,6 +193,13 @@ class OutfitMixin:
             else:
                 delta = item_minutes - now_minutes
                 future_lines.append(f"{line}（约 {delta} 分钟后，尚未发生）")
+            item_place = str(
+                getattr(item, "place", "")
+                if hasattr(item, "place")
+                else item.get("place", "")
+            ).strip()
+            if item_place:
+                previous_place = item_place
         return "\n".join(past_lines) or "暂无已发生日程", "\n".join(
             future_lines
         ) or "暂无未发生日程"

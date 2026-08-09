@@ -294,7 +294,10 @@ class DailyEngineMixin:
                 preselected_places = []
                 if location_validation_enabled:
                     logger.debug("[日程生成] 开始规划地点意图并通过地图预选候选……")
-                    location_context, preselected_places = await self._prepare_daily_location_context(
+                    (
+                        location_context,
+                        preselected_places,
+                    ) = await self._prepare_daily_location_context(
                         context=context,
                         provider=provider,
                         provider_id=provider_id,
@@ -354,7 +357,10 @@ class DailyEngineMixin:
                             )
                     if ok:
                         if callable(location_auditor):
-                            audit_kwargs = {"allow_safe_corrections": True}
+                            audit_kwargs = {
+                                "allow_safe_corrections": True,
+                                "weather_info": context["weather_info"],
+                            }
                             if preselected_places:
                                 audit_kwargs["preselected_places"] = preselected_places
                             result, location_reason = await location_auditor(

@@ -3,7 +3,7 @@
 import datetime
 import types
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 from support import (
     ActionBot,
@@ -1502,7 +1502,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
 
         correction_flags = []
 
-        async def audit(payload, *, allow_safe_corrections=False):
+        async def audit(payload, *, allow_safe_corrections=False, **_kwargs):
             correction_flags.append(allow_safe_corrections)
             if not allow_safe_corrections:
                 return payload, "地图未能确认测试地点，请修正结构化地点"
@@ -1593,6 +1593,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
                 }
             ],
             max_candidates=8,
+            weather_info=ANY,
         )
 
     async def test_daily_generation_continues_when_location_preselection_fails(self):
@@ -2336,7 +2337,15 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
                         time="13:20", activity="坐在雨边长椅吃炸串", status="慵懒满足"
                     ),
                     TimelineItem(
-                        time="15:30", activity="去甜品店看看草莓慕斯", status="轻松"
+                        time="15:30",
+                        activity="去甜品店看看草莓慕斯",
+                        status="轻松",
+                        place="测试甜品店",
+                        travel_mode="driving",
+                        travel_origin="雨边长椅",
+                        travel_provider="amap",
+                        travel_minutes=16,
+                        travel_distance_meters=5100,
                     ),
                     TimelineItem(
                         time="21:00", activity="洗完澡换睡裙准备睡前放松", status="困倦"
@@ -2364,6 +2373,11 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("当前时间范围：12:00-14:00", prompt)
         self.assertIn("当前日程位置：13:20 - 坐在雨边长椅吃炸串 [慵懒满足]", prompt)
         self.assertIn("下一项安排：15:30 - 去甜品店看看草莓慕斯 [轻松]", prompt)
+        self.assertIn(
+            "出行：从雨边长椅前往测试甜品店 · 驾车约 16 分钟 · 5.1 公里",
+            prompt,
+        )
+        self.assertNotIn("高德地图", prompt)
         self.assertIn("实时状态摘要：坐在雨边长椅吃炸串，想吃完再溜达过去碰头", prompt)
         self.assertIn("未发生的未来安排只能作为预告，不能提前覆盖当前穿搭", prompt)
         self.assertLess(prompt.index("当前日程位置"), prompt.index("未发生日程预告"))

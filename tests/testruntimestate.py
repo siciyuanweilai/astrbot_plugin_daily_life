@@ -291,8 +291,23 @@ class RuntimeStateTest(unittest.TestCase):
             date="2026-05-24",
             timeline=[
                 TimelineItem(time="08:00", activity="起床洗漱", status="清醒"),
-                TimelineItem(time="12:00", activity="在厨房煮清汤面", status="温和"),
-                TimelineItem(time="20:30", activity="洗完碗整理餐桌", status="清爽"),
+                TimelineItem(
+                    time="12:00",
+                    activity="在厨房煮清汤面",
+                    status="温和",
+                    place="测试美食广场",
+                ),
+                TimelineItem(
+                    time="20:30",
+                    activity="回家整理餐桌",
+                    status="清爽",
+                    place="家",
+                    travel_mode="driving",
+                    travel_origin="测试美食广场",
+                    travel_provider="amap",
+                    travel_minutes=16,
+                    travel_distance_meters=5100,
+                ),
                 TimelineItem(time="23:00", activity="关灯睡觉", status="放松"),
             ],
         )
@@ -305,7 +320,12 @@ class RuntimeStateTest(unittest.TestCase):
 
         self.assertIn("[HiddenScheduleWindow]", text)
         self.assertIn("当前: 12:00 在厨房煮清汤面 [温和]", text)
-        self.assertIn("接下来: 20:30 洗完碗整理餐桌 [清爽]", text)
+        self.assertIn("接下来: 20:30 回家整理餐桌 [清爽]", text)
+        self.assertIn(
+            "出行：从测试美食广场前往家 · 驾车约 16 分钟 · 5.1 公里",
+            text,
+        )
+        self.assertNotIn("高德地图", text)
         self.assertIn("全天索引", text)
         self.assertLess(
             text.index("全天索引"), text.index("当前: 12:00 在厨房煮清汤面 [温和]")
@@ -919,7 +939,7 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             await asyncio.sleep(0.03)
             self.assertEqual(calls, [])
 
-            client._wsr_event_clients.add(object())
+            client._wsr_api_clients["测试账号"] = object()
             await asyncio.wait_for(task, timeout=1)
 
         self.assertEqual(len(calls), 1)

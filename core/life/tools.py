@@ -641,7 +641,7 @@ def format_timeline_to_text(timeline: list) -> str:
         execution = _timeline_field(item, "execution_state", "planned")
         execution_str = f" [执行:{execution}]" if execution else ""
         lines.append(f"{time_str} - {act}{status_str}{execution_str}")
-        travel_text = _format_timeline_travel(item, previous_place=previous_place)
+        travel_text = format_timeline_travel(item, previous_place=previous_place)
         if travel_text:
             lines.append(f"  出行：{travel_text}")
         place = _timeline_field(item, "place")
@@ -650,7 +650,23 @@ def format_timeline_to_text(timeline: list) -> str:
     return "\n".join(lines)
 
 
-def _format_timeline_travel(item: Any, *, previous_place: str = "") -> str:
+def format_timeline_travel(
+    item: Any,
+    *,
+    previous_place: str = "",
+    include_provider: bool = True,
+) -> str:
+    """格式化时间轴节点中已经核验的交通事实。
+
+    Args:
+        item: 时间轴节点对象或字典。
+        previous_place: 节点未保存出发地时使用的上一地点。
+        include_provider: 是否附带地图或估算来源。
+
+    Returns:
+        可供展示或模型上下文使用的交通摘要；没有交通事实时返回空字符串。
+    """
+
     mode = _timeline_field(item, "travel_mode")
     minutes = _non_negative_timeline_number(item, "travel_minutes")
     distance = _non_negative_timeline_number(item, "travel_distance_meters")
@@ -673,16 +689,17 @@ def _format_timeline_travel(item: Any, *, previous_place: str = "") -> str:
     if distance > 0:
         parts.append(_format_travel_distance(distance))
 
-    provider = _timeline_field(item, "travel_provider")
-    provider_label = {
-        "amap": "高德地图",
-        "tencent": "腾讯地图",
-        "baidu": "百度地图",
-        "coordinate_estimate": "坐标估算",
-        "default_estimate": "默认估算",
-    }.get(provider, "")
-    if provider_label:
-        parts.append(provider_label)
+    if include_provider:
+        provider = _timeline_field(item, "travel_provider")
+        provider_label = {
+            "amap": "高德地图",
+            "tencent": "腾讯地图",
+            "baidu": "百度地图",
+            "coordinate_estimate": "坐标估算",
+            "default_estimate": "默认估算",
+        }.get(provider, "")
+        if provider_label:
+            parts.append(provider_label)
     return " · ".join(parts)
 
 

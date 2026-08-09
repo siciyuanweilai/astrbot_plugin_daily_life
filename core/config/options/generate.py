@@ -6,20 +6,16 @@ from typing import Any
 from .cast import (
     as_bool,
     as_float,
-    as_float_map,
     as_friend_reference_profiles,
     as_int,
     as_reference_image_items,
     as_str,
     as_str_list,
-    as_str_map,
 )
 
-DEFAULT_VOICE_MODEL = "FunAudioLLM/CosyVoice2-0.5B"
-DEFAULT_VOICE_MAP = "neutral:\nhappy:\nsad:\nangry:"
-DEFAULT_SPEED_MAP = "neutral: 1.0\nhappy: 1.15\nsad: 0.9\nangry: 1.1"
-DEFAULT_VOICE_SPEED = 1.0
-DEFAULT_VOICE_FORMAT = "wav"
+DEFAULT_VOLCENGINE_TTS_MODEL = "seed-tts-2.0-standard"
+DEFAULT_VOLCENGINE_SAMPLE_RATE = 24000
+DEFAULT_VOLCENGINE_FORMAT = "mp3"
 IMAGE_PROTOCOLS = {"gemini", "openai"}
 IMAGE_RESOLUTIONS = {"1K", "2K", "4K"}
 IMAGE_ASPECT_RATIOS = (
@@ -38,6 +34,20 @@ IMAGE_ASPECT_RATIOS = (
     "16:9",
     "21:9",
 )
+
+
+def _normalize_voice_source(value: Any) -> str:
+    source = as_str(value, "cloned").strip().lower()
+    aliases = {
+        "clone": "cloned",
+        "cloned": "cloned",
+        "复刻": "cloned",
+        "复刻音色": "cloned",
+        "preset": "preset",
+        "预置": "preset",
+        "预置音色": "preset",
+    }
+    return aliases.get(source, "cloned")
 
 
 @dataclass(slots=True)
@@ -215,14 +225,11 @@ class VoiceGenerationSettings:
     smart_switch_probability: float = 35.0
     proactive_enabled: bool = False
     proactive_probability: float = 100.0
-    api_url: str = "https://api.siliconflow.cn/v1"
     api_key: str = ""
-    model: str = DEFAULT_VOICE_MODEL
-    voice: str = ""
-    emotion_voice_map: dict[str, str] = field(default_factory=dict)
-    emotion_speed_map: dict[str, float] = field(
-        default_factory=lambda: as_float_map(DEFAULT_SPEED_MAP, {})
-    )
+    speaker_id: str = ""
+    speaker_source: str = "cloned"
+    speech_rate: int = 0
+    loudness_rate: int = 0
     timeout_seconds: int = 30
     max_retries: int = 2
 
@@ -240,26 +247,13 @@ class VoiceGenerationSettings:
             proactive_probability=as_float(
                 data.get("proactive_probability", 100.0), 100.0, 0.0, 100.0
             ),
-            api_url=as_str(
-                data.get("api_url", "https://api.siliconflow.cn/v1"),
-                "https://api.siliconflow.cn/v1",
-            )
-            .strip()
-            .rstrip("/")
-            or "https://api.siliconflow.cn/v1",
             api_key=as_str(data.get("api_key", "")).strip(),
-            model=as_str(
-                data.get("model", DEFAULT_VOICE_MODEL), DEFAULT_VOICE_MODEL
-            ).strip()
-            or DEFAULT_VOICE_MODEL,
-            voice=as_str(data.get("voice", "")).strip(),
-            emotion_voice_map=as_str_map(
-                data.get("emotion_voice_map", DEFAULT_VOICE_MAP)
+            speaker_id=as_str(data.get("speaker_id", data.get("speaker", ""))).strip(),
+            speaker_source=_normalize_voice_source(
+                data.get("speaker_source", data.get("voice_source", "cloned"))
             ),
-            emotion_speed_map=as_float_map(
-                data.get("emotion_speed_map", DEFAULT_SPEED_MAP),
-                as_float_map(DEFAULT_SPEED_MAP, {}),
-            ),
+            speech_rate=as_int(data.get("speech_rate", 0), 0, -50, 100),
+            loudness_rate=as_int(data.get("loudness_rate", 0), 0, -50, 100),
             timeout_seconds=as_int(data.get("timeout_seconds", 30), 30, 5, 300),
             max_retries=as_int(data.get("max_retries", 2), 2, 0, 5),
         )

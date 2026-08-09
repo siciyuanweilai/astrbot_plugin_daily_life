@@ -9,6 +9,7 @@ from typing import Any
 from astrbot.api import logger
 from astrbot.api.event import MessageChain
 
+from ..media.base import normalize_voice_style
 from .delivery import (
     BackgroundTextMode,
     EventDeliveryRequest,
@@ -33,6 +34,7 @@ class SemanticSegmentPlan:
     channel: str = "text"
     emotion: str = ""
     emotion_category: str = "neutral"
+    voice_style: str = "neutral"
     emoji_intent: str = ""
     send_emoji: bool = False
     stance: str = "respond"
@@ -210,6 +212,7 @@ class SemanticSegmentRuntimeMixin:
             channel=plan.channel,
             emotion=plan.emotion,
             emotion_category=plan.emotion_category,
+            voice_style=plan.voice_style,
             emoji_intent=plan.emoji_intent,
             send_emoji=plan.send_emoji,
             stance=plan.stance,
@@ -475,6 +478,7 @@ class SemanticSegmentRuntimeMixin:
             channel=plan.channel,
             emotion=plan.emotion,
             emotion_category=plan.emotion_category,
+            voice_style=plan.voice_style,
             emoji_intent=plan.emoji_intent,
             send_emoji=plan.send_emoji,
             stance=plan.stance,
@@ -520,6 +524,9 @@ class SemanticSegmentRuntimeMixin:
         emotion_category = (
             str(payload.get("emotion_category") or "neutral").strip().lower()
         )
+        voice_style = normalize_voice_style(
+            payload.get("voice_style"), emotion_category
+        )
         stance = str(payload.get("stance") or "respond").strip().lower()
         if channel not in {"text", "voice"}:
             channel = "text"
@@ -538,6 +545,7 @@ class SemanticSegmentRuntimeMixin:
             channel=channel,
             emotion=str(payload.get("emotion") or "").strip(),
             emotion_category=emotion_category,
+            voice_style=voice_style,
             emoji_intent=str(payload.get("emoji_intent") or "").strip(),
             send_emoji=payload.get("send_emoji") is True,
             stance=stance,
@@ -580,7 +588,7 @@ class SemanticSegmentRuntimeMixin:
             prompt = (
                 "你负责按语义划分回复分段。只把给定的最终回复原文划分为可直接发送的完整分段，不能改写、增删、纠正或调换任何字符。\n"
                 "这是通用模型语义分段协议，不要根据关键词套模板，也不要解释理由。\n"
-                '返回 JSON：{"segments":[{"text":"原文连续片段","relation":"standalone|lead|continue|add|turn|question|correction|closing","pause":"none|short|normal|long"}],"channel":"text|voice","emotion":"自然情绪或空","emotion_category":"neutral|happy|sad|angry","emoji_intent":"可选表情语义或空","send_emoji":false,"stance":"respond|comfort|play|reflect|close","confidence":0.0,"reason":"简短表达依据"}。\n'
+                '返回 JSON：{"segments":[{"text":"原文连续片段","relation":"standalone|lead|continue|add|turn|question|correction|closing","pause":"none|short|normal|long"}],"channel":"text|voice","emotion":"自然情绪或空","emotion_category":"neutral|happy|sad|angry","voice_style":"neutral|happy|light|sad|angry","emoji_intent":"可选表情语义或空","send_emoji":false,"stance":"respond|comfort|play|reflect|close","confidence":0.0,"reason":"简短表达依据"}。\n'
                 "按自然聊天中的独立表达动作划分：每个分段短而完整，只承载一个主要意思。"
                 "如果一个分段连续堆叠了多个可以分别发送的意思，应在不破坏语义的位置继续拆开；"
                 "不要因为前后相关就合并成长段，也不要把一个不可分的意思拆碎。\n"
@@ -591,7 +599,7 @@ class SemanticSegmentRuntimeMixin:
                     if int(length_hint or 0) > 0
                     else "当前没有额外长度倾向，按自然表达决定分段边界。\n"
                 )
-                + "channel、情绪、表情和姿态必须根据整轮语义判断；列表、代码、链接、参数和需要回看的信息应选择文字。没有明显必要时不选择语音或表情。\n"
+                + "channel、情绪、语音风格、表情和姿态必须根据整轮语义判断；voice_style 只能填写枚举值，不要从 emotion 文本推导；列表、代码、链接、参数和需要回看的信息应选择文字。没有明显必要时不选择语音或表情。\n"
                 + f"当前对方消息：{user_message}\n"
                 + (
                     "原文中的非空换行是已经确定的表达边界，分段不能跨行；"

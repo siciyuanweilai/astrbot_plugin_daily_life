@@ -7,16 +7,24 @@ from typing import Any
 
 from astrbot.api import logger
 
+from .route_choice import (
+    ROUTE_MODES,
+    RouteChoiceContext,
+    choose_practical_route,
+    default_route_mode,
+    route_needs_comparison,
+    route_query_modes,
+)
+
 _PLACE_KINDS = frozenset({"home", "poi", "generic", "transit", "online", "none"})
 _PLACE_SCOPES = frozenset({"local", "travel"})
-_TRAVEL_MODES = frozenset({"walking", "cycling", "driving", "transit"})
+_TRAVEL_MODES = ROUTE_MODES
 _TRAVEL_SPEEDS = {
     "walking": 1.25,
     "cycling": 4.2,
     "driving": 8.5,
     "transit": 6.0,
 }
-_ROUTE_FALLBACK_MODES = ("transit", "cycling", "driving", "walking")
 
 
 class DailyLocationAuditMixin:
@@ -26,6 +34,7 @@ class DailyLocationAuditMixin:
         *,
         allow_safe_corrections: bool = False,
         preselected_places: list[dict[str, Any]] | None = None,
+        weather_info: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], str]:
         """在日程保存前核验结构化地点和连续路线。
 
@@ -33,6 +42,7 @@ class DailyLocationAuditMixin:
             payload: 已通过基础结构校验的日程结果。
             allow_safe_corrections: 是否自动收敛地点、路线和时间轴中的可修正问题。
             preselected_places: 本轮生成前已由地图确认的候选地点；匹配时直接复用其坐标。
+            weather_info: 当前日程对应的结构化天气，用于判断步行和骑行是否合理。
 
         Returns:
             写入地图标准字段后的日程，以及校验失败原因。原因为空表示通过。
@@ -53,9 +63,15 @@ class DailyLocationAuditMixin:
             return payload, ""
 
         revised = copy.deepcopy(payload)
+        route_context = RouteChoiceContext.from_values(
+            weather_info,
+            revised.get("state"),
+        )
         preselected_places = [
             item
-            for item in (preselected_places if isinstance(preselected_places, list) else [])
+            for item in (
+                preselected_places if isinstance(preselected_places, list) else []
+            )
             if isinstance(item, dict)
         ]
         timeline = revised.get("timeline")
@@ -269,6 +285,11 @@ class DailyLocationAuditMixin:
                     continue
                 coordinate = candidate["coordinate"]
                 address = str(candidate.get("address") or "").strip()
+                candidate_mode = str(candidate.get("travel_mode") or "").strip().lower()
+                if candidate_mode in _TRAVEL_MODES:
+                    entry["mode"] = candidate_mode
+                    entry["mode_locked"] = bool(candidate.get("travel_mode_locked"))
+                    item["travel_mode"] = candidate_mode
                 item.update(
                     {
                         "place": place,
@@ -329,6 +350,7 @@ class DailyLocationAuditMixin:
         transitions, route_by_index, issue = await self._audit_location_routes(
             entries,
             allow_safe_corrections=allow_safe_corrections,
+            context=route_context,
         )
         if issue:
             return payload, issue
@@ -465,6 +487,7 @@ class DailyLocationAuditMixin:
                     "hint": place_hint,
                     "city": target_city,
                     "mode": travel_mode,
+                    "mode_locked": bool(item.get("travel_mode_locked")),
                     "query": query,
                     "coordinate": None,
                 }
@@ -478,12 +501,14 @@ class DailyLocationAuditMixin:
         entries: list[dict[str, Any]],
         *,
         allow_safe_corrections: bool,
+        context: RouteChoiceContext,
     ) -> tuple[list[dict[str, Any]], dict[int, dict[str, Any]], str]:
         """核验连续地点之间的交通方式、耗时和时间窗。
 
         Args:
             entries: 已完成地图地点解析的时间轴节点。
             allow_safe_corrections: 是否允许自动调整路线和时间轴。
+            context: 交通方式判断所需的天气与身体状态。
 
         Returns:
             地点转换列表、按时间轴索引组织的路线和失败原因。
@@ -537,11 +562,12 @@ class DailyLocationAuditMixin:
                                 {},
                                 f"从“{previous['place']}”前往“{entry['place']}”缺少 travel_mode",
                             )
-                        entry["mode"] = "walking"
-                        entry["item"]["travel_mode"] = "walking"
+                        entry["mode"] = default_route_mode(distance, context)
+                        entry["item"]["travel_mode"] = entry["mode"]
                         logger.warning(
                             f"[日程生成] 从“{previous['place']}”前往“{entry['place']}”"
-                            "缺少交通方式，地图校正先按步行查询并自动选择可行路线。"
+                            "缺少交通方式，地图校正将按距离、天气、体力和路线耗时"
+                            "自动选择。"
                         )
                     transitions.append(
                         {
@@ -579,45 +605,64 @@ class DailyLocationAuditMixin:
             destination_index = transition["destination"]["index"]
             origin_minutes = unwrapped_minutes[origin_index]
             destination_minutes = unwrapped_minutes[destination_index]
-            if origin_minutes is not None and destination_minutes is not None:
-                available_minutes = destination_minutes - origin_minutes
-                if required_minutes > available_minutes:
-                    if not allow_safe_corrections:
-                        return (
-                            [],
-                            {},
-                            f"从“{transition['origin']['place']}”到“{transition['destination']['place']}”"
-                            f"预计需要约 {required_minutes} 分钟，但时间轴只预留了 {available_minutes} 分钟",
-                        )
-                    mode, route, required_minutes = await self._select_route_for_window(
-                        transition,
-                        requested_mode=mode,
-                        requested_route=route,
-                        available_minutes=available_minutes,
+            available_minutes = (
+                destination_minutes - origin_minutes
+                if origin_minutes is not None and destination_minutes is not None
+                else None
+            )
+            needs_time_correction = bool(
+                available_minutes is not None and required_minutes > available_minutes
+            )
+            needs_practical_comparison = bool(
+                allow_safe_corrections
+                and not transition["destination"].get("mode_locked")
+                and route_needs_comparison(mode, route, context)
+            )
+            if needs_time_correction or needs_practical_comparison:
+                if not allow_safe_corrections:
+                    return (
+                        [],
+                        {},
+                        f"从“{transition['origin']['place']}”到“{transition['destination']['place']}”"
+                        f"预计需要约 {required_minutes} 分钟，但时间轴只预留了 {available_minutes} 分钟",
                     )
-                    if required_minutes > available_minutes:
-                        shift_minutes = required_minutes - available_minutes
-                        self._shift_timeline(
-                            entries,
-                            unwrapped_minutes,
-                            start_index=destination_index,
-                            shift_minutes=shift_minutes,
-                        )
-                        logger.warning(
-                            f"[日程生成] 从“{transition['origin']['place']}”到"
-                            f"“{transition['destination']['place']}”最快仍需约 "
-                            f"{required_minutes} 分钟，已将当前及后续日程顺延 "
-                            f"{shift_minutes} 分钟。"
-                        )
-                    elif mode != transition["destination"]["mode"]:
-                        logger.warning(
-                            f"[日程生成] 从“{transition['origin']['place']}”到"
-                            f"“{transition['destination']['place']}”原交通方式无法按时到达，"
-                            f"已改用 {self._travel_mode_label(mode)}，预计约 "
-                            f"{required_minutes} 分钟。"
-                        )
-                    transition["destination"]["mode"] = mode
-                    transition["destination"]["item"]["travel_mode"] = mode
+                original_mode = mode
+                choice = await self._select_route_for_window(
+                    transition,
+                    requested_mode=mode,
+                    requested_route=route,
+                    available_minutes=available_minutes,
+                    locked=bool(transition["destination"].get("mode_locked")),
+                    context=context,
+                )
+                if choice is not None:
+                    mode, route, required_minutes = choice
+                if (
+                    available_minutes is not None
+                    and required_minutes > available_minutes
+                ):
+                    shift_minutes = required_minutes - available_minutes
+                    self._shift_timeline(
+                        entries,
+                        unwrapped_minutes,
+                        start_index=destination_index,
+                        shift_minutes=shift_minutes,
+                    )
+                    logger.warning(
+                        f"[日程生成] 从“{transition['origin']['place']}”到"
+                        f"“{transition['destination']['place']}”当前可用路线仍需约 "
+                        f"{required_minutes} 分钟，已将当前及后续日程顺延 "
+                        f"{shift_minutes} 分钟。"
+                    )
+                elif mode != original_mode:
+                    logger.warning(
+                        f"[日程生成] 从“{transition['origin']['place']}”到"
+                        f"“{transition['destination']['place']}”综合距离、天气、体力和"
+                        f"时间安排后，已改用 {self._travel_mode_label(mode)}，预计约 "
+                        f"{required_minutes} 分钟。"
+                    )
+                transition["destination"]["mode"] = mode
+                transition["destination"]["item"]["travel_mode"] = mode
             destination_item = transition["destination"]["item"]
             destination_item["travel_minutes"] = required_minutes
             destination_item["travel_distance_meters"] = round(
@@ -646,7 +691,10 @@ class DailyLocationAuditMixin:
 
         if not isinstance(candidate, dict) or not candidate.get("coordinate"):
             return False
-        if str(candidate.get("name") or "").strip() != str(entry.get("place") or "").strip():
+        if (
+            str(candidate.get("name") or "").strip()
+            != str(entry.get("place") or "").strip()
+        ):
             return False
         if not self._cities_match(
             str(candidate.get("city") or "").strip(), target_city
@@ -796,13 +844,14 @@ class DailyLocationAuditMixin:
         *,
         requested_mode: str,
         requested_route: dict[str, Any],
-        available_minutes: int,
-    ) -> tuple[str, dict[str, Any], int]:
-        """选择能落入时间窗的路线，找不到时返回耗时最短的方案。"""
+        available_minutes: int | None,
+        locked: bool,
+        context: RouteChoiceContext,
+    ) -> tuple[str, dict[str, Any], int] | None:
+        """选择兼顾时间窗与出行负担的地图路线。"""
 
-        modes = [requested_mode]
-        modes.extend(mode for mode in _ROUTE_FALLBACK_MODES if mode != requested_mode)
-        alternative_modes = modes[1:]
+        modes = route_query_modes(requested_mode, locked=locked)
+        alternative_modes = [mode for mode in modes if mode != requested_mode]
         alternative_values = await asyncio.gather(
             *(
                 self._map.route(
@@ -817,25 +866,21 @@ class DailyLocationAuditMixin:
         )
         options = [(requested_mode, requested_route)]
         options.extend(
-            (
-                mode,
-                self._normalize_route_result(
-                    value,
-                    mode=mode,
-                    straight_distance=transition["straight_distance"],
-                ),
-            )
+            (mode, value)
             for mode, value in zip(
                 alternative_modes,
                 alternative_values,
                 strict=True,
             )
+            if isinstance(value, dict)
         )
-        measured = [
-            (mode, route, self._route_minutes(route)) for mode, route in options
-        ]
-        fitting = [option for option in measured if option[2] <= available_minutes]
-        return fitting[0] if fitting else min(measured, key=lambda option: option[2])
+        return choose_practical_route(
+            options,
+            requested_mode=requested_mode,
+            locked=locked,
+            context=context,
+            available_minutes=available_minutes,
+        )
 
     @staticmethod
     def _normalize_route_result(

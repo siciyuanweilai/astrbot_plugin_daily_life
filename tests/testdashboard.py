@@ -2948,6 +2948,9 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertIn("templateEntries", config)
         self.assertIn("normalizeTemplateListItem", config)
         self.assertIn("reorderItem", config)
+        self.assertIn("templateListDropIndex", config)
+        self.assertIn("dragState.itemCenters", config)
+        self.assertIn("moveEvent.pointerId !== dragState?.pointerId", config)
         self.assertIn("pointerdown", config)
         self.assertIn("pointermove", config)
         self.assertIn("animateListFrom", config)
@@ -2966,6 +2969,7 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertIn(".config-field.template-list-field", style)
         self.assertIn(".template-list-item-actions", style)
         self.assertIn(".template-list-drag", style)
+        self.assertIn("touch-action: none;", style)
         self.assertIn(".template-list-item.is-drop-target", style)
         self.assertIn(".template-list-item.is-shifting", style)
         self.assertIn("will-change: transform", style)
@@ -2995,6 +2999,40 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertIn('[data-template-field="resolution"]', style)
         self.assertNotIn("min-width: 1420px", style)
 
+    def test_dashboard_template_list_drop_index_uses_stable_item_centers(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        script = """
+globalThis.window = { AstrBotPluginPage: null };
+const { templateListDropIndex } = await import("./pages/dashboard/ui/settings.js");
+const centers = [100, 200, 300];
+const cases = [
+  [50, 1, 0],
+  [150, 1, 1],
+  [350, 1, 2],
+  [150, 2, 1],
+  [250, 0, 1],
+  [350, 0, 2],
+];
+for (const [pointerY, fromIndex, expected] of cases) {
+  const actual = templateListDropIndex(pointerY, centers, fromIndex);
+  if (actual !== expected) {
+    throw new Error(`落点计算错误：${pointerY}/${fromIndex} -> ${actual}，预期 ${expected}`);
+  }
+}
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module"],
+            cwd=root,
+            input=script,
+            text=True,
+            encoding="utf-8",
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+
     def test_dashboard_mobile_sliders_do_not_capture_vertical_scroll(self):
         from pathlib import Path
 
@@ -3002,15 +3040,130 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         config = (root / "ui" / "settings.js").read_text(encoding="utf-8")
         style = self._dashboard_style(root)
 
-        self.assertIn('event.pointerType === "mouse"', config)
         self.assertIn(
-            'touchGesture.intent = deltaX > deltaY * 1.25 ? "adjust" : "scroll";',
+            'const pointerGuard = node("span", "range-pointer-guard");',
             config,
         )
-        self.assertIn('slider.addEventListener("pointercancel"', config)
-        self.assertIn('if (touchGesture?.intent === "scroll")', config)
-        self.assertIn("@media (pointer: coarse)", style)
+        self.assertIn(
+            'pointerGesture.intent = deltaX > deltaY * 1.25 ? "adjust" : "scroll";',
+            config,
+        )
+        self.assertIn('if (pointerGesture.intent !== "adjust") return;', config)
+        self.assertIn('pointerGuard.addEventListener("pointercancel"', config)
+        self.assertIn("wrap.append(slider, pointerGuard, number);", config)
+        self.assertNotIn('slider.addEventListener("pointerdown"', config)
+        self.assertIn('.number-line.has-range > input[type="range"]', style)
+        self.assertIn("pointer-events: none;", style)
+        self.assertIn(".range-pointer-guard", style)
         self.assertIn("touch-action: pan-y;", style)
+
+    def test_dashboard_slider_changes_only_after_horizontal_touch_intent(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        script = (
+            self._dashboard_dom_mock_script()
+            + """
+const { createConfigPanel } = await import("./pages/dashboard/ui/settings.js");
+const makeNode = (tag, className = "", content = "") => {
+  const item = new MockElement(tag);
+  item.className = className;
+  item.textContent = content === null || content === undefined ? "" : String(content);
+  return item;
+};
+const state = {
+  configSectionKey: "test_config",
+  configSchema: {
+    test_config: {
+      description: "测试设置",
+      type: "object",
+      items: {
+        level: {
+          description: "测试数值",
+          type: "int",
+          default: 50,
+          slider: { min: 0, max: 100, step: 1 },
+        },
+      },
+    },
+  },
+  config: { test_config: { level: 50 } },
+  providers: [],
+  relationships: [],
+  configLoaded: false,
+  configDirty: false,
+  configDirtySince: 0,
+  configVersion: 0,
+  configChangeSeq: 0,
+  configSaveTimer: 0,
+};
+const el = {
+  configNav: new MockElement("nav"),
+  configSectionTitle: new MockElement("h2"),
+  configSectionHint: new MockElement("p"),
+  configFieldList: new MockElement("div"),
+};
+const panel = createConfigPanel({
+  state,
+  el,
+  node: makeNode,
+  empty: (message) => makeNode("div", "empty", message),
+  setBusy() {},
+  setNotice() {},
+  async loadStatus() {},
+});
+panel.renderConfig();
+
+const descendants = [];
+const visit = (item) => {
+  descendants.push(item);
+  for (const child of item.children || []) visit(child);
+};
+visit(el.configFieldList);
+const slider = descendants.find((item) => item.tagName === "INPUT" && item.type === "range");
+const number = descendants.find((item) => item.tagName === "INPUT" && item.type === "number");
+const guard = descendants.find((item) => item.className === "range-pointer-guard");
+if (!slider || !number || !guard) throw new Error("滑块控件没有完整渲染");
+
+guard.dispatch("pointerdown", { pointerId: 1, pointerType: "touch", clientX: 80, clientY: 10 });
+guard.dispatch("pointermove", { pointerId: 1, pointerType: "touch", clientX: 82, clientY: 42 });
+guard.dispatch("pointerup", { pointerId: 1, pointerType: "touch", clientX: 82, clientY: 42 });
+if (slider.value !== "50" || number.value !== "50" || state.config.test_config.level !== 50) {
+  throw new Error("纵向滚动误改了滑块数值");
+}
+
+guard.dispatch("pointerdown", { pointerId: 2, pointerType: "touch", clientX: 50, clientY: 10 });
+guard.dispatch("pointermove", { pointerId: 2, pointerType: "touch", clientX: 80, clientY: 12 });
+if (slider.value !== "80" || number.value !== "80" || state.config.test_config.level !== 50) {
+  throw new Error("横向拖动预览或延迟提交不正确");
+}
+guard.dispatch("pointerup", { pointerId: 2, pointerType: "touch", clientX: 80, clientY: 12 });
+if (state.config.test_config.level !== 80) throw new Error("横向拖动没有提交数值");
+
+guard.dispatch("pointerdown", { pointerId: 3, pointerType: "touch", clientX: 80, clientY: 10 });
+guard.dispatch("pointermove", { pointerId: 3, pointerType: "touch", clientX: 95, clientY: 11 });
+guard.dispatch("pointercancel", { pointerId: 3, pointerType: "touch", clientX: 95, clientY: 11 });
+if (slider.value !== "80" || number.value !== "80" || state.config.test_config.level !== 80) {
+  throw new Error("取消的手势没有恢复原值");
+}
+
+slider.value = "60";
+slider.dispatch("input");
+if (number.value !== "60" || state.config.test_config.level !== 60) {
+  throw new Error("键盘调整滑块失效");
+}
+"""
+        )
+        result = subprocess.run(
+            ["node", "--input-type=module"],
+            cwd=root,
+            input=script,
+            text=True,
+            encoding="utf-8",
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
 
     def test_dashboard_settings_use_explicit_section_order(self):
         from pathlib import Path
@@ -4840,6 +4993,9 @@ class MockElement {
     this.style = {};
     this.hidden = false;
     this.disabled = false;
+    this.listeners = {};
+    this.attributes = {};
+    this.capturedPointers = new Set();
     this.classList = {
       add: (...names) => { this.className = [this.className, ...names].filter(Boolean).join(" "); },
       remove: (...names) => {
@@ -4856,8 +5012,30 @@ class MockElement {
   }
   append(...items) { this.children.push(...items); }
   replaceChildren(...items) { this.children = items; }
-  addEventListener() {}
+  addEventListener(type, listener) {
+    if (!this.listeners[type]) this.listeners[type] = [];
+    this.listeners[type].push(listener);
+  }
+  dispatch(type, event = {}) {
+    const payload = {
+      pointerId: 0,
+      pointerType: "mouse",
+      button: 0,
+      clientX: 0,
+      clientY: 0,
+      preventDefault() {},
+      ...event,
+    };
+    for (const listener of this.listeners[type] || []) listener(payload);
+  }
+  setAttribute(name, value) { this.attributes[name] = String(value); }
+  getBoundingClientRect() { return { left: 0, width: 100 }; }
+  focus() {}
+  setPointerCapture(pointerId) { this.capturedPointers.add(pointerId); }
+  hasPointerCapture(pointerId) { return this.capturedPointers.has(pointerId); }
+  releasePointerCapture(pointerId) { this.capturedPointers.delete(pointerId); }
   querySelector() { return null; }
+  querySelectorAll() { return []; }
 }
 globalThis.Option = class Option {
   constructor(text, value) { this.text = text; this.textContent = text; this.value = value; }

@@ -410,6 +410,8 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             "画面主体是当前角色本人，窗边晨光生活照",
             contains_character=True,
             trusted_identity=True,
+            text_model="gpt-image-text",
+            edit_model="gpt-image-edit",
         )
 
         self.assertEqual(result.path, Path("role.png"))
@@ -420,7 +422,46 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
                 (
                     "画面主体是当前角色本人，窗边晨光生活照",
                     "D:/ref/role.png",
-                    {"preserve_reference_ratio": False},
+                    {
+                        "preserve_reference_ratio": False,
+                        "model": "gpt-image-edit",
+                    },
+                )
+            ],
+        )
+
+    async def test_generate_life_image_asset_uses_text_model_without_reference(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        generate_calls = []
+
+        async def direct(event, prompt, **kwargs):
+            return types.SimpleNamespace(
+                contains_character=False,
+                needs_character_reference=False,
+            )
+
+        class ImageService:
+            async def generate_image(self, prompt, **kwargs):
+                generate_calls.append((prompt, kwargs))
+                return types.SimpleNamespace(path=Path("scene.png"))
+
+        runtime._direct_life_image_payload = direct
+        runtime.media = types.SimpleNamespace(image=ImageService())
+
+        result = await runtime.generate_life_image_asset(
+            None,
+            "雨后街角的安静风景",
+            text_model="gpt-image-text",
+            edit_model="gpt-image-edit",
+        )
+
+        self.assertEqual(result.path, Path("scene.png"))
+        self.assertEqual(
+            generate_calls,
+            [
+                (
+                    "雨后街角的安静风景",
+                    {"model": "gpt-image-text"},
                 )
             ],
         )

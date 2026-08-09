@@ -23,7 +23,6 @@ from runtimehelpers import (
     SightInsight,
     SightTextResult,
     SightVault,
-    SiliconFlowVoiceService,
     TimelineItem,
     TranscriptResult,
     async_return,
@@ -2033,123 +2032,6 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(len(result.chain), 1)
         self.assertEqual(getattr(result.chain[0], "type", ""), "record")
         self.assertIsNone(getattr(result.chain[0], "text", None))
-
-    async def test_voice_generation_routes_emotion_to_voice_and_speed(self):
-        posted_payloads = []
-
-        class Response:
-            status = 200
-            headers = {"Content-Type": "audio/mpeg"}
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *args):
-                return False
-
-            async def read(self):
-                return b"voice-bytes"
-
-        class Session:
-            closed = False
-
-            def post(self, url, headers=None, json=None, timeout=None):
-                posted_payloads.append(json)
-                return Response()
-
-        settings = LifeSettings.from_dict(
-            {
-                "voice_generation_config": {
-                    "enabled": True,
-                    "api_key": "sf-key",
-                    "voice": "voice-neutral",
-                    "emotion_voice_map": "happy: voice-happy\nsad: voice-sad\n无奈中带点宠溺: voice-soft",
-                    "emotion_speed_map": "happy: 1.35\nsad: 0.75\nneutral: 1.0\n无奈中带点宠溺: 0.95",
-                }
-            }
-        ).voice_generation
-        service = SiliconFlowVoiceService(settings, Path(tempfile.mkdtemp()))
-        service._get_session = lambda: async_return(Session())
-
-        await service.synthesize("好耶，今天很开心")
-
-        self.assertEqual(posted_payloads[-1]["voice"], "voice-neutral")
-        self.assertEqual(posted_payloads[-1]["speed"], 1.0)
-        self.assertEqual(posted_payloads[-1]["response_format"], "wav")
-        self.assertNotIn("sample_rate", posted_payloads[-1])
-        self.assertNotIn("gain", posted_payloads[-1])
-
-        await service.synthesize("好耶，今天很开心", emotion="开心")
-
-        self.assertEqual(posted_payloads[-1]["voice"], "voice-neutral")
-        self.assertEqual(posted_payloads[-1]["speed"], 1.0)
-
-        await service.synthesize(
-            "好耶，今天很开心", emotion="开心", emotion_category="happy"
-        )
-
-        self.assertEqual(posted_payloads[-1]["voice"], "voice-happy")
-        self.assertEqual(posted_payloads[-1]["speed"], 1.35)
-
-        await service.synthesize("我还好", emotion="难过")
-
-        self.assertEqual(posted_payloads[-1]["voice"], "voice-neutral")
-        self.assertEqual(posted_payloads[-1]["speed"], 1.0)
-
-        await service.synthesize("我还好", emotion="难过", emotion_category="sad")
-
-        self.assertEqual(posted_payloads[-1]["voice"], "voice-sad")
-        self.assertEqual(posted_payloads[-1]["speed"], 0.75)
-
-        route = service._voice_route("无奈中带点宠溺")
-        self.assertEqual(route["emotion"], "无奈中带点宠溺")
-        self.assertEqual(route["voice"], "voice-soft")
-        self.assertEqual(route["speed"], 0.95)
-
-        await service.synthesize("行了行了，听到没", emotion="无奈中带点宠溺")
-
-        self.assertEqual(posted_payloads[-1]["voice"], "voice-soft")
-        self.assertEqual(posted_payloads[-1]["speed"], 0.95)
-
-        unknown_route = service._voice_route("困得有点撒娇")
-        self.assertEqual(unknown_route["emotion"], "困得有点撒娇")
-        self.assertEqual(unknown_route["emotion_category"], "")
-        self.assertEqual(unknown_route["voice"], "voice-neutral")
-        self.assertEqual(unknown_route["speed"], 1.0)
-
-        category_route = service._voice_route("慵懒治愈", "happy")
-        self.assertEqual(category_route["emotion"], "慵懒治愈")
-        self.assertEqual(category_route["emotion_category"], "happy")
-        self.assertEqual(category_route["voice"], "voice-happy")
-        self.assertEqual(category_route["speed"], 1.35)
-
-        await service.synthesize(
-            "慢慢醒一下", emotion="慵懒治愈", emotion_category="happy"
-        )
-
-        self.assertEqual(posted_payloads[-1]["voice"], "voice-happy")
-        self.assertEqual(posted_payloads[-1]["speed"], 1.35)
-
-        no_category_settings = LifeSettings.from_dict(
-            {
-                "voice_generation_config": {
-                    "enabled": True,
-                    "api_key": "sf-key",
-                    "voice": "voice-default",
-                    "emotion_voice_map": "neutral: voice-neutral",
-                    "emotion_speed_map": "neutral: 0.7",
-                }
-            }
-        ).voice_generation
-        no_category_service = SiliconFlowVoiceService(
-            no_category_settings, Path(tempfile.mkdtemp())
-        )
-        no_category_route = no_category_service._voice_route("慵懒治愈")
-
-        self.assertEqual(no_category_route["emotion"], "慵懒治愈")
-        self.assertEqual(no_category_route["emotion_category"], "")
-        self.assertEqual(no_category_route["voice"], "voice-default")
-        self.assertEqual(no_category_route["speed"], 1.0)
 
     async def test_video_sight_updates_private_structured_context(self):
         vision_provider = Provider(

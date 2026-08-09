@@ -32,6 +32,7 @@ class VoiceSwitchJudgeMixin:
                 "语音表达倾向不够明确，保留文字发送。", score
             )
         emotion_category = str(getattr(plan, "emotion_category", "neutral") or "neutral")
+        voice_style = str(getattr(plan, "voice_style", "neutral") or "neutral")
         emotion = str(getattr(plan, "emotion", "") or "平常口吻")
         reason = str(getattr(plan, "reason", "") or "整轮语义更适合直接说出来。")
         return {
@@ -39,6 +40,7 @@ class VoiceSwitchJudgeMixin:
             "reason": reason,
             "emotion": emotion,
             "emotion_category": emotion_category,
+            "voice_style": voice_style,
             "confidence": round(score, 2),
         }
 
@@ -49,6 +51,7 @@ class VoiceSwitchJudgeMixin:
             "reason": reason,
             "emotion": "",
             "emotion_category": "",
+            "voice_style": "neutral",
             "confidence": round(max(0.0, min(float(confidence or 0.0), 1.0)), 2),
         }
 

@@ -273,13 +273,11 @@ class LifeSettingsTest(unittest.TestCase):
                     "smart_switch_probability": "135",
                     "proactive_enabled": "yes",
                     "proactive_probability": "135",
-                    "api_url": "",
-                    "api_key": "sf-key",
-                    "model": "",
-                    "voice": "voice-1",
-                    "emotion_voice_map": "neutral: voice-neutral\nhappy: voice-happy",
-                    "emotion_speed_map": "neutral: 1.05\nhappy: 1.25\nsad: bad",
-                    "sample_rate": "999999",
+                    "api_key": "volc-key",
+                    "speaker_source": "cloned",
+                    "speaker_id": "speaker-1",
+                    "speech_rate": "25",
+                    "loudness_rate": "-10",
                     "timeout_seconds": "1",
                     "max_retries": "99",
                 },
@@ -454,17 +452,11 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertEqual(config.voice_generation.smart_switch_probability, 100.0)
         self.assertTrue(config.voice_generation.proactive_enabled)
         self.assertEqual(config.voice_generation.proactive_probability, 100.0)
-        self.assertEqual(
-            config.voice_generation.api_url, "https://api.siliconflow.cn/v1"
-        )
-        self.assertEqual(config.voice_generation.api_key, "sf-key")
-        self.assertEqual(config.voice_generation.model, "FunAudioLLM/CosyVoice2-0.5B")
-        self.assertEqual(config.voice_generation.voice, "voice-1")
-        self.assertEqual(
-            config.voice_generation.emotion_voice_map["happy"], "voice-happy"
-        )
-        self.assertEqual(config.voice_generation.emotion_speed_map["happy"], 1.25)
-        self.assertEqual(config.voice_generation.emotion_speed_map["sad"], 0.9)
+        self.assertEqual(config.voice_generation.api_key, "volc-key")
+        self.assertEqual(config.voice_generation.speaker_source, "cloned")
+        self.assertEqual(config.voice_generation.speaker_id, "speaker-1")
+        self.assertEqual(config.voice_generation.speech_rate, 25)
+        self.assertEqual(config.voice_generation.loudness_rate, -10)
         self.assertEqual(config.voice_generation.timeout_seconds, 5)
         self.assertEqual(config.voice_generation.max_retries, 5)
         self.assertTrue(config.search.enabled)
@@ -1178,8 +1170,8 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertNotIn("aspect_ratio", video_items)
         self.assertEqual(video_items["model"]["default"], "grok-imagine-video-1.5")
         self.assertEqual(
-            schema["voice_generation_config"]["items"]["model"]["default"],
-            "FunAudioLLM/CosyVoice2-0.5B",
+            schema["voice_generation_config"]["items"]["speaker_source"]["default"],
+            "cloned",
         )
         self.assertIn(
             "smart_switch_enabled", schema["voice_generation_config"]["items"]
@@ -1247,13 +1239,16 @@ class LifeSettingsTest(unittest.TestCase):
             "闲时回复或私聊回访",
             schema["voice_generation_config"]["items"]["proactive_probability"]["hint"],
         )
-        self.assertNotIn("emotion_keywords", schema["voice_generation_config"]["items"])
-        self.assertIn("emotion_voice_map", schema["voice_generation_config"]["items"])
-        self.assertIn("emotion_speed_map", schema["voice_generation_config"]["items"])
-        self.assertNotIn("format", schema["voice_generation_config"]["items"])
-        self.assertNotIn("speed", schema["voice_generation_config"]["items"])
-        self.assertNotIn("gain", schema["voice_generation_config"]["items"])
-        self.assertNotIn("sample_rate", schema["voice_generation_config"]["items"])
+        voice_items = schema["voice_generation_config"]["items"]
+        self.assertIn("speaker_source", voice_items)
+        self.assertIn("speaker_id", voice_items)
+        self.assertIn("speech_rate", voice_items)
+        self.assertIn("loudness_rate", voice_items)
+        self.assertNotIn("api_url", voice_items)
+        self.assertNotIn("model", voice_items)
+        self.assertNotIn("voice", voice_items)
+        self.assertNotIn("emotion_voice_map", voice_items)
+        self.assertNotIn("emotion_speed_map", voice_items)
         self.assertEqual(
             schema["vision_config"]["items"]["provider"]["description"], "视觉信息"
         )
@@ -1446,10 +1441,18 @@ class LifeSettingsTest(unittest.TestCase):
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertIn("version: 1.2.1", metadata)
-        self.assertIn("version-1.2.1", readme)
-        self.assertIn("v1.2.1 · 2026-08-08", changelog)
-        self.assertLess(changelog.index("v1.2.1"), changelog.index("v1.2.0"))
+        self.assertIn("version: 1.2.2", metadata)
+        self.assertIn("version-1.2.2", readme)
+        self.assertIn("v1.2.2 · 2026-08-09", changelog)
+        self.assertLess(changelog.index("v1.2.2"), changelog.index("v1.2.1"))
+        release_122 = changelog.split("## 🌸 v1.2.2", 1)[1].split(
+            "## 🌸 v1.2.1", 1
+        )[0]
+        release_121 = changelog.split("## 🌸 v1.2.1", 1)[1].split(
+            "## 🌸 v1.2.0", 1
+        )[0]
+        self.assertIn("火山引擎语音合成", release_122)
+        self.assertNotIn("火山引擎", release_121)
         self.assertLess(changelog.index("v1.1.8"), changelog.index("v1.1.7"))
         self.assertLess(changelog.index("v1.1.7"), changelog.index("v1.1.6"))
         self.assertLess(changelog.index("v1.1.6"), changelog.index("v1.1.5"))

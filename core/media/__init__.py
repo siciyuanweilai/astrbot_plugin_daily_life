@@ -1,8 +1,8 @@
-from .picture import GeminiImageService
-from .hub import LifeMediaService
 from .base import GeneratedImage, GeneratedVideo, GeneratedVoice
+from .hub import LifeMediaService
+from .picture import GeminiImageService
 from .video import GrokVideoService
-from .silicon import SiliconFlowVoiceService
+from .volcengine import VolcengineVoiceService
 
 __all__ = [
     "GeminiImageService",
@@ -11,5 +11,5 @@ __all__ = [
     "GeneratedVoice",
     "GrokVideoService",
     "LifeMediaService",
-    "SiliconFlowVoiceService",
+    "VolcengineVoiceService",
 ]

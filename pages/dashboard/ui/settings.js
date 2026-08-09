@@ -41,6 +41,15 @@ const IMAGE_CHANNEL_LIST_PATHS = new Set([
   "image_generation_config.text_channels",
   "image_generation_config.edit_channels",
 ]);
+
+export function templateListDropIndex(pointerY, itemCenters = [], fromIndex = -1) {
+  if (!itemCenters.length) return 0;
+  const targetIndex = itemCenters.reduce((count, center, index) => (
+    index !== fromIndex && pointerY > center ? count + 1 : count
+  ), 0);
+  return Math.max(0, Math.min(targetIndex, itemCenters.length - 1));
+}
+
 const CONFIG_FIELD_DISPLAY_SECTIONS = new Map([
   ["outfit_config.default_style_preference", "story_engine_config"],
   ["outfit_config.default_hair_preference", "story_engine_config"],
@@ -890,62 +899,95 @@ export function createConfigPanel({
       setConfigPathValue(path, next);
     };
     if (spec.slider) {
+      wrap.classList.add("has-range");
       const slider = document.createElement("input");
       slider.type = "range";
       applySliderBounds(slider, spec);
       slider.value = text(normalized);
-      let touchGesture = null;
-      const restoreTouchValue = () => {
-        if (!touchGesture) return;
-        slider.value = touchGesture.startValue;
-        number.value = touchGesture.startValue;
+      slider.setAttribute(
+        "aria-label",
+        configLabel(path[path.length - 1] || "数值", spec),
+      );
+      const pointerGuard = node("span", "range-pointer-guard");
+      pointerGuard.setAttribute("aria-hidden", "true");
+      let pointerGesture = null;
+      const pointerValue = (clientX) => {
+        const rect = slider.getBoundingClientRect();
+        const min = Number(slider.min || 0);
+        const max = Number(slider.max || 100);
+        const width = Math.max(1, rect.width);
+        const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / width));
+        let next = min + ((max - min) * ratio);
+        const step = Number(slider.step);
+        if (Number.isFinite(step) && step > 0) {
+          next = min + (Math.round((next - min) / step) * step);
+        }
+        return Math.max(min, Math.min(max, Number(next.toFixed(12))));
       };
-      slider.addEventListener("pointerdown", (event) => {
-        if (event.pointerType === "mouse") return;
-        touchGesture = {
+      const previewPointerValue = (clientX) => {
+        const next = numberValue(pointerValue(clientX), spec);
+        slider.value = text(next);
+        number.value = text(next);
+      };
+      const restorePointerValue = () => {
+        if (!pointerGesture) return;
+        slider.value = pointerGesture.startValue;
+        number.value = pointerGesture.startValue;
+      };
+      pointerGuard.addEventListener("pointerdown", (event) => {
+        if (event.pointerType === "mouse" && event.button !== 0) return;
+        pointerGesture = {
           pointerId: event.pointerId,
+          pointerType: event.pointerType,
           startX: event.clientX,
           startY: event.clientY,
           startValue: slider.value,
-          intent: "",
+          intent: event.pointerType === "mouse" ? "adjust" : "",
         };
+        pointerGuard.setPointerCapture?.(event.pointerId);
+        slider.focus({ preventScroll: true });
+        if (pointerGesture.intent === "adjust") {
+          previewPointerValue(event.clientX);
+        }
       });
-      slider.addEventListener("pointermove", (event) => {
+      pointerGuard.addEventListener("pointermove", (event) => {
         if (
-          !touchGesture
-          || event.pointerId !== touchGesture.pointerId
-          || touchGesture.intent
+          !pointerGesture
+          || event.pointerId !== pointerGesture.pointerId
         ) return;
-        const deltaX = Math.abs(event.clientX - touchGesture.startX);
-        const deltaY = Math.abs(event.clientY - touchGesture.startY);
-        if (Math.max(deltaX, deltaY) < 8) return;
-        touchGesture.intent = deltaX > deltaY * 1.25 ? "adjust" : "scroll";
-        if (touchGesture.intent === "scroll") restoreTouchValue();
-      });
-      slider.addEventListener("input", () => {
-        if (touchGesture?.intent === "scroll") {
-          restoreTouchValue();
-          return;
+        if (!pointerGesture.intent) {
+          const deltaX = Math.abs(event.clientX - pointerGesture.startX);
+          const deltaY = Math.abs(event.clientY - pointerGesture.startY);
+          if (Math.max(deltaX, deltaY) < 8) return;
+          pointerGesture.intent = deltaX > deltaY * 1.25 ? "adjust" : "scroll";
         }
-        if (touchGesture && !touchGesture.intent) {
-          number.value = text(numberValue(slider.value, spec));
-          return;
-        }
-        update(slider, slider);
+        if (pointerGesture.intent !== "adjust") return;
+        event.preventDefault();
+        previewPointerValue(event.clientX);
       });
-      const finishTouchGesture = (event, cancelled = false) => {
-        if (!touchGesture || event.pointerId !== touchGesture.pointerId) return;
-        const shouldRestore = cancelled || touchGesture.intent === "scroll";
-        if (shouldRestore) restoreTouchValue();
-        touchGesture = null;
-        if (!shouldRestore) update(slider, slider);
+      const finishPointerGesture = (event, cancelled = false) => {
+        if (!pointerGesture || event.pointerId !== pointerGesture.pointerId) return;
+        const { intent, pointerId } = pointerGesture;
+        if (cancelled) {
+          restorePointerValue();
+        } else if (intent !== "scroll") {
+          if (!intent) previewPointerValue(event.clientX);
+          update(slider, slider);
+        }
+        if (pointerGuard.hasPointerCapture?.(pointerId)) {
+          pointerGuard.releasePointerCapture(pointerId);
+        }
+        pointerGesture = null;
       };
-      slider.addEventListener("pointerup", (event) => finishTouchGesture(event));
-      slider.addEventListener("pointercancel", (event) => {
-        finishTouchGesture(event, true);
+      pointerGuard.addEventListener("pointerup", (event) => {
+        finishPointerGesture(event);
       });
+      pointerGuard.addEventListener("pointercancel", (event) => {
+        finishPointerGesture(event, true);
+      });
+      slider.addEventListener("input", () => update(slider, slider));
       number.addEventListener("change", () => update(number, slider));
-      wrap.append(slider, number);
+      wrap.append(slider, pointerGuard, number);
       return wrap;
     }
     number.addEventListener("change", () => update(number));
@@ -1186,12 +1228,11 @@ export function createConfigPanel({
       const deltaY = clientY - dragState.startY;
       draggedCard.style.transform = `translateY(${deltaY}px)`;
       draggedCard.style.zIndex = "5";
-      let targetIndex = 0;
-      cards.forEach((card, cardIndex) => {
-        const rect = card.getBoundingClientRect();
-        if (clientY > rect.top + rect.height / 2) targetIndex = cardIndex;
-      });
-      dragState.targetIndex = Math.max(0, Math.min(targetIndex, items.length - 1));
+      dragState.targetIndex = templateListDropIndex(
+        clientY,
+        dragState.itemCenters,
+        dragState.fromIndex,
+      );
       const shift = dragState.height + dragState.gap;
       cards.forEach((card, cardIndex) => {
         if (cardIndex === dragState.fromIndex) return;
@@ -1222,20 +1263,28 @@ export function createConfigPanel({
         if (items.length <= 1 || event.button !== 0) return;
         event.preventDefault();
         const rect = card.getBoundingClientRect();
+        const cards = [...list.querySelectorAll(".template-list-item")];
         dragState = {
+          pointerId: event.pointerId,
           fromIndex: index,
           targetIndex: index,
           startY: event.clientY,
           height: rect.height,
           gap: dragGap(),
+          itemCenters: cards.map((entry) => {
+            const itemRect = entry.getBoundingClientRect();
+            return itemRect.top + itemRect.height / 2;
+          }),
         };
         card.classList.add("is-dragging");
         dragButton.setPointerCapture?.(event.pointerId);
         const move = (moveEvent) => {
+          if (moveEvent.pointerId !== dragState?.pointerId) return;
           moveEvent.preventDefault();
           applyDragPreview(moveEvent.clientY);
         };
         const finish = (finishEvent) => {
+          if (finishEvent.pointerId !== dragState?.pointerId) return;
           finishEvent.preventDefault();
           const state = dragState;
           const beforeRects = captureListRects();
@@ -1247,7 +1296,8 @@ export function createConfigPanel({
             reorderItem(state.fromIndex, state.targetIndex, { beforeRects });
           }
         };
-        const cancel = () => {
+        const cancel = (cancelEvent) => {
+          if (cancelEvent.pointerId !== dragState?.pointerId) return;
           window.removeEventListener("pointermove", move);
           window.removeEventListener("pointerup", finish);
           window.removeEventListener("pointercancel", cancel);

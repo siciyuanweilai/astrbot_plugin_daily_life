@@ -174,15 +174,21 @@ class ProactiveSendMixin:
             return False
         emotion = ""
         emotion_category = ""
+        voice_style = ""
         if isinstance(payload, dict):
             intent = payload.get("expression_intent")
             if isinstance(intent, dict):
                 emotion = str(intent.get("emotion") or "").strip()
                 emotion_category = str(intent.get("emotion_category") or "").strip()
+                voice_style = str(intent.get("voice_style") or "").strip().lower()
         try:
-            generated = await voice_service.synthesize(
-                reply_text, emotion=emotion, emotion_category=emotion_category
-            )
+            voice_kwargs = {
+                "emotion": emotion,
+                "emotion_category": emotion_category,
+            }
+            if voice_style:
+                voice_kwargs["voice_style"] = voice_style
+            generated = await voice_service.synthesize(reply_text, **voice_kwargs)
             if not await self.send_message_if_not_recalled(
                 target_scope,
                 self._record_message_chain(generated.path),

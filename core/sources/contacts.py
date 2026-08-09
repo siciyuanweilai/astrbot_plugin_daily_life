@@ -1,6 +1,6 @@
 import inspect
 import asyncio
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List
 
 from astrbot.api import logger
 
@@ -19,10 +19,17 @@ class ContactNameResolver:
 
     _NAME_CACHE_LIMIT = 512
 
-    def __init__(self, context: Any, config: dict, log_prefix: str = "[日常生活]"):
+    def __init__(
+        self,
+        context: Any,
+        config: dict,
+        log_prefix: str = "[日常生活]",
+        platform_ready_waiter: Callable[..., Any] | None = None,
+    ):
         self.context = context
         self.config = config
         self.log_prefix = log_prefix
+        self._platform_ready_waiter = platform_ready_waiter
         self._onebot_name_cache: dict[str, str] = {}
         self._onebot_name_pending: dict[str, asyncio.Task[str]] = {}
         self._onebot_group_name_cache: dict[str, str] = {}
@@ -92,6 +99,13 @@ class ContactNameResolver:
         if pending:
             return await asyncio.shield(pending)
 
+        await self.wait_for_platform_ready()
+        cached = self._cached_name(self._onebot_name_cache, cache_key)
+        if cached:
+            return cached
+        pending = self._onebot_name_pending.get(cache_key)
+        if pending:
+            return await asyncio.shield(pending)
         bot = get_onebot_client(
             self.context, target_s, event=event, adapter_id=adapter_id
         )
@@ -131,12 +145,10 @@ class ContactNameResolver:
             if isinstance(ret, dict):
                 remark = str(ret.get("remark", "") or "").strip()
                 if remark:
-                    logger.debug(f"{self.log_prefix} 获取到用户备注：{remark}")
                     self._remember_name(self._onebot_name_cache, cache_key, remark)
                     return remark
                 nickname = str(ret.get("nickname", "") or "").strip()
                 if nickname:
-                    logger.debug(f"{self.log_prefix} 获取到用户昵称：{nickname}")
                     self._remember_name(self._onebot_name_cache, cache_key, nickname)
                     return nickname
         except Exception as e:
@@ -180,6 +192,13 @@ class ContactNameResolver:
         if pending:
             return await asyncio.shield(pending)
 
+        await self.wait_for_platform_ready()
+        cached = self._cached_name(self._onebot_group_name_cache, cache_key)
+        if cached:
+            return cached
+        pending = self._onebot_group_name_pending.get(cache_key)
+        if pending:
+            return await asyncio.shield(pending)
         bot = get_onebot_client(
             self.context, target_umo, event=event_source, adapter_id=adapter_id
         )
@@ -196,6 +215,25 @@ class ContactNameResolver:
             )
         )
         return await asyncio.shield(task)
+
+    async def wait_for_platform_ready(self) -> bool:
+        """在联系人查询前等待平台连接完成；无法等待时继续使用已有回退。"""
+        waiter = self._platform_ready_waiter
+        if not callable(waiter):
+            return True
+        try:
+            result = waiter()
+            if inspect.isawaitable(result):
+                result = await result
+            return bool(result)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug(
+                f"{self.log_prefix} 等待平台适配器连接失败，继续使用联系人回退："
+                f"{type(exc).__name__}"
+            )
+            return False
 
     async def _fetch_onebot_group_name(
         self,

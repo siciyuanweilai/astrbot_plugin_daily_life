@@ -2,10 +2,30 @@ import asyncio
 import types
 import unittest
 
-from support import ActionBot, ContactNameResolver, Event, OneBot, PersonaManager
+from support import (
+    ActionBot,
+    ContactNameResolver,
+    DailyLifeRuntime,
+    Event,
+    OneBot,
+    PersonaManager,
+    PlatformInstance,
+)
 
 
 class ContactNameResolverTest(unittest.IsolatedAsyncioTestCase):
+    async def test_onebot_readiness_requires_reverse_websocket_connection(self):
+        bot = types.SimpleNamespace(_wsr_event_clients=set(), _wsr_api_clients={})
+        instance = PlatformInstance(bot)
+
+        self.assertFalse(DailyLifeRuntime._is_platform_ready(instance))
+
+        bot._wsr_event_clients.add(object())
+        self.assertFalse(DailyLifeRuntime._is_platform_ready(instance))
+
+        bot._wsr_api_clients["测试账号"] = object()
+        self.assertTrue(DailyLifeRuntime._is_platform_ready(instance))
+
     async def test_local_alias_overrides_event_and_onebot_name(self):
         bot = OneBot({"remark": "QQ备注", "nickname": "QQ昵称"})
         resolver = ContactNameResolver(
@@ -31,6 +51,32 @@ class ContactNameResolverTest(unittest.IsolatedAsyncioTestCase):
         name = await resolver.resolve_event_sender(Event(bot=bot))
 
         self.assertEqual(name, "QQ备注")
+        self.assertEqual(bot.calls[0], ("get_stranger_info", {"user_id": 123456}))
+
+    async def test_onebot_lookup_waits_for_platform_before_calling_action(self):
+        bot = OneBot({"remark": "QQ备注", "nickname": "QQ昵称"})
+        release = asyncio.Event()
+        wait_calls = []
+
+        async def wait_for_platform():
+            wait_calls.append(True)
+            await release.wait()
+            return True
+
+        resolver = ContactNameResolver(
+            None,
+            {"relationship_aliases": []},
+            platform_ready_waiter=wait_for_platform,
+        )
+        lookup = asyncio.create_task(
+            resolver.get_onebot_nickname("123456", event=Event(bot=bot))
+        )
+        await asyncio.sleep(0)
+        self.assertEqual(wait_calls, [True])
+        self.assertEqual(bot.calls, [])
+
+        release.set()
+        self.assertEqual(await lookup, "QQ备注")
         self.assertEqual(bot.calls[0], ("get_stranger_info", {"user_id": 123456}))
 
     async def test_onebot_remark_is_cached(self):
