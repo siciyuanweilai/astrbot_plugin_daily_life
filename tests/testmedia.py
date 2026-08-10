@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from io import BytesIO
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from support import LifeSettings
 
@@ -13,7 +13,10 @@ from core.media import GeminiImageService
 from core.media import video as video_module
 from core.media.base import videos_endpoint
 from core.media.picture import canvas as picture_canvas
+from core.media.picture import grok as grok_image
 from core.media.picture import openai as openai_image
+from core.media.picture.pipe import ImageRoute
+from core.media.picture.routes import requested_image_provider
 from core.media.video import GrokVideoService
 from core.media.video.protocol.size import video_aspect_ratio, video_size
 from core.media.video.reference import (
@@ -118,6 +121,306 @@ class _Session:
 
 
 class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
+    def test_grok_text_request_uses_documented_json_fields(self):
+        route = ImageRoute(
+            api_url="https://grok-relay.example/v1/images/generations",
+            api_key="grok-key",
+            model="grok-imagine-image",
+            label="Grok 主线路",
+            protocol="grok",
+            resolution="2K",
+            aspect_ratio="16:9",
+            timeout_seconds=120,
+            origin="https://grok-relay.example",
+        )
+
+        request = grok_image.build_request(
+            route,
+            [{"text": "雨后街巷生活照"}],
+            resolution="2K",
+            aspect_ratio="16:9",
+        )
+
+        self.assertEqual(
+            request.url, "https://grok-relay.example/v1/images/generations"
+        )
+        self.assertEqual(request.headers["Authorization"], "Bearer grok-key")
+        self.assertEqual(request.payload["model"], "grok-imagine-image")
+        self.assertEqual(request.payload["prompt"], "雨后街巷生活照")
+        self.assertEqual(request.payload["aspect_ratio"], "16:9")
+        self.assertEqual(request.payload["resolution"], "2k")
+        self.assertEqual(request.payload["response_format"], "b64_json")
+        self.assertFalse(request.payload["stream"])
+
+    def test_grok_edit_request_embeds_all_reference_images_as_data_urls(self):
+        route = ImageRoute(
+            api_url="https://grok-relay.example",
+            api_key="grok-key",
+            model="grok-imagine-image",
+            label="Grok 编辑线路",
+            protocol="grok",
+            resolution="2K",
+            aspect_ratio="9:16",
+            timeout_seconds=120,
+            origin="https://grok-relay.example",
+        )
+        parts = [
+            {"text": "保持两个人物身份，改成夜景合影"},
+            {
+                "inlineData": {
+                    "mimeType": "image/png",
+                    "data": base64.b64encode(b"first").decode("ascii"),
+                }
+            },
+            {
+                "inlineData": {
+                    "mimeType": "image/jpeg",
+                    "data": base64.b64encode(b"second").decode("ascii"),
+                }
+            },
+        ]
+
+        request = grok_image.build_request(
+            route,
+            parts,
+            resolution="2K",
+            aspect_ratio="9:16",
+        )
+
+        self.assertEqual(request.url, "https://grok-relay.example/v1/images/edits")
+        self.assertNotIn("image", request.payload)
+        self.assertEqual(len(request.payload["images"]), 2)
+        self.assertTrue(
+            request.payload["images"][0]["url"].startswith("data:image/png;base64,")
+        )
+        self.assertTrue(
+            request.payload["images"][1]["url"].startswith("data:image/jpeg;base64,")
+        )
+        self.assertEqual(request.payload["resolution"], "2k")
+        self.assertEqual(request.payload["aspect_ratio"], "9:16")
+        self.assertEqual(request.payload["size"], "1152x2048")
+
+    def test_grok_output_size_validation_checks_ratio_and_resolution(self):
+        matches = GeminiImageService._grok_output_matches_request
+
+        self.assertTrue(
+            matches(1152, 2048, resolution="2K", aspect_ratio="9:16")
+        )
+        self.assertTrue(matches(1024, 1024, resolution="1K", aspect_ratio="1:1"))
+        self.assertFalse(matches(1024, 1024, resolution="2K", aspect_ratio="9:16"))
+        self.assertFalse(matches(1024, 1024, resolution="2K", aspect_ratio="1:1"))
+
+    async def test_grok_wrong_edit_size_keeps_current_channel_result(self):
+        square_output = _real_png_bytes(1024, 1024)
+        calls = []
+
+        class _ImageSession:
+            closed = False
+
+            def post(self, url, json=None, data=None, headers=None, timeout=None):
+                calls.append((url, json, data))
+                return _Response(
+                    payload={
+                        "data": [
+                            {
+                                "b64_json": base64.b64encode(square_output).decode(
+                                    "ascii"
+                                )
+                            }
+                        ]
+                    }
+                )
+
+        temp_dir = Path(tempfile.mkdtemp())
+        reference = temp_dir / "reference.png"
+        reference.write_bytes(_real_png_bytes(900, 1600))
+        settings = LifeSettings.from_dict(
+            {
+                "image_generation_config": {
+                    "enabled": True,
+                    "edit_channels": [
+                        {
+                            "__template_key": "grok",
+                            "api_url": "https://grok-relay.example",
+                            "api_key": "grok-key",
+                            "resolution": "2K",
+                            "aspect_ratio": "9:16",
+                        },
+                        {
+                            "__template_key": "openai",
+                            "api_url": "https://backup.example",
+                            "api_key": "backup-key",
+                            "resolution": "2K",
+                            "aspect_ratio": "9:16",
+                        },
+                    ],
+                }
+            }
+        ).image_generation
+        service = GeminiImageService(settings, temp_dir)
+
+        async def get_session():
+            return _ImageSession()
+
+        service._get_session = get_session
+        generated = await service.edit_image("换成雨夜街景", str(reference))
+
+        self.assertEqual(generated.path.read_bytes(), square_output)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "https://grok-relay.example/v1/images/edits")
+        self.assertEqual(calls[0][1]["size"], "1152x2048")
+
+    async def test_grok_generation_downloads_url_response(self):
+        output_bytes = b"\x89PNG\r\n\x1a\ngrok-output"
+        calls = []
+
+        class _Content:
+            async def read(self, _limit):
+                return output_bytes
+
+        class _DownloadResponse(_Response):
+            headers = {"Content-Type": "image/png"}
+            content = _Content()
+
+        class _ImageSession:
+            closed = False
+
+            def post(self, url, json=None, data=None, headers=None, timeout=None):
+                calls.append(("POST", url, json, headers or {}))
+                return _Response(
+                    payload={"data": [{"url": "https://cdn.example/generated.png"}]}
+                )
+
+            def get(self, url, timeout=None):
+                calls.append(("GET", url, timeout))
+                return _DownloadResponse()
+
+        settings = LifeSettings.from_dict(
+            {
+                "image_generation_config": {
+                    "enabled": True,
+                    "text_channels": [
+                        {
+                            "__template_key": "grok",
+                            "group_name": "Grok 图片",
+                            "api_url": "https://grok-relay.example",
+                            "api_key": "grok-key",
+                            "model": "grok-imagine-image",
+                            "resolution": "2K",
+                            "aspect_ratio": "16:9",
+                        }
+                    ],
+                }
+            }
+        ).image_generation
+        service = GeminiImageService(settings, Path(tempfile.mkdtemp()))
+
+        async def get_session():
+            return _ImageSession()
+
+        service._get_session = get_session
+        with patch.object(
+            picture_canvas,
+            "is_http_url_allowed_async",
+            new=AsyncMock(return_value=True),
+        ):
+            generated = await service.generate_image("雨夜生活照", protocol="grok")
+
+        self.assertTrue(generated.path.exists())
+        self.assertTrue(generated.path.name.startswith("grok_"))
+        self.assertEqual(generated.path.read_bytes(), output_bytes)
+        self.assertEqual(
+            calls[0][0:2], ("POST", "https://grok-relay.example/v1/images/generations")
+        )
+        self.assertEqual(calls[0][2]["resolution"], "2k")
+        self.assertEqual(calls[1][0:2], ("GET", "https://cdn.example/generated.png"))
+
+    async def test_grok_url_download_failure_tries_next_channel(self):
+        output_bytes = b"\x89PNG\r\n\x1a\nbackup-output"
+        calls = []
+
+        class _ImageSession:
+            closed = False
+
+            def post(self, url, json=None, data=None, headers=None, timeout=None):
+                calls.append(url)
+                if url.startswith("https://grok-relay.example/"):
+                    return _Response(
+                        payload={"data": [{"url": "https://blocked.example/image.png"}]}
+                    )
+                return _Response(
+                    payload={
+                        "data": [
+                            {"b64_json": base64.b64encode(output_bytes).decode("ascii")}
+                        ]
+                    }
+                )
+
+        settings = LifeSettings.from_dict(
+            {
+                "image_generation_config": {
+                    "enabled": True,
+                    "text_channels": [
+                        {
+                            "__template_key": "grok",
+                            "api_url": "https://grok-relay.example",
+                            "api_key": "grok-key",
+                        },
+                        {
+                            "__template_key": "openai",
+                            "api_url": "https://backup.example",
+                            "api_key": "backup-key",
+                        },
+                    ],
+                }
+            }
+        ).image_generation
+        service = GeminiImageService(settings, Path(tempfile.mkdtemp()))
+
+        async def get_session():
+            return _ImageSession()
+
+        service._get_session = get_session
+        with patch.object(
+            picture_canvas,
+            "is_http_url_allowed_async",
+            new=AsyncMock(return_value=False),
+        ):
+            generated = await service.generate_image("雨夜生活照")
+
+        self.assertEqual(generated.path.read_bytes(), output_bytes)
+        self.assertEqual(
+            calls,
+            [
+                "https://grok-relay.example/v1/images/generations",
+                "https://backup.example/v1/images/generations",
+            ],
+        )
+
+    async def test_grok_rejects_unsupported_4k_without_calling_api(self):
+        settings = LifeSettings.from_dict(
+            {
+                "image_generation_config": {
+                    "enabled": True,
+                    "text_channels": [
+                        {
+                            "__template_key": "grok",
+                            "api_url": "https://grok-relay.example",
+                            "api_key": "grok-key",
+                        }
+                    ],
+                }
+            }
+        ).image_generation
+        service = GeminiImageService(settings, Path(tempfile.mkdtemp()))
+
+        with self.assertRaisesRegex(RuntimeError, "只支持 1K 或 2K"):
+            await service.generate_image("雨夜生活照", resolution="4K")
+
+    def test_grok_provider_aliases_are_supported(self):
+        self.assertEqual(requested_image_provider("grok"), "grok")
+        self.assertEqual(requested_image_provider("grok-imagine-image"), "grok")
+
     async def test_generate_image_filters_channels_by_explicit_model(self):
         output_bytes = b"\x89PNG\r\n\x1a\noutput"
         calls = []

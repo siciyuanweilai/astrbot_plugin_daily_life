@@ -28,6 +28,7 @@ from core.models import (
     LifeState,
     MemoryCorrectionRecord,
     PlaceRecord,
+    PreferenceRecord,
     TimelineItem,
 )
 
@@ -610,6 +611,12 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("住在测试市", provider.prompts[0])
         self.assertIn("清冷书卷气", provider.prompts[0])
+        self.assertIn("独立评估今天是否适合有目的的身体活动", provider.prompts[0])
+        self.assertIn("不得为了填充生活实况面板机械增加运动", provider.prompts[0])
+        self.assertIn("meal 表示直接用餐", provider.prompts[0])
+        self.assertIn("由系统自动沉淀食谱", provider.prompts[0])
+        self.assertIn("不要用 meal 代替 cook", provider.prompts[0])
+        self.assertIn("通勤、普通出行、购物、逛街", provider.prompts[0])
 
     async def test_daily_prompt_uses_complete_persona_prompt(self):
         late_hint = "后半段关键设定：小岑是我的男死党，性格爽朗，经常约我看展。"
@@ -902,8 +909,9 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("不得虚构画面不可见的细节", prompt)
         self.assertIn("穿搭、发型和整体风格偏好只是软参考", prompt)
         self.assertIn(
-            "用户当前明确要求 > 短期生活纠偏 > 已学习长期偏好 > 配置审美", prompt
+            "近期重复抑制 > 已学习长期偏好 > 配置审美", prompt
         )
+        self.assertIn("同义偏好即使存在多条也只能视为一次证据", prompt)
         self.assertNotIn("默认角色审美（来自配置，可清空；只作为软参考）", prompt)
         self.assertNotIn("穿搭审美偏甜美、奶系、少女感", prompt)
         self.assertIn("不要机械复用同一套衣服、发型、配饰或色彩", prompt)
@@ -1454,6 +1462,77 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("生成穿搭与 2026-06-11 过于相似", reason)
         self.assertEqual(composer._last_validation_issue_code, "outfit_repeat")
+
+    async def test_repeated_sleepwear_is_rejected_after_two_recent_days(self):
+        composer, _, _, archive = make_composer([])
+        for date_str, outfit in (
+            (
+                "2026-06-10",
+                "浅绿色棉质细肩带睡裙，宽松轻盈，光脚在家休息",
+            ),
+            (
+                "2026-06-11",
+                "柔软的浅绿色吊带睡裙，纯棉宽松，裙摆自然垂落",
+            ),
+        ):
+            await archive.save_day(
+                DayRecord(
+                    date=date_str,
+                    outfit=outfit,
+                    timeline=[
+                        TimelineItem(time="23:00", activity="洗漱休息", status="放松")
+                    ],
+                    meta={"outfit_style_pool": "sleep_styles"},
+                )
+            )
+        candidate = DayRecord(
+            date="2026-06-12",
+            outfit="浅绿色纯棉吊带睡裙，版型宽松轻盈，适合睡前休息",
+            timeline=[TimelineItem(time="23:10", activity="准备睡觉", status="困倦")],
+            meta={"outfit_style_pool": "sleep_styles"},
+        )
+
+        reason = await composer._repeat_generation_issue(
+            candidate,
+            datetime.datetime(2026, 6, 12, 9, 0),
+            {"decision_summary": {"novelty": "今晚改看一部新的轻松动画"}},
+        )
+
+        self.assertIn("睡衣造型与近期多日记录高度相似", reason)
+        self.assertEqual(composer._last_validation_issue_code, "outfit_repeat")
+
+    async def test_preference_consistency_uses_model_semantic_groups(self):
+        composer, provider, _, archive = make_composer(
+            [
+                '{"merge_groups":[{"canonical_id":1,"merge_ids":[2],'
+                '"content":"夏夜偏好柔软宽松的浅绿色棉质睡裙",'
+                '"evidence":"两条记录表达同一稳定偏好"}]}'
+            ]
+        )
+        await archive.upsert_preferences(
+            [
+                PreferenceRecord(
+                    category="outfit",
+                    content="夏夜偏好柔软宽松的浅绿色棉质吊带睡裙",
+                    weight=1.2,
+                    last_seen="2026-06-10",
+                ),
+                PreferenceRecord(
+                    category="outfit",
+                    content="晚上喜欢穿轻薄宽松的浅绿色纯棉睡裙",
+                    weight=1.1,
+                    last_seen="2026-06-11",
+                ),
+            ]
+        )
+
+        merged_count = await composer.maintain_preference_consistency(force=True)
+        preferences = await archive.get_preferences(10, "outfit")
+
+        self.assertEqual(merged_count, 1)
+        self.assertEqual(len(preferences), 1)
+        self.assertEqual(preferences[0].weight, 1.2)
+        self.assertIn("条件、对象、地点、时间", provider.prompts[0])
 
     async def test_daily_generation_accepts_valid_json_after_natural_preface(
         self,

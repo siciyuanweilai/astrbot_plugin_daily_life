@@ -165,12 +165,14 @@ class DomainArchiveMixin:
                 """
                 INSERT INTO route_cache(
                     origin_name, destination_name, travel_mode, distance_meters,
-                    duration_seconds, provider, confidence, fetched_at, expires_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    duration_seconds, provider, travel_detail, confidence,
+                    fetched_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(origin_name, destination_name, travel_mode) DO UPDATE SET
                     distance_meters = excluded.distance_meters,
                     duration_seconds = excluded.duration_seconds,
                     provider = excluded.provider,
+                    travel_detail = excluded.travel_detail,
                     confidence = excluded.confidence,
                     fetched_at = excluded.fetched_at,
                     expires_at = excluded.expires_at
@@ -182,6 +184,7 @@ class DomainArchiveMixin:
                     float(payload.get("distance_meters") or 0),
                     max(0, self._int(payload.get("duration_seconds"))),
                     self._text(payload.get("provider")) or "fallback",
+                    self._text(payload.get("travel_detail")),
                     max(0.0, min(1.0, float(payload.get("confidence") or 0))),
                     self._text(payload.get("fetched_at")),
                     self._text(payload.get("expires_at")),

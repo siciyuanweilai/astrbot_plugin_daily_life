@@ -1363,6 +1363,78 @@
                 "hint": "GPT Image 通道单次请求的最长等待时间。"
               }
             }
+          },
+          "grok": {
+            "name": "Grok Image",
+            "items": {
+              "group_name": {
+                "description": "分组名称",
+                "type": "string",
+                "default": "Grok Image",
+                "hint": "自定义这条文生图接口通道的名称，用于区分不同接口分组。"
+              },
+              "api_url": {
+                "description": "接口地址",
+                "type": "string",
+                "default": "",
+                "hint": "填写 Grok 图片接口根地址，插件会自动补全 /v1/images/generations。"
+              },
+              "api_key": {
+                "description": "接口密钥",
+                "type": "string",
+                "default": "",
+                "hint": "这条接口通道单独使用的密钥。"
+              },
+              "model": {
+                "description": "模型名称",
+                "type": "string",
+                "default": "grok-imagine-image",
+                "hint": "Grok 图片通道使用的生图模型。"
+              },
+              "resolution": {
+                "description": "图片尺寸",
+                "type": "string",
+                "default": "2K",
+                "options": [
+                  "1K",
+                  "2K"
+                ],
+                "hint": "Grok 图片接口支持 1K 和 2K 分辨率。"
+              },
+              "aspect_ratio": {
+                "description": "图片比例",
+                "type": "string",
+                "default": "1:1",
+                "options": [
+                  "1:1",
+                  "1:4",
+                  "1:8",
+                  "2:3",
+                  "3:2",
+                  "3:4",
+                  "4:1",
+                  "4:3",
+                  "4:5",
+                  "5:4",
+                  "8:1",
+                  "9:16",
+                  "16:9",
+                  "21:9"
+                ],
+                "hint": "Grok 图片通道直接使用所选宽高比。"
+              },
+              "timeout_seconds": {
+                "description": "超时（秒）",
+                "type": "int",
+                "default": 120,
+                "slider": {
+                  "min": 10,
+                  "max": 600,
+                  "step": 10
+                },
+                "hint": "Grok 图片通道单次请求及结果图片下载的最长等待时间。"
+              }
+            }
           }
         }
       },
@@ -1515,6 +1587,78 @@
                   "step": 10
                 },
                 "hint": "GPT Image 通道单次请求的最长等待时间。"
+              }
+            }
+          },
+          "grok": {
+            "name": "Grok Image",
+            "items": {
+              "group_name": {
+                "description": "分组名称",
+                "type": "string",
+                "default": "Grok Image",
+                "hint": "自定义这条图生图接口通道的名称，用于区分不同接口分组。"
+              },
+              "api_url": {
+                "description": "接口地址",
+                "type": "string",
+                "default": "",
+                "hint": "填写 Grok 图片接口根地址，插件会自动补全 /v1/images/edits。"
+              },
+              "api_key": {
+                "description": "接口密钥",
+                "type": "string",
+                "default": "",
+                "hint": "这条接口通道单独使用的密钥。"
+              },
+              "model": {
+                "description": "模型名称",
+                "type": "string",
+                "default": "grok-imagine-image",
+                "hint": "Grok 图片通道使用的生图模型。"
+              },
+              "resolution": {
+                "description": "图片尺寸",
+                "type": "string",
+                "default": "2K",
+                "options": [
+                  "1K",
+                  "2K"
+                ],
+                "hint": "Grok 图片接口支持 1K 和 2K 分辨率。"
+              },
+              "aspect_ratio": {
+                "description": "图片比例",
+                "type": "string",
+                "default": "1:1",
+                "options": [
+                  "1:1",
+                  "1:4",
+                  "1:8",
+                  "2:3",
+                  "3:2",
+                  "3:4",
+                  "4:1",
+                  "4:3",
+                  "4:5",
+                  "5:4",
+                  "8:1",
+                  "9:16",
+                  "16:9",
+                  "21:9"
+                ],
+                "hint": "Grok 图生图会在画面要求中保留所选宽高比。"
+              },
+              "timeout_seconds": {
+                "description": "超时（秒）",
+                "type": "int",
+                "default": 120,
+                "slider": {
+                  "min": 10,
+                  "max": 600,
+                  "step": 10
+                },
+                "hint": "Grok 图片通道单次请求及结果图片下载的最长等待时间。"
               }
             }
           }

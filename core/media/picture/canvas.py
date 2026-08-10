@@ -30,7 +30,7 @@ from ..base import (
     image_mime_and_ext,
     upstream_error_text,
 )
-from . import gemini, openai, routes
+from . import gemini, grok, openai, routes
 from .pipe import ImageRoute
 
 _SUPPORTED_ASPECT_RATIO_VALUES = {
@@ -38,6 +38,7 @@ _SUPPORTED_ASPECT_RATIO_VALUES = {
     for ratio in IMAGE_ASPECT_RATIOS
 }
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_GENERATED_IMAGE_MAX_BYTES = 32 * 1024 * 1024
 
 
 def _best_supported_aspect_ratio(width: int, height: int) -> str:
@@ -510,7 +511,7 @@ class GeminiImageService:
     def _route_accepts_character_reference(
         route: ImageRoute, *, text_to_image: bool = False
     ) -> bool:
-        return not (text_to_image and route.protocol == "openai")
+        return not (text_to_image and route.protocol in {"openai", "grok"})
 
     def _character_reference_sources(self) -> list[dict[str, Any]]:
         policy = str(
@@ -750,6 +751,18 @@ class GeminiImageService:
             raise RuntimeError(f"图片生成缺少{self._mode_label(mode)}接口地址")
         prompt = str(prompt or "").strip()
         for route in request_routes:
+            route_resolution = (
+                requested_resolution or str(route.resolution or "").strip().upper()
+            )
+            if route.protocol == "grok" and route_resolution == "4K":
+                route_label = f"{route.origin} / {route.label}"
+                message = f"{route_label}：Grok 图片接口只支持 1K 或 2K 分辨率"
+                errors.append(message)
+                logger.debug(
+                    f"{LOG_PREFIX} {self._mode_label(mode)}接口通道不支持本轮参数，"
+                    f"尝试下一条：{message}"
+                )
+                continue
             route = self._route_with_options(route, aspect_ratio, requested_resolution)
             session = await self._get_session()
             route_label = f"{route.origin} / {route.label}"
@@ -784,14 +797,39 @@ class GeminiImageService:
                     f"{LOG_PREFIX} {self._mode_label(mode)}接口通道失败，尝试下一条：{message}"
                 )
                 continue
-            image_bytes = (
-                openai.extract_image(data)
-                if route.protocol == "openai"
-                else gemini.extract_image(data)
-            )
+            try:
+                image_bytes = await self._extract_image_bytes(
+                    data,
+                    route,
+                    timeout=timeout,
+                )
+            except Exception as exc:
+                message = f"{route_label}：{self._error_text(exc)}"
+                errors.append(message)
+                logger.debug(
+                    f"{LOG_PREFIX} {self._mode_label(mode)}结果图片获取失败，"
+                    f"尝试下一条：{message}"
+                )
+                continue
             if image_bytes:
                 width, height = _image_dimensions(image_bytes)
                 actual_size = f"{width}×{height}" if width and height else "未知"
+                if (
+                    route.protocol == "grok"
+                    and width
+                    and height
+                    and not self._grok_output_matches_request(
+                        width,
+                        height,
+                        resolution=route.resolution,
+                        aspect_ratio=route.aspect_ratio,
+                    )
+                ):
+                    message = (
+                        f"{route_label}：Grok 图片接口返回尺寸与请求不一致"
+                        f"（请求={requested_size}；实际={actual_size}）"
+                    )
+                    logger.warning(f"{LOG_PREFIX} {message}")
                 logger.debug(
                     f"{LOG_PREFIX} 图片完成：通道={route_label}；"
                     f"请求={requested_size}；实际={actual_size}"
@@ -870,11 +908,77 @@ class GeminiImageService:
 
     def _build_request(self, route: ImageRoute, parts: list[dict[str, Any]]):
         kwargs = {"resolution": route.resolution, "aspect_ratio": route.aspect_ratio}
-        return (
-            openai.build_request(route, parts, **kwargs)
-            if route.protocol == "openai"
-            else gemini.build_request(route, parts, **kwargs)
-        )
+        builder = {
+            "openai": openai.build_request,
+            "grok": grok.build_request,
+        }.get(route.protocol, gemini.build_request)
+        return builder(route, parts, **kwargs)
+
+    async def _extract_image_bytes(
+        self,
+        data: dict[str, Any],
+        route: ImageRoute,
+        *,
+        timeout: aiohttp.ClientTimeout,
+    ) -> bytes:
+        """按当前图片协议提取或下载最终图片。
+
+        Args:
+            data: 图片接口返回对象。
+            route: 当前成功响应所属的接口通道。
+            timeout: 结果图片下载沿用的通道超时。
+
+        Returns:
+            可直接保存的图片字节。
+        """
+        if route.protocol == "openai":
+            return openai.extract_image(data)
+        if route.protocol == "gemini":
+            return gemini.extract_image(data)
+        image_bytes, image_url = grok.extract_image(data, route.api_url)
+        if image_bytes or not image_url:
+            return image_bytes
+        return await self._download_generated_image(image_url, timeout=timeout)
+
+    async def _download_generated_image(
+        self,
+        url: str,
+        *,
+        timeout: aiohttp.ClientTimeout,
+    ) -> bytes:
+        """下载接口返回的结果图片并校验内容。
+
+        Args:
+            url: Grok 接口返回的图片地址。
+            timeout: 当前通道配置的请求超时。
+
+        Returns:
+            下载完成的图片字节。
+
+        Raises:
+            ValueError: 地址、内容类型、大小或内容为空时抛出。
+            RuntimeError: 图片地址返回非成功状态时抛出。
+        """
+        if not await is_http_url_allowed_async(url):
+            raise ValueError("生成图片地址不在允许的媒体网络范围内")
+        session = await self._get_session()
+        async with session.get(url, timeout=timeout) as response:
+            if response.status != 200:
+                raise RuntimeError(f"生成图片下载失败（HTTP {response.status}）")
+            content_type = (
+                str(response.headers.get("Content-Type", "") or "")
+                .split(";", 1)[0]
+                .strip()
+                .lower()
+            )
+            if content_type and not content_type.startswith("image/"):
+                raise ValueError("生成图片链接返回的不是图片内容")
+            image_bytes = await response.content.read(_GENERATED_IMAGE_MAX_BYTES + 1)
+        if not image_bytes:
+            raise ValueError("生成图片内容为空")
+        if len(image_bytes) > _GENERATED_IMAGE_MAX_BYTES:
+            raise ValueError("生成图片内容过大")
+        return image_bytes
 
     @staticmethod
     def _route_with_options(
@@ -890,6 +994,8 @@ class GeminiImageService:
         effective_resolution = resolution or str(route.resolution or "").strip().upper()
         if effective_resolution not in IMAGE_RESOLUTIONS:
             raise ValueError("图片通道分辨率只能是 1K、2K 或 4K")
+        if route.protocol == "grok" and effective_resolution == "4K":
+            raise ValueError("Grok 图片接口只支持 1K 或 2K 分辨率")
         resolution_source = "本轮指定" if resolution else "通道配置"
         if (
             effective_aspect_ratio == route.aspect_ratio
@@ -912,15 +1018,42 @@ class GeminiImageService:
 
     @staticmethod
     def _protocol_label(protocol: str) -> str:
-        return "GPT" if str(protocol or "").lower() == "openai" else "Gemini"
+        return routes.image_provider_label(protocol) or "Gemini"
 
     @staticmethod
     def _request_size_label(route: ImageRoute) -> str:
-        if route.protocol == "openai":
+        if route.protocol in {"openai", "grok"}:
             return openai.size_for(route.resolution, route.aspect_ratio).replace(
                 "x", "×"
             )
         return f"{route.resolution}档位"
+
+    @staticmethod
+    def _grok_output_matches_request(
+        width: int,
+        height: int,
+        *,
+        resolution: str,
+        aspect_ratio: str,
+    ) -> bool:
+        """判断 Grok 返回图是否满足请求的比例与分辨率档位。"""
+        try:
+            ratio_width, ratio_height = (
+                int(value) for value in str(aspect_ratio or "1:1").split(":", 1)
+            )
+        except (TypeError, ValueError):
+            ratio_width = ratio_height = 1
+        if ratio_width <= 0 or ratio_height <= 0:
+            ratio_width = ratio_height = 1
+        requested_ratio = ratio_width / ratio_height
+        actual_ratio = width / height
+        if abs(actual_ratio - requested_ratio) / requested_ratio > 0.05:
+            return False
+        minimum_long_edge = {"1K": 768, "2K": 1536}.get(
+            str(resolution or "").strip().upper(),
+            0,
+        )
+        return max(width, height) >= minimum_long_edge
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:

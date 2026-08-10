@@ -180,19 +180,30 @@ class LifecycleArchiveMixin:
         date_str: str = "",
     ) -> list[PreferenceRecord]:
         saved: list[PreferenceRecord] = []
+        saved_ids: set[int] = set()
         for pref in preferences:
             item = PreferenceRecord.from_value(pref, date=date_str)
             if not item:
                 continue
-            existing = self._conn.execute(
-                "SELECT * FROM preferences WHERE category = ? AND content = ?",
-                (self._text(item.category) or "general", self._text(item.content)),
-            ).fetchone()
+            category = self._text(item.category) or "general"
+            existing = None
+            if int(item.id or 0) > 0:
+                existing = self._conn.execute(
+                    "SELECT * FROM preferences WHERE id = ? AND category = ?",
+                    (int(item.id), category),
+                ).fetchone()
+            if existing is None:
+                existing = self._conn.execute(
+                    "SELECT * FROM preferences WHERE category = ? AND content = ?",
+                    (category, self._text(item.content)),
+                ).fetchone()
             if existing:
                 weight = min(
                     5.0,
-                    max(float(existing["weight"] or 0.0), 0.0)
-                    + max(float(item.weight or 0.0), 0.1),
+                    max(
+                        max(float(existing["weight"] or 0.0), 0.0),
+                        max(float(item.weight or 0.0), 0.1),
+                    ),
                 )
                 self._conn.execute(
                     """
@@ -222,7 +233,7 @@ class LifecycleArchiveMixin:
                     VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     """,
                     (
-                        self._text(item.category) or "general",
+                        category,
                         self._text(item.content),
                         max(float(item.weight or 0.0), 0.1),
                         self._text(item.evidence),
@@ -233,9 +244,136 @@ class LifecycleArchiveMixin:
                 row = self._conn.execute(
                     "SELECT * FROM preferences WHERE id = ?", (cursor.lastrowid,)
                 ).fetchone()
-            if row:
+            if row and int(row["id"] or 0) not in saved_ids:
+                saved_ids.add(int(row["id"] or 0))
                 saved.append(self._compose_preference(row))
         return saved
+
+    def _merge_preferences_unlocked(
+        self,
+        groups: list[dict[str, Any]],
+    ) -> dict[int, int]:
+        merged_ids: dict[int, int] = {}
+        claimed_ids: set[int] = set()
+        for raw in groups:
+            if not isinstance(raw, dict):
+                continue
+            try:
+                canonical_id = int(raw.get("canonical_id") or 0)
+            except (TypeError, ValueError):
+                continue
+            canonical = self._conn.execute(
+                "SELECT * FROM preferences WHERE id = ?", (canonical_id,)
+            ).fetchone()
+            if canonical is None or canonical_id in claimed_ids:
+                continue
+            merge_ids = []
+            for value in raw.get("merge_ids") or []:
+                try:
+                    preference_id = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if (
+                    preference_id <= 0
+                    or preference_id == canonical_id
+                    or preference_id in claimed_ids
+                    or preference_id in merge_ids
+                ):
+                    continue
+                merge_ids.append(preference_id)
+            if not merge_ids:
+                continue
+            placeholders = ",".join("?" for _ in merge_ids)
+            rows = self._conn.execute(
+                f"SELECT * FROM preferences WHERE id IN ({placeholders})",
+                tuple(merge_ids),
+            ).fetchall()
+            rows = [
+                row for row in rows if str(row["category"]) == str(canonical["category"])
+            ]
+            if not rows:
+                continue
+            valid_merge_ids = [int(row["id"]) for row in rows]
+            latest = max(
+                [canonical, *rows],
+                key=lambda row: (str(row["last_seen"] or ""), int(row["id"] or 0)),
+            )
+            content = self._text(raw.get("content")) or canonical["content"]
+            evidence = self._text(raw.get("evidence")) or latest["evidence"]
+            weight = max(float(row["weight"] or 0.0) for row in [canonical, *rows])
+            last_seen = max(str(row["last_seen"] or "") for row in [canonical, *rows])
+            merge_placeholders = ",".join("?" for _ in valid_merge_ids)
+            review_rows = self._conn.execute(
+                f"""
+                SELECT date, MIN(sort_order) AS sort_order
+                FROM review_preferences
+                WHERE preference_id IN ({merge_placeholders})
+                GROUP BY date
+                """,
+                tuple(valid_merge_ids),
+            ).fetchall()
+            for review_row in review_rows:
+                self._conn.execute(
+                    """
+                    INSERT OR IGNORE INTO review_preferences(date, preference_id, sort_order)
+                    VALUES (?, ?, ?)
+                    """,
+                    (review_row["date"], canonical_id, review_row["sort_order"]),
+                )
+            self._conn.execute(
+                f"DELETE FROM review_preferences WHERE preference_id IN ({merge_placeholders})",
+                tuple(valid_merge_ids),
+            )
+            source_ids = tuple(str(value) for value in valid_merge_ids)
+            source_placeholders = ",".join("?" for _ in source_ids)
+            self._conn.execute(
+                f"""
+                UPDATE long_term_memories
+                SET status = 'superseded', updated_at = CURRENT_TIMESTAMP
+                WHERE source_table = 'preferences' AND source_id IN ({source_placeholders})
+                """,
+                source_ids,
+            )
+            self._conn.execute(
+                f"""
+                UPDATE memory_evidence
+                SET target_id = ?
+                WHERE target_type = 'preference' AND target_id IN ({source_placeholders})
+                """,
+                (str(canonical_id), *source_ids),
+            )
+            self._conn.execute(
+                f"""
+                DELETE FROM memory_vectors
+                WHERE target_type = 'preference' AND target_id IN ({source_placeholders})
+                """,
+                source_ids,
+            )
+            self._conn.execute(
+                f"DELETE FROM preferences WHERE id IN ({merge_placeholders})",
+                tuple(valid_merge_ids),
+            )
+            self._conn.execute(
+                """
+                UPDATE preferences
+                SET content = ?, weight = ?, evidence = ?, last_seen = ?,
+                    source = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (
+                    content,
+                    weight,
+                    evidence,
+                    last_seen,
+                    latest["source"],
+                    canonical_id,
+                ),
+            )
+            for preference_id in valid_merge_ids:
+                merged_ids[preference_id] = canonical_id
+            claimed_ids.add(canonical_id)
+            claimed_ids.update(valid_merge_ids)
+        return merged_ids
 
     async def upsert_preferences(
         self,
@@ -249,6 +387,20 @@ class LifecycleArchiveMixin:
             saved = self._upsert_preferences_unlocked(preferences, date_str)
             self._conn.commit()
             return saved
+
+        return await self._run_db(dbwork)
+
+    async def merge_preferences(
+        self,
+        groups: list[dict[str, Any]],
+    ) -> dict[int, int]:
+        if not groups:
+            return {}
+
+        def dbwork():
+            merged = self._merge_preferences_unlocked(groups)
+            self._conn.commit()
+            return merged
 
         return await self._run_db(dbwork)
 

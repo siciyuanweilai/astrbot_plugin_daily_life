@@ -17,6 +17,13 @@ class SnapshotSeedMixin:
         wait_for_platform = getattr(self, "wait_for_platform_ready", None)
         if callable(wait_for_platform):
             await wait_for_platform()
+        preference_maintainer = getattr(
+            getattr(self, "composer", None),
+            "maintain_preference_consistency",
+            None,
+        )
+        if callable(preference_maintainer):
+            await preference_maintainer()
         now = now or self._runtime_now()
         target_date_str, _ = await self.resolve_injection_target(now)
         domains = getattr(self, "domains", None)

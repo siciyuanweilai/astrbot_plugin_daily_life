@@ -25,6 +25,7 @@ class TimelineItem:
     place_coordinate_source: str = ""
     travel_origin: str = ""
     travel_provider: str = ""
+    travel_detail: str = ""
     travel_minutes: int = 0
     travel_distance_meters: float = 0.0
     execution_state: str = "planned"
@@ -64,6 +65,7 @@ class TimelineItem:
             ).strip(),
             travel_origin=str(raw.get("travel_origin") or "").strip(),
             travel_provider=str(raw.get("travel_provider") or "").strip(),
+            travel_detail=str(raw.get("travel_detail") or "").strip(),
             travel_minutes=_non_negative_int(raw.get("travel_minutes")),
             travel_distance_meters=_non_negative_float(
                 raw.get("travel_distance_meters")
@@ -91,6 +93,7 @@ class TimelineItem:
             "place_coordinate_source": self.place_coordinate_source,
             "travel_origin": self.travel_origin,
             "travel_provider": self.travel_provider,
+            "travel_detail": self.travel_detail,
             "travel_minutes": self.travel_minutes,
             "travel_distance_meters": self.travel_distance_meters,
             "execution_state": self.execution_state,

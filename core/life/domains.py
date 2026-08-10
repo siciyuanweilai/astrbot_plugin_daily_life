@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import hashlib
 import json
 import math
 from typing import Any
@@ -72,12 +73,34 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
         if not self.settings.enabled:
             return
         repaired_actions = await self._repair_committed_action_records()
+        repaired_recipes = await self._repair_committed_recipe_records()
         repaired_items = await self._repair_conversation_action_items()
-        if repaired_actions or repaired_items:
+        if repaired_actions or repaired_recipes or repaired_items:
             logger.debug(
                 "[日常生活] 生活实况记录已自愈："
-                f"动作={repaired_actions}；行动项={repaired_items}"
+                f"动作={repaired_actions}；食谱={repaired_recipes}；"
+                f"行动项={repaired_items}"
             )
+
+    @staticmethod
+    def _planned_action(day: DayRecord, action_id: str) -> LifeActionIntent | None:
+        raw = (day.meta or {}).get("planned_life_actions")
+        if isinstance(raw, list):
+            values = raw
+        else:
+            try:
+                values = json.loads(str(raw)) if raw else []
+            except (TypeError, ValueError, json.JSONDecodeError):
+                values = []
+        return next(
+            (
+                LifeActionIntent.from_value(item)
+                for item in values
+                if isinstance(item, dict)
+                and str(item.get("action_id") or "").strip() == action_id
+            ),
+            None,
+        )
 
     async def _repair_committed_action_records(self) -> int:
         getter = getattr(self.archive, "get_life_action_outcomes", None)
@@ -100,23 +123,7 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
             day = await day_getter(stored.date)
             if day is None:
                 continue
-            raw = (day.meta or {}).get("planned_life_actions")
-            if isinstance(raw, list):
-                values = raw
-            else:
-                try:
-                    values = json.loads(str(raw)) if raw else []
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    values = []
-            action = next(
-                (
-                    LifeActionIntent.from_value(item)
-                    for item in values
-                    if isinstance(item, dict)
-                    and str(item.get("action_id") or "").strip() == stored.action_id
-                ),
-                None,
-            )
+            action = self._planned_action(day, stored.action_id)
             if action is None:
                 continue
             stored_evidence = (
@@ -153,6 +160,63 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
                 continue
             if await checker(stored.action_type, stored.action_id):
                 repaired += 1
+        return repaired
+
+    async def _repair_committed_recipe_records(self) -> int:
+        """补齐历史已完成烹饪动作遗漏的食谱及餐食关联。"""
+
+        if not self.settings.meals_enabled:
+            return 0
+        outcome_getter = getattr(self.archive, "get_life_action_outcomes", None)
+        day_getter = getattr(self.archive, "get_day", None)
+        meal_getter = getattr(self.archive, "get_meal_records", None)
+        meal_saver = getattr(self.archive, "save_meal_record", None)
+        recipe_getter = getattr(self.archive, "get_recipes", None)
+        if not all(
+            callable(item)
+            for item in (
+                outcome_getter,
+                day_getter,
+                meal_getter,
+                meal_saver,
+                recipe_getter,
+            )
+        ):
+            return 0
+        meals = {
+            str(item.get("action_id") or "").strip(): item
+            for item in await meal_getter(limit=0)
+        }
+        recipe_ids = {
+            str(item.get("id") or "").strip()
+            for item in await recipe_getter(limit=0)
+        }
+        repaired = 0
+        for stored in await outcome_getter(status="committed", limit=500):
+            if stored.action_type != "cook":
+                continue
+            meal = meals.get(stored.action_id)
+            if not meal:
+                continue
+            day = await day_getter(stored.date)
+            if day is None:
+                continue
+            action = self._planned_action(day, stored.action_id)
+            if action is None:
+                continue
+            recipe_id = await self._save_cook_recipe(
+                action,
+                source=str(meal.get("source") or "life_action_simulation"),
+            )
+            if not recipe_id:
+                continue
+            needs_recipe = recipe_id not in recipe_ids
+            needs_link = str(meal.get("recipe_id") or "").strip() != recipe_id
+            if needs_link:
+                await meal_saver({**meal, "recipe_id": recipe_id})
+            if needs_recipe or needs_link:
+                repaired += 1
+                recipe_ids.add(recipe_id)
         return repaired
 
     async def _repair_conversation_action_items(self) -> int:
@@ -434,10 +498,7 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
                         False,
                         f"预留出行时间不足：需要约 {required_minutes} 分钟，计划为 {action.duration_minutes} 分钟",
                     )
-        if (
-            action.action_type not in {"meal", "cook"}
-            or not self.settings.pantry_enabled
-        ):
+        if action.action_type != "cook" or not self.settings.pantry_enabled:
             return True, ""
         ingredients = action.payload.get("ingredients")
         if not isinstance(ingredients, list):
@@ -521,21 +582,8 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
         ingredients = ingredients if isinstance(ingredients, list) else []
         saver = getattr(self.archive, "save_meal_record", None)
         recipe_id = str(action.payload.get("recipe_id") or "").strip()
-        save_recipe = getattr(self.archive, "upsert_recipe", None)
-        if recipe_id and callable(save_recipe):
-            await save_recipe(
-                {
-                    "id": recipe_id,
-                    "name": action.target
-                    or str(action.payload.get("name") or "未命名食谱"),
-                    "meal_type": str(action.payload.get("meal_type") or ""),
-                    "ingredients": ingredients,
-                    "tags": action.payload.get("tags")
-                    if isinstance(action.payload.get("tags"), list)
-                    else [],
-                    "source": source,
-                }
-            )
+        if action.action_type == "cook":
+            recipe_id = await self._save_cook_recipe(action, source=source)
         if callable(saver):
             await saver(
                 {
@@ -552,7 +600,7 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
                     "occurred_at": occurred_at,
                 }
             )
-        if not self.settings.pantry_enabled or action.action_type == "order_food":
+        if not self.settings.pantry_enabled or action.action_type != "cook":
             return
         adjust = getattr(self.archive, "adjust_pantry_item", None)
         if not callable(adjust):
@@ -575,6 +623,41 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
                     occurred_at=occurred_at,
                     source=source,
                 )
+
+    @staticmethod
+    def _automatic_recipe_id(name: str) -> str:
+        normalized = " ".join(str(name or "").split()).casefold()
+        if not normalized:
+            return ""
+        digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:20]
+        return f"recipe:auto:{digest}"
+
+    async def _save_cook_recipe(
+        self, action: LifeActionIntent, *, source: str
+    ) -> str:
+        """为明确的烹饪动作保存稳定食谱，并返回食谱编号。"""
+
+        name = action.target or str(action.payload.get("name") or "").strip()
+        recipe_id = str(action.payload.get("recipe_id") or "").strip()
+        recipe_id = recipe_id or self._automatic_recipe_id(name)
+        save_recipe = getattr(self.archive, "upsert_recipe", None)
+        if not recipe_id or not name or not callable(save_recipe):
+            return ""
+        ingredients = action.payload.get("ingredients")
+        ingredients = ingredients if isinstance(ingredients, list) else []
+        await save_recipe(
+            {
+                "id": recipe_id,
+                "name": name,
+                "meal_type": str(action.payload.get("meal_type") or ""),
+                "ingredients": ingredients,
+                "tags": action.payload.get("tags")
+                if isinstance(action.payload.get("tags"), list)
+                else [],
+                "source": source,
+            }
+        )
+        return recipe_id
 
     async def _apply_purchase(
         self, action: LifeActionIntent, *, occurred_at: str, source: str
@@ -1363,6 +1446,10 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
                     f"{item.get('date')} {item.get('activity')} {item.get('duration_minutes')}分钟"
                     for item in fitness[:4]
                 )
+            )
+        elif self.settings.fitness_enabled:
+            blocks.append(
+                "近期运动：尚无已结算记录（仅供生活平衡判断，不要求今天强行安排）"
             )
         if not blocks:
             return ""

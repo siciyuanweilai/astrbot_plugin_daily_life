@@ -523,6 +523,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                                 place_coordinate_source="test_poi",
                                 travel_origin="家",
                                 travel_provider="test_map",
+                                travel_detail="公交 + 地铁",
                                 travel_minutes=18,
                                 travel_distance_meters=1260.5,
                                 execution_state="active",
@@ -549,6 +550,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(item.place_coordinate_source, "test_poi")
                 self.assertEqual(item.travel_origin, "家")
                 self.assertEqual(item.travel_provider, "test_map")
+                self.assertEqual(item.travel_detail, "公交 + 地铁")
                 self.assertEqual(item.travel_minutes, 18)
                 self.assertEqual(item.travel_distance_meters, 1260.5)
                 self.assertEqual(item.execution_state, "active")
@@ -591,6 +593,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                 "place_coordinate_source",
                 "travel_origin",
                 "travel_provider",
+                "travel_detail",
                 "travel_minutes",
                 "travel_distance_meters",
             )
@@ -622,6 +625,68 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(item.execution_state, "active")
                 self.assertEqual(item.place, "")
                 self.assertEqual(item.place_kind, "none")
+            finally:
+                await migrated.aclose()
+
+    async def test_v10_database_adds_travel_detail_without_losing_records(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = f"{tmpdir}/daily_life.db"
+            archive = LifeArchive(db_path)
+            await archive.save_day(
+                DayRecord(
+                    date="2026-08-09",
+                    timeline=[
+                        TimelineItem(
+                            time="18:00",
+                            activity="保留的公共交通日程",
+                            travel_mode="transit",
+                        )
+                    ],
+                )
+            )
+            await archive.upsert_route(
+                {
+                    "origin_name": "家",
+                    "destination_name": "测试广场",
+                    "travel_mode": "transit",
+                    "distance_meters": 5700,
+                    "duration_seconds": 3300,
+                    "provider": "amap",
+                }
+            )
+            await archive.aclose()
+
+            connection = sqlite3.connect(db_path)
+            connection.execute("ALTER TABLE timelines DROP COLUMN travel_detail")
+            connection.execute("ALTER TABLE route_cache DROP COLUMN travel_detail")
+            connection.execute(
+                "UPDATE meta SET value = '10' WHERE key = 'schema_version'"
+            )
+            connection.commit()
+            connection.close()
+
+            migrated = LifeArchive(db_path)
+            try:
+                timeline_columns = {
+                    row[1]
+                    for row in migrated._conn.execute(
+                        "PRAGMA table_info(timelines)"
+                    ).fetchall()
+                }
+                route_columns = {
+                    row[1]
+                    for row in migrated._conn.execute(
+                        "PRAGMA table_info(route_cache)"
+                    ).fetchall()
+                }
+                day = await migrated.get_day("2026-08-09")
+                route = await migrated.get_route("家", "测试广场", "transit")
+                self.assertIn("travel_detail", timeline_columns)
+                self.assertIn("travel_detail", route_columns)
+                self.assertEqual(day.timeline[0].activity, "保留的公共交通日程")
+                self.assertEqual(day.timeline[0].travel_detail, "")
+                self.assertEqual(route["distance_meters"], 5700)
+                self.assertEqual(route["travel_detail"], "")
             finally:
                 await migrated.aclose()
 
@@ -2951,6 +3016,77 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(life_events[0].title, "买了新的手帐贴纸")
             self.assertEqual(day.timeline[0].time, "10:30")
             reopened.close()
+
+    async def test_semantic_preference_merge_keeps_one_canonical_record(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(f"{tmpdir}/daily_life.db")
+            first = (
+                await archive.upsert_preferences(
+                    [
+                        PreferenceRecord(
+                            category="outfit",
+                            content="夏夜偏好柔软宽松的浅绿色棉质吊带睡裙",
+                            weight=1.2,
+                            evidence="第一天的居家记录",
+                        )
+                    ],
+                    "2026-05-24",
+                )
+            )[0]
+            repeated = (
+                await archive.upsert_preferences(
+                    [
+                        PreferenceRecord(
+                            category="outfit",
+                            content="晚上喜欢穿轻薄宽松的浅绿色纯棉睡裙",
+                            weight=1.1,
+                            evidence="第二天的居家记录",
+                        )
+                    ],
+                    "2026-05-25",
+                )
+            )[0]
+            await archive.save_daily_review(
+                DailyReviewRecord(
+                    date="2026-05-25",
+                    summary="今天在家安静休息。",
+                    preference_points=[repeated],
+                )
+            )
+
+            merged = await archive.merge_preferences(
+                [
+                    {
+                        "canonical_id": first.id,
+                        "merge_ids": [repeated.id],
+                        "content": "夏夜偏好柔软宽松的浅绿色棉质睡裙",
+                        "evidence": "两天记录表达同一穿着偏好",
+                    }
+                ]
+            )
+            preferences = await archive.get_preferences(10, "outfit")
+            review = await archive.get_daily_review("2026-05-25")
+
+            self.assertEqual(merged, {repeated.id: first.id})
+            self.assertEqual(len(preferences), 1)
+            self.assertEqual(preferences[0].id, first.id)
+            self.assertEqual(preferences[0].weight, 1.2)
+            self.assertEqual(review.preference_points[0].id, first.id)
+
+            await archive.upsert_preferences(
+                [
+                    PreferenceRecord(
+                        category="outfit",
+                        content=preferences[0].content,
+                        weight=0.8,
+                        evidence="第三次相同观察",
+                    )
+                ],
+                "2026-05-26",
+            )
+            stable = await archive.get_preferences(10, "outfit")
+            self.assertEqual(stable[0].weight, 1.2)
+            archive.close()
 
     async def test_life_event_status_can_be_closed_or_expired(self):
         with tempfile.TemporaryDirectory() as tmpdir:

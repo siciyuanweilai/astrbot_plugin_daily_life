@@ -54,6 +54,7 @@ class LifeBackgroundComposer(
         self.domains = domain_service
         self._reference_name_cache = {}
         self._gen_lock = asyncio.Lock()
+        self._preference_maintenance_done = False
 
     def _get_curr_period(self, target_dt=None) -> str:
         return get_time_period(target_dt)

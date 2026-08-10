@@ -57,6 +57,7 @@ import {
   scheduleTypeText,
   stateLogText,
   text,
+  timelineTravelText,
   visibleExperienceEvidence,
   visibleLifeEpisodes
 } from "./shared/format.js";
@@ -871,41 +872,6 @@ function cloneTimeline(timeline = []) {
   });
 }
 
-function timelineTravelText(item = {}, previousItem = {}) {
-  const mode = clean(item.travel_mode, "");
-  const minutes = Math.max(0, Number(item.travel_minutes || 0));
-  const distance = Math.max(0, Number(item.travel_distance_meters || 0));
-  if (!mode && !minutes && !distance) return "";
-
-  const modeLabel = {
-    walking: "步行",
-    cycling: "骑行",
-    driving: "驾车",
-    transit: "公共交通",
-  }[mode] || mode || "出行";
-  const providerLabel = {
-    amap: "高德地图",
-    tencent: "腾讯地图",
-    baidu: "百度地图",
-    coordinate_estimate: "坐标估算",
-    default_estimate: "默认估算",
-  }[clean(item.travel_provider, "")] || "";
-  const origin = clean(item.travel_origin, "") || clean(previousItem.place, "");
-  const destination = clean(item.place, "");
-  const parts = [];
-  if (origin && destination && origin !== destination) {
-    parts.push(`从${origin}前往${destination}`);
-  }
-  parts.push(minutes ? `${modeLabel}约 ${Math.ceil(minutes)} 分钟` : modeLabel);
-  if (distance > 0) {
-    parts.push(distance < 1000
-      ? `${Math.round(distance)} 米`
-      : `${(distance / 1000).toFixed(distance >= 10000 ? 0 : 1)} 公里`);
-  }
-  if (providerLabel) parts.push(providerLabel);
-  return parts.join(" · ");
-}
-
 function setTimelineButtons(hasDay) {
   el.timelineEditButton.hidden = !hasDay || state.timelineEditing;
   el.timelineAddButton.hidden = !hasDay || !state.timelineEditing;
@@ -1058,6 +1024,26 @@ function renderDomainFood(domains = {}) {
       [clean(item.occurred_at || item.date, ""), clean(item.place, "")]
     )
   ));
+  const recipes = (Array.isArray(domains.recipes) ? domains.recipes : []).map((item) => {
+    const ingredients = (Array.isArray(item.ingredients) ? item.ingredients : [])
+      .map((ingredient) => {
+        const name = clean(ingredient?.name, "");
+        if (!name) return "";
+        const quantity = Number(ingredient?.quantity || 0);
+        const unit = enumLabelOrReadableText(ingredient?.unit, QUANTITY_UNIT_LABELS, "");
+        return quantity > 0 ? `${name} ${quantity}${unit}` : name;
+      })
+      .filter(Boolean);
+    const tags = (Array.isArray(item.tags) ? item.tags : []).map((tag) => clean(tag, "")).filter(Boolean);
+    return domainRecord(
+      clean(item.name, "食谱"),
+      ["食谱", enumLabelOrReadableText(item.meal_type, MEAL_TYPE_LABELS, "")].filter(Boolean).join(" · "),
+      [
+        ingredients.length ? `食材：${ingredients.join("、")}` : "",
+        tags.length ? `标签：${tags.join("、")}` : "",
+      ]
+    );
+  });
   const pantry = (Array.isArray(domains.pantry) ? domains.pantry : []).map((item) => (
     domainRecord(
       clean(item.name, "库存物品"),
@@ -1068,7 +1054,7 @@ function renderDomainFood(domains = {}) {
       ]
     )
   ));
-  return [...meals, ...pantry];
+  return [...meals, ...recipes, ...pantry];
 }
 
 function renderDomainChores(domains = {}) {
@@ -2899,6 +2885,7 @@ function addTimelineItem() {
   updateTimelineDraftFromInputs();
   state.timelineDraft.push({ time: "12:00", activity: "", status: "", execution_state: "planned" });
   renderTimelineEditor();
+  el.timelineList.scrollTop = el.timelineList.scrollHeight;
 }
 
 async function saveTimeline() {

@@ -117,6 +117,70 @@ class RuntimeChatStyleTest(unittest.TestCase):
         self.assertEqual(event.get_result().chain[0].text, source)
         self.assertTrue(getattr(event, "_daily_life_t2i_default_send", False))
 
+    def test_text_to_image_cleanup_unwraps_natural_language_fence(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.config = LifeSettings.from_dict({"chat_style_config": {}})
+        runtime.context = Context(
+            Provider([]), config={"t2i": True, "t2i_word_threshold": 50}
+        )
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
+        body = (
+            "精灵花园俯视循环短视频，二次元柔和插画风。\n\n"
+            "镜头全程固定，构图与原图一致，人物保持自然姿势。\n\n"
+            "循环动态重点：花草轻晃，水面涟漪缓慢扩散，首尾自然闭环。\n"
+        )
+        source = f"好，按重点写一版：\n\n```\n{body}```\n\n需要调整再告诉我。"
+        event.set_result(event.chain_result([types.SimpleNamespace(text=source)]))
+
+        changed = runtime.apply_chat_plain_text_cleanup_before_send(event)
+
+        expected = f"好，按重点写一版：\n\n{body}\n需要调整再告诉我。"
+        self.assertTrue(changed)
+        self.assertEqual(event.get_result().chain[0].text, expected)
+        self.assertEqual(event._daily_life_t2i_source_text, expected)
+
+    def test_text_to_image_cleanup_preserves_labelled_code_fence(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.config = LifeSettings.from_dict({"chat_style_config": {}})
+        runtime.context = Context(
+            Provider([]), config={"t2i": True, "t2i_word_threshold": 50}
+        )
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
+        source = (
+            "下面是完整示例：\n\n```python\n"
+            "def render_message(message: str) -> str:\n"
+            "    value = message.strip()\n"
+            "    return value if value else 'empty'\n"
+            "```\n\n这段代码需要保持原样。"
+        )
+        event.set_result(event.chain_result([types.SimpleNamespace(text=source)]))
+
+        changed = runtime.apply_chat_plain_text_cleanup_before_send(event)
+
+        self.assertFalse(changed)
+        self.assertEqual(event.get_result().chain[0].text, source)
+
+    def test_text_to_image_cleanup_preserves_unlabelled_code_fence(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.config = LifeSettings.from_dict({"chat_style_config": {}})
+        runtime.context = Context(
+            Provider([]), config={"t2i": True, "t2i_word_threshold": 50}
+        )
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
+        source = (
+            "下面是完整示例：\n\n```\n"
+            "def render_message(message: str) -> str:\n"
+            "    value = message.strip()\n"
+            "    return value if value else 'empty'\n"
+            "```\n\n这段代码需要保持原样。"
+        )
+        event.set_result(event.chain_result([types.SimpleNamespace(text=source)]))
+
+        changed = runtime.apply_chat_plain_text_cleanup_before_send(event)
+
+        self.assertFalse(changed)
+        self.assertEqual(event.get_result().chain[0].text, source)
+
     def test_chat_style_master_switch_disables_the_entire_expression_pipeline(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.config = LifeSettings.from_dict(

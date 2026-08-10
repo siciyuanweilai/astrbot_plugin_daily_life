@@ -269,6 +269,12 @@
     padding: 8px;
   }
 
+  .timeline {
+    max-height: 640px;
+    max-height: min(72vh, 640px);
+    padding-inline-end: 5px;
+  }
+
   .emoji-list {
     grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
     width: 100%;

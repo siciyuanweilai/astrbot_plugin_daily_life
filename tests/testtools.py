@@ -45,6 +45,7 @@ class LifeToolsTest(unittest.TestCase):
                 travel_mode="transit",
                 travel_origin="家",
                 travel_provider="amap",
+                travel_detail="地铁",
                 travel_minutes=20,
                 travel_distance_meters=5600,
             ),
@@ -53,9 +54,24 @@ class LifeToolsTest(unittest.TestCase):
         result = format_timeline_to_text(timeline)
 
         self.assertIn(
-            "出行：从家前往测试书店 · 公共交通约 20 分钟 · 5.6 公里 · 高德地图",
+            "出行：从家前往测试书店 · 地铁约 20 分钟 · 5.6 公里 · 高德地图",
             result,
         )
+
+    def test_timeline_travel_falls_back_to_public_transit(self):
+        result = format_timeline_to_text(
+            [
+                TimelineItem(
+                    time="09:00",
+                    activity="到测试书店看书",
+                    place="测试书店",
+                    travel_mode="transit",
+                    travel_minutes=20,
+                )
+            ]
+        )
+
+        self.assertIn("公共交通约 20 分钟", result)
 
     def test_timeline_execution_follows_clock_and_preserves_skips(self):
         timeline = [

@@ -1511,9 +1511,7 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
             [item["title"] for item in snapshot["activity_sessions"]],
             ["今天的活动"],
         )
-        self.assertEqual(
-            [item["name"] for item in snapshot["meals"]], ["今天的餐食"]
-        )
+        self.assertEqual([item["name"] for item in snapshot["meals"]], ["今天的餐食"])
         self.assertEqual(
             [item["name"] for item in snapshot["chore_records"]],
             ["今天执行的家务"],
@@ -1928,9 +1926,7 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
             records, "2026-06-11", "date", "created_at"
         )
 
-        self.assertEqual(
-            [item["summary"] for item in filtered], ["今天的业务记录"]
-        )
+        self.assertEqual([item["summary"] for item in filtered], ["今天的业务记录"])
 
     async def test_timeline_save_replaces_day_timeline(self):
         self.plugin.body = {
@@ -1955,6 +1951,7 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
         day.timeline[1].travel_mode = "walking"
         day.timeline[1].travel_origin = "家"
         day.timeline[1].travel_provider = "amap"
+        day.timeline[1].travel_detail = "地铁"
         day.timeline[1].travel_minutes = 16
         day.timeline[1].travel_distance_meters = 1300
         await self.plugin.runtime.archive.save_day(day)
@@ -1976,6 +1973,7 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(saved.timeline[1].travel_origin, "家")
         self.assertEqual(saved.timeline[1].travel_provider, "amap")
+        self.assertEqual(saved.timeline[1].travel_detail, "地铁")
         self.assertEqual(saved.timeline[1].travel_minutes, 16)
         self.assertEqual(saved.timeline[1].travel_distance_meters, 1300)
 
@@ -2209,12 +2207,30 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
     def test_dashboard_timeline_displays_and_preserves_travel_details(self):
         root = Path(__file__).resolve().parents[1] / "pages" / "dashboard"
         app = (root / "app.js").read_text(encoding="utf-8")
+        formatter = (root / "shared" / "format.js").read_text(encoding="utf-8")
         style = self._dashboard_style(root)
 
-        self.assertIn("function timelineTravelText", app)
+        self.assertIn("timelineTravelText,", app)
+        self.assertIn("function timelineTravelText", formatter)
         self.assertIn('node("div", "timeline-travel", travel)', app)
         self.assertIn("...source", app)
         self.assertIn(".timeline-travel", style)
+
+    def test_dashboard_timeline_uses_internal_vertical_scroll(self):
+        root = Path(__file__).resolve().parents[1] / "pages" / "dashboard"
+        html = (root / "index.html").read_text(encoding="utf-8")
+        app = (root / "app.js").read_text(encoding="utf-8")
+        style = self._dashboard_style(root)
+
+        self.assertIn('id="timelineList"', html)
+        self.assertIn('tabindex="0"', html)
+        self.assertIn('aria-label="今日日程时间轴，可滚动查看"', html)
+        self.assertIn("max-height: min(78vh, 840px);", style)
+        self.assertIn("max-height: min(72vh, 640px);", style)
+        self.assertIn("overflow-y: auto;", style)
+        self.assertIn("scrollbar-gutter: stable;", style)
+        self.assertIn("touch-action: pan-y;", style)
+        self.assertIn("el.timelineList.scrollTop = el.timelineList.scrollHeight;", app)
 
     def test_dashboard_local_assets_do_not_use_version_queries(self):
         from pathlib import Path
@@ -4792,6 +4808,25 @@ if (
 ) {
   throw new Error("时间轴状态枚举没有正确中文化");
 }
+if (
+  mod.timelineTravelText({
+    travel_mode: "transit",
+    travel_detail: "公交 + 地铁",
+    travel_minutes: 55,
+    travel_distance_meters: 5700,
+    travel_provider: "amap",
+    travel_origin: "家",
+    place: "测试广场",
+  }) !== "从家前往测试广场 · 公交 + 地铁约 55 分钟 · 5.7 公里 · 高德地图"
+) {
+  throw new Error("公共交通细分没有正确展示");
+}
+if (
+  mod.timelineTravelText({ travel_mode: "transit", travel_minutes: 20 })
+  !== "公共交通约 20 分钟"
+) {
+  throw new Error("公共交通回退被地点枚举错误翻译");
+}
 if (mod.evidenceTargetTitle({ target_type: "life_decision", target_id: "4" }, 2) !== "生活决策") {
   throw new Error("evidenceTargetTitle 不应给生活决策证据展示临时序号");
 }
@@ -5440,6 +5475,8 @@ if (!intentPair.current || intentPair.current.time !== "20:50") {
         )
         self.assertNotIn('clean(item.meal_type, "饮食")', app)
         self.assertNotIn('`负责人：${clean(item.owner, "未定")}`', app)
+        self.assertIn("Array.isArray(domains.recipes)", app)
+        self.assertIn('ingredients.length ? `食材：${ingredients.join("、")}`', app)
 
     def test_current_outfit_display_separates_clothing_and_hair(self):
         root = Path(__file__).resolve().parents[1]

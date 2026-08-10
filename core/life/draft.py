@@ -198,8 +198,12 @@ class DailyDraftMixin:
 - 只为确实需要状态结算的 timeline 节点输出，可为空数组，不要为了填满而制造动作。
 - action_type、timeline_index、前置条件和影响必须显式填写；不得要求系统从 activity 文案猜动作。
 - action_id 在不同日期和节点间必须唯一；effects 只写该动作真实会改变的数值状态。
-- payload 只用于明确的领域数据：meal/cook 的 ingredients、purchase 的 items 使用 {{"name":"名称","quantity":1,"unit":"可选单位"}} 数组；move/travel 可填 origin、destination、travel_mode；chore 的 cadence_days 使用非负整数、effort 使用 1-5 整数；exercise 的 intensity 使用 1-5 整数。
+- payload 只用于明确的领域数据：cook 的 ingredients、purchase 的 items 使用 {{"name":"名称","quantity":1,"unit":"可选单位"}} 数组；meal/cook/order_food 可填 meal_type 和 place；move/travel 可填 origin、destination、travel_mode；chore 的 cadence_days 使用非负整数、effort 使用 1-5 整数；exercise 的 intensity 使用 1-5 整数。
+- meal 表示直接用餐，不校验或扣减家庭库存；cook 表示实际动手烹饪，会按 ingredients 校验并扣减库存，同时由系统自动沉淀食谱；order_food 表示点餐或外卖。不要用 meal 代替 cook，也不要为 meal/order_food 填写 ingredients 或自行编造 recipe_id。
 - 不要从 activity 文案隐含领域参数；没有可靠参数就保留空 payload。
+- 做生活决策时独立评估今天是否适合有目的的身体活动：结合体力、身体状态、天气、近期运动负荷、日程密度和角色兴趣自主决定，也可以合理地不安排；不得为了填充生活实况面板机械增加运动。
+- 只有节点的主要目的确实是锻炼、舒展身体或运动恢复时才使用 exercise。通勤、普通出行、购物、逛街、游览、社交和拍照过程中的走动仍按各自真实目的记录，不能仅因存在步行或体力消耗就算作运动。
+- 安排 exercise 时，timeline 必须有语义一致的明确运动节点，并填写具体 target、合理 duration_minutes 和 payload.intensity；没有对应运动节点时不得单独制造 exercise 动作。
 5. 地点与事件要求：
 {self.config.world_prompt}
 """

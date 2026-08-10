@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS timelines (
             place_coordinate_source TEXT NOT NULL DEFAULT '',
             travel_origin TEXT NOT NULL DEFAULT '',
             travel_provider TEXT NOT NULL DEFAULT '',
+            travel_detail TEXT NOT NULL DEFAULT '',
             travel_minutes INTEGER NOT NULL DEFAULT 0,
             travel_distance_meters REAL NOT NULL DEFAULT 0,
             execution_state TEXT NOT NULL DEFAULT 'planned',

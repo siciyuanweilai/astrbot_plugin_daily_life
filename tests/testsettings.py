@@ -721,6 +721,7 @@ class LifeSettingsTest(unittest.TestCase):
             for template_key, expected_default in (
                 ("gemini", "Gemini"),
                 ("openai", "GPT Image"),
+                ("grok", "Grok Image"),
             ):
                 channel_items = image_items[list_key]["templates"][template_key][
                     "items"
@@ -733,6 +734,39 @@ class LifeSettingsTest(unittest.TestCase):
                     list(channel_items).index("group_name"),
                     list(channel_items).index("api_url"),
                 )
+
+    def test_grok_image_channels_use_grok_defaults(self):
+        config = LifeSettings.from_dict(
+            {
+                "image_generation_config": {
+                    "enabled": True,
+                    "text_channels": [
+                        {
+                            "__template_key": "grok",
+                            "api_url": "https://grok-text.example/v1/images/generations",
+                            "api_key": "text-key",
+                        }
+                    ],
+                    "edit_channels": [
+                        {
+                            "__template_key": "grok",
+                            "api_url": "https://grok-edit.example/v1/images/edits",
+                            "api_key": "edit-key",
+                            "resolution": "4K",
+                        }
+                    ],
+                }
+            }
+        )
+
+        text_channel = config.image_generation.text_channels[0]
+        edit_channel = config.image_generation.edit_channels[0]
+        self.assertEqual(text_channel.protocol, "grok")
+        self.assertEqual(text_channel.model, "grok-imagine-image")
+        self.assertEqual(text_channel.resolution, "2K")
+        self.assertEqual(edit_channel.protocol, "grok")
+        self.assertEqual(edit_channel.model, "grok-imagine-image")
+        self.assertEqual(edit_channel.resolution, "2K")
 
     def test_conf_schema_no_longer_exposes_catalog_workshop(self):
         schema = json.loads(
@@ -1073,6 +1107,15 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertEqual(openai_channel_items["resolution"]["default"], "4K")
         self.assertEqual(openai_channel_items["aspect_ratio"]["default"], "1:1")
         self.assertEqual(openai_channel_items["timeout_seconds"]["default"], 120)
+        grok_text_items = image_items["text_channels"]["templates"]["grok"]["items"]
+        grok_edit_items = image_items["edit_channels"]["templates"]["grok"]["items"]
+        for grok_items in (grok_text_items, grok_edit_items):
+            self.assertEqual(grok_items["group_name"]["default"], "Grok Image")
+            self.assertEqual(grok_items["model"]["default"], "grok-imagine-image")
+            self.assertEqual(grok_items["resolution"]["default"], "2K")
+            self.assertEqual(grok_items["resolution"]["options"], ["1K", "2K"])
+            self.assertEqual(grok_items["aspect_ratio"]["default"], "1:1")
+            self.assertEqual(grok_items["timeout_seconds"]["default"], 120)
         self.assertNotIn(
             "character_reference_enabled", schema["image_generation_config"]["items"]
         )
@@ -1441,16 +1484,18 @@ class LifeSettingsTest(unittest.TestCase):
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertIn("version: 1.2.2", metadata)
-        self.assertIn("version-1.2.2", readme)
+        self.assertIn("version: 1.2.3", metadata)
+        self.assertIn("version-1.2.3", readme)
+        self.assertIn("v1.2.3 · 2026-08-11", changelog)
         self.assertIn("v1.2.2 · 2026-08-09", changelog)
+        self.assertLess(changelog.index("v1.2.3"), changelog.index("v1.2.2"))
         self.assertLess(changelog.index("v1.2.2"), changelog.index("v1.2.1"))
-        release_122 = changelog.split("## 🌸 v1.2.2", 1)[1].split(
-            "## 🌸 v1.2.1", 1
-        )[0]
-        release_121 = changelog.split("## 🌸 v1.2.1", 1)[1].split(
-            "## 🌸 v1.2.0", 1
-        )[0]
+        release_123 = changelog.split("## 🌸 v1.2.3", 1)[1].split("## 🌸 v1.2.2", 1)[0]
+        release_122 = changelog.split("## 🌸 v1.2.2", 1)[1].split("## 🌸 v1.2.1", 1)[0]
+        release_121 = changelog.split("## 🌸 v1.2.1", 1)[1].split("## 🌸 v1.2.0", 1)[0]
+        self.assertIn("Grok 图片", release_123)
+        self.assertIn("运动、饮食与食谱闭环", release_123)
+        self.assertIn("数据库结构保持 v11", release_123)
         self.assertIn("火山引擎语音合成", release_122)
         self.assertNotIn("火山引擎", release_121)
         self.assertLess(changelog.index("v1.1.8"), changelog.index("v1.1.7"))

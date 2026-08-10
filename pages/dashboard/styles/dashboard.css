@@ -227,6 +227,33 @@
 
 .timeline {
   gap: 9px;
+  max-height: 840px;
+  max-height: min(78vh, 840px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-inline-end: 8px;
+  scrollbar-color: rgba(217, 68, 126, 0.46) transparent;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  touch-action: pan-y;
+}
+
+.timeline:focus-visible {
+  outline: 3px solid rgba(148, 218, 242, 0.64);
+  outline-offset: 3px;
+}
+
+.timeline::-webkit-scrollbar {
+  width: 6px;
+}
+
+.timeline::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.timeline::-webkit-scrollbar-thumb {
+  border-radius: 8px;
+  background: rgba(217, 68, 126, 0.38);
 }
 
 .timeline::before {

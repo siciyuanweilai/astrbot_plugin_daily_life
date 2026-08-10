@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS route_cache (
             distance_meters REAL NOT NULL DEFAULT 0,
             duration_seconds INTEGER NOT NULL DEFAULT 0,
             provider TEXT NOT NULL DEFAULT 'fallback',
+            travel_detail TEXT NOT NULL DEFAULT '',
             confidence REAL NOT NULL DEFAULT 0,
             fetched_at TEXT NOT NULL DEFAULT '',
             expires_at TEXT NOT NULL DEFAULT '',

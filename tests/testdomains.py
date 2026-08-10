@@ -17,6 +17,7 @@ from core.life.baidu_map import (
 )
 from core.life.domains import LifeDomainService
 from core.life.tencent_map import TencentMapWebServiceClient
+from core.life.transit import transit_route_detail
 from core.models import (
     CommitmentRecord,
     DayRecord,
@@ -134,19 +135,26 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
                 "distance_meters": 1800,
                 "duration_seconds": 1200,
                 "provider": "amap",
+                "travel_detail": "地铁",
             }
         )
 
-        revised, reason = await service.audit_daily_locations(self._location_payload())
+        revised, reason = await service.audit_daily_locations(
+            self._location_payload(mode="transit")
+        )
 
         self.assertEqual(reason, "")
         self.assertEqual(revised["timeline"][1]["place_city"], "测试市")
         self.assertEqual(revised["timeline"][1]["travel_minutes"], 20)
         self.assertEqual(revised["timeline"][1]["travel_origin"], "家")
         self.assertEqual(revised["timeline"][1]["travel_provider"], "amap")
+        self.assertEqual(revised["timeline"][1]["travel_detail"], "地铁")
         self.assertEqual(revised["places"][1]["name"], "测试书店")
         self.assertEqual(
             revised["planned_actions"][0]["payload"]["route_provider"], "amap"
+        )
+        self.assertEqual(
+            revised["planned_actions"][0]["payload"]["travel_detail"], "地铁"
         )
         service._map.search_places.assert_awaited_once_with(
             "测试书店", city_hint="测试市", limit=5
@@ -701,7 +709,6 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
                 "duration_minutes": 30,
                 "payload": {
                     "meal_type": "午餐",
-                    "recipe_id": "recipe:test-rice",
                     "ingredients": [{"name": "大米", "quantity": 1, "unit": "份"}],
                 },
                 "source": "daily_plan",
@@ -716,7 +723,9 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
         pantry = await self.archive.get_pantry_items()
         self.assertEqual(pantry[0]["quantity"], 1)
         self.assertEqual(len(await self.archive.get_meal_records()), 1)
-        self.assertEqual(len(await self.archive.get_recipes()), 1)
+        recipes = await self.archive.get_recipes()
+        self.assertEqual(len(recipes), 1)
+        self.assertTrue(recipes[0]["id"].startswith("recipe:auto:"))
         receipts = await self.archive.get_life_action_receipts(
             action_id="2026-08-03:meal:0"
         )
@@ -843,6 +852,61 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(actions[0]["commitment_id"], commitment.id)
         self.assertEqual(actions[0]["status"], "open")
 
+    async def test_domain_initialize_repairs_legacy_cook_recipe_idempotently(self):
+        action_id = "2026-08-03:cook:legacy"
+        day = self._day(
+            {
+                "action_id": action_id,
+                "action_type": "cook",
+                "target": "测试家常饭",
+                "timeline_index": 0,
+                "duration_minutes": 30,
+                "payload": {
+                    "meal_type": "晚餐",
+                    "ingredients": [
+                        {"name": "测试食材", "quantity": 1, "unit": "份"}
+                    ],
+                },
+                "source": "daily_plan",
+            }
+        )
+        await self.archive.save_day(day, replace=True)
+        await self.archive.save_life_action_outcome(
+            {
+                "action_id": action_id,
+                "date": day.date,
+                "action_type": "cook",
+                "target": "测试家常饭",
+                "status": "committed",
+                "evidence": ["测试时间轴已完成"],
+                "committed_at": "2026-08-03 18:30:00",
+            }
+        )
+        await self.archive.save_meal_record(
+            {
+                "action_id": action_id,
+                "date": day.date,
+                "meal_type": "晚餐",
+                "name": "测试家常饭",
+                "recipe_id": "",
+                "status": "completed",
+                "ingredients": [
+                    {"name": "测试食材", "quantity": 1, "unit": "份"}
+                ],
+                "source": "life_action_simulation",
+                "evidence": ["测试时间轴已完成"],
+                "occurred_at": "2026-08-03 18:30:00",
+            }
+        )
+
+        await self.domains.initialize()
+        await self.domains.initialize()
+
+        recipes = await self.archive.get_recipes(limit=0)
+        meals = await self.archive.get_meal_records(limit=0)
+        self.assertEqual(len(recipes), 1)
+        self.assertEqual(meals[0]["recipe_id"], recipes[0]["id"])
+
     async def test_internal_outfit_change_completes_without_external_receipt(self):
         outfit = "薄荷绿棉质上衣配浅色牛仔短裤"
         day = self._day(
@@ -955,6 +1019,31 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.archive.get_meal_records(), [])
         pantry = await self.archive.get_pantry_items()
         self.assertEqual(pantry[0]["quantity"], 1)
+
+    async def test_direct_meal_does_not_require_or_consume_pantry(self):
+        day = self._day(
+            {
+                "action_id": "2026-08-03:meal:direct",
+                "action_type": "meal",
+                "target": "测试餐食",
+                "timeline_index": 0,
+                "duration_minutes": 20,
+                "payload": {
+                    "meal_type": "午餐",
+                    "ingredients": [
+                        {"name": "测试食材", "quantity": 2, "unit": "份"}
+                    ],
+                },
+                "source": "daily_plan",
+            }
+        )
+
+        outcomes = await self.harness.settle_completed_planned_actions(day)
+
+        self.assertEqual(outcomes[0].status, "committed")
+        self.assertEqual(len(await self.archive.get_meal_records()), 1)
+        self.assertEqual(await self.archive.get_pantry_items(), [])
+        self.assertEqual(await self.archive.get_recipes(), [])
 
     async def test_external_photo_action_still_expires_without_receipt(self):
         day = self._day(
@@ -1358,6 +1447,12 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("负责人：共同", context)
         self.assertLessEqual(len(context), self.settings.context_budget_chars)
 
+    async def test_context_exposes_missing_fitness_without_forcing_activity(self):
+        context = await self.domains.format_context()
+
+        self.assertIn("近期运动：尚无已结算记录", context)
+        self.assertIn("不要求今天强行安排", context)
+
     async def test_route_falls_back_without_coordinates(self):
         route = await self.domains.estimate_route("地点甲", "地点乙")
 
@@ -1432,6 +1527,28 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
                         {
                             "distance": "5600",
                             "cost": {"duration": "1800"},
+                            "segments": [
+                                {
+                                    "bus": {
+                                        "buslines": [
+                                            {
+                                                "name": "测试地铁二号线",
+                                                "type": "地铁线路",
+                                            }
+                                        ]
+                                    }
+                                },
+                                {
+                                    "bus": {
+                                        "buslines": [
+                                            {
+                                                "name": "测试公交十五路",
+                                                "type": "公交线路",
+                                            }
+                                        ]
+                                    }
+                                },
+                            ],
                         }
                     ]
                 }
@@ -1456,12 +1573,32 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(first["provider"], "amap")
+        self.assertEqual(first["travel_detail"], "公交 + 地铁")
         self.assertEqual(second["duration_seconds"], 1800)
         client.geocode.assert_awaited_once_with("测试市", city_hint="")
         for request in client._request_json.await_args_list:
             self.assertEqual(request.args[0], "/v5/direction/transit/integrated")
             self.assertEqual(request.args[1]["city1"], "123400")
             self.assertEqual(request.args[1]["city2"], "123400")
+            self.assertEqual(request.args[1]["show_fields"], "cost,navi")
+
+    def test_transit_route_detail_uses_structured_map_route(self):
+        self.assertEqual(
+            transit_route_detail(
+                {
+                    "steps": [
+                        {"vehicle": {"type": "SUBWAY", "name": "测试一号线"}},
+                        {"vehicle": {"type": "BUS", "name": "测试十路"}},
+                    ]
+                }
+            ),
+            "公交 + 地铁",
+        )
+        self.assertEqual(
+            transit_route_detail({"segments": [{"type": "地铁线路"}]}),
+            "地铁",
+        )
+        self.assertEqual(transit_route_detail({"distance": 1000}), "")
 
     async def test_amap_transit_accepts_adcodes_without_geocoding(self):
         client = AmapWebServiceClient("test-key")
@@ -2044,6 +2181,25 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
             {"city_hint": ""},
         )
         self.assertIsNone(await self.archive.get_route("家", "测试地点", "walking"))
+
+    async def test_route_cache_preserves_map_transit_detail(self):
+        saved = await self.archive.upsert_route(
+            {
+                "origin_name": "家",
+                "destination_name": "测试广场",
+                "travel_mode": "transit",
+                "travel_detail": "公交 + 地铁",
+                "distance_meters": 5700,
+                "duration_seconds": 3300,
+                "provider": "amap",
+                "confidence": 0.95,
+            }
+        )
+
+        loaded = await self.archive.get_route("家", "测试广场", "transit")
+
+        self.assertEqual(saved["travel_detail"], "公交 + 地铁")
+        self.assertEqual(loaded["travel_detail"], "公交 + 地铁")
 
     async def test_residence_reset_keeps_history_and_clears_active_location_context(
         self,

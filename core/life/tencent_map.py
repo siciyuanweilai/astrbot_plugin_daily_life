@@ -6,6 +6,7 @@ from astrbot.api import logger
 
 from .map_common import non_negative_number
 from .map_http import request_map_json
+from .transit import transit_route_detail
 
 _TENCENT_MAP_BASE_URL = "https://apis.map.qq.com"
 _ROUTE_PATHS = {
@@ -94,12 +95,15 @@ class TencentMapWebServiceClient:
         duration_minutes = non_negative_number(first.get("duration"))
         if distance is None or duration_minutes is None:
             return None
-        return {
+        route_result = {
             "distance_meters": round(distance, 1),
             "duration_seconds": max(0, int(duration_minutes * 60)),
             "provider": self.provider_id,
             "confidence": 0.95,
         }
+        if normalized_mode == "transit":
+            route_result["travel_detail"] = transit_route_detail(first)
+        return route_result
 
     async def search_places(
         self,

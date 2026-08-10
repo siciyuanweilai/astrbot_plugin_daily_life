@@ -1078,7 +1078,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             current_outfit_instruction(string): 当前角色真实换装要求；current_outfit_change=true 时填写用户原始要求，不得自行扩写成另一套服装，其他情况留空。
             use_last_reverse_prompt(bool): 是否使用本会话上一条图片反推提示词原文。
             resolution(string): 可选输出分辨率，只能填 1K、2K 或 4K；仅当用户明确要求输出分辨率时填写，“高清”等模糊描述不要推断，其他语境里的 1K、2K、4K 也不要误填。
-            provider(string): 可选图片接口，只能填 auto、gpt 或 gemini；仅当用户明确要求使用 GPT 或 Gemini 时填写，否则留空。
+            provider(string): 可选图片接口，只能填 auto、gpt、gemini 或 grok；仅当用户明确要求使用指定图片接口时填写，否则留空。
         """
         use_reverse_cache = self._tool_bool(use_last_reverse_prompt)
         options = {
@@ -1155,7 +1155,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             friend_scene_category(string): 人物 B 当前画面场景，只能填 home、sleep、outdoor、public 或 mixed；新合影套图每次填写，重拍沿用清单无需填写。
             retry_indexes(list[int]): 可选重拍位置，使用从 1 开始的序号，例如 [2, 4]；普通新套图留空。
             resolution(string): 可选输出分辨率，只能填 1K、2K 或 4K；仅当用户明确要求整组照片的输出分辨率时填写，“高清”等模糊描述不要推断。
-            provider(string): 可选图片接口，只能填 auto、gpt 或 gemini；仅当用户明确要求使用 GPT 或 Gemini 时填写，否则留空。
+            provider(string): 可选图片接口，只能填 auto、gpt、gemini 或 grok；仅当用户明确要求使用指定图片接口时填写，否则留空。
         """
         options = {
             "count": self._tool_int(count, 3),
@@ -1216,7 +1216,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             generate_without_reference(bool): 未找到真实参考图时，是否允许改走 life_image_generate 生成新图。
             participants(list[string]): 可选合影好友的关系档案 ID，只能填写一位；普通改图留空。
             resolution(string): 可选输出分辨率，只能填 1K、2K 或 4K；仅当用户明确要求修改后图片的输出分辨率时填写，“高清”等模糊描述不要推断，不能把原图或画面内容里的分辨率当成输出要求。
-            provider(string): 可选图片接口，只能填 auto、gpt 或 gemini；仅当用户明确要求使用 GPT 或 Gemini 时填写，否则留空。
+            provider(string): 可选图片接口，只能填 auto、gpt、gemini 或 grok；仅当用户明确要求使用指定图片接口时填写，否则留空。
         """
         options = {
             "continue_last_result": self._tool_bool(continue_last_result),

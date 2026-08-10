@@ -7,6 +7,7 @@ from astrbot.api import logger
 
 from .map_common import non_negative_number
 from .map_http import request_map_json
+from .transit import transit_route_detail
 
 _AMAP_BASE_URL = "https://restapi.amap.com"
 _ROUTE_PATHS = {
@@ -104,6 +105,7 @@ class AmapWebServiceClient:
             "show_fields": "cost",
         }
         if normalized_mode == "transit":
+            params["show_fields"] = "cost,navi"
             origin_city_value = str(origin_city or self.city).strip()
             destination_city_value = str(destination_city or self.city).strip()
             if not origin_city_value or not destination_city_value:
@@ -133,12 +135,15 @@ class AmapWebServiceClient:
         duration = self._route_metric(first, "duration")
         if distance is None or duration is None:
             return None
-        return {
+        result = {
             "distance_meters": round(distance, 1),
             "duration_seconds": max(0, int(duration)),
             "provider": "amap",
             "confidence": 0.95,
         }
+        if normalized_mode == "transit":
+            result["travel_detail"] = transit_route_detail(first)
+        return result
 
     async def search_places(
         self,

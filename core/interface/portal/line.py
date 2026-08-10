@@ -16,6 +16,7 @@ _TIMELINE_CONTEXT_DEFAULTS = {
     "place_coordinate_source": "",
     "travel_origin": "",
     "travel_provider": "",
+    "travel_detail": "",
     "travel_minutes": 0,
     "travel_distance_meters": 0.0,
 }

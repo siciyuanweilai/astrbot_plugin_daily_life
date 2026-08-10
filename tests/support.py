@@ -1363,6 +1363,7 @@ class DataManager:
 
     async def upsert_preferences(self, preferences, date_str=""):
         saved = []
+        saved_ids = set()
         for pref in preferences or []:
             item = (
                 pref
@@ -1372,21 +1373,72 @@ class DataManager:
             if not item:
                 continue
             key = (item.category, item.content)
-            current = self.preferences.get(key)
+            current = None
+            if int(item.id or 0) > 0:
+                current = next(
+                    (
+                        value
+                        for value in self.preferences.values()
+                        if value.id == int(item.id) and value.category == item.category
+                    ),
+                    None,
+                )
+            current = current or self.preferences.get(key)
             if current:
-                current.weight = min(5.0, current.weight + max(item.weight, 0.1))
+                current.weight = min(5.0, max(current.weight, max(item.weight, 0.1)))
                 current.evidence = item.evidence or current.evidence
                 current.last_seen = item.last_seen or date_str or current.last_seen
                 current.source = item.source or current.source
-                saved.append(current)
+                if current.id not in saved_ids:
+                    saved_ids.add(current.id)
+                    saved.append(current)
             else:
                 item.id = self.next_preference_id
                 self.next_preference_id += 1
                 if not item.last_seen:
                     item.last_seen = date_str
                 self.preferences[key] = item
+                saved_ids.add(item.id)
                 saved.append(item)
         return saved
+
+    async def merge_preferences(self, groups):
+        merged = {}
+        by_id = {item.id: item for item in self.preferences.values()}
+        for group in groups or []:
+            if not isinstance(group, dict):
+                continue
+            try:
+                canonical_id = int(group.get("canonical_id") or 0)
+            except (TypeError, ValueError):
+                continue
+            canonical = by_id.get(canonical_id)
+            if not canonical:
+                continue
+            valid = []
+            for value in group.get("merge_ids") or []:
+                try:
+                    item = by_id.get(int(value))
+                except (TypeError, ValueError):
+                    item = None
+                if item and item.category == canonical.category and item.id != canonical_id:
+                    valid.append(item)
+            if not valid:
+                continue
+            old_key = (canonical.category, canonical.content)
+            self.preferences.pop(old_key, None)
+            canonical.content = str(group.get("content") or canonical.content)
+            canonical.evidence = str(group.get("evidence") or canonical.evidence)
+            canonical.weight = max([canonical.weight, *(item.weight for item in valid)])
+            canonical.last_seen = max(
+                [canonical.last_seen, *(item.last_seen for item in valid)]
+            )
+            for item in valid:
+                self.preferences.pop((item.category, item.content), None)
+                by_id.pop(item.id, None)
+                merged[item.id] = canonical_id
+            self.preferences[(canonical.category, canonical.content)] = canonical
+        return merged
 
     async def get_preferences(self, limit=20, category=""):
         values = list(self.preferences.values())

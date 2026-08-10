@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ...config.options import ImageGenerationSettings
-from . import gemini, openai
+from . import gemini, grok, openai
 from .pipe import ImageRoute
 
 
@@ -11,6 +11,8 @@ def normalize_image_provider(value: str) -> str:
         return "openai"
     if provider in {"gemini", "gemini-image"}:
         return "gemini"
+    if provider in {"grok", "grok-image", "grok-imagine-image"}:
+        return "grok"
     return ""
 
 
@@ -20,15 +22,13 @@ def requested_image_provider(value: str) -> str:
         return ""
     provider = normalize_image_provider(raw)
     if not provider:
-        raise ValueError("图片接口只能指定 auto、gpt 或 gemini")
+        raise ValueError("图片接口只能指定 auto、gpt、gemini 或 grok")
     return provider
 
 
 def image_provider_label(provider: str) -> str:
     normalized = normalize_image_provider(provider)
-    return (
-        "GPT" if normalized == "openai" else "Gemini" if normalized == "gemini" else ""
-    )
+    return {"openai": "GPT", "gemini": "Gemini", "grok": "Grok"}.get(normalized, "")
 
 
 def has_channel(
@@ -67,10 +67,11 @@ def make_route(
     timeout_seconds: int,
 ) -> ImageRoute:
     protocol = str(protocol or "gemini").strip().lower()
-    protocol = protocol if protocol in {"gemini", "openai"} else "gemini"
-    default_model = (
-        "gpt-image-2" if protocol == "openai" else "gemini-3-pro-image-preview"
-    )
+    protocol = protocol if protocol in {"gemini", "openai", "grok"} else "gemini"
+    default_model = {
+        "openai": "gpt-image-2",
+        "grok": "grok-imagine-image",
+    }.get(protocol, "gemini-3-pro-image-preview")
     return ImageRoute(
         api_url=api_url,
         api_key=api_key,
@@ -80,7 +81,8 @@ def make_route(
         resolution=resolution,
         aspect_ratio=aspect_ratio,
         timeout_seconds=timeout_seconds,
-        origin=(
-            openai.origin(api_url) if protocol == "openai" else gemini.origin(api_url)
-        ),
+        origin={
+            "openai": openai.origin,
+            "grok": grok.origin,
+        }.get(protocol, gemini.origin)(api_url),
     )

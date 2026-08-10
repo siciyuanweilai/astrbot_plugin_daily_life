@@ -668,6 +668,7 @@ def format_timeline_travel(
     """
 
     mode = _timeline_field(item, "travel_mode")
+    detail = _timeline_field(item, "travel_detail")
     minutes = _non_negative_timeline_number(item, "travel_minutes")
     distance = _non_negative_timeline_number(item, "travel_distance_meters")
     if not mode and minutes <= 0 and distance <= 0:
@@ -679,12 +680,16 @@ def format_timeline_travel(
     if origin and destination and origin != destination:
         parts.append(f"从{origin}前往{destination}")
 
-    mode_label = {
-        "walking": "步行",
-        "cycling": "骑行",
-        "driving": "驾车",
-        "transit": "公共交通",
-    }.get(mode, mode or "出行")
+    mode_label = (
+        detail
+        if mode == "transit" and detail
+        else {
+            "walking": "步行",
+            "cycling": "骑行",
+            "driving": "驾车",
+            "transit": "公共交通",
+        }.get(mode, mode or "出行")
+    )
     parts.append(f"{mode_label}约 {int(minutes)} 分钟" if minutes > 0 else mode_label)
     if distance > 0:
         parts.append(_format_travel_distance(distance))

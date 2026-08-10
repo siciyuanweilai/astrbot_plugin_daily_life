@@ -71,6 +71,7 @@ class DayArchiveMixin:
                 place_coordinate_source=item["place_coordinate_source"],
                 travel_origin=item["travel_origin"],
                 travel_provider=item["travel_provider"],
+                travel_detail=item["travel_detail"],
                 travel_minutes=item["travel_minutes"],
                 travel_distance_meters=item["travel_distance_meters"],
                 execution_state=item["execution_state"],
@@ -83,7 +84,7 @@ class DayArchiveMixin:
                 SELECT time, activity, status, place, place_kind, place_scope,
                        place_city, place_hint, travel_mode, place_address,
                        place_latitude, place_longitude, place_coordinate_source,
-                       travel_origin, travel_provider, travel_minutes,
+                       travel_origin, travel_provider, travel_detail, travel_minutes,
                        travel_distance_meters, execution_state, execution_reason,
                        execution_evidence, execution_updated_at
                 FROM timelines WHERE date = ? ORDER BY sort_order
@@ -316,7 +317,9 @@ class DayArchiveMixin:
         self._conn.execute("BEGIN IMMEDIATE")
         try:
             current = self._get_day_unlocked(day.date)
-            target = day if replace or current is None else merge_day_records(day, current)
+            target = (
+                day if replace or current is None else merge_day_records(day, current)
+            )
             revision = self._set_day_unlocked(target)
             self._conn.commit()
         except Exception:
@@ -338,10 +341,10 @@ class DayArchiveMixin:
                     date, sort_order, time, activity, status, place, place_kind,
                     place_scope, place_city, place_hint, travel_mode, place_address,
                     place_latitude, place_longitude, place_coordinate_source,
-                    travel_origin, travel_provider, travel_minutes,
+                    travel_origin, travel_provider, travel_detail, travel_minutes,
                     travel_distance_meters, execution_state, execution_reason,
                     execution_evidence, execution_updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     date_str,
@@ -361,6 +364,7 @@ class DayArchiveMixin:
                     item.place_coordinate_source,
                     item.travel_origin,
                     item.travel_provider,
+                    item.travel_detail,
                     item.travel_minutes,
                     item.travel_distance_meters,
                     item.execution_state,

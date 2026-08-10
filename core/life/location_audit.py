@@ -290,6 +290,11 @@ class DailyLocationAuditMixin:
                     entry["mode"] = candidate_mode
                     entry["mode_locked"] = bool(candidate.get("travel_mode_locked"))
                     item["travel_mode"] = candidate_mode
+                    item["travel_detail"] = (
+                        str(candidate.get("travel_detail") or "").strip()
+                        if candidate_mode == "transit"
+                        else ""
+                    )
                 item.update(
                     {
                         "place": place,
@@ -664,6 +669,11 @@ class DailyLocationAuditMixin:
                 transition["destination"]["mode"] = mode
                 transition["destination"]["item"]["travel_mode"] = mode
             destination_item = transition["destination"]["item"]
+            destination_item["travel_detail"] = (
+                str(route.get("travel_detail") or "").strip()
+                if mode == "transit"
+                else ""
+            )
             destination_item["travel_minutes"] = required_minutes
             destination_item["travel_distance_meters"] = round(
                 float(route.get("distance_meters") or 0), 1
@@ -782,6 +792,7 @@ class DailyLocationAuditMixin:
                     int(self.settings.default_travel_minutes),
                 )
                 destination["item"]["travel_mode"] = mode
+                destination["item"]["travel_detail"] = ""
                 destination["item"]["travel_minutes"] = required_minutes
                 destination["item"]["travel_distance_meters"] = 0.0
                 destination["item"]["travel_origin"] = str(
@@ -827,6 +838,7 @@ class DailyLocationAuditMixin:
                 "origin": route["origin"],
                 "destination": route["destination"],
                 "travel_mode": route["mode"],
+                "travel_detail": route.get("travel_detail") or "",
                 "distance_meters": route.get("distance_meters"),
                 "route_provider": route.get("provider"),
             }

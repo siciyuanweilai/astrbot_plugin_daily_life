@@ -2,6 +2,7 @@ import datetime
 import math
 from collections import Counter
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 
 from ..prompts import cache_friendly_prompt
 from .fashion import outfit_style_contamination_reason
@@ -102,6 +103,19 @@ class DailyContractMixin:
         return len(left_set & right_set) / len(left_set | right_set)
 
     @classmethod
+    def _repeat_sequence_similarity(cls, left: object, right: object) -> float:
+        left_text = cls._repeat_text(left, 280)
+        right_text = cls._repeat_text(right, 280)
+        if not left_text or not right_text:
+            return 0.0
+        return SequenceMatcher(
+            None,
+            left_text,
+            right_text,
+            autojunk=False,
+        ).ratio()
+
+    @classmethod
     def _day_repeat_profile(cls, day) -> dict[str, str]:
         meta = getattr(day, "meta", {}) or {}
         timeline = getattr(day, "timeline", []) or []
@@ -159,6 +173,7 @@ class DailyContractMixin:
                 )
         if str(manual_extra or "").strip():
             return ""
+        similar_sleepwear_dates: list[str] = []
         for offset in range(1, 4):
             previous_date = (date - datetime.timedelta(days=offset)).strftime(
                 "%Y-%m-%d"
@@ -184,6 +199,22 @@ class DailyContractMixin:
             outfit_similarity = self._repeat_similarity(
                 current["outfit"], previous["outfit"]
             )
+            both_sleepwear = (
+                current["outfit_style_pool"] == "sleep_styles"
+                and previous["outfit_style_pool"] == "sleep_styles"
+            )
+            if both_sleepwear and self._repeat_sequence_similarity(
+                current["outfit"], previous["outfit"]
+            ) >= 0.46:
+                similar_sleepwear_dates.append(previous_date)
+                if len(similar_sleepwear_dates) >= 2:
+                    self._set_validation_issue("outfit_repeat")
+                    return (
+                        "生成的睡衣造型与近期多日记录高度相似（"
+                        + "、".join(similar_sleepwear_dates)
+                        + "）；保留睡眠场景和舒适需求，但需要更换具体服装类别、"
+                        "主色、材质或版型组合"
+                    )
             timeline_similarity = self._repeat_similarity(
                 current["timeline"], previous["timeline"]
             )
@@ -194,8 +225,7 @@ class DailyContractMixin:
             has_clear_novelty = len(novelty) >= 8
             if (
                 outfit_similarity >= 0.86
-                and current["outfit_style_pool"] != "sleep_styles"
-                and previous["outfit_style_pool"] != "sleep_styles"
+                and not both_sleepwear
             ):
                 self._set_validation_issue("outfit_repeat")
                 return (

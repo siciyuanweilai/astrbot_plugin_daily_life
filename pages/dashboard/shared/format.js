@@ -213,6 +213,44 @@ function clean(value, fallback = "--") {
   return translateStructuredText(body) || fallback;
 }
 
+function timelineTravelText(item = {}, previousItem = {}) {
+  const mode = text(item.travel_mode).trim().toLowerCase();
+  const detail = text(item.travel_detail).trim();
+  const minutes = Math.max(0, Number(item.travel_minutes || 0));
+  const distance = Math.max(0, Number(item.travel_distance_meters || 0));
+  if (!mode && !minutes && !distance) return "";
+
+  const defaultModeLabel = {
+    walking: "步行",
+    cycling: "骑行",
+    driving: "驾车",
+    transit: "公共交通",
+  }[mode] || mode || "出行";
+  const modeLabel = mode === "transit" && detail ? detail : defaultModeLabel;
+  const provider = text(item.travel_provider).trim().toLowerCase();
+  const providerLabel = {
+    amap: "高德地图",
+    tencent: "腾讯地图",
+    baidu: "百度地图",
+    coordinate_estimate: "坐标估算",
+    default_estimate: "默认估算",
+  }[provider] || "";
+  const origin = text(item.travel_origin).trim() || text(previousItem.place).trim();
+  const destination = text(item.place).trim();
+  const parts = [];
+  if (origin && destination && origin !== destination) {
+    parts.push(`从${origin}前往${destination}`);
+  }
+  parts.push(minutes ? `${modeLabel}约 ${Math.ceil(minutes)} 分钟` : modeLabel);
+  if (distance > 0) {
+    parts.push(distance < 1000
+      ? `${Math.round(distance)} 米`
+      : `${(distance / 1000).toFixed(distance >= 10000 ? 0 : 1)} 公里`);
+  }
+  if (providerLabel) parts.push(providerLabel);
+  return parts.join(" · ");
+}
+
 function node(tag, className = "", content = "") {
   const element = document.createElement(tag);
   if (className) element.className = className;
@@ -990,6 +1028,7 @@ export {
   stateLogText,
   structuredTextLines,
   text,
+  timelineTravelText,
   visibleExperienceEvidence,
   visibleLifeEpisodes
 };

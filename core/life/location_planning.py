@@ -227,6 +227,11 @@ class DailyLocationPlanningMixin:
                     "place_hint": address or district,
                     "travel_mode": selected_mode_value,
                     "travel_mode_locked": request["travel_mode_locked"],
+                    "travel_detail": (
+                        self._location_plan_text(route.get("travel_detail"), 32)
+                        if selected_mode_value == "transit"
+                        else ""
+                    ),
                     "travel_minutes": route_minutes_value,
                     "travel_distance_meters": round(route_distance_value, 1),
                     "poi_id": str(selected.get("poi_id") or "").strip(),
@@ -395,6 +400,8 @@ class DailyLocationGenerationMixin:
                 f"place_hint={item.get('place_hint') or ''}",
                 f"travel_mode={item.get('travel_mode') or '未指定'}",
             ]
+            if item.get("travel_detail"):
+                details.append(f"公共交通={item['travel_detail']}")
             if item.get("purpose"):
                 details.insert(0, f"用途={item['purpose']}")
             if int(item.get("travel_minutes") or 0) > 0:

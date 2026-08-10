@@ -4,6 +4,8 @@ import json
 import uuid
 from typing import Any
 
+from astrbot.api import logger
+
 from ..clock import now as life_now
 from ..models import DailyReviewRecord, EventRecord, LifeEventRecord, PreferenceRecord
 from ..prompts import (
@@ -37,6 +39,140 @@ class LifecycleMixin:
             return float(str(meta.get(key, "")).strip())
         except (TypeError, ValueError):
             return default
+
+    def _build_preference_consistency_prompt(
+        self,
+        preferences: list[PreferenceRecord],
+    ) -> str:
+        fixed = f"""审阅已沉淀的生活偏好，将语义上完全相同、只是换了说法的记录合并。
+
+{json_output_section()}
+
+只输出 JSON 对象：
+{{
+  "merge_groups": [
+    {{
+      "canonical_id": "保留的偏好编号",
+      "merge_ids": ["要并入该记录的偏好编号"],
+      "content": "合并后准确、简洁、可长期复用的偏好",
+      "evidence": "合并依据的简短概括"
+    }}
+  ]
+}}
+
+规则：
+- 只有表达同一个稳定偏好、可以互相替代的记录才能合并；只是主题相关、场景相邻或部分重叠时必须保留为不同记录。
+- 条件、对象、地点、时间、人物、穿着类别、颜色、材质或态度存在独立差异时，不得合并。
+- 肯定、否定、接受、回避等方向不同的偏好不得合并。
+- 每个编号最多出现一次；canonical_id 不能同时出现在 merge_ids。
+- content 必须覆盖被合并记录的共同事实，不添加原记录没有的新偏好。
+- 没有真正同义的记录时返回空数组。"""
+        payload = [
+            {
+                "id": int(item.id or 0),
+                "category": item.category,
+                "content": item.content,
+                "weight": float(item.weight or 0.0),
+                "evidence": item.evidence,
+                "last_seen": item.last_seen,
+            }
+            for item in preferences
+            if int(item.id or 0) > 0 and str(item.content or "").strip()
+        ]
+        return cache_friendly_prompt(
+            fixed,
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            dynamic_title="待整理生活偏好",
+        )
+
+    async def maintain_preference_consistency(self, *, force: bool = False) -> int:
+        """在后台合并同义偏好，避免重复证据放大同一生活倾向。"""
+
+        if bool(getattr(self, "_preference_maintenance_done", False)) and not force:
+            return 0
+        if not force:
+            self._preference_maintenance_done = True
+        preferences = await self.archive.get_preferences(80)
+        category_counts: dict[str, int] = {}
+        for item in preferences:
+            category = str(item.category or "general")
+            category_counts[category] = category_counts.get(category, 0) + 1
+        if not any(count >= 2 for count in category_counts.values()):
+            return 0
+        merger = getattr(self.archive, "merge_preferences", None)
+        if not callable(merger):
+            return 0
+        provider_id = self._task_provider_id(self.config.lifecycle.provider)
+        provider = await self._get_provider(provider_id)
+        if not provider:
+            return 0
+        session_id = f"daily_life_preference_consistency_{uuid.uuid4().hex[:8]}"
+        try:
+            text = await self._call_llm_text(
+                provider,
+                self._build_preference_consistency_prompt(preferences),
+                session_id,
+                empty_retries=0,
+                primary_provider_id=provider_id,
+            )
+            payload = extract_json_from_text(text)
+            groups = payload.get("merge_groups") if isinstance(payload, dict) else None
+            if not isinstance(groups, list) or not groups:
+                return 0
+            category_by_id = {
+                int(item.id): str(item.category or "general")
+                for item in preferences
+                if int(item.id or 0) > 0
+            }
+            allowed_ids = set(category_by_id)
+            claimed_ids: set[int] = set()
+            sanitized = []
+            for raw in groups[:40]:
+                if not isinstance(raw, dict):
+                    continue
+                try:
+                    canonical_id = int(raw.get("canonical_id") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if canonical_id not in allowed_ids or canonical_id in claimed_ids:
+                    continue
+                merge_ids = []
+                for value in raw.get("merge_ids") or []:
+                    try:
+                        preference_id = int(value)
+                    except (TypeError, ValueError):
+                        continue
+                    if (
+                        preference_id not in allowed_ids
+                        or preference_id == canonical_id
+                        or category_by_id[preference_id]
+                        != category_by_id[canonical_id]
+                        or preference_id in claimed_ids
+                        or preference_id in merge_ids
+                    ):
+                        continue
+                    merge_ids.append(preference_id)
+                if not merge_ids:
+                    continue
+                sanitized.append(
+                    {
+                        "canonical_id": canonical_id,
+                        "merge_ids": merge_ids,
+                        "content": _compact(raw.get("content"), 240),
+                        "evidence": _compact(raw.get("evidence"), 240),
+                    }
+                )
+                claimed_ids.add(canonical_id)
+                claimed_ids.update(merge_ids)
+            merged = await merger(sanitized)
+            return len(merged or {})
+        except Exception as exc:
+            logger.debug(
+                f"[日常生活] 生活偏好语义整理跳过：{type(exc).__name__}: {exc}"
+            )
+            return 0
+        finally:
+            await self._cleanup_conversation(session_id)
 
     def _compute_sleep_continuity(
         self,
@@ -309,6 +445,7 @@ class LifecycleMixin:
 
 要求：
 - preference_points 必须是稳定、可复用偏好；不确定就少写。
+- 已学习偏好中已经存在同一含义时，不要换一种说法再次输出；一天内重复发生的同一习惯只更新证据，不产生多条偏好。
 - life_events 是能自然延续几天的小事件，不要编造重大剧情。
 - event_updates 只更新输入中已有的开放事件；仍会继续影响后续生活就保持 open，已经完成或取消时及时收束。
 - decision_outcomes 只更新输入中已有的当天生活决策。它必须描述实际发生的结果，不能复述原计划或编造未发生事项。
@@ -481,6 +618,10 @@ class LifecycleMixin:
                     for event in review.life_events[:5]
                 ],
             )
+        if await self.maintain_preference_consistency(force=True):
+            refreshed = await self.archive.get_daily_review(date_str)
+            if refreshed:
+                return refreshed
         return saved
 
     async def _apply_timeline_review_updates(

@@ -16,7 +16,7 @@ from .cast import (
 DEFAULT_VOLCENGINE_TTS_MODEL = "seed-tts-2.0-standard"
 DEFAULT_VOLCENGINE_SAMPLE_RATE = 24000
 DEFAULT_VOLCENGINE_FORMAT = "mp3"
-IMAGE_PROTOCOLS = {"gemini", "openai"}
+IMAGE_PROTOCOLS = {"gemini", "openai", "grok"}
 IMAGE_RESOLUTIONS = {"1K", "2K", "4K"}
 IMAGE_ASPECT_RATIOS = (
     "1:1",
@@ -62,9 +62,12 @@ class ImageApiChannel:
     timeout_seconds: int = 120
 
 
-def _image_resolution(value: Any) -> str:
-    resolution = as_str(value, "4K").strip().upper() or "4K"
-    return resolution if resolution in IMAGE_RESOLUTIONS else "4K"
+def _image_resolution(value: Any, protocol: str = "gemini") -> str:
+    default = "2K" if protocol == "grok" else "4K"
+    resolution = as_str(value, default).strip().upper() or default
+    if protocol == "grok":
+        return resolution if resolution in {"1K", "2K"} else default
+    return resolution if resolution in IMAGE_RESOLUTIONS else default
 
 
 def _image_aspect_ratio(value: Any) -> str:
@@ -91,14 +94,15 @@ def _image_channels(value: Any) -> list[ImageApiChannel]:
             .lower()
         )
         protocol = protocol if protocol in IMAGE_PROTOCOLS else "gemini"
-        default_model = (
-            "gpt-image-2" if protocol == "openai" else "gemini-3-pro-image-preview"
-        )
+        default_model = {
+            "openai": "gpt-image-2",
+            "grok": "grok-imagine-image",
+        }.get(protocol, "gemini-3-pro-image-preview")
         model = (
             as_str(raw.get("model", default_model), default_model).strip()
             or default_model
         )
-        resolution = _image_resolution(raw.get("resolution", "4K"))
+        resolution = _image_resolution(raw.get("resolution"), protocol)
         aspect_ratio = _image_aspect_ratio(raw.get("aspect_ratio", "1:1"))
         timeout_seconds = as_int(raw.get("timeout_seconds", 120), 120, 10, 600)
         if not api_url or not api_key:

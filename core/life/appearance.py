@@ -7,8 +7,10 @@ from ..models import PreferenceRecord
 
 APPEARANCE_PREFERENCE_CATEGORIES = ("outfit", "hair", "style")
 APPEARANCE_PRIORITY_RULE = (
-    "优先级：用户当前明确要求 > 短期生活纠偏 > 已学习长期偏好 > 配置审美 > 近期重复抑制 > 模型自由发挥。"
-    "配置审美只作为软底色；当前场景不适合或用户纠偏时必须让位。"
+    "优先级：用户当前明确要求 > 已经发生的当前穿着事实 > 短期生活纠偏 > 场景与天气适配 > "
+    "近期重复抑制 > 已学习长期偏好 > 配置审美 > 模型自由发挥。"
+    "长期偏好表示审美、舒适度和生活习惯，不等于每天复刻同一件具体服装；"
+    "配置审美只作为软底色，当前场景不适合或用户纠偏时必须让位。"
 )
 CURRENT_APPEARANCE_GENERATION_RULES = (
     "outfit 写当前实际可见的完整穿搭：至少交代服装类别、主色，以及版型/松紧、材质/纹理中的有效细节；"
@@ -209,6 +211,7 @@ def format_life_preference_context(
     if learned:
         parts.append("已学习长期偏好：")
         parts.extend(_format_preference_line(item) for item in learned)
+        parts.append("- 同义偏好即使存在多条也只能视为一次证据，不得叠加权重或据此复刻同一具体方案。")
     if defaults:
         parts.append("配置审美（由审美影响程度控制；只作为软参考）：")
         parts.extend(_format_preference_line(item) for item in defaults)

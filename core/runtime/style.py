@@ -223,6 +223,70 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
         parts.append(clean_plain(source[position:]))
         return "".join(parts)
 
+    @staticmethod
+    def _chat_style_plain_fence_marker(line: str) -> str:
+        marker = str(line or "").strip()
+        if len(marker) < 3 or marker[0] not in {"`", "~"}:
+            return ""
+        return marker if all(char == marker[0] for char in marker) else ""
+
+    @staticmethod
+    def _chat_style_fenced_block_is_prose(text: str) -> bool:
+        value = str(text or "").strip()
+        if len(value) < 40:
+            return False
+        lines = [line for line in value.splitlines() if line.strip()]
+        if not lines:
+            return False
+        compact = "".join(char for char in value if not char.isspace())
+        if not compact:
+            return False
+        readable = sum(char.isalnum() for char in compact)
+        code_symbols = sum(char in "{}[]();=<>\\|$" for char in compact)
+        sentence_marks = sum(char in "，。！？；：、,.!?;:" for char in compact)
+        indented_lines = sum(line.startswith((" ", "\t")) for line in lines)
+        return (
+            readable / len(compact) >= 0.55
+            and code_symbols / len(compact) <= 0.06
+            and sentence_marks >= 2
+            and indented_lines <= 1
+        )
+
+    @classmethod
+    def _chat_style_unwrap_t2i_prose_fences(cls, text: str) -> str:
+        lines = str(text or "").splitlines(keepends=True)
+        if not lines:
+            return str(text or "")
+        output: list[str] = []
+        index = 0
+        while index < len(lines):
+            marker = cls._chat_style_plain_fence_marker(lines[index])
+            if not marker:
+                output.append(lines[index])
+                index += 1
+                continue
+            closing = index + 1
+            while closing < len(lines):
+                candidate = cls._chat_style_plain_fence_marker(lines[closing])
+                if (
+                    candidate
+                    and candidate[0] == marker[0]
+                    and len(candidate) >= len(marker)
+                ):
+                    break
+                closing += 1
+            if closing >= len(lines):
+                output.append(lines[index])
+                index += 1
+                continue
+            body = "".join(lines[index + 1 : closing])
+            if cls._chat_style_fenced_block_is_prose(body):
+                output.extend(lines[index + 1 : closing])
+            else:
+                output.extend(lines[index : closing + 1])
+            index = closing + 1
+        return "".join(output)
+
     def apply_chat_plain_text_cleanup_before_send(self, event: Any) -> bool:
         if not self._chat_style_enabled() or not self._chat_style_result_is_text_only(
             event
@@ -233,9 +297,15 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
         source_text = "".join(
             self._chat_style_text_component_text(item) for item in chain or []
         )
-        if not source_text or self._chat_style_text_is_structural(source_text):
+        if not source_text:
             return False
         if self._chat_style_should_keep_default_send(event, source_text):
+            cleaned = self._chat_style_unwrap_t2i_prose_fences(source_text)
+            if cleaned == source_text:
+                return False
+            setattr(event, "_daily_life_t2i_source_text", cleaned)
+            return self._replace_text_result(event, cleaned)
+        if self._chat_style_text_is_structural(source_text):
             return False
         cleaned = self._chat_style_clean_inline_markdown(source_text)
         if cleaned == source_text:
