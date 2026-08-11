@@ -1484,18 +1484,21 @@ class LifeSettingsTest(unittest.TestCase):
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertIn("version: 1.2.3", metadata)
-        self.assertIn("version-1.2.3", readme)
+        self.assertIn("version: 1.2.4", metadata)
+        self.assertIn("version-1.2.4", readme)
+        self.assertIn("v1.2.4 · 2026-08-12", changelog)
         self.assertIn("v1.2.3 · 2026-08-11", changelog)
         self.assertIn("v1.2.2 · 2026-08-09", changelog)
+        self.assertLess(changelog.index("v1.2.4"), changelog.index("v1.2.3"))
         self.assertLess(changelog.index("v1.2.3"), changelog.index("v1.2.2"))
         self.assertLess(changelog.index("v1.2.2"), changelog.index("v1.2.1"))
+        release_124 = changelog.split("## 🌸 v1.2.4", 1)[1].split("## 🌸 v1.2.3", 1)[0]
         release_123 = changelog.split("## 🌸 v1.2.3", 1)[1].split("## 🌸 v1.2.2", 1)[0]
         release_122 = changelog.split("## 🌸 v1.2.2", 1)[1].split("## 🌸 v1.2.1", 1)[0]
         release_121 = changelog.split("## 🌸 v1.2.1", 1)[1].split("## 🌸 v1.2.0", 1)[0]
         self.assertIn("Grok 图片", release_123)
         self.assertIn("运动、饮食与食谱闭环", release_123)
-        self.assertIn("数据库结构保持 v11", release_123)
+        self.assertIn("数据库结构升级为 v12", release_124)
         self.assertIn("火山引擎语音合成", release_122)
         self.assertNotIn("火山引擎", release_121)
         self.assertLess(changelog.index("v1.1.8"), changelog.index("v1.1.7"))

@@ -1263,6 +1263,116 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             str(profile or "").strip(),
         )
 
+    @filter.llm_tool(name="life_style_learn")
+    @_runtime_guard
+    async def tool_life_style_learn(
+        self,
+        event: AstrMessageEvent,
+        reference_image: str = "",
+        reference_images: list[str] | None = None,
+        source_url: str = "",
+        note: str = "",
+        kind: str = "auto",
+    ):
+        """
+        把用户发送、引用或明确指定的服装商品图、穿搭图、发型图学习为视觉衣橱候选。
+        服装与发型会分别结构化保存；候选只用于以后需要新造型时参考，不会改变当前真实穿搭。
+        用户只是询问图片内容、要求生成图片或真实换装时不要调用本工具。
+        商品页本身不是图片地址时，先用 life_web_fetch(include_images=true) 取得页面图片，再把图片地址传给本工具。
+
+        Args:
+            reference_image(string): 一张可学习图片的路径或直链；留空时自动使用当前或引用消息里的图片。
+            reference_images(array[string]): 可选多张图片路径或直链；适合用户明确提供一组商品图时使用。
+            source_url(string): 可选商品页或原始网页地址，只用于来源追溯，不会当作图片理解。
+            note(string): 用户指定的学习重点或商品说明；只辅助取舍，不能覆盖图片可见事实。
+            kind(string): 学习范围，只能是 auto、outfit、hair 或 both；默认 auto。
+        """
+        return await self.runtime.life_style_learn(
+            event,
+            str(reference_image or "").strip(),
+            reference_images=reference_images or [],
+            source_url=str(source_url or "").strip(),
+            note=str(note or "").strip(),
+            kind=str(kind or "auto").strip(),
+        )
+
+    @filter.llm_tool(name="life_style_browse_learn")
+    @_runtime_guard
+    async def tool_life_style_browse_learn(
+        self,
+        event: AstrMessageEvent,
+        query: str = "",
+        kind: str = "auto",
+        count: int = 3,
+        note: str = "",
+    ):
+        """
+        这是把网上图片真正搜索、视觉核对并写入视觉衣橱的唯一工具。
+        用户说“找几套/再找/搜索/浏览/学进衣橱/加入衣橱”等意思时必须调用本工具，不能只调用 life_style_catalog 查看旧候选，也不能只用文字回复“稍后再搜”。
+        在用户明确要求浏览、寻找或学习网上服装商品图/发型参考时，搜索少量相关图片并加入视觉衣橱候选。
+        不用于每天自动上网找穿搭，不用于购买、下单、整站抓取或把搜索图片直接设成当前穿搭。
+        搜索结果会再次经过视觉模型核对，网页描述不能替代图片可见事实。
+
+        Args:
+            query(string): 具体的商品图或发型图片需求，包含场景、季节、风格等用户真正提出的条件。
+            kind(string): 学习范围，只能是 auto、outfit、hair 或 both；默认 auto。
+            count(int): 需要分析的候选图片数量，默认 3，最多 6。
+            note(string): 可选补充取舍要求，不得加入用户未提出的限制。
+        """
+        return await self.runtime.life_style_browse_learn(
+            event,
+            str(query or "").strip(),
+            kind=str(kind or "auto").strip(),
+            count=self._tool_int(count, 3),
+            note=str(note or "").strip(),
+        )
+
+    @filter.llm_tool(name="life_style_catalog")
+    @_runtime_guard
+    async def tool_life_style_catalog(
+        self,
+        event: AstrMessageEvent,
+        kind: str = "",
+        limit: int = 8,
+    ):
+        """
+        查看当前已学习且可用的视觉衣橱候选及编号，供用户检查或后续反馈。
+        仅在用户问已经学了哪些服装/发型、要查看候选或需要候选编号时调用。
+        用户本轮如果还要求寻找、搜索或学习新的网上穿搭，查看结果不能结束本轮，必须继续调用 life_style_browse_learn；本工具本身不会新增候选。
+
+        Args:
+            kind(string): 可选 outfit 或 hair；留空同时查看服装和发型。
+            limit(int): 最多返回多少条候选，默认 8。
+        """
+        return await self.runtime.life_style_catalog_list(
+            event,
+            kind=str(kind or "").strip(),
+            limit=self._tool_int(limit, 8),
+        )
+
+    @filter.llm_tool(name="life_style_feedback")
+    @_runtime_guard
+    async def tool_life_style_feedback(
+        self,
+        event: AstrMessageEvent,
+        feedback: str = "",
+        item_ids: list[int] | None = None,
+    ):
+        """
+        处理用户对视觉衣橱候选的自然语言反馈，例如喜欢、不适合、太厚、颜色不喜欢或不要再用。
+        工具会语义判断候选分数和状态，只把稳定、可复用的意见沉淀为长期偏好；不使用关键词替换。
+        item_ids 应填写候选结果中的编号；留空时只处理当前会话最近学习的一条候选，不能猜其他编号。
+
+        Args:
+            feedback(string): 用户对候选的完整原始反馈，不要改写成简单关键词。
+            item_ids(array[int]): 需要调整的视觉衣橱候选编号。
+        """
+        return await self.runtime.life_style_feedback(
+            event,
+            str(feedback or "").strip(),
+            item_ids=item_ids or [],
+        )
+
     @filter.llm_tool(name="life_video_generate")
     @_runtime_guard
     async def tool_life_video_generate(
@@ -1545,6 +1655,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             "life_web_crawl",
             "life_web_research",
             "life_web_research_status",
+            "life_style_browse_learn",
         }:
             self._mark_external_search_turn(event)
         reaction = getattr(self.runtime, "note_tool_reaction_start", None)

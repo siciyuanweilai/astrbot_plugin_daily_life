@@ -31,6 +31,7 @@ class ContinuousTurnMixin:
     _CONTINUOUS_TURN_DEADLINE_ATTR = "_daily_life_continuous_turn_deadline"
     _CONTINUOUS_TURN_STOPPED_ATTR = "_daily_life_continuous_turn_stopped"
     _CONTINUOUS_TURN_WAIT_ATTR = "_daily_life_continuous_turn_wait_seconds"
+    _CONTINUOUS_TURN_FOLLOW_UP_ATTR = "_daily_life_continuous_turn_follow_up"
     _CONTINUOUS_TURN_MAX_MESSAGES = 12
     _CONTINUOUS_TURN_MAX_CHARS = 4000
     _CONTINUOUS_TURN_ACTIVE_SECONDS = 90.0
@@ -203,16 +204,20 @@ class ContinuousTurnMixin:
             self._init_continuous_turn_state()
             revisions = self._continuous_turn_revisions
             batches = self._continuous_turn_batches
-        revision_bucket = revisions.setdefault(scope, {})
-        revision = int(revision_bucket.get(participant, 0)) + 1
-        revision_bucket[participant] = revision
         batch_bucket = batches.setdefault(scope, {})
         previous = batch_bucket.get(participant)
         active = bool(
             isinstance(previous, ContinuousTurnBatch)
-            and previous.phase in {"collecting", "generating", "waiting"}
+            and previous.phase in {"collecting", "ready", "generating", "waiting"}
             and now - previous.last_at <= self._CONTINUOUS_TURN_ACTIVE_SECONDS
         )
+        joins_active_generation = bool(active and previous.phase == "generating")
+        revision_bucket = revisions.setdefault(scope, {})
+        if joins_active_generation:
+            revision = previous.revision
+        else:
+            revision = int(revision_bucket.get(participant, 0)) + 1
+            revision_bucket[participant] = revision
         messages = list(previous.messages) if active else []
         message_ids = list(previous.message_ids) if active else []
         message_id = self._continuous_turn_message_id(event)
@@ -228,7 +233,10 @@ class ContinuousTurnMixin:
             revision=revision,
             first_at=first_at,
             last_at=now,
-            deadline=first_at + max_wait,
+            deadline=(
+                previous.deadline if joins_active_generation else first_at + max_wait
+            ),
+            phase=(previous.phase if joins_active_generation else "collecting"),
             messages=messages,
             message_ids=message_ids,
         )
@@ -237,6 +245,7 @@ class ContinuousTurnMixin:
         setattr(event, self._CONTINUOUS_TURN_PARTICIPANT_ATTR, participant)
         setattr(event, self._CONTINUOUS_TURN_REVISION_ATTR, revision)
         setattr(event, self._CONTINUOUS_TURN_DEADLINE_ATTR, batch.deadline)
+        setattr(event, self._CONTINUOUS_TURN_FOLLOW_UP_ATTR, joins_active_generation)
         self._continuous_turn_metrics["registered"] += 1
         if len(messages) > 1:
             self._continuous_turn_metrics["merged"] += 1
@@ -294,6 +303,14 @@ class ContinuousTurnMixin:
         identity = self._continuous_turn_event_identity(event)
         if identity is None:
             return True
+        if self.continuous_turn_event_is_inflight_follow_up(event):
+            text = str(getattr(event, "message_str", "") or "").strip()
+            setattr(
+                event,
+                self._CONTINUOUS_TURN_MESSAGES_ATTR,
+                (text,) if text else (),
+            )
+            return True
         scope, participant, revision = identity
         batch = self._continuous_turn_batch(scope, participant)
         if batch is None or batch.revision != revision:
@@ -314,7 +331,7 @@ class ContinuousTurnMixin:
         if batch is None or batch.revision != revision:
             self.stop_stale_continuous_turn_event(event)
             return False
-        batch.phase = "generating"
+        batch.phase = "ready"
         messages = tuple(item for item in batch.messages if item)
         setattr(event, self._CONTINUOUS_TURN_MESSAGES_ATTR, messages)
         setattr(event, self._CONTINUOUS_TURN_DEADLINE_ATTR, batch.deadline)
@@ -332,6 +349,9 @@ class ContinuousTurnMixin:
 
     def continuous_turn_message_count(self, event: Any) -> int:
         return len(self.continuous_turn_messages(event))
+
+    def continuous_turn_event_is_inflight_follow_up(self, event: Any) -> bool:
+        return bool(getattr(event, self._CONTINUOUS_TURN_FOLLOW_UP_ATTR, False))
 
     def continuous_turn_semantic_enabled_for_event(self, event: Any) -> bool:
         style = self._continuous_turn_style()
@@ -369,13 +389,18 @@ class ContinuousTurnMixin:
             return "superseded"
         batch = self._continuous_turn_batch(identity[0], identity[1])
         if batch is not None:
-            batch.phase = "generating"
+            batch.phase = "ready"
         self._continuous_turn_metrics["semantic_wait"] += 1
         return "reply"
 
     def prepare_continuous_turn_llm_request(self, event: Any, request: Any) -> bool:
         if self.stop_stale_continuous_turn_event(event):
             return False
+        identity = self._continuous_turn_event_identity(event)
+        if identity is not None:
+            batch = self._continuous_turn_batch(identity[0], identity[1])
+            if batch is not None and batch.revision == identity[2]:
+                batch.phase = "generating"
         messages = self.continuous_turn_messages(event)
         if len(messages) < 2:
             return True

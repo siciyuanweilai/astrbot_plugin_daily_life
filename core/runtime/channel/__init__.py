@@ -1,18 +1,19 @@
 from __future__ import annotations
 
-from .summary import RuntimeMediaCommonMixin
-from .image import RuntimeImageMediaMixin
-from .suite import RuntimePhotoSuiteMediaMixin
-from .reverse import RuntimeReverseMediaMixin
-from .motion import RuntimeVideoMediaMixin
 from .audio import RuntimeVoiceMediaMixin
-
+from .image import RuntimeImageMediaMixin
+from .motion import RuntimeVideoMediaMixin
+from .reverse import RuntimeReverseMediaMixin
+from .style_catalog import RuntimeStyleCatalogMixin
+from .suite import RuntimePhotoSuiteMediaMixin
+from .summary import RuntimeMediaCommonMixin
 
 __all__ = [
     "RuntimeImageMediaMixin",
     "RuntimePhotoSuiteMediaMixin",
     "RuntimeMediaCommonMixin",
     "RuntimeReverseMediaMixin",
+    "RuntimeStyleCatalogMixin",
     "RuntimeVideoMediaMixin",
     "RuntimeVoiceMediaMixin",
 ]

@@ -204,6 +204,11 @@ JSON 输出要求：
         superseded = self._response_gate_superseded_decision(event)
         if superseded:
             return superseded
+        follow_up_checker = getattr(
+            self, "continuous_turn_event_is_inflight_follow_up", None
+        )
+        if callable(follow_up_checker) and follow_up_checker(event):
+            return self._response_gate_reply("接续正在生成的当前话轮", forced=True)
         config = getattr(self.config, "response_gate", None)
         if not config:
             return self._response_gate_reply("随心回复配置不可用")

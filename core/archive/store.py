@@ -18,6 +18,7 @@ from .queue import ChatMemoryQueueArchiveMixin
 from .reflections import LifecycleArchiveMixin
 from .schema import init_schema
 from .storage import StorageArchiveMixin
+from .style_catalog import StyleCatalogArchiveMixin
 from .vectors import MemoryVectorArchiveMixin
 from .weeks import WeekArchiveMixin
 
@@ -64,6 +65,7 @@ _CONTEXT_SNAPSHOT_KEYS = (
 
 
 class LifeArchive(
+    StyleCatalogArchiveMixin,
     DomainArchiveMixin,
     CognitionArchiveMixin,
     MemoryVectorArchiveMixin,

@@ -102,6 +102,44 @@ class PluginLifecycleTest(unittest.IsolatedAsyncioTestCase):
             ["江边这套\n对岸灯挺好看。"],
         )
 
+    async def test_expressive_send_tool_skips_text_already_sent_by_preface(self):
+        calls = []
+
+        class OriginalTool:
+            name = "send_message_to_user"
+            description = "发送消息"
+            parameters = {"type": "object", "properties": {}}
+            active = True
+            handler_module_path = None
+            is_background_task = False
+
+            async def call(self, context, **kwargs):
+                calls.append(("original", context, kwargs))
+                return "original"
+
+        async def send_background_text(*args, **kwargs):
+            calls.append(("expressive", args, kwargs))
+            return True
+
+        runtime = types.SimpleNamespace(
+            should_skip_duplicate_send_message=lambda _event, _text: True,
+            _semantic_segment_enabled=lambda: True,
+            _chat_style_text_is_structural=lambda _text: False,
+            send_background_text=send_background_text,
+        )
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
+        context = types.SimpleNamespace(context=types.SimpleNamespace(event=event))
+        tool = ExpressiveSendMessageTool(OriginalTool(), runtime)
+
+        result = await tool.call(
+            context,
+            messages=[{"type": "plain", "text": "行，按这版出。\n等会儿。"}],
+        )
+
+        self.assertEqual(result, f"Message sent to session {event.unified_msg_origin}")
+        self.assertEqual(calls, [])
+        self.assertTrue(event._has_send_oper)
+
     async def test_expressive_send_tool_keeps_media_on_original_tool(self):
         calls = []
 
@@ -979,6 +1017,122 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(suppressed)
         self.assertIsNone(event.get_result())
+
+    async def test_runtime_assigns_identical_preface_to_send_message_tool(self):
+        class Runtime(VoiceSwitchMixin):
+            @staticmethod
+            def _event_session_id(event):
+                return event.unified_msg_origin
+
+            @staticmethod
+            def _semantic_segment_enabled():
+                return True
+
+            @staticmethod
+            def _chat_style_text_is_structural(_text):
+                return False
+
+            async def send_background_text(
+                self,
+                scope,
+                text,
+                *,
+                mode,
+                source_event=None,
+                source="background",
+                **kwargs,
+            ):
+                del scope, mode, source, kwargs
+                await source_event.send(text)
+                return True
+
+        class Runner:
+            tools_call_name = ["send_message_to_user"]
+
+            def done(self):
+                return False
+
+        runtime = Runtime()
+        event = Event(message_id="duplicate-preface")
+        source_text = "行，按这版出。\n\n等会儿。\n"
+        event.set_result(event.chain_result([source_text]))
+        tool_args = {
+            "messages": [
+                {"type": "plain", "text": "行，按这版出。"},
+                {"type": "plain", "text": "等会儿。"},
+            ]
+        }
+
+        with patched_follow_up_runners({event.unified_msg_origin: Runner()}):
+            self.assertTrue(runtime.suppress_intermediate_tool_result(event))
+            await runtime.handle_llm_tool_start(
+                event,
+                types.SimpleNamespace(name="send_message_to_user"),
+                tool_args,
+            )
+
+        self.assertEqual(event.sent_messages, [])
+        state = runtime._tool_reply_round_store()[event.unified_msg_origin]
+        self.assertTrue(state["preface_suppressed"])
+        self.assertTrue(state["preface_duplicate_owned_by_tool"])
+
+        class OriginalTool:
+            name = "send_message_to_user"
+            description = "发送消息"
+            parameters = {"type": "object", "properties": {}}
+            active = True
+            handler_module_path = None
+            is_background_task = False
+
+            async def call(self, context, **kwargs):
+                raise AssertionError(f"不应调用原始工具：{kwargs}")
+
+        context = types.SimpleNamespace(context=types.SimpleNamespace(event=event))
+        tool = ExpressiveSendMessageTool(OriginalTool(), runtime)
+        await tool.call(context, **tool_args)
+        self.assertEqual(event.sent_messages, ["行，按这版出。\n等会儿。"])
+
+    async def test_runtime_skips_send_tool_after_other_tool_sent_identical_preface(self):
+        class Runtime(VoiceSwitchMixin):
+            @staticmethod
+            def _event_session_id(event):
+                return event.unified_msg_origin
+
+            async def send_background_text(
+                self,
+                scope,
+                text,
+                *,
+                mode,
+                source_event=None,
+                source="background",
+                **kwargs,
+            ):
+                del scope, mode, source, kwargs
+                await source_event.send(text)
+                return True
+
+        class Runner:
+            tools_call_name = ["life_video_generate"]
+
+            def done(self):
+                return False
+
+        runtime = Runtime()
+        event = Event(message_id="duplicate-after-preface")
+        source_text = "行，按这版出。\n等会儿。"
+        event.set_result(event.chain_result([source_text]))
+
+        with patched_follow_up_runners({event.unified_msg_origin: Runner()}):
+            self.assertTrue(runtime.suppress_intermediate_tool_result(event))
+            await runtime.handle_llm_tool_start(
+                event, types.SimpleNamespace(name="life_video_generate")
+            )
+
+        self.assertEqual(event.sent_messages, [source_text])
+        self.assertTrue(
+            runtime.should_skip_duplicate_send_message(event, source_text)
+        )
 
     async def test_runtime_does_not_suppress_without_active_tool_runner(
         self,

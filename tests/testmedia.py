@@ -198,7 +198,8 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(request.payload["resolution"], "2k")
         self.assertEqual(request.payload["aspect_ratio"], "9:16")
-        self.assertEqual(request.payload["size"], "1152x2048")
+        self.assertFalse(request.payload["stream"])
+        self.assertNotIn("size", request.payload)
 
     def test_grok_output_size_validation_checks_ratio_and_resolution(self):
         matches = GeminiImageService._grok_output_matches_request
@@ -268,7 +269,10 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(generated.path.read_bytes(), square_output)
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][0], "https://grok-relay.example/v1/images/edits")
-        self.assertEqual(calls[0][1]["size"], "1152x2048")
+        self.assertEqual(calls[0][1]["aspect_ratio"], "9:16")
+        self.assertEqual(calls[0][1]["resolution"], "2k")
+        self.assertFalse(calls[0][1]["stream"])
+        self.assertNotIn("size", calls[0][1])
 
     async def test_grok_generation_downloads_url_response(self):
         output_bytes = b"\x89PNG\r\n\x1a\ngrok-output"

@@ -851,7 +851,8 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
                 '"life_decision":{"life_mode":"late_night",'
                 '"sleep":{"mode":"late_night","quality":45,"summary":"凌晨还没睡踏实"},'
                 '"outfit":{"decision":"keep","scene_category":"home","style_pool":"sleep_styles",'
-                '"style":"居家睡前","hair_style":"自然披发","hair":"黑色长发自然散在肩后","reason":"当前仍在家里低强度活动"},'
+                '"style":"居家睡前","hair_style":"自然披发","hair":"黑色长发自然散在肩后",'
+                '"makeup":"无妆","nails":"透明短甲","reason":"当前仍在家里低强度活动"},'
                 '"day_plan":{"schedule_type":"宅家充电的慵懒一日","schedule_intent":"rest",'
                 '"energy_bias":"rest","social_bias":"avoid"},'
                 '"theme":"慢慢放空","mood":"雾蓝·松弛"},'
@@ -874,6 +875,8 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data.meta["outfit_style_pool"], "sleep_styles")
         self.assertEqual(data.meta["hair_style"], "自然披发")
         self.assertEqual(data.meta["hair"], "黑色长发自然散在肩后")
+        self.assertEqual(data.meta["makeup"], "无妆")
+        self.assertEqual(data.meta["nails"], "透明短甲")
         self.assertEqual(data.meta["schedule_type"], "宅家充电的慵懒一日")
         self.assertEqual(data.meta["schedule_intent"], "rest")
         prompt = provider.prompts[0]
@@ -905,8 +908,10 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("hair_style 只写简短发型名称", prompt)
         self.assertIn("hair 单独写当前可见的详细发型", prompt)
         self.assertIn("style 只写简短审美标签", prompt)
-        self.assertIn("处于实际取景范围内时补充", prompt)
-        self.assertIn("不得虚构画面不可见的细节", prompt)
+        self.assertIn("makeup 单独写当前实际妆容", prompt)
+        self.assertIn("nails 单独写当前实际美甲", prompt)
+        self.assertIn("换衣不会自动改变美甲", prompt)
+        self.assertIn("不得虚构没有依据的组成", prompt)
         self.assertIn("穿搭、发型和整体风格偏好只是软参考", prompt)
         self.assertIn(
             "近期重复抑制 > 已学习长期偏好 > 配置审美", prompt
@@ -1268,7 +1273,11 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(provider.prompts), 2)
         self.assertIn("过于相似", provider.prompts[1])
         saved = await archive.get_day("2026-06-12")
-        self.assertEqual(saved.outfit, "雾蓝薄开衫搭米白棉质长裙，头发松松编到一侧")
+        self.assertEqual(
+            saved.outfit, "浅绿色宽松针织衫配白色棉裙，头发低低扎起"
+        )
+        self.assertEqual(saved.meta["outfit_fact_source"], "carried_previous_day")
+        self.assertEqual(saved.meta["plan_outfit_style"], "柔软居家层次")
 
     async def test_manual_regeneration_rejects_replaced_day_outfit(self):
         repeated = (
@@ -1837,6 +1846,91 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data.state.mood, "元气满满，准备好好学习")
         self.assertNotIn("mood", data.meta)
 
+    async def test_daily_generation_carries_current_appearance_until_first_node(self):
+        composer, _, _, archive = make_composer([])
+        await archive.save_day(
+            DayRecord(
+                date="2026-05-23",
+                outfit="浅灰色棉质睡裙，光脚",
+                meta={
+                    "outfit_decision": "sleepwear",
+                    "outfit_scene_category": "sleep",
+                    "outfit_style_pool": "sleep_styles",
+                    "style": "轻柔居家睡裙风",
+                    "hair_style": "自然披发",
+                    "hair": "黑色长发自然披在肩后",
+                    "makeup": "无妆",
+                    "nails": "奶白色短圆甲",
+                    "outfit_fact_source": "user_instruction",
+                    "outfit_fact_confirmed_at": "2026-05-23 22:10:00",
+                },
+            )
+        )
+        day = DayRecord(
+            date="2026-05-24",
+            outfit="白色薄棉短袖配浅蓝色棉麻短裤",
+            timeline=[TimelineItem(time="08:40", activity="起床洗漱后换衣服")],
+            meta={
+                "plan_outfit_decision": "outdoor",
+                "outfit_decision": "outdoor",
+                "style": "清爽白日外出风",
+                "hair_style": "高马尾",
+                "hair": "黑色长发扎成高马尾",
+                "makeup": "清透防晒妆",
+                "nails": "浅粉色短方圆甲",
+            },
+        )
+
+        grounded = await composer._ground_generated_current_appearance(
+            day,
+            context={
+                "check_time": datetime.datetime(2026, 5, 24, 7, 30),
+                "period": "dawn",
+            },
+        )
+
+        self.assertEqual(grounded.outfit, "浅灰色棉质睡裙，光脚")
+        self.assertEqual(
+            grounded.meta["plan_outfit"], "白色薄棉短袖配浅蓝色棉麻短裤"
+        )
+        self.assertEqual(grounded.meta["plan_outfit_style"], "清爽白日外出风")
+        self.assertEqual(grounded.meta["plan_outfit_decision"], "outdoor")
+        self.assertEqual(grounded.meta["outfit_decision"], "sleepwear")
+        self.assertEqual(grounded.meta["hair_style"], "自然披发")
+        self.assertEqual(grounded.meta["makeup"], "无妆")
+        self.assertEqual(grounded.meta["nails"], "奶白色短圆甲")
+        self.assertEqual(grounded.meta["plan_makeup"], "清透防晒妆")
+        self.assertEqual(grounded.meta["plan_nails"], "浅粉色短方圆甲")
+        self.assertEqual(grounded.meta["outfit_fact_source"], "user_instruction")
+        self.assertEqual(grounded.meta["outfit_carried_from"], "2026-05-23")
+        self.assertEqual(
+            grounded.outfit_history, {"dawn": "浅灰色棉质睡裙，光脚"}
+        )
+
+    async def test_daily_generation_uses_generated_appearance_after_node_occurs(self):
+        composer, _, _, archive = make_composer([])
+        await archive.save_day(
+            DayRecord(date="2026-05-23", outfit="浅灰色棉质睡裙，光脚")
+        )
+        day = DayRecord(
+            date="2026-05-24",
+            outfit="白色薄棉短袖配浅蓝色棉麻短裤",
+            timeline=[TimelineItem(time="07:10", activity="洗漱后换好衣服")],
+            meta={"plan_outfit_decision": "outdoor"},
+        )
+
+        grounded = await composer._ground_generated_current_appearance(
+            day,
+            context={
+                "check_time": datetime.datetime(2026, 5, 24, 7, 30),
+                "period": "dawn",
+            },
+        )
+
+        self.assertEqual(grounded.outfit, "白色薄棉短袖配浅蓝色棉麻短裤")
+        self.assertEqual(grounded.meta["outfit_fact_source"], "daily_generation")
+        self.assertNotIn("outfit_carried_from", grounded.meta)
+
     async def test_update_outfit_can_keep_current_outfit(self):
         composer, provider, _, archive = make_composer(
             [
@@ -2025,6 +2119,98 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("已经换装则选择", provider.prompts[0])
         self.assertIn("不复述具体日期、钟点或时间轴编号", provider.prompts[0])
 
+    async def test_update_outfit_preserves_user_confirmed_fact_without_change_evidence(
+        self,
+    ):
+        composer, _, _, archive = make_composer(
+            [
+                '{"outfit_decision":"change","current_outfit_basis":"live_state",'
+                '"scene_category":"home","style_pool":"outfit_styles",'
+                '"outfit":"宽松白色短袖T恤配浅蓝色棉麻短裤",'
+                '"style":"清爽居家休闲风","hair_style":"低马尾",'
+                '"hair":"黑色长发扎成低马尾",'
+                '"reason":"午休前换成更舒适的衣服",'
+                '"change_evidence":{"kind":"comfort_adjustment","source":"autonomous",'
+                '"timeline_time":"","quote":""}}'
+            ]
+        )
+        confirmed_outfit = "白色碎花挂脖短上衣配同款荷叶边短裙，光脚"
+        await archive.save_day(
+            DayRecord(
+                date="2026-08-11",
+                outfit=confirmed_outfit,
+                timeline=[
+                    TimelineItem(time="12:30", activity="吃完午饭后准备午休")
+                ],
+                meta={
+                    "outfit_decision": "outdoor",
+                    "style": "清爽夏日少女风",
+                    "hair_style": "自然披发",
+                    "hair": "黑色长发自然披在肩后",
+                    "outfit_fact_source": "user_instruction",
+                    "outfit_fact_confirmed_at": "2026-08-11 12:24:00",
+                    "outfit_fact_evidence": "用户本轮明确穿搭要求",
+                },
+            )
+        )
+
+        result = await composer.update_outfit(
+            "2026-08-11",
+            "noon",
+            current_time=datetime.datetime(2026, 8, 11, 12, 26),
+        )
+
+        self.assertIsNotNone(result)
+        stored = await archive.get_day("2026-08-11")
+        self.assertEqual(stored.outfit, confirmed_outfit)
+        self.assertEqual(stored.meta["outfit_fact_source"], "user_instruction")
+        self.assertEqual(stored.meta["style"], "清爽夏日少女风")
+
+    async def test_update_outfit_accepts_grounded_occurred_change(self):
+        composer, _, _, archive = make_composer(
+            [
+                '{"outfit_decision":"change","current_outfit_basis":"occurred_schedule",'
+                '"scene_category":"sleep","style_pool":"sleep_styles",'
+                '"outfit":"宽松米白色棉质睡裙，光脚",'
+                '"style":"轻柔居家睡裙风","hair_style":"自然披发",'
+                '"hair":"黑色长发自然披在肩后",'
+                '"reason":"洗漱后已经换好睡裙",'
+                '"change_evidence":{"kind":"explicit_outfit_change",'
+                '"source":"occurred_schedule","timeline_time":"21:10",'
+                '"quote":"已经换上米白色棉质睡裙"}}'
+            ]
+        )
+        await archive.save_day(
+            DayRecord(
+                date="2026-08-11",
+                outfit="白色碎花挂脖短上衣配同款荷叶边短裙",
+                timeline=[
+                    TimelineItem(
+                        time="21:10",
+                        activity="洗漱后已经换上米白色棉质睡裙，准备休息",
+                    )
+                ],
+                meta={
+                    "outfit_fact_source": "user_instruction",
+                    "outfit_fact_confirmed_at": "2026-08-11 12:24:00",
+                },
+            )
+        )
+
+        result = await composer.update_outfit(
+            "2026-08-11",
+            "night",
+            current_time=datetime.datetime(2026, 8, 11, 21, 12),
+        )
+
+        self.assertIsNotNone(result)
+        stored = await archive.get_day("2026-08-11")
+        self.assertEqual(stored.outfit, "宽松米白色棉质睡裙，光脚")
+        self.assertEqual(stored.meta["outfit_fact_source"], "occurred_schedule")
+        self.assertEqual(
+            stored.meta["outfit_fact_evidence"], "已经换上米白色棉质睡裙"
+        )
+
     async def test_update_outfit_partially_adjusts_outdoor_clothes_at_home(self):
         composer, _, _, archive = make_composer(
             [
@@ -2087,6 +2273,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
                 '"outfit":"浅色棉质短袖配休闲短裤，换成柔软室内拖鞋",'
                 '"style":"清爽居家日常风","hair_style":"低马尾",'
                 '"hair":"黑色长发松松扎成低马尾",'
+                '"makeup":"清透淡妆","nails":"奶白色短圆甲",'
                 '"reason":"主体衣物继续穿着，只调整当前活动不便的局部组成"}'
             ]
         )
@@ -2108,6 +2295,8 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
                     "style": "清爽日常外出风",
                     "hair_style": "低马尾",
                     "hair": "黑色长发松松扎成低马尾",
+                    "makeup": "清透淡妆",
+                    "nails": "奶白色短圆甲",
                 },
             )
         )
@@ -2124,6 +2313,8 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stored.meta["outfit_decision"], "partial_change")
         self.assertEqual(stored.meta["outfit_scene_category"], "home")
         self.assertEqual(stored.meta["outfit_style_pool"], "mixed")
+        self.assertEqual(stored.meta["makeup"], "清透淡妆")
+        self.assertEqual(stored.meta["nails"], "奶白色短圆甲")
 
     async def test_update_outfit_clears_replaced_optional_appearance_fields(self):
         composer, _, _, archive = make_composer(
@@ -2226,6 +2417,10 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stored.weather, before["weather"])
         self.assertEqual(stored.memo, before["memo"])
         self.assertEqual(stored.state_log, before["state_log"])
+        self.assertEqual(stored.meta["outfit_fact_source"], "user_instruction")
+        self.assertEqual(
+            stored.meta["outfit_fact_confirmed_at"], "2026-05-24 17:07:00"
+        )
         for key, value in before["meta"].items():
             self.assertEqual(stored.meta[key], value)
         prompt = provider.prompts[0]

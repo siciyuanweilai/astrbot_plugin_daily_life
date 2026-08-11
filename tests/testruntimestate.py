@@ -204,8 +204,10 @@ class RuntimeStateTest(unittest.TestCase):
                 "theme": "雨后散步",
                 "mood": "松弛",
                 "style": "清爽日常风",
-                "hair_style": "松散低马尾",
-                "hair": "黑色中长直发，低马尾，碎发自然垂落",
+                    "hair_style": "松散低马尾",
+                    "hair": "黑色中长直发，低马尾，碎发自然垂落",
+                    "makeup": "清透自然妆",
+                    "nails": "奶白色短圆甲",
             },
             state=LifeState.from_value(
                 {
@@ -244,6 +246,8 @@ class RuntimeStateTest(unittest.TestCase):
         self.assertIn("当前穿搭风格：清爽日常风", text)
         self.assertIn("当前发型名称：松散低马尾", text)
         self.assertIn("当前发型细节：黑色中长直发，低马尾，碎发自然垂落", text)
+        self.assertIn("当前妆容：清透自然妆", text)
+        self.assertIn("当前美甲：奶白色短圆甲", text)
         self.assertLess(
             text.index("[HiddenMoodHint]"), text.index("[HiddenScheduleWindow]")
         )

@@ -1347,6 +1347,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
                     '"frame_logic":"半身取景能看到抱枕、窗边和上半身居家穿搭",'
                     '"lighting":"暖色台灯","outfit":"宽松白色长T恤",'
                     '"hair":"黑色中长直发，低马尾，碎发自然垂落",'
+                    '"makeup":"清透自然妆","nails":"奶白色短圆甲",'
                     '"appearance_style":"清爽柔和的居家风",'
                     '"body_presentation":"合身上衣自然呈现既有的整体轮廓与比例",'
                     '"outfit_visibility":"上半身可见",'
@@ -1373,6 +1374,8 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
                 "style": "清爽柔和的居家风",
                 "hair_style": "松散低马尾",
                 "hair": "黑色中长直发，低马尾，碎发自然垂落",
+                "makeup": "清透自然妆",
+                "nails": "奶白色短圆甲",
             },
         )
 
@@ -1435,6 +1438,8 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertIn("穿搭可见性：上半身可见", image_prompts[0])
         self.assertIn("穿搭逻辑：人在客厅休息", image_prompts[0])
         self.assertIn("发型：黑色中长直发，低马尾，碎发自然垂落", image_prompts[0])
+        self.assertIn("妆容：清透自然妆", image_prompts[0])
+        self.assertIn("美甲：奶白色短圆甲", image_prompts[0])
         self.assertIn("造型风格：清爽柔和的居家风", image_prompts[0])
         self.assertIn(
             "体貌呈现：合身上衣自然呈现既有的整体轮廓与比例",
@@ -1452,6 +1457,8 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertIn("visible_scope", provider.prompts[0])
         self.assertIn("outfit_visibility", provider.prompts[0])
         self.assertIn('"hair"', provider.prompts[0])
+        self.assertIn('"makeup"', provider.prompts[0])
+        self.assertIn('"nails"', provider.prompts[0])
         self.assertIn('"appearance_style"', provider.prompts[0])
         self.assertIn('"body_presentation"', provider.prompts[0])
         self.assertIn("当前角色稳定体貌", provider.prompts[0])
@@ -1462,6 +1469,8 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             "当前发型细节：黑色中长直发，低马尾，碎发自然垂落",
             provider.prompts[0],
         )
+        self.assertIn("当前妆容：清透自然妆", provider.prompts[0])
+        self.assertIn("当前美甲：奶白色短圆甲", provider.prompts[0])
         self.assertIn("原始画面要求 > 真实参考图 > 当前生活外观", provider.prompts[0])
         self.assertIn("frame_logic", provider.prompts[0])
         self.assertIn("outfit_logic", provider.prompts[0])

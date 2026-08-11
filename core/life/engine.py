@@ -12,7 +12,31 @@ from .tools import (
     parse_schedule_time,
     resolve_daily_hint,
     resolve_daily_suggested,
+    timeline_item_datetime,
 )
+
+_CURRENT_APPEARANCE_META_KEYS = (
+    "outfit_decision",
+    "outfit_scene_category",
+    "outfit_style_pool",
+    "style",
+    "hair_style",
+    "hair",
+    "makeup",
+    "nails",
+    "outfit_reason",
+)
+
+_PLANNED_APPEARANCE_META_KEYS = {
+    "outfit_scene_category": "plan_outfit_scene_category",
+    "outfit_style_pool": "plan_outfit_style_pool",
+    "style": "plan_outfit_style",
+    "hair_style": "plan_hair_style",
+    "hair": "plan_hair",
+    "makeup": "plan_makeup",
+    "nails": "plan_nails",
+    "outfit_reason": "plan_outfit_reason",
+}
 
 
 class DailyEngineMixin:
@@ -102,6 +126,9 @@ class DailyEngineMixin:
             domain_context = await domain_context_builder()
             if domain_context:
                 world_context = f"{world_context}\n\n{domain_context}".strip()
+        style_catalog_context = await self._style_catalog_context(limit=10)
+        if style_catalog_context:
+            world_context = f"{world_context}\n\n{style_catalog_context}".strip()
         prompt = self._build_timeline_prompt(
             date_str,
             period_cn,
@@ -218,9 +245,29 @@ class DailyEngineMixin:
             return None, repeat_issue
 
         logger.debug("[日程生成] 成功解析结构化数据")
+        decision = (
+            result.get("life_decision")
+            if isinstance(result.get("life_decision"), dict)
+            else {}
+        )
+        outfit_decision = (
+            decision.get("outfit")
+            if isinstance(decision.get("outfit"), dict)
+            else {}
+        )
+        catalog_appearance = await self._style_catalog_reference_appearance(
+            outfit_decision.get("catalog_reference_ids")
+        )
+        for key, value in catalog_appearance.items():
+            if not str(day.meta.get(key) or "").strip():
+                day.meta[key] = value
+        day = await self._ground_generated_current_appearance(day, context=context)
         day = await self._apply_lifecycle_to_day(day, date, result)
         await self._persist_generated_day(
             context["date_str"], day, context["due_commitments"]
+        )
+        await self._mark_style_catalog_references(
+            outfit_decision.get("catalog_reference_ids")
         )
         decision_text, decision_reason, decision_evidence = self._daily_decision_text(
             result, day
@@ -238,6 +285,68 @@ class DailyEngineMixin:
             f"[日程生成] 生成成功：{context['date_str']}（{context['period_cn']}），时间轴节点数：{len(day.timeline)}"
         )
         return day, ""
+
+    async def _ground_generated_current_appearance(self, day, *, context: dict):
+        """避免把尚未发生的日程穿搭提前保存为当前穿搭。"""
+
+        check_time = context["check_time"]
+        has_occurred_timeline = any(
+            item_time is not None and item_time <= check_time
+            for item in day.timeline
+            if (item_time := timeline_item_datetime(item, day.date)) is not None
+        )
+        confirmed_at = check_time.strftime("%Y-%m-%d %H:%M:%S")
+        if has_occurred_timeline:
+            day.meta["outfit_fact_source"] = "daily_generation"
+            day.meta["outfit_fact_confirmed_at"] = confirmed_at
+            day.meta["outfit_fact_evidence"] = "当日日程已覆盖当前时刻"
+            return day
+
+        previous_date = (
+            check_time.date() - datetime.timedelta(days=1)
+        ).isoformat()
+        previous_day = await self.archive.get_day(previous_date)
+        previous_outfit = str(
+            getattr(previous_day, "outfit", "") if previous_day else ""
+        ).strip()
+        if not previous_outfit:
+            day.meta["outfit_fact_source"] = "daily_generation"
+            day.meta["outfit_fact_confirmed_at"] = confirmed_at
+            day.meta["outfit_fact_evidence"] = "无可延续穿搭，采用当日日程初始状态"
+            return day
+
+        previous_meta = getattr(previous_day, "meta", {}) or {}
+        day.meta["plan_outfit"] = day.outfit
+        for current_key, plan_key in _PLANNED_APPEARANCE_META_KEYS.items():
+            planned_value = str(day.meta.get(current_key) or "").strip()
+            if planned_value:
+                day.meta[plan_key] = planned_value
+        for key in _CURRENT_APPEARANCE_META_KEYS:
+            value = str(previous_meta.get(key) or "").strip()
+            if value:
+                day.meta[key] = value
+            else:
+                day.meta.pop(key, None)
+
+        previous_source = str(
+            previous_meta.get("outfit_fact_source") or ""
+        ).strip()
+        day.outfit = previous_outfit
+        day.outfit_history = {context["period"]: previous_outfit}
+        day.meta["outfit_fact_source"] = (
+            "user_instruction"
+            if previous_source == "user_instruction"
+            else "carried_previous_day"
+        )
+        day.meta["outfit_fact_confirmed_at"] = str(
+            previous_meta.get("outfit_fact_confirmed_at") or confirmed_at
+        ).strip()
+        day.meta["outfit_fact_evidence"] = (
+            f"延续 {previous_date} 尚未被已发生换装替代的当前穿搭"
+        )
+        day.meta["outfit_carried_from"] = previous_date
+        logger.debug("[日程生成] 首个日程节点尚未发生，当前穿搭延续上一日记录")
+        return day
 
     async def generate_daily(
         self,

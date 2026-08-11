@@ -1373,6 +1373,21 @@ function renderFactPair(target, value, emptyText = "暂无内容") {
     }
     parts.push(hairLine);
   }
+  if (data.makeup || data.nails) {
+    const groomingLine = node("div", "today-week-appearance-grooming", "");
+    if (data.makeup) {
+      groomingLine.append(
+        node("span", "today-week-label", `妆容：${data.makeup}`),
+      );
+    }
+    if (data.nails) {
+      groomingLine.append(
+        document.createTextNode(data.makeup ? " " : ""),
+        node("span", "today-week-label", `美甲：${data.nails}`),
+      );
+    }
+    parts.push(groomingLine);
+  }
   if (data.decision) {
     parts.push(node("span", "today-week-label", data.decision));
   }

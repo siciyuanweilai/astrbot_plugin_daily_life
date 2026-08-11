@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.2.3-ef6f8f" alt="版本 1.2.3"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.2.4-ef6f8f" alt="版本 1.2.4"></a>
   <img src="https://img.shields.io/badge/AstrBot-%3E%3D4.26.0-4c78a8" alt="AstrBot >= 4.26.0">
   <img src="https://img.shields.io/badge/platform-aiocqhttp%20%7C%20weixin__oc-4f8a66" alt="支持 aiocqhttp 和 weixin_oc">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-555555" alt="MIT License"></a>
@@ -34,7 +34,7 @@
 [![Yousa Ling](https://count.getloli.com/get/@DailyLife?theme=yousa-ling)](https://github.com/siciyuanweilai/astrbot_plugin_daily_life)
 
 > [!TIP]
-> **v1.2.3 重点更新**：新增 Grok 文生图与图生图通道，修正文转图把自然语言围栏误画成代码框的问题；穿搭生成加强多日防复刻和组成部分审视，生活实况补齐运动决策、直接用餐、居家烹饪、库存与食谱之间的完整结算边界。完整说明见 [CHANGELOG.md](./CHANGELOG.md)。
+> **v1.2.4 重点更新**：连续消息在模型生成期间继续补充时会接续同一话轮；视觉衣橱联网学习在快速结果不足时自动进入深度检索，并增强远程参考图的来源页、超时和内容校验处理。完整说明见 [CHANGELOG.md](./CHANGELOG.md)。
 
 ---
 
@@ -113,6 +113,8 @@
 * **自主生活决策**：主题、心情色彩、穿搭风格、日程类型和发型都由模型结合近期状态、记忆、天气和目标自然生成，不再按固定清单抽签。
 * **造型防复刻**：近期生活只提供聚合惯性，不把旧穿搭、颜色和发型反复当作生成素材；普通造型与近期记录高度重复时会在保存前单独重写，睡衣允许自然复穿，但连续多日仍是同一具体组合时也会触发调整，不改动已经生成好的日程和人物事实。
 * **穿搭与发型分离**：穿搭正文只描述服装、材质和必要配饰，发型名称与发型细节使用独立字段保存和展示；同日强制重生成时，旧造型只参与重复检测，不会被当成必须延续的当前事实。
+* **视觉衣橱学习**：可以让角色学习用户发送、引用或明确指定的服装商品图、穿搭图和发型图；用户明确要求联网寻找灵感时，会先快速检索，候选不足则自动继续深度检索，并对远程参考图使用来源页、独立超时和内容校验。完整穿搭可分别记录服装、鞋袜、包袋/首饰/头饰、妆容和美甲，发型保持独立；真正采用后，妆容与美甲会作为独立当前造型事实进入聊天、图片、视频和 Dashboard，同图自动去重，未采用的候选不会自动写成“已经换上”。
+* **造型反馈闭环**：可以查看已学习候选并用自然语言反馈喜欢、不适合、太厚、颜色不合适或不要再使用；反馈由模型按完整语义调整候选分数与状态，只有稳定、可复用的意见才进入长期偏好。
 
 ### 4. 💬 聊天余温：关系、记忆与自然靠近
 

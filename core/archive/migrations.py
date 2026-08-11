@@ -7,10 +7,12 @@ from collections.abc import Callable, Mapping
 
 from .tables.cognition import COGNITION_INDEX_SQL, COGNITION_SQL
 from .tables.domains import DOMAIN_INDEX_SQL, DOMAIN_SQL
+from .tables.indexes import INDEX_SQL
+from .tables.world import STYLE_CATALOG_SQL
 
 SCHEMA_VERSION_KEY = "schema_version"
 BASELINE_SCHEMA_VERSION = 1
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 LEGACY_BASELINE_SCHEMA_FINGERPRINT = (
     "9e6243276bf6bd509f6019502e30192310da4197838bd0f7d478f0100f8750a5"
 )
@@ -38,8 +40,11 @@ PREVIOUS_V9_SCHEMA_FINGERPRINT = (
 PREVIOUS_V10_SCHEMA_FINGERPRINT = (
     "188abaade1aace99b29cae4322db76a02dd738f77a284fea50e480ead88081f3"
 )
-CURRENT_SCHEMA_FINGERPRINT = (
+PREVIOUS_V11_SCHEMA_FINGERPRINT = (
     "a1cf402aa1ee09e7ee070240284ad4ffaef9cdadfce4f80acc0453720a026400"
+)
+CURRENT_SCHEMA_FINGERPRINT = (
+    "86365a73b9bb947feab3191007402f5cf72cfed879215b9416d671c5a33a4eb2"
 )
 
 MigrationStep = Callable[[sqlite3.Connection], None]
@@ -317,6 +322,22 @@ def _migrate_travel_detail(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN travel_detail {definition}")
 
 
+def _migrate_style_catalog(conn: sqlite3.Connection) -> None:
+    """创建视觉衣橱候选、反馈和检索索引。"""
+
+    for script in (STYLE_CATALOG_SQL, INDEX_SQL):
+        buffer = ""
+        for line in script.splitlines(keepends=True):
+            buffer += line
+            if sqlite3.complete_statement(buffer):
+                statement = buffer.strip()
+                buffer = ""
+                if statement:
+                    conn.execute(statement)
+        if buffer.strip():
+            raise ValueError("视觉衣橱迁移脚本存在不完整语句")
+
+
 # 键是迁移完成后的目标版本；每个步骤只负责从前一版本升级一次。
 MIGRATIONS: dict[int, MigrationStep] = {
     2: _migrate_timeline_execution_state,
@@ -329,6 +350,7 @@ MIGRATIONS: dict[int, MigrationStep] = {
     9: _migrate_commitment_source_message_id,
     10: _migrate_timeline_location_facts,
     11: _migrate_travel_detail,
+    12: _migrate_style_catalog,
 }
 
 
@@ -375,6 +397,7 @@ def is_baseline_schema(conn: sqlite3.Connection) -> bool:
         PREVIOUS_V8_SCHEMA_FINGERPRINT,
         PREVIOUS_V9_SCHEMA_FINGERPRINT,
         PREVIOUS_V10_SCHEMA_FINGERPRINT,
+        PREVIOUS_V11_SCHEMA_FINGERPRINT,
         LEGACY_BASELINE_SCHEMA_FINGERPRINT,
         CURRENT_SCHEMA_FINGERPRINT,
     }
@@ -470,6 +493,7 @@ __all__ = [
     "PREVIOUS_V8_SCHEMA_FINGERPRINT",
     "PREVIOUS_V9_SCHEMA_FINGERPRINT",
     "PREVIOUS_V10_SCHEMA_FINGERPRINT",
+    "PREVIOUS_V11_SCHEMA_FINGERPRINT",
     "SCHEMA_VERSION",
     "SCHEMA_VERSION_KEY",
     "MigrationStep",

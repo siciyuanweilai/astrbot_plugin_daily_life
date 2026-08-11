@@ -68,6 +68,8 @@ class StageFrameMixin:
             f"当前穿搭风格：{appearance['style'] or '未知'}",
             f"当前发型名称：{appearance['hair_style'] or '未知'}",
             f"当前发型细节：{appearance['hair'] or '未知'}",
+            f"当前妆容：{appearance['makeup'] or '未知'}",
+            f"当前美甲：{appearance['nails'] or '未知'}",
             f"心情色彩：{meta.get('mood') or '未知'}",
             f"日程类型：{meta.get('theme') or meta.get('schedule_intent') or '未知'}",
             f"日程基调：{meta.get('life_mode') or '未知'}",

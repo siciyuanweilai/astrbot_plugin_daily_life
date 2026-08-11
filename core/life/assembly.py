@@ -196,12 +196,20 @@ class DailyAssemblyMixin:
             "style": outfit.get("style"),
             "hair_style": outfit.get("hair_style"),
             "hair": outfit.get("hair"),
+            "makeup": outfit.get("makeup"),
+            "nails": outfit.get("nails"),
             "life_mode": decision.get("life_mode") or plan.get("life_mode"),
             "plan_outfit_decision": outfit_decision,
             "outfit_decision": outfit_decision,
             "outfit_scene_category": outfit_scene_category,
             "outfit_style_pool": outfit_style_pool,
             "outfit_reason": self._localize_outfit_reason(outfit.get("reason")),
+            "style_catalog_reference_ids": ",".join(
+                str(item)
+                for item in self._style_catalog_reference_ids(
+                    outfit.get("catalog_reference_ids")
+                )
+            ),
             "sleep_mode": sleep.get("mode"),
             "schedule_type": plan.get("schedule_type") or plan.get("type"),
             "schedule_intent": plan.get("schedule_intent"),

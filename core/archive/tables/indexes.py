@@ -12,6 +12,9 @@ CREATE INDEX IF NOT EXISTS idx_action_decisions_recent ON action_decisions(id DE
 CREATE INDEX IF NOT EXISTS idx_daily_reviews_recent ON daily_reviews(date DESC);
 CREATE INDEX IF NOT EXISTS idx_preferences_rank ON preferences(weight DESC, last_seen DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_life_events_recent ON life_events(date DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_style_catalog_active ON style_catalog_items(kind, status, preference_score DESC, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_style_catalog_scope_recent ON style_catalog_items(source_scope, updated_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_style_catalog_feedback_item ON style_catalog_feedback(item_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_life_episodes_recent ON life_episodes(date DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_memory_evidence_target ON memory_evidence(target_type, target_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_behavior_feedback_recent ON behavior_feedback(date DESC, id DESC);

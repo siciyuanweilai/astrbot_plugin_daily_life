@@ -53,6 +53,7 @@ from core.models import (
     ReversePromptRecord,
     SessionMidSummaryRecord,
     SleepState,
+    StyleCatalogItemRecord,
     TemporaryExpressionStateRecord,
     TimelineItem,
     WeekPlanRecord,
@@ -62,6 +63,114 @@ from support import LifeArchive, LifeSettings
 
 
 class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
+    async def test_style_catalog_separates_items_deduplicates_and_records_feedback(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(f"{tmpdir}/daily_life.db")
+            try:
+                outfit = await archive.upsert_style_catalog_item(
+                    StyleCatalogItemRecord(
+                        kind="outfit",
+                        title="测试通勤造型",
+                        description="浅色短外套搭直筒长裤",
+                        source_scope="private:test-user",
+                        source_image_hash="a" * 64,
+                        attributes={
+                            "colors": ["浅色"],
+                            "scenes": ["通勤"],
+                        },
+                        confidence=0.8,
+                    )
+                )
+                hair = await archive.upsert_style_catalog_item(
+                    StyleCatalogItemRecord(
+                        kind="hair",
+                        title="测试低马尾",
+                        description="中长发低位束起并保留轻薄刘海",
+                        source_scope="private:test-user",
+                        source_image_hash="a" * 64,
+                        attributes={"scenes": ["通勤"]},
+                        confidence=0.9,
+                    )
+                )
+                repeated = await archive.upsert_style_catalog_item(
+                    StyleCatalogItemRecord(
+                        kind="outfit",
+                        title="更新后的测试通勤造型",
+                        description="浅色短外套搭高腰直筒长裤",
+                        source_scope="private:test-user",
+                        source_image_hash="a" * 64,
+                        attributes={"scenes": ["通勤", "日常"]},
+                        confidence=0.9,
+                    )
+                )
+
+                self.assertIsNotNone(outfit)
+                self.assertIsNotNone(hair)
+                self.assertEqual(repeated.id, outfit.id)
+                self.assertEqual(repeated.seen_count, 2)
+                self.assertNotEqual(outfit.id, hair.id)
+
+                updated = await archive.add_style_catalog_feedback(
+                    outfit.id,
+                    scope="private:test-user",
+                    feedback="这套更适合日常通勤",
+                    sentiment="prefer",
+                    score_delta=0.6,
+                    reason="用户明确表示适合",
+                    status="active",
+                )
+                self.assertAlmostEqual(updated.preference_score, 0.6)
+                self.assertEqual(updated.feedback_count, 1)
+
+                active = await archive.get_style_catalog_items(limit=10)
+                self.assertEqual({item.kind for item in active}, {"outfit", "hair"})
+                self.assertEqual(active[0].id, outfit.id)
+                self.assertEqual(await archive.mark_style_catalog_used([outfit.id]), 1)
+                used = await archive.get_style_catalog_items(
+                    status="", ids=[outfit.id], limit=1
+                )
+                self.assertTrue(used[0].last_used_at)
+            finally:
+                archive.close()
+
+    async def test_v11_database_migrates_style_catalog_without_losing_existing_data(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = f"{tmpdir}/daily_life.db"
+            archive = LifeArchive(path)
+            await archive.upsert_preferences(
+                [PreferenceRecord(category="outfit", content="测试偏好")],
+                "2026-08-11",
+            )
+            archive.close()
+
+            conn = sqlite3.connect(path)
+            try:
+                conn.execute("DROP INDEX IF EXISTS idx_style_catalog_feedback_item")
+                conn.execute("DROP INDEX IF EXISTS idx_style_catalog_scope_recent")
+                conn.execute("DROP INDEX IF EXISTS idx_style_catalog_active")
+                conn.execute("DROP TABLE IF EXISTS style_catalog_feedback")
+                conn.execute("DROP TABLE IF EXISTS style_catalog_items")
+                conn.execute(
+                    "UPDATE meta SET value = '11' WHERE key = 'schema_version'"
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            migrated = LifeArchive(path)
+            try:
+                preferences = await migrated.get_preferences(5, "outfit")
+                self.assertEqual(preferences[0].content, "测试偏好")
+                self.assertEqual(
+                    await migrated.get_style_catalog_items(limit=5), []
+                )
+                version = migrated._conn.execute(
+                    "SELECT value FROM meta WHERE key = 'schema_version'"
+                ).fetchone()
+                self.assertEqual(version[0], str(SCHEMA_VERSION))
+            finally:
+                migrated.close()
+
     async def test_daily_plan_episode_is_replaced_for_same_date(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             archive = LifeArchive(f"{tmpdir}/daily_life.db")

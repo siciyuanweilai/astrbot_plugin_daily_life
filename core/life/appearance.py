@@ -13,10 +13,12 @@ APPEARANCE_PRIORITY_RULE = (
     "配置审美只作为软底色，当前场景不适合或用户纠偏时必须让位。"
 )
 CURRENT_APPEARANCE_GENERATION_RULES = (
-    "outfit 写当前实际可见的完整穿搭：至少交代服装类别、主色，以及版型/松紧、材质/纹理中的有效细节；"
-    "鞋袜、配饰、妆容或指甲只在符合场景且处于实际取景范围内时补充，不得虚构画面不可见的细节。\n"
+    "outfit 写当前实际穿着的完整穿搭：至少交代服装类别、主色，以及版型/松紧、材质/纹理中的有效细节；"
+    "鞋袜和配饰在确实存在时写入 outfit，不得虚构没有依据的组成。\n"
     "hair_style 只写简短发型名称；hair 单独写当前可见的详细发型，"
     "按场景自然交代长度/层次、扎法/分缝、刘海/发尾、发饰/整理状态中的有效细节；"
+    "makeup 单独写当前实际妆容，nails 单独写当前实际美甲；没有可靠事实时留空，明确无妆、裸甲或卸除时如实写明。"
+    "换衣不会自动改变美甲；只有用户明确要求、已发生的妆发护理/美甲动作或可靠实时状态才能改变对应事实。\n"
     "style 只写简短审美标签，不重复服装清单。"
 )
 _APPEARANCE_COMPARISON_IGNORED_CHARACTERS = frozenset(
@@ -101,12 +103,21 @@ def strip_hair_from_outfit(outfit: object, hair_style: object, hair: object) -> 
 
 def current_appearance_values(day: Any) -> dict[str, str]:
     if day is None:
-        return {"outfit": "", "style": "", "hair_style": "", "hair": ""}
+        return {
+            "outfit": "",
+            "style": "",
+            "hair_style": "",
+            "hair": "",
+            "makeup": "",
+            "nails": "",
+        }
     meta = getattr(day, "meta", {}) or {}
     if not isinstance(meta, dict):
         meta = {}
     hair_style = _clean_text(meta.get("hair_style"), 80)
     hair = _clean_text(meta.get("hair"), 180)
+    makeup = _clean_text(meta.get("makeup"), 160)
+    nails = _clean_text(meta.get("nails"), 160)
     return {
         "outfit": strip_hair_from_outfit(
             getattr(day, "outfit", ""), hair_style, hair
@@ -114,6 +125,8 @@ def current_appearance_values(day: Any) -> dict[str, str]:
         "style": _clean_text(meta.get("style"), 120),
         "hair_style": hair_style,
         "hair": hair,
+        "makeup": makeup,
+        "nails": nails,
     }
 
 
@@ -124,6 +137,8 @@ def format_current_appearance_context(day: Any) -> str:
         f"当前穿搭风格：{values['style']}" if values["style"] else "",
         f"当前发型名称：{values['hair_style']}" if values["hair_style"] else "",
         f"当前发型细节：{values['hair']}" if values["hair"] else "",
+        f"当前妆容：{values['makeup']}" if values["makeup"] else "",
+        f"当前美甲：{values['nails']}" if values["nails"] else "",
     ]
     return "\n".join(line for line in lines if line)
 

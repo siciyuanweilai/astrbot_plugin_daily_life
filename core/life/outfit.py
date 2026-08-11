@@ -57,6 +57,16 @@ PERIOD_TIME_RANGES = {
     "late_night": "22:00-24:00",
 }
 
+_OUTFIT_FACT_SOURCE_LABELS = {
+    "user_instruction": "用户明确确认",
+    "life_action": "已结算生活动作",
+    "occurred_schedule": "已发生日程",
+    "live_state": "实时生活状态",
+    "autonomous": "自主生活判断",
+    "daily_generation": "当日日程生成",
+    "carried_previous_day": "前一日延续",
+}
+
 
 class OutfitMixin:
     @staticmethod
@@ -129,6 +139,81 @@ class OutfitMixin:
         for token in sorted(labels, key=len, reverse=True):
             text = cls._replace_enum_token(text, token, labels[token])
         return text
+
+    @staticmethod
+    def _compact_outfit_evidence(value: object, limit: int = 240) -> str:
+        return " ".join(str(value or "").strip().split())[:limit]
+
+    @classmethod
+    def _outfit_fact_context_text(cls, meta: dict) -> str:
+        source = str(meta.get("outfit_fact_source") or "").strip()
+        source_label = _OUTFIT_FACT_SOURCE_LABELS.get(source, "普通历史记录")
+        confirmed_at = cls._compact_outfit_evidence(
+            meta.get("outfit_fact_confirmed_at"), 40
+        )
+        evidence = cls._compact_outfit_evidence(meta.get("outfit_fact_evidence"), 120)
+        lines = [f"当前穿搭事实来源：{source_label}"]
+        if confirmed_at:
+            lines.append(f"当前穿搭确认时间：{confirmed_at}")
+        if evidence:
+            lines.append(f"当前穿搭确认依据：{evidence}")
+        if source == "user_instruction":
+            lines.append(
+                "当前穿搭是用户明确要求后保存的已确认事实；普通舒适度判断、未来休息安排或模型偏好不能覆盖。"
+            )
+        return "\n".join(lines)
+
+    @classmethod
+    def _state_outfit_evidence_text(cls, data) -> str:
+        state = getattr(data, "state", None)
+        values = []
+        if state:
+            values.extend(
+                (
+                    getattr(state, "summary", ""),
+                    getattr(state, "interrupt_reason", ""),
+                    getattr(getattr(state, "sleep", None), "summary", ""),
+                    getattr(
+                        getattr(state, "physiological_rhythm", None), "summary", ""
+                    ),
+                )
+            )
+        values.extend(list(getattr(data, "state_log", []) or [])[-4:])
+        return "\n".join(
+            text
+            for value in values
+            if (text := cls._compact_outfit_evidence(value, 360))
+        )
+
+    @classmethod
+    def _verified_outfit_change_source(cls, result: dict, context: dict) -> str:
+        evidence = (
+            result.get("change_evidence")
+            if isinstance(result.get("change_evidence"), dict)
+            else {}
+        )
+        if str(evidence.get("kind") or "").strip() != "explicit_outfit_change":
+            return ""
+        source = str(evidence.get("source") or "").strip()
+        quote = cls._compact_outfit_evidence(evidence.get("quote"), 360)
+        if not quote:
+            return ""
+        if source == "occurred_schedule":
+            timeline_time = str(evidence.get("timeline_time") or "").strip()
+            for item in context.get("occurred_timeline_items", []):
+                item_time = str(getattr(item, "time", "") or "").strip()
+                if not timeline_time or item_time != timeline_time:
+                    continue
+                item_evidence = "\n".join(
+                    cls._compact_outfit_evidence(getattr(item, field, ""), 360)
+                    for field in ("activity", "status", "execution_evidence")
+                )
+                if quote in item_evidence:
+                    return "occurred_schedule"
+            return ""
+        if source == "live_state" and quote in context.get("state_evidence", ""):
+            return "live_state"
+        return ""
 
     @staticmethod
     def _timeline_item_text(item: object, *, previous_place: str = "") -> str:
@@ -260,6 +345,8 @@ class OutfitMixin:
             f"当前穿搭：{old_data.outfit or '未知'}",
             f"当前发型名称：{old_meta.get('hair_style') or '未知'}",
             f"当前发型细节：{old_meta.get('hair') or '未知'}",
+            f"当前妆容：{old_meta.get('makeup') or '未知'}",
+            f"当前美甲：{old_meta.get('nails') or '未知'}",
             f"当前穿着场景：{outfit_scene_category_label(old_meta.get('outfit_scene_category')) if old_meta.get('outfit_scene_category') else '未知'}",
             f"当前穿着风格池：{outfit_style_pool_label(old_meta.get('outfit_style_pool')) if old_meta.get('outfit_style_pool') else '未知'}",
             f"今日日程基调：{old_meta.get('life_mode', '未知')}",
@@ -293,6 +380,11 @@ class OutfitMixin:
         past_timeline, future_timeline = self._timeline_context_text(
             old_data.timeline, current_time, timeline_date
         )
+        occurred_timeline_items = []
+        for item in old_data.timeline:
+            item_time = timeline_item_datetime(item, timeline_date)
+            if item_time is not None and item_time <= current_time:
+                occurred_timeline_items.append(item)
         old_meta = old_data.meta
         return {
             "old_data": old_data,
@@ -305,10 +397,14 @@ class OutfitMixin:
             "weather": old_data.weather or "未知",
             "weather_info": old_data.weather_info,
             "old_meta": old_meta,
+            "outfit_fact_context": self._outfit_fact_context_text(old_meta),
+            "occurred_timeline_items": occurred_timeline_items,
+            "state_evidence": self._state_outfit_evidence_text(old_data),
             "daily_theme": old_meta.get("theme", "未设定"),
             "mood_color": old_meta.get("mood", "未设定"),
             "instruction": str(instruction or "").strip(),
             "appearance_context": await self._outfit_appearance_context(),
+            "style_catalog_context": await self._style_catalog_context(limit=10),
         }
 
     async def _outfit_appearance_context(self) -> str:
@@ -342,14 +438,18 @@ class OutfitMixin:
 2. 未发生的未来安排只能作为预告，不能提前覆盖当前穿搭；等对应时间/场景实际到达后再换装。
 3. 当前或下一项安排需要外出时，先判断现有穿搭是否适合场景和天气；明显不合适时不能直接 keep。
 4. current_outfit_basis 用于说明最终穿搭依据：stored 表示数据库中的当前穿搭仍有效；occurred_schedule 表示当前或已发生日程明确完成了换装；live_state 表示实时状态明确确认已经换装。未发生日程不能作为依据。
-5. keep 只能与 stored 搭配，并原样返回当前 outfit、style、hair_style、hair；已经换装则选择 change、partial_change、sleepwear 或 outdoor，不能用 keep 表示“换装后继续穿着”。
-6. component_review 必须分别审视主体服装、鞋履、外层和随身配饰；不存在的组成写 not_present，无法确认写 unknown。任一组成需要调整时，不能返回 keep。
+5. keep 只能与 stored 搭配，并原样返回当前 outfit、style、hair_style、hair、makeup、nails；已经换装则选择 change、partial_change、sleepwear 或 outdoor，不能用 keep 表示“换装后继续穿着”。
+6. component_review 必须分别审视主体服装、鞋履、外层、随身配饰、妆容和美甲；不存在的组成写 not_present，无法确认写 unknown。任一组成需要调整时，不能返回 keep。
 7. partial_change 只写局部调整后的最终状态；component_review 标记 adjust 时，outfit 必须写调整后实际可见的完整穿搭。
-8. outfit/style/hair_style/hair 只写最终视觉状态；新换装或局部调整时遵循以下描述要求，keep 仍须原样返回已有状态：
+8. outfit/style/hair_style/hair/makeup/nails 只写最终视觉状态；新换装或局部调整时遵循以下描述要求，keep 仍须原样返回已有状态：
 {CURRENT_APPEARANCE_GENERATION_RULES}
 reason 使用自然中文，不写内部枚举，也不复述具体日期、钟点或时间轴编号。
 9. 用户明确提出穿搭要求时，在不违背当前真实场景和天气的前提下优先执行，不能用 keep 回避。
 10. 只返回穿搭决策，不得改写时间轴、实时状态、主题、地点、事件或睡眠信息。
+11. change_evidence 只描述本轮更换主体服装的事实依据：
+- 已发生日程明确记载已经换装时，kind=explicit_outfit_change、source=occurred_schedule，timeline_time 填对应节点时间，quote 必须原样摘录该节点中明确确认换装的短句。
+- 实时生活状态明确记载已经换装时，kind=explicit_outfit_change、source=live_state，quote 必须原样摘录实时状态中的确认短句。
+- 只是基于舒适度自主建议换装时，kind=comfort_adjustment、source=autonomous；场景变化但没有已发生换装事实时使用 scene_transition；没有变化依据时使用 none。不得把未来安排、普通活动或换装建议标成已经换装。
 
 返回JSON格式：
 {{
@@ -357,12 +457,16 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
   "current_outfit_basis": "{OUTFIT_CURRENT_BASIS_ENUM}",
   "scene_category": "{OUTFIT_SCENE_CATEGORY_ENUM}",
   "style_pool": "sleep_styles | outfit_styles | mixed",
-  "component_review": {{"main_clothing": "keep | adjust | not_present | unknown", "footwear": "keep | adjust | not_present | unknown", "outer_layer": "keep | adjust | not_present | unknown", "carried_accessories": "keep | adjust | not_present | unknown"}},
+  "component_review": {{"main_clothing": "keep | adjust | not_present | unknown", "footwear": "keep | adjust | not_present | unknown", "outer_layer": "keep | adjust | not_present | unknown", "carried_accessories": "keep | adjust | not_present | unknown", "makeup": "keep | adjust | not_present | unknown", "nails": "keep | adjust | not_present | unknown"}},
   "outfit": "当前实际可见的详细穿搭；keep 时必须原样返回当前穿搭",
   "style": "简短的最终风格",
   "hair_style": "简短发型名称",
   "hair": "当前可见的详细发型",
-  "reason": "一句很短的内部原因"
+  "makeup": "当前实际妆容或空字符串",
+  "nails": "当前实际美甲或空字符串",
+  "catalog_reference_ids": ["实际采用的视觉衣橱候选编号"],
+  "reason": "一句很短的内部原因",
+  "change_evidence": {{"kind": "none | explicit_outfit_change | comfort_adjustment | scene_transition", "source": "stored | occurred_schedule | live_state | autonomous", "timeline_time": "已发生节点时间或空字符串", "quote": "原样证据短句或空字符串"}}
 }}
 """
         dynamic = f"""生活日程日期：{context["timeline_date"]}
@@ -381,10 +485,15 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
                 target_period=target_period,
             )
         }
+当前穿搭事实：
+{context["outfit_fact_context"]}
 实时生活状态：
 {context["state_context"]}
 长期审美偏好：
 {context["appearance_context"] or "无"}
+视觉衣橱候选：
+{context["style_catalog_context"] or "无"}
+候选仅在本轮确实生成新造型时使用；keep 时必须返回空数组。服装与发型分别选择，实际采用的编号写入 catalog_reference_ids，未采用写空数组。
 当前实际时间：{current_time.strftime("%Y-%m-%d %H:%M")}
 当前时间范围：{PERIOD_TIME_RANGES.get(target_period, "未知")}
 用户本次明确穿搭要求：{context["instruction"] or "无"}"""
@@ -408,10 +517,13 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
         current_basis = normalize_outfit_current_basis(
             result.get("current_outfit_basis")
         )
+        verified_change_source = self._verified_outfit_change_source(result, context)
         generated_outfit = str(result.get("outfit") or "").strip()
         generated_style = str(result.get("style") or "").strip()
         generated_hair_style = str(result.get("hair_style") or "").strip()
         generated_hair = str(result.get("hair") or "").strip()
+        generated_makeup = str(result.get("makeup") or "").strip()
+        generated_nails = str(result.get("nails") or "").strip()
         component_review = (
             result.get("component_review")
             if isinstance(result.get("component_review"), dict)
@@ -454,6 +566,19 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
         if reviewed_partial_change:
             decision = "partial_change"
             logger.debug("[穿搭更新] 已按组成部分审视结果校正穿搭决定：决定=局部调整")
+        reference_ids = (
+            self._style_catalog_reference_ids(result.get("catalog_reference_ids"))
+            if decision != "keep"
+            else []
+        )
+        if reference_ids:
+            catalog_appearance = await self._style_catalog_reference_appearance(
+                reference_ids
+            )
+            generated_makeup = generated_makeup or catalog_appearance.get(
+                "makeup", ""
+            )
+            generated_nails = generated_nails or catalog_appearance.get("nails", "")
         if decision == "keep":
             new_outfit = old_outfit
             model_kept_outfit = not generated_outfit or generated_outfit == new_outfit
@@ -467,11 +592,21 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
             final_hair = str(
                 old_meta.get("hair") or (generated_hair if model_kept_outfit else "")
             ).strip()
+            final_makeup = str(
+                old_meta.get("makeup")
+                or (generated_makeup if model_kept_outfit else "")
+            ).strip()
+            final_nails = str(
+                old_meta.get("nails")
+                or (generated_nails if model_kept_outfit else "")
+            ).strip()
         else:
             new_outfit = generated_outfit
             final_style = generated_style
             final_hair_style = generated_hair_style
             final_hair = generated_hair
+            final_makeup = generated_makeup or str(old_meta.get("makeup") or "").strip()
+            final_nails = generated_nails or str(old_meta.get("nails") or "").strip()
         new_outfit = strip_hair_from_outfit(
             new_outfit,
             final_hair_style,
@@ -479,6 +614,32 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
         )
         if not new_outfit:
             return None
+        appearance_changed = any(
+            (
+                new_outfit != old_outfit,
+                final_style != str(old_meta.get("style") or "").strip(),
+                final_hair_style
+                != str(old_meta.get("hair_style") or "").strip(),
+                final_hair != str(old_meta.get("hair") or "").strip(),
+                final_makeup != str(old_meta.get("makeup") or "").strip(),
+                final_nails != str(old_meta.get("nails") or "").strip(),
+            )
+        )
+        user_confirmed = (
+            str(old_meta.get("outfit_fact_source") or "").strip()
+            == "user_instruction"
+        )
+        if (
+            user_confirmed
+            and not context.get("instruction")
+            and decision != "keep"
+            and appearance_changed
+            and not verified_change_source
+        ):
+            logger.info(
+                "[穿搭更新] 已保留用户确认的当前穿搭：本轮没有已发生换装证据"
+            )
+            return old_data
         style_pool = resolve_outfit_style_pool(
             scene_category,
             decision=decision,
@@ -506,7 +667,14 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
         if should_abort and should_abort():
             return None
         old_data.outfit_history[target_period] = new_outfit
-        clearable_keys = {"style", "hair_style", "hair", "outfit_reason"}
+        clearable_keys = {
+            "style",
+            "hair_style",
+            "hair",
+            "makeup",
+            "nails",
+            "outfit_reason",
+        }
         for key, value in {
             "outfit_decision": decision,
             "outfit_scene_category": scene_category,
@@ -514,6 +682,8 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
             "style": final_style,
             "hair_style": final_hair_style,
             "hair": final_hair,
+            "makeup": final_makeup,
+            "nails": final_nails,
             "outfit_reason": self._localize_outfit_reason(result.get("reason")),
         }.items():
             text = str(value or "").strip()
@@ -521,14 +691,49 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
                 old_data.meta[key] = text
             elif key in clearable_keys:
                 old_data.meta.pop(key, None)
+        if context.get("instruction"):
+            old_data.meta["outfit_fact_source"] = "user_instruction"
+            old_data.meta["outfit_fact_confirmed_at"] = current_time.strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            old_data.meta["outfit_fact_evidence"] = "用户本轮明确穿搭要求"
+        elif decision != "keep" and appearance_changed:
+            old_data.meta["outfit_fact_source"] = (
+                verified_change_source or "autonomous"
+            )
+            old_data.meta["outfit_fact_confirmed_at"] = current_time.strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            evidence = (
+                result.get("change_evidence")
+                if isinstance(result.get("change_evidence"), dict)
+                else {}
+            )
+            evidence_text = self._compact_outfit_evidence(
+                evidence.get("quote") or result.get("reason"), 160
+            )
+            if evidence_text:
+                old_data.meta["outfit_fact_evidence"] = evidence_text
+            else:
+                old_data.meta.pop("outfit_fact_evidence", None)
         old_data.outfit = new_outfit
         old_data.time_period = target_period
+        if reference_ids:
+            old_data.meta["style_catalog_reference_ids"] = ",".join(
+                str(item) for item in reference_ids
+            )
         await self.archive.save_day(old_data)
+        if reference_ids:
+            await self._mark_style_catalog_references(reference_ids)
         outcome_parts = [f"风格：{final_style}"]
         if final_hair_style:
             outcome_parts.append(f"发型名称：{final_hair_style}")
         if final_hair:
             outcome_parts.append(f"发型细节：{final_hair}")
+        if final_makeup:
+            outcome_parts.append(f"妆容：{final_makeup}")
+        if final_nails:
+            outcome_parts.append(f"美甲：{final_nails}")
         outcome_parts.extend(
             (
                 f"场景：{outfit_scene_category_label(scene_category)}",

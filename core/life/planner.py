@@ -18,12 +18,14 @@ from .outfit import OutfitMixin
 from .people import PersonFactMixin
 from .reference import ReferenceMixin
 from .rhythm import LifecycleMixin
+from .style_catalog import StyleCatalogMixin
 from .tools import extract_json_from_text, get_time_period
 from .weather import WeatherClient
 from .weekly import WeekMixin
 
 
 class LifeBackgroundComposer(
+    StyleCatalogMixin,
     ReferenceMixin,
     PersonFactMixin,
     LifeAutonomyMixin,

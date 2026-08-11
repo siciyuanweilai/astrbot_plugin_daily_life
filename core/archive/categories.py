@@ -62,8 +62,12 @@ WORLD_TABLES = (
     "event_people",
     "preferences",
     "life_events",
+    "style_catalog_items",
+    "style_catalog_feedback",
 )
 WORLD_CLEAR_ORDER = (
+    "style_catalog_feedback",
+    "style_catalog_items",
     "event_people",
     "events",
     "life_events",
@@ -356,6 +360,11 @@ STORAGE_CATEGORIES: dict[str, StorageCategory] = {
                 "events", "事件线索", ("events", "event_people", "life_events")
             ),
             StorageTableGroup("preferences", "长期偏好", ("preferences",)),
+            StorageTableGroup(
+                "style_catalog",
+                "视觉衣橱",
+                ("style_catalog_items", "style_catalog_feedback"),
+            ),
         ),
     ),
     "conversation": StorageCategory(

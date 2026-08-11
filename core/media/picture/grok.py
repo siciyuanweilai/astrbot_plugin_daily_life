@@ -6,7 +6,6 @@ from typing import Any
 from astrbot.api import logger
 
 from ..base import LOG_PREFIX, absolute_url, normalize_openai_base_url, origin_from_url
-from .openai import size_for
 from .pipe import ImageRequest, ImageRoute
 
 
@@ -58,9 +57,9 @@ def build_request(
         "response_format": "b64_json",
         "aspect_ratio": aspect_ratio,
         "resolution": resolution.lower(),
+        "stream": False,
     }
     if not images:
-        payload["stream"] = False
         return ImageRequest(
             url=f"{base}/images/generations",
             headers=headers,
@@ -71,8 +70,6 @@ def build_request(
         payload["image"] = {"url": images[0]}
     else:
         payload["images"] = [{"url": image} for image in images]
-    # 部分 OpenAI 兼容中转只识别精确 size，不读取 Grok 的档位与比例字段。
-    payload["size"] = size_for(resolution, aspect_ratio)
     return ImageRequest(
         url=f"{base}/images/edits",
         headers=headers,

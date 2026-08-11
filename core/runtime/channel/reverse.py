@@ -477,7 +477,9 @@ class RuntimeReverseMediaMixin:
     def _reverse_reference_cache_dir(self) -> Path:
         return runtime_data_root(getattr(self, "data_path", None)) / "reverse"
 
-    async def _reverse_reference_bytes(self, image: str) -> tuple[bytes, str]:
+    async def _reverse_reference_bytes(
+        self, image: str, *, referer: str = ""
+    ) -> tuple[bytes, str]:
         image = str(image or "").strip()
         loader = getattr(
             getattr(getattr(self, "media", None), "image", None),
@@ -485,7 +487,10 @@ class RuntimeReverseMediaMixin:
             None,
         )
         if callable(loader):
-            data, mime = await loader(image)
+            if referer:
+                data, mime = await loader(image, referer=referer)
+            else:
+                data, mime = await loader(image)
             return bytes(data or b""), str(mime or "").strip()
         if image.startswith("base64://"):
             data = base64.b64decode(image.removeprefix("base64://"), validate=True)
@@ -746,14 +751,16 @@ class RuntimeReverseMediaMixin:
             source_image_hash=source_image_hash,
         )
         return ToolResultText(
-            self._format_reverse_prompt_result({
-                "title": title,
-                "prompt": prompt,
-                "keywords": keywords,
-                "ratio": ratio,
-                "usage": usage,
-                "analysis": analysis,
-            }),
+            self._format_reverse_prompt_result(
+                {
+                    "title": title,
+                    "prompt": prompt,
+                    "keywords": keywords,
+                    "ratio": ratio,
+                    "usage": usage,
+                    "analysis": analysis,
+                }
+            ),
             status="ok",
             media="image_reverse_prompt",
         )

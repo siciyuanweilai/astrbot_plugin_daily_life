@@ -97,3 +97,44 @@ CREATE TABLE IF NOT EXISTS chat_summary_people (
             FOREIGN KEY(summary_id) REFERENCES chat_summaries(id) ON DELETE CASCADE
         );
 """
+
+STYLE_CATALOG_SQL = """
+-- 视觉衣橱候选与语义反馈
+CREATE TABLE IF NOT EXISTS style_catalog_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL CHECK(kind IN ('outfit', 'hair')),
+            title TEXT NOT NULL DEFAULT '',
+            description TEXT NOT NULL DEFAULT '',
+            image_path TEXT NOT NULL DEFAULT '',
+            source_url TEXT NOT NULL DEFAULT '',
+            source_scope TEXT NOT NULL DEFAULT '',
+            source_kind TEXT NOT NULL DEFAULT 'user_image',
+            source_image_hash TEXT NOT NULL,
+            attributes_json TEXT NOT NULL DEFAULT '{}',
+            confidence REAL NOT NULL DEFAULT 0,
+            preference_score REAL NOT NULL DEFAULT 0,
+            feedback_count INTEGER NOT NULL DEFAULT 0,
+            seen_count INTEGER NOT NULL DEFAULT 1,
+            status TEXT NOT NULL DEFAULT 'active',
+            last_used_at TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(source_image_hash, kind)
+        );
+CREATE TABLE IF NOT EXISTS style_catalog_feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_id INTEGER NOT NULL,
+            scope TEXT NOT NULL DEFAULT '',
+            feedback TEXT NOT NULL DEFAULT '',
+            sentiment TEXT NOT NULL DEFAULT 'neutral',
+            score_delta REAL NOT NULL DEFAULT 0,
+            reason TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(item_id) REFERENCES style_catalog_items(id) ON DELETE CASCADE
+        );
+"""
+
+WORLD_SQL += STYLE_CATALOG_SQL
+
+
+__all__ = ["STYLE_CATALOG_SQL", "WORLD_SQL"]

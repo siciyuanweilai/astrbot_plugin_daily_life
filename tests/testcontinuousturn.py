@@ -57,18 +57,41 @@ class ContinuousTurnTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request.prompt, "明天下雨\n记得带伞出门")
         self.assertIn("同一个话轮", request.system_prompt)
 
-    async def test_new_message_invalidates_an_event_that_started_generating(self):
+    async def test_new_message_joins_an_event_that_started_generating(self):
         runtime = self._runtime(continuous_turn_wait_seconds=0)
         first = self._event("第一条", "m-first")
         second = self._event("补充一条", "m-second")
 
         runtime.note_continuous_turn_incoming(first)
         self.assertTrue(await runtime.settle_continuous_turn(first))
+        request = ProviderRequest(prompt=first.message_str)
+        self.assertTrue(runtime.prepare_continuous_turn_llm_request(first, request))
         runtime.note_continuous_turn_incoming(second)
 
+        self.assertTrue(runtime.continuous_turn_event_is_current(first))
+        self.assertTrue(runtime.continuous_turn_event_is_inflight_follow_up(second))
+        self.assertTrue(await runtime.settle_continuous_turn(second))
+        self.assertFalse(first.is_stopped())
+        self.assertTrue(runtime.prepare_continuous_turn_llm_request(first, request))
+
+    async def test_inflight_follow_up_bypasses_a_second_response_gate_decision(self):
+        runtime = self._runtime(continuous_turn_wait_seconds=0)
+        runtime._init_response_gate_state()
+        first = self._event("先拍一张", "m-first")
+        second = self._event("拍套图的", "m-second")
+
+        runtime.note_continuous_turn_incoming(first)
+        self.assertTrue(await runtime.settle_continuous_turn(first))
         request = ProviderRequest(prompt=first.message_str)
-        self.assertFalse(runtime.prepare_continuous_turn_llm_request(first, request))
-        self.assertTrue(first.is_stopped())
+        self.assertTrue(runtime.prepare_continuous_turn_llm_request(first, request))
+        runtime.note_continuous_turn_incoming(second)
+        self.assertTrue(await runtime.settle_continuous_turn(second))
+
+        decision = await runtime.evaluate_response_gate(second)
+
+        self.assertEqual(decision["action"], "reply")
+        self.assertTrue(decision["forced"])
+        self.assertIn("接续正在生成", decision["reason"])
 
     async def test_completed_turn_does_not_leak_into_the_next_turn(self):
         runtime = self._runtime(continuous_turn_wait_seconds=0)

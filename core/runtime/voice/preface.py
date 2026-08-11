@@ -17,6 +17,7 @@ from ..markers import LOG_PREFIX
 
 VOICE_TOOL_NAME = "life_voice_generate"
 EMOJI_TOOL_NAME = "life_emoji_send"
+SEND_MESSAGE_TOOL_NAME = "send_message_to_user"
 SILENT_TOOL_PREFACE_NAMES = frozenset({VOICE_TOOL_NAME, EMOJI_TOOL_NAME})
 
 
@@ -94,14 +95,53 @@ class SilentToolPrefaceMixin:
             target.extend(raw_chain)
         return chain
 
+    @staticmethod
+    def _normalize_visible_text(value: Any) -> str:
+        """统一可见文本的空白，便于同一工具轮次做完整内容比较。"""
+
+        return " ".join(str(value or "").split()).strip()
+
+    @classmethod
+    def _same_visible_text(cls, left: Any, right: Any) -> bool:
+        first = cls._normalize_visible_text(left)
+        second = cls._normalize_visible_text(right)
+        return bool(first) and first == second
+
+    @staticmethod
+    def _plain_send_message_tool_text(event: Any, tool_args: Any) -> str:
+        """读取当前会话发送工具中的纯文本，不处理跨会话或媒体消息。"""
+
+        if not isinstance(tool_args, dict):
+            return ""
+        scope = str(getattr(event, "unified_msg_origin", "") or "").strip()
+        target = str(tool_args.get("session") or scope).strip()
+        if not scope or target != scope:
+            return ""
+        messages = tool_args.get("messages")
+        if not isinstance(messages, (list, tuple)) or not messages:
+            return ""
+        texts: list[str] = []
+        for message in messages:
+            if not isinstance(message, dict):
+                return ""
+            if str(message.get("type") or "").strip().lower() != "plain":
+                return ""
+            text = str(message.get("text") or "").strip()
+            if not text:
+                return ""
+            texts.append(text)
+        return "\n".join(texts)
+
     def _remember_tool_preface(self, event: Any, result: Any) -> bool:
         scope = self._tool_preface_scope_key(event)
         chain = getattr(result, "chain", None)
         if not scope or not isinstance(chain, list) or not chain:
             return False
+        copied = self._copy_result_chain(result)
         self._tool_reply_round_store()[scope] = {
             "event_key": self._tool_preface_event_key(event),
-            "preface": self._copy_result_chain(result),
+            "preface": copied,
+            "preface_text": self._plain_tool_preface_text(copied),
             "tool_name": "",
             "outcome": "",
             "preface_sent": False,
@@ -172,7 +212,6 @@ class SilentToolPrefaceMixin:
     ) -> None:
         """在 AstrBot 确认工具后释放或丢弃已经暂存的中间回复。"""
 
-        del tool_args
         scope = self._tool_preface_scope_key(event)
         if not scope:
             return
@@ -183,6 +222,19 @@ class SilentToolPrefaceMixin:
         state["tool_name"] = name
         state["tool_completed"] = False
         chain = state.pop("preface", None)
+        preface_text = str(state.get("preface_text") or "").strip()
+        if (
+            name == SEND_MESSAGE_TOOL_NAME
+            and chain is not None
+            and self._same_visible_text(
+                preface_text,
+                self._plain_send_message_tool_text(event, tool_args),
+            )
+        ):
+            state["preface_suppressed"] = True
+            state["preface_duplicate_owned_by_tool"] = True
+            logger.debug(f"{LOG_PREFIX} 工具前置回复与发送工具内容一致，跳过重复发送。")
+            return
         if name in SILENT_TOOL_PREFACE_NAMES:
             state["preface_suppressed"] = True
             logger.debug(f"{LOG_PREFIX} 工具调用前回复已静默：{name}")
@@ -205,6 +257,20 @@ class SilentToolPrefaceMixin:
                 f"{LOG_PREFIX} 工具调用前回复已发送：{name or '未知工具'}；通道={channel}"
             )
 
+    def should_skip_duplicate_send_message(
+        self, event: Any, source_text: str
+    ) -> bool:
+        """发送工具已覆盖同内容前置回复时，阻止第二次投递。"""
+
+        state = self._tool_reply_state_for_event(event)
+        if state is None or not state.get("preface_sent"):
+            return False
+        if not self._same_visible_text(state.get("preface_text"), source_text):
+            return False
+        state["direct_send_suppressed"] = True
+        logger.debug(f"{LOG_PREFIX} 发送工具内容已由工具前置回复发送，跳过重复投递。")
+        return True
+
     async def handle_llm_tool_respond(
         self,
         event: Any,
@@ -215,7 +281,6 @@ class SilentToolPrefaceMixin:
         """结束工具阶段，保留结果状态供最终文字回复判断。"""
 
         del tool_args, tool_result
-        scope = self._tool_preface_scope_key(event)
         state = self._tool_reply_state_for_event(event)
         if state is None:
             return

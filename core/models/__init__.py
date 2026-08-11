@@ -70,6 +70,7 @@ from .relations import (
     RelationshipRecord,
 )
 from .reversal import ReversePromptRecord
+from .style_catalog import StyleCatalogItemRecord
 from .vitals import (
     BodyCondition,
     LifeState,
@@ -146,6 +147,7 @@ __all__ = [
     "ScheduleAnchor",
     "SessionMidSummaryRecord",
     "SleepState",
+    "StyleCatalogItemRecord",
     "TemporaryExpressionStateRecord",
     "TemporalFactRecord",
     "TimelineItem",

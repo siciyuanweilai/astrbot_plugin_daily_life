@@ -142,6 +142,30 @@ class LifeActionTest(unittest.TestCase):
         self.assertEqual(day.outfit, "浅黄色短袖和米白长裤")
         self.assertEqual(day.state.mood_score, 57)
         self.assertEqual(len(day.outfit_history), 1)
+        self.assertEqual(day.meta["outfit_fact_source"], "life_action")
+        self.assertEqual(day.meta["outfit_fact_confirmed_at"], "2026-08-01 16:05:00")
+        self.assertEqual(day.meta["outfit_fact_evidence"], "outfit-1")
+
+    def test_daily_plan_change_outfit_uses_action_target_as_current_fact(self):
+        day = DayRecord(
+            date="2026-08-01",
+            outfit="日程生成时延续的居家服",
+            state=LifeState(mood_score=50),
+        )
+        outcome = self.engine.settle_life_action(
+            day,
+            {
+                "action_id": "outfit-plan-1",
+                "action_type": "change_outfit",
+                "target": "浅绿色短袖和米白色长裤",
+                "source": "daily_plan",
+            },
+            now=datetime.datetime(2026, 8, 1, 8, 40),
+        )
+
+        self.assertEqual(outcome.status, "committed")
+        self.assertEqual(day.outfit, "浅绿色短袖和米白色长裤")
+        self.assertEqual(day.meta["outfit_fact_source"], "life_action")
 
     def test_action_preconditions_cover_life_weather_and_timeline_evidence(self):
         day = DayRecord(

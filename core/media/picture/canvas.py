@@ -39,6 +39,19 @@ _SUPPORTED_ASPECT_RATIO_VALUES = {
 }
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 _GENERATED_IMAGE_MAX_BYTES = 32 * 1024 * 1024
+_REFERENCE_IMAGE_DOWNLOAD_TIMEOUT = aiohttp.ClientTimeout(
+    total=20,
+    connect=8,
+    sock_read=15,
+)
+_REFERENCE_IMAGE_REQUEST_HEADERS = {
+    "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+}
 
 
 def _best_supported_aspect_ratio(width: int, height: int) -> str:
@@ -670,9 +683,14 @@ class GeminiImageService:
             *image_parts,
         ]
 
-    async def _load_reference_image(self, reference_image: str) -> tuple[bytes, str]:
+    async def _load_reference_image(
+        self, reference_image: str, *, referer: str = ""
+    ) -> tuple[bytes, str]:
         if reference_image.startswith(("http://", "https://")):
-            return await self._download_reference_image(reference_image)
+            return await self._download_reference_image(
+                reference_image,
+                referer=referer,
+            )
         if reference_image.startswith("base64://"):
             data = base64.b64decode(
                 reference_image.removeprefix("base64://"), validate=True
@@ -700,11 +718,20 @@ class GeminiImageService:
         width, height = _image_dimensions(image_bytes)
         return _best_supported_aspect_ratio(width, height)
 
-    async def _download_reference_image(self, url: str) -> tuple[bytes, str]:
+    async def _download_reference_image(
+        self, url: str, *, referer: str = ""
+    ) -> tuple[bytes, str]:
         if not await is_http_url_allowed_async(url):
             raise ValueError("参考图片地址不在允许的媒体网络范围内")
         session = await self._get_session()
-        async with session.get(url) as response:
+        headers = dict(_REFERENCE_IMAGE_REQUEST_HEADERS)
+        if str(referer or "").startswith(("http://", "https://")):
+            headers["Referer"] = str(referer).strip()
+        async with session.get(
+            url,
+            headers=headers,
+            timeout=_REFERENCE_IMAGE_DOWNLOAD_TIMEOUT,
+        ) as response:
             if response.status != 200:
                 raise RuntimeError(f"参考图片下载失败（HTTP {response.status}）")
             content_type = (

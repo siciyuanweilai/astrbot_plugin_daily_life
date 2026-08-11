@@ -72,7 +72,7 @@ def _outfit_overlap_threshold(left: str, right: str) -> int:
     return max(8, min(18, int(base * 0.45)))
 
 
-def _looks_like_same_outfit(context: str, outfit: str) -> bool:
+def outfit_descriptions_match(context: str, outfit: str) -> bool:
     fragment_text = _normalize_text(context)
     outfit_text = _normalize_text(outfit)
     if not fragment_text or not outfit_text:
@@ -85,7 +85,23 @@ def _looks_like_same_outfit(context: str, outfit: str) -> bool:
     if len(fragment_text) >= threshold and fragment_text in outfit_text:
         return True
 
-    return _longest_common_run(fragment_text, outfit_text) >= threshold
+    if _longest_common_run(fragment_text, outfit_text) >= threshold:
+        return True
+
+    # 穿搭描述常用不同连接词串起同一组单品，再比较相邻字符证据，
+    # 避免未来穿搭仅因换一种措辞就绕过时序校验。
+    fragment_pairs = {
+        fragment_text[index : index + 2]
+        for index in range(len(fragment_text) - 1)
+    }
+    outfit_pairs = {
+        outfit_text[index : index + 2] for index in range(len(outfit_text) - 1)
+    }
+    if not fragment_pairs or not outfit_pairs:
+        return False
+    shared = len(fragment_pairs & outfit_pairs)
+    shorter = min(len(fragment_pairs), len(outfit_pairs))
+    return shared >= 8 and shared / shorter >= 0.35
 
 
 def future_outfit_timing_issue(
@@ -110,7 +126,7 @@ def future_outfit_timing_issue(
             if item_minutes is None or item_minutes <= current_minutes:
                 continue
         activity = _field(item, "activity")
-        if activity and _looks_like_same_outfit(activity, outfit):
+        if activity and outfit_descriptions_match(activity, outfit):
             time_text = _field(item, "time") or "未来"
             short_fragment = " ".join(activity.split())[:40]
             return f"当前穿搭疑似提前使用了 {time_text} 尚未发生的换装内容：{short_fragment}"

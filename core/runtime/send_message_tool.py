@@ -71,6 +71,12 @@ class ExpressiveSendMessageTool(FunctionTool):
         if candidate is None:
             return await self._wrapped.call(context, **kwargs)
         event, scope, source_text = candidate
+        duplicate_checker = getattr(
+            self._runtime, "should_skip_duplicate_send_message", None
+        )
+        if callable(duplicate_checker) and duplicate_checker(event, source_text):
+            self._note_direct_send(event, source_text)
+            return f"Message sent to session {scope}"
         enabled = getattr(self._runtime, "_semantic_segment_enabled", None)
         structural = getattr(self._runtime, "_chat_style_text_is_structural", None)
         if not callable(enabled) or not enabled():

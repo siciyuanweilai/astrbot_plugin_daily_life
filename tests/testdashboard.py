@@ -4424,11 +4424,16 @@ if (number.value !== "60" || state.config.test_config.level !== 60) {
             "stripCoveredAppearanceDetail(day.outfit, hairStyle, hair)",
             display,
         )
-        self.assertIn("return { style, outfit, hairStyle, hair }", display)
+        self.assertIn(
+            "return { style, outfit, hairStyle, hair, makeup, nails }", display
+        )
         self.assertIn('hair_style: "发型名称"', display)
         self.assertIn('hair: "发型细节"', display)
         self.assertIn('data.hairStyle ? `发型：${data.hairStyle}` : "发型："', app)
         self.assertIn("document.createTextNode(data.hair)", app)
+        self.assertIn('node("div", "today-week-appearance-grooming", "")', app)
+        self.assertIn("`妆容：${data.makeup}`", app)
+        self.assertIn("`美甲：${data.nails}`", app)
         self.assertNotIn('data.hairStyle ? "，"', app)
         self.assertNotIn("`发型：${data.hair}`", app)
         self.assertNotIn(".today-week-appearance-hair-detail {", style)
@@ -5490,12 +5495,16 @@ const repeated = mod.currentOutfitDisplayText(
     style: "清爽日常风",
     hair_style: "蓬松高马尾",
     hair: "蓬松高马尾用浅色发圈固定，额前留有轻薄刘海，发尾自然微卷。",
+    makeup: "清透自然妆",
+    nails: "奶白色短圆甲",
   },
 );
 if (
   repeated.outfit !== "浅绿色短袖衬衫搭配白色直筒裤，脚穿帆布鞋"
   || !repeated.hair.includes("浅色发圈")
   || repeated.hairStyle !== "蓬松高马尾"
+  || repeated.makeup !== "清透自然妆"
+  || repeated.nails !== "奶白色短圆甲"
 ) {
   throw new Error(`穿搭与发型没有正确分离：${JSON.stringify(repeated)}`);
 }

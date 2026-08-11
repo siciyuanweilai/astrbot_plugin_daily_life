@@ -72,6 +72,8 @@ class StageReelMixin:
         lighting = clean_director_text(payload.get("lighting"))
         outfit = clean_director_text(payload.get("outfit"))
         hair = clean_director_text(payload.get("hair"))
+        makeup = clean_director_text(payload.get("makeup"), 120)
+        nails = clean_director_text(payload.get("nails"), 120)
         appearance_style = clean_director_text(payload.get("appearance_style"), 80)
         body_presentation = clean_director_text(
             payload.get("body_presentation"), 140
@@ -97,6 +99,8 @@ class StageReelMixin:
             lighting,
             outfit,
             f"发型：{hair}" if hair else "",
+            f"妆容：{makeup}" if makeup else "",
+            f"美甲：{nails}" if nails else "",
             f"造型风格：{appearance_style}" if appearance_style else "",
             f"体貌呈现：{body_presentation}" if body_presentation else "",
             f"穿搭可见性：{outfit_visibility}" if outfit_visibility else "",
@@ -181,6 +185,7 @@ JSON 字段：
 - frame_logic 写取景依据，说明哪些身体范围、物品或环境进入画面。
 - outfit 只写画面中可见的穿搭；outfit_visibility 写穿搭可见范围。
 - hair 只写画面中可见的发型；人物不是当前角色、原始要求另有指定或画面看不见头发时，不得套用生活上下文里的当前发型。
+- makeup 和 nails 只写画面实际可见的妆容与美甲；优先保持当前生活外观，脸部或手部不在取景范围时留空，不得为了填写字段改变构图。
 - appearance_style 写人物当前造型的简短审美风格；不要与 render_style 的摄影或画面风格混同。
 - body_presentation 只在当前角色本人入镜、实际可见范围能呈现身体轮廓、且给出了稳定体貌时填写。它只说明本轮服装、姿势或景别如何自然呈现既有比例；不得新增身体特征，不得刻意突出局部，也不得把遮挡、远景或宽松衣物改成贴身展示。其他情况留空。
 - render_style 写用户明确要求的画面风格；没有明确要求时留空。
@@ -190,7 +195,7 @@ JSON 字段：
 - 输出字段尽量短，最终会被拼成图片提示词。
 {CORE_JSON_OUTPUT_RULES}
 JSON 字段：
-{{"identity_route":"不确定","contains_character":false,"needs_character_reference":false,"appearance_profile":"","subject":"","subject_kind":"unknown","scene":"","scene_type":"","temperature_feel":"","weather_condition":"","composition":"","visible_scope":"","frame_logic":"","lighting":"","outfit":"","hair":"","appearance_style":"","body_presentation":"","outfit_visibility":"","outfit_logic":"","action":"","weather_vibe":"","mood":"","render_style":"","constraints":""}}"""
+{{"identity_route":"不确定","contains_character":false,"needs_character_reference":false,"appearance_profile":"","subject":"","subject_kind":"unknown","scene":"","scene_type":"","temperature_feel":"","weather_condition":"","composition":"","visible_scope":"","frame_logic":"","lighting":"","outfit":"","hair":"","makeup":"","nails":"","appearance_style":"","body_presentation":"","outfit_visibility":"","outfit_logic":"","action":"","weather_vibe":"","mood":"","render_style":"","constraints":""}}"""
         appearance_context = (
             "\n\n当前角色稳定体貌（仅在身份路线为当前角色本人且可见时使用；"
             "只能如实呈现，不得推断或强化）：\n"

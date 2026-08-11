@@ -261,6 +261,21 @@ class LifeToolsTest(unittest.TestCase):
 
         self.assertIn("当前穿搭疑似提前使用了 20:50 尚未发生的换装内容", issue)
 
+    def test_future_outfit_timing_matches_same_items_with_different_connectors(self):
+        issue = future_outfit_timing_issue(
+            "白色薄棉短袖T恤搭配浅蓝色棉麻短裤，脚穿白色帆布鞋",
+            [
+                {
+                    "time": "08:40",
+                    "activity": "换上白色薄棉短袖和浅蓝色棉麻短裤，再穿好白色帆布鞋",
+                    "status": "清醒",
+                }
+            ],
+            current_minutes=7 * 60 + 30,
+        )
+
+        self.assertIn("当前穿搭疑似提前使用了 08:40 尚未发生的换装内容", issue)
+
     def test_week_plan_daily_helpers_support_date_and_weekday_keys(self):
         plan = {
             "daily_hints": {

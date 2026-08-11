@@ -20,6 +20,7 @@ from ..models import (
     ReflectionSignal,
     ScheduleAnchor,
 )
+from .future import outfit_descriptions_match
 
 ACTION_SETTLEMENT_META_KEY = "life_action_settlements"
 ACTION_EXPIRATION_META_KEY = "life_action_expirations"
@@ -326,14 +327,19 @@ class LifeActionMixin:
         state.source = f"life_action:{action.action_type}"
 
         if action.action_type == "change_outfit":
+            current_outfit = str(day.outfit or "").strip()
             resolved_outfit = (
-                day.outfit
-                if action.source == "daily_plan" and day.outfit
+                current_outfit
+                if current_outfit
+                and outfit_descriptions_match(current_outfit, action.target)
                 else action.target
             )
             day.outfit = resolved_outfit
             day.outfit_history[committed_at] = resolved_outfit
             day.meta["outfit_decision"] = "life_action"
+            day.meta["outfit_fact_source"] = "life_action"
+            day.meta["outfit_fact_confirmed_at"] = committed_at
+            day.meta["outfit_fact_evidence"] = action.action_id
         if action.action_type in {"move", "travel"} and action.target:
             previous_place = str((day.meta or {}).get("current_place") or "").strip()
             if previous_place:

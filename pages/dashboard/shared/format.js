@@ -903,8 +903,10 @@ function currentOutfitDisplayText(day = {}, meta = {}) {
   const style = clean(meta.style, "");
   const hairStyle = clean(meta.hair_style, "");
   const hair = clean(meta.hair, "");
+  const makeup = clean(meta.makeup, "");
+  const nails = clean(meta.nails, "");
   const outfit = stripCoveredAppearanceDetail(day.outfit, hairStyle, hair);
-  return { style, outfit, hairStyle, hair };
+  return { style, outfit, hairStyle, hair, makeup, nails };
 }
 
 function outfitDecisionText(meta = {}) {
