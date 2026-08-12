@@ -309,7 +309,9 @@ class RuntimeMemoryAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTe
         self.assertEqual(relationship.notes, [])
         self.assertEqual(relationship.memory_points, [])
 
-    async def test_relationship_calibration_without_persona_hint_uses_neutral_context(self):
+    async def test_relationship_calibration_without_persona_hint_uses_neutral_context(
+        self,
+    ):
         provider = Provider(
             [
                 '{"needs_revision":true,"reason":"没有明确性别依据，改用中性称呼。",'
@@ -598,6 +600,90 @@ class RuntimeMemoryAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTe
         self.assertEqual(correction.correction, "这个旧片段不应作为事实引用")
         self.assertEqual(intent.emotion_category, "happy")
         self.assertEqual(intent.action_intent, "探头看一眼")
+
+    async def test_experience_records_force_current_session_scope(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.archive = DataManager()
+        target = "aiocqhttp:FriendMessage:10001"
+        payload = {
+            "behavior_feedback": [
+                {
+                    "target_id": "other-target",
+                    "feedback": "用户愿意继续聊",
+                    "result": "positive",
+                }
+            ],
+            "expression_profiles": [
+                {"scope": "other-scope", "label": "阿林", "tone": "自然熟悉"}
+            ],
+            "behavior_patterns": [
+                {
+                    "scope": "other-scope",
+                    "scene": "日常分享",
+                    "pattern": "先说结论",
+                }
+            ],
+            "behavior_scenes": [
+                {
+                    "scope": "other-scope",
+                    "scene": "日常分享",
+                    "preferred_action": "轻量开场",
+                }
+            ],
+            "temporary_expression_state": {
+                "scope": "other-scope",
+                "label": "轻松",
+                "tone": "自然",
+            },
+            "focus_updates": [
+                {
+                    "scope": "other-scope",
+                    "target_type": "topic",
+                    "target_id": "weekend",
+                    "label": "周末安排",
+                }
+            ],
+            "focus_slots": [
+                {
+                    "scope": "other-scope",
+                    "focus_key": "weekend",
+                    "label": "周末安排",
+                }
+            ],
+            "life_terms": [
+                {
+                    "scope": "other-scope",
+                    "term": "约饭",
+                    "meaning": "约好一起吃饭",
+                }
+            ],
+        }
+        meta = {
+            "session_id": target,
+            "message_id": "m-scope",
+            "sender_profile_id": "10001",
+            "sender_name": "阿林",
+            "group_id": "",
+            "date": "2026-08-12",
+            "is_group": "false",
+        }
+
+        await runtime._save_experience_payload(payload, meta)
+
+        feedback = await runtime.archive.get_behavior_feedback(10)
+        profiles = await runtime.archive.get_expression_profiles(10)
+        patterns = await runtime.archive.get_behavior_patterns(10)
+        scenes = await runtime.archive.get_behavior_scenes(10)
+        temporary = await runtime.archive.get_temporary_expression_states(
+            10, active_only=False
+        )
+        targets = await runtime.archive.get_focus_targets(10)
+        slots = await runtime.archive.get_focus_slots(10, active_only=False)
+        terms = await runtime.archive.get_life_terms(10)
+
+        self.assertEqual(feedback[0].target_id, target)
+        for records in (profiles, patterns, scenes, temporary, targets, slots, terms):
+            self.assertEqual({item.scope for item in records}, {target})
 
     async def test_life_adjustments_are_layered_into_short_and_long_term_records(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)

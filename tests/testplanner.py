@@ -841,6 +841,40 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn("隐藏推理", selected_provider.system_prompts[0])
 
+    async def test_provider_http_400_is_not_retried(self):
+        composer, provider, _, _ = make_composer(
+            [RuntimeError("HTTP 400: invalid request")]
+        )
+
+        with patch("core.life.planner.asyncio.sleep", new=AsyncMock()) as sleep:
+            text = await composer._call_llm_text(
+                provider,
+                "测试请求",
+                "daily_life_non_retryable",
+                empty_retries=2,
+            )
+
+        self.assertEqual(text, "")
+        self.assertEqual(provider.prompts, ["测试请求"])
+        sleep.assert_not_awaited()
+
+    async def test_provider_http_429_uses_backoff_then_retries(self):
+        composer, provider, _, _ = make_composer(
+            [RuntimeError("HTTP 429: rate limited"), "重试成功"]
+        )
+
+        with patch("core.life.planner.asyncio.sleep", new=AsyncMock()) as sleep:
+            text = await composer._call_llm_text(
+                provider,
+                "测试限流",
+                "daily_life_transient",
+                empty_retries=2,
+            )
+
+        self.assertEqual(text, "重试成功")
+        self.assertEqual(provider.prompts, ["测试限流", "测试限流"])
+        sleep.assert_awaited_once_with(0.6)
+
     async def test_update_outfit_missing_day_generates_target_date_without_deadlock(
         self,
     ):

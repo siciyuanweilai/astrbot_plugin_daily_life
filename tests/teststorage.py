@@ -63,7 +63,9 @@ from support import LifeArchive, LifeSettings
 
 
 class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
-    async def test_style_catalog_separates_items_deduplicates_and_records_feedback(self):
+    async def test_style_catalog_separates_items_deduplicates_and_records_feedback(
+        self,
+    ):
         with tempfile.TemporaryDirectory() as tmpdir:
             archive = LifeArchive(f"{tmpdir}/daily_life.db")
             try:
@@ -133,7 +135,9 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 archive.close()
 
-    async def test_v11_database_migrates_style_catalog_without_losing_existing_data(self):
+    async def test_v11_database_migrates_style_catalog_without_losing_existing_data(
+        self,
+    ):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = f"{tmpdir}/daily_life.db"
             archive = LifeArchive(path)
@@ -161,9 +165,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             try:
                 preferences = await migrated.get_preferences(5, "outfit")
                 self.assertEqual(preferences[0].content, "测试偏好")
-                self.assertEqual(
-                    await migrated.get_style_catalog_items(limit=5), []
-                )
+                self.assertEqual(await migrated.get_style_catalog_items(limit=5), [])
                 version = migrated._conn.execute(
                     "SELECT value FROM meta WHERE key = 'schema_version'"
                 ).fetchone()
@@ -2587,9 +2589,32 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             active = await archive.get_focus_targets(10)
             all_items = await archive.get_focus_targets(10, include_expired=True)
 
+            await archive.upsert_focus_target(
+                FocusTargetRecord(
+                    target_type="topic",
+                    target_id="甲会话话题",
+                    label="甲会话话题",
+                    priority=90,
+                    scope="session-a",
+                )
+            )
+            await archive.upsert_focus_target(
+                FocusTargetRecord(
+                    target_type="topic",
+                    target_id="乙会话话题",
+                    label="乙会话话题",
+                    priority=95,
+                    scope="session-b",
+                )
+            )
+            scoped = await archive.get_focus_targets(10, scope="session-a")
+
             self.assertEqual([item.label for item in active], ["当前话题"])
             self.assertEqual(
                 {item.label for item in all_items}, {"当前话题", "过期话题"}
+            )
+            self.assertEqual(
+                {item.label for item in scoped}, {"当前话题", "甲会话话题"}
             )
             archive.close()
 
@@ -3022,10 +3047,18 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                 BehaviorFeedbackRecord.from_value({**record.as_dict(), "id": 0})
             )
             feedback = await archive.get_behavior_feedback(10)
+            scoped_feedback = await archive.get_behavior_feedback(
+                10, target_id=record.target_id
+            )
+            unrelated_feedback = await archive.get_behavior_feedback(
+                10, target_id="other-target"
+            )
 
             self.assertIsNotNone(first)
             self.assertEqual(second.id, first.id)
             self.assertEqual(len(feedback), 1)
+            self.assertEqual([item.id for item in scoped_feedback], [first.id])
+            self.assertEqual(unrelated_feedback, [])
             archive.close()
 
     async def test_day_meta_persists_autonomous_life_decision(self):

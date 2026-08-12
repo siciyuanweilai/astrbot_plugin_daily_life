@@ -2330,20 +2330,27 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
 
         root = Path(__file__).resolve().parents[1]
         view = (root / "core" / "interface" / "view.py").read_text(encoding="utf-8")
+        compact_view = "".join(view.split())
 
-        self.assertIn("PAGE_WORLD_RECORD_LIMIT = 20", view)
-        self.assertIn("get_recent_relationships(PAGE_WORLD_RECORD_LIMIT)", view)
-        self.assertIn("get_recent_places(PAGE_WORLD_RECORD_LIMIT)", view)
-        self.assertIn("get_recent_events(PAGE_WORLD_RECORD_LIMIT)", view)
-        self.assertIn("get_recent_chat_summaries(PAGE_WORLD_RECORD_LIMIT)", view)
-        self.assertIn("get_recent_group_environments(PAGE_WORLD_RECORD_LIMIT)", view)
-        self.assertIn("get_message_visibility_records(PAGE_WORLD_RECORD_LIMIT)", view)
-        self.assertIn("limit=PAGE_WORLD_RECORD_LIMIT", view)
-        self.assertNotIn("get_recent_relationships(8)", view)
-        self.assertNotIn("get_recent_places(12)", view)
-        self.assertNotIn("get_recent_events(12)", view)
-        self.assertNotIn("get_recent_chat_summaries(8)", view)
-        self.assertNotIn("get_recent_group_environments(8)", view)
+        self.assertIn("PAGE_WORLD_RECORD_LIMIT=20", compact_view)
+        self.assertIn("get_recent_relationships(PAGE_WORLD_RECORD_LIMIT)", compact_view)
+        self.assertIn("get_recent_places(PAGE_WORLD_RECORD_LIMIT)", compact_view)
+        self.assertIn("get_recent_events(PAGE_WORLD_RECORD_LIMIT)", compact_view)
+        self.assertIn(
+            "get_recent_chat_summaries(PAGE_WORLD_RECORD_LIMIT)", compact_view
+        )
+        self.assertIn(
+            "get_recent_group_environments(PAGE_WORLD_RECORD_LIMIT)", compact_view
+        )
+        self.assertIn(
+            "get_message_visibility_records(PAGE_WORLD_RECORD_LIMIT)", compact_view
+        )
+        self.assertIn("limit=PAGE_WORLD_RECORD_LIMIT", compact_view)
+        self.assertNotIn("get_recent_relationships(8)", compact_view)
+        self.assertNotIn("get_recent_places(12)", compact_view)
+        self.assertNotIn("get_recent_events(12)", compact_view)
+        self.assertNotIn("get_recent_chat_summaries(8)", compact_view)
+        self.assertNotIn("get_recent_group_environments(8)", compact_view)
 
     def test_dashboard_dom_entrypoints_exist(self):
         import re
@@ -4376,20 +4383,35 @@ if (number.value !== "60" || state.config.test_config.level !== 60) {
         self.assertIn(".facts-column-fill {\n  align-self: start;", style)
         self.assertIn("block-size: auto;", style)
         self.assertIn("grid-template-rows: none;", style)
-        self.assertIn('.facts-column-fill > [data-fact-card="memo"]', style)
+        self.assertIn('.facts-column > [data-fact-card="memo"]', style)
         self.assertIn(".facts-column > div {\n  min-width: 0;", style)
         self.assertIn('.facts-column > [data-fact-card="schedule-tone"]', style)
         self.assertIn('.facts-column > [data-fact-card="schedule-intent"]', style)
 
         self.assertIn("padding-block: 5px;", style)
-        self.assertIn("const FACT_CARD_ORDER = [", app)
+        self.assertIn("const FACT_CARD_COLUMNS = [", app)
+        self.assertIn(
+            '["weather", "theme", "week", "mood", "schedule-type", "memo"]',
+            app,
+        )
+        self.assertIn(
+            '["schedule-tone", "schedule-intent", "outfit", "outfit-decision"]',
+            app,
+        )
         self.assertIn("function layoutTodayFacts()", app)
         self.assertIn("function scheduleTodayFactsLayout()", app)
         self.assertIn(
             'window.addEventListener("resize", scheduleTodayFactsLayout)', app
         )
-        self.assertIn("const leftSize = Math.ceil(FACT_CARD_ORDER.length / 2);", app)
-        self.assertNotIn("compact ? FACT_CARD_ORDER.length", app)
+        self.assertIn("const [leftKeys = [], rightKeys = []] = FACT_CARD_COLUMNS;", app)
+        self.assertNotIn("const leftSize = Math.ceil", app)
+        first_column = html.split('<div class="facts-column">', 1)[1].split(
+            '<div class="facts-column facts-column-fill">', 1
+        )[0]
+        self.assertLess(
+            first_column.index('data-fact-card="schedule-type"'),
+            first_column.index('data-fact-card="memo"'),
+        )
         self.assertNotIn("window.innerWidth || 0) <= 680", app)
         self.assertIn(
             ".facts {\n    grid-template-columns: repeat(2, minmax(0, 1fr));", style

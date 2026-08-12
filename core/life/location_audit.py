@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import math
+from dataclasses import dataclass, field
 from typing import Any
 
 from astrbot.api import logger
@@ -25,6 +26,15 @@ _TRAVEL_SPEEDS = {
     "driving": 8.5,
     "transit": 6.0,
 }
+
+
+@dataclass(slots=True)
+class _LocationAuditState:
+    canonical_places: list[dict[str, Any]] = field(default_factory=list)
+    seen_places: set[str] = field(default_factory=set)
+    substituted_places: list[dict[str, str]] = field(default_factory=list)
+    downgraded_places: list[str] = field(default_factory=list)
+    verified_count: int = 0
 
 
 class DailyLocationAuditMixin:
@@ -89,6 +99,70 @@ class DailyLocationAuditMixin:
         if issue:
             return payload, issue
 
+        search_results = await self._location_search_results(
+            entries,
+            search_requests,
+            preselected_places,
+        )
+        audit_state = _LocationAuditState()
+        issue = self._canonicalize_location_entries(
+            entries,
+            home_city=home_city,
+            home_coordinate=home_coordinate,
+            home_address=home_address,
+            preselected_places=preselected_places,
+            search_results=search_results,
+            allow_safe_corrections=allow_safe_corrections,
+            state=audit_state,
+        )
+        if issue:
+            return payload, issue
+
+        transitions, route_by_index, issue = await self._audit_location_routes(
+            entries,
+            allow_safe_corrections=allow_safe_corrections,
+            context=route_context,
+        )
+        if issue:
+            return payload, issue
+
+        issue = self._synchronize_travel_actions(
+            revised,
+            entries=entries,
+            route_by_index=route_by_index,
+            allow_safe_corrections=allow_safe_corrections,
+        )
+        if issue:
+            return payload, issue
+
+        revised["places"] = audit_state.canonical_places
+        self._replace_place_references(revised, audit_state.substituted_places)
+        revised["location_audit"] = {
+            "map_provider": self.map_provider_label,
+            "home_city": home_city,
+            "verified_places": audit_state.verified_count,
+            "checked_routes": len(transitions),
+            "substituted_places": len(audit_state.substituted_places),
+            "place_substitutions": audit_state.substituted_places,
+            "downgraded_places": len(audit_state.downgraded_places),
+            "downgraded_place_names": audit_state.downgraded_places,
+        }
+        logger.debug(
+            f"[日程生成] 地图地点校正通过：地点={audit_state.verified_count}；"
+            f"路线={len(transitions)}；地图替代={len(audit_state.substituted_places)}；"
+            f"泛化降级={len(audit_state.downgraded_places)}；"
+            f"服务={self.map_provider_label}"
+        )
+        return revised, ""
+
+    async def _location_search_results(
+        self,
+        entries: list[dict[str, Any]],
+        search_requests: dict[tuple[str, str], None],
+        preselected_places: list[dict[str, Any]],
+    ) -> dict[tuple[str, str], Any]:
+        """只查询没有被预选地点覆盖的 POI。"""
+
         search_keys = [
             key
             for key in search_requests
@@ -109,284 +183,362 @@ class DailyLocationAuditMixin:
                 for query, city in search_keys
             )
         )
-        search_results = dict(zip(search_keys, search_values, strict=True))
+        return dict(zip(search_keys, search_values, strict=True))
 
-        canonical_places: list[dict[str, Any]] = []
-        seen_places: set[str] = set()
-        verified_count = 0
-        substituted_places: list[dict[str, str]] = []
-        downgraded_places: list[str] = []
+    def _canonicalize_location_entries(
+        self,
+        entries: list[dict[str, Any]],
+        *,
+        home_city: str,
+        home_coordinate: tuple[float, float],
+        home_address: str,
+        preselected_places: list[dict[str, Any]],
+        search_results: dict[tuple[str, str], Any],
+        allow_safe_corrections: bool,
+        state: _LocationAuditState,
+    ) -> str:
+        """把归一化节点写成稳定的地图地点字段。"""
+
         for entry in entries:
-            item = entry["item"]
             kind = entry["kind"]
-            place = entry["place"]
-            target_city = entry["city"]
             if kind == "home":
-                item.update(
-                    {
-                        "place": "家",
-                        "place_kind": "home",
-                        "place_scope": "local",
-                        "place_city": home_city,
-                        "place_hint": "",
-                        "place_address": home_address,
-                        "place_latitude": float(home_coordinate[0]),
-                        "place_longitude": float(home_coordinate[1]),
-                        "place_coordinate_source": f"{self.map_provider}_home_address",
-                    }
+                self._apply_home_location_entry(
+                    entry,
+                    home_city=home_city,
+                    home_coordinate=home_coordinate,
+                    home_address=home_address,
+                    state=state,
                 )
-                entry.update(
-                    {
-                        "place": "家",
-                        "city": home_city,
-                        "coordinate": home_coordinate,
-                    }
-                )
-                verified_count += 1
-                if "家" not in seen_places:
-                    seen_places.add("家")
-                    canonical_places.append(
-                        {
-                            "name": "家",
-                            "type": "home",
-                            "hint": home_address,
-                            "latitude": float(home_coordinate[0]),
-                            "longitude": float(home_coordinate[1]),
-                            "coordinate_source": f"{self.map_provider}_home_address",
-                        }
-                    )
                 continue
-
             if kind == "poi":
-                preselected = [
-                    candidate
-                    for candidate in preselected_places
-                    if self._preselected_place_matches(candidate, entry, target_city)
-                ]
-                candidates = preselected or [
-                    candidate
-                    for candidate in search_results.get(
-                        (entry["query"], target_city), []
-                    )
-                    if isinstance(candidate, dict)
-                    and candidate.get("name")
-                    and candidate.get("coordinate")
-                ]
-                exact_candidates = [
-                    candidate
-                    for candidate in candidates
-                    if str(candidate.get("name") or "").strip() == place
-                ]
-                if not exact_candidates:
-                    same_city_candidates = [
-                        candidate
-                        for candidate in candidates
-                        if self._cities_match(
-                            str(candidate.get("city") or "").strip(), target_city
-                        )
-                    ]
-                    suggestions = "、".join(
-                        str(candidate.get("name") or "").strip()
-                        for candidate in same_city_candidates[:3]
-                    )
-                    suffix = f"；地图候选为：{suggestions}" if suggestions else ""
-                    issue = (
-                        f"地图未能在{target_city}确认地点“{place}”的精确名称{suffix}。"
-                        "请改用地图中的完整名称；若本来只是泛化场景，请改为 generic。"
-                    )
-                    if not allow_safe_corrections:
-                        return payload, issue
-                    if same_city_candidates:
-                        candidate = same_city_candidates[0]
-                        canonical_name = str(candidate.get("name") or "").strip()
-                        substituted_places.append(
-                            {"original": place, "canonical": canonical_name}
-                        )
-                        item["place"] = canonical_name
-                        entry["place"] = canonical_name
-                        logger.warning(
-                            f"[日程生成] 地点“{place}”未能精确确认，地图校正改用"
-                            f"同城地图候选“{canonical_name}”。"
-                        )
-                        place = canonical_name
-                        candidate_values = [candidate]
-                    else:
-                        self._downgrade_unverified_place(
-                            item,
-                            entry,
-                            canonical_places=canonical_places,
-                            seen_places=seen_places,
-                        )
-                        downgraded_places.append(place)
-                        logger.warning(
-                            f"[日程生成] {issue} 已由地图校正按泛化场景保留，"
-                            "不写入导航坐标。"
-                        )
-                        continue
-                else:
-                    unique_candidates = {
-                        (
-                            str(candidate.get("poi_id") or ""),
-                            str(candidate.get("address") or ""),
-                        ): candidate
-                        for candidate in exact_candidates
-                    }
-                    candidate_values = list(unique_candidates.values())
-                if len(candidate_values) > 1:
-                    hint = entry["hint"]
-                    matched_candidates = [
-                        value
-                        for value in candidate_values
-                        if hint
-                        and (
-                            hint in str(value.get("address") or "")
-                            or hint in str(value.get("district") or "")
-                        )
-                    ]
-                    if len(matched_candidates) == 1:
-                        candidate = matched_candidates[0]
-                    else:
-                        suggestions = "；".join(
-                            f"{value.get('name')}（{value.get('address') or value.get('district') or '地址未知'}）"
-                            for value in candidate_values[:3]
-                        )
-                        issue = (
-                            f"地点“{place}”在{target_city}存在多个同名候选：{suggestions}。"
-                            "请在 place_hint 中补充能够唯一定位的区县、商圈或地址。"
-                        )
-                        if not allow_safe_corrections:
-                            return payload, issue
-                        candidate = candidate_values[0]
-                        logger.warning(
-                            f"[日程生成] {issue} 地图校正采用排序第一的候选地址。"
-                        )
-                else:
-                    candidate = candidate_values[0]
-                candidate_city = str(candidate.get("city") or "").strip()
-                same_city = self._cities_match(candidate_city, target_city)
-                if target_city and not same_city:
-                    issue = (
-                        f"地点“{place}”解析到{candidate_city or '未知城市'}，"
-                        f"与日程声明的{target_city}不一致"
-                    )
-                    if not allow_safe_corrections:
-                        return payload, issue
-                    self._downgrade_unverified_place(
-                        item,
-                        entry,
-                        canonical_places=canonical_places,
-                        seen_places=seen_places,
-                    )
-                    downgraded_places.append(place)
-                    logger.warning(
-                        f"[日程生成] {issue}，已由地图校正按日程声明城市的"
-                        "泛化场景保留，不采用异地坐标。"
-                    )
-                    continue
-                coordinate = candidate["coordinate"]
-                address = str(candidate.get("address") or "").strip()
-                candidate_mode = str(candidate.get("travel_mode") or "").strip().lower()
-                if candidate_mode in _TRAVEL_MODES:
-                    entry["mode"] = candidate_mode
-                    entry["mode_locked"] = bool(candidate.get("travel_mode_locked"))
-                    item["travel_mode"] = candidate_mode
-                    item["travel_detail"] = (
-                        str(candidate.get("travel_detail") or "").strip()
-                        if candidate_mode == "transit"
-                        else ""
-                    )
-                item.update(
-                    {
-                        "place": place,
-                        "place_kind": "poi",
-                        "place_scope": entry["scope"],
-                        "place_city": candidate_city or target_city,
-                        "place_address": address,
-                        "place_latitude": float(coordinate[0]),
-                        "place_longitude": float(coordinate[1]),
-                        "place_coordinate_source": f"{self.map_provider}_poi",
-                    }
+                issue = self._canonicalize_poi_entry(
+                    entry,
+                    preselected_places=preselected_places,
+                    search_results=search_results,
+                    allow_safe_corrections=allow_safe_corrections,
+                    state=state,
                 )
-                entry.update(
-                    {
-                        "city": candidate_city or target_city,
-                        "coordinate": coordinate,
-                    }
-                )
-                verified_count += 1
-                if place not in seen_places:
-                    seen_places.add(place)
-                    canonical_places.append(
-                        {
-                            "name": place,
-                            "type": str(candidate.get("category") or "poi").strip(),
-                            "hint": address or entry["hint"],
-                            "latitude": float(coordinate[0]),
-                            "longitude": float(coordinate[1]),
-                            "coordinate_source": f"{self.map_provider}_poi",
-                        }
-                    )
+                if issue:
+                    return issue
                 continue
+            self._apply_non_poi_location_entry(entry, state=state)
+        return ""
 
-            item.update(
+    def _apply_home_location_entry(
+        self,
+        entry: dict[str, Any],
+        *,
+        home_city: str,
+        home_coordinate: tuple[float, float],
+        home_address: str,
+        state: _LocationAuditState,
+    ) -> None:
+        item = entry["item"]
+        item.update(
+            {
+                "place": "家",
+                "place_kind": "home",
+                "place_scope": "local",
+                "place_city": home_city,
+                "place_hint": "",
+                "place_address": home_address,
+                "place_latitude": float(home_coordinate[0]),
+                "place_longitude": float(home_coordinate[1]),
+                "place_coordinate_source": f"{self.map_provider}_home_address",
+            }
+        )
+        entry.update(
+            {
+                "place": "家",
+                "city": home_city,
+                "coordinate": home_coordinate,
+            }
+        )
+        state.verified_count += 1
+        if "家" in state.seen_places:
+            return
+        state.seen_places.add("家")
+        state.canonical_places.append(
+            {
+                "name": "家",
+                "type": "home",
+                "hint": home_address,
+                "latitude": float(home_coordinate[0]),
+                "longitude": float(home_coordinate[1]),
+                "coordinate_source": f"{self.map_provider}_home_address",
+            }
+        )
+
+    def _canonicalize_poi_entry(
+        self,
+        entry: dict[str, Any],
+        *,
+        preselected_places: list[dict[str, Any]],
+        search_results: dict[tuple[str, str], Any],
+        allow_safe_corrections: bool,
+        state: _LocationAuditState,
+    ) -> str:
+        candidate, issue, downgraded = self._resolve_poi_candidate(
+            entry,
+            preselected_places=preselected_places,
+            search_results=search_results,
+            allow_safe_corrections=allow_safe_corrections,
+            state=state,
+        )
+        if issue or downgraded:
+            return issue
+        self._apply_verified_poi_entry(entry, candidate, state=state)
+        return ""
+
+    def _resolve_poi_candidate(
+        self,
+        entry: dict[str, Any],
+        *,
+        preselected_places: list[dict[str, Any]],
+        search_results: dict[tuple[str, str], Any],
+        allow_safe_corrections: bool,
+        state: _LocationAuditState,
+    ) -> tuple[dict[str, Any], str, bool]:
+        item = entry["item"]
+        place = entry["place"]
+        target_city = entry["city"]
+        preselected = [
+            candidate
+            for candidate in preselected_places
+            if self._preselected_place_matches(candidate, entry, target_city)
+        ]
+        candidates = preselected or [
+            candidate
+            for candidate in search_results.get((entry["query"], target_city), [])
+            if isinstance(candidate, dict)
+            and candidate.get("name")
+            and candidate.get("coordinate")
+        ]
+        exact_candidates = [
+            candidate
+            for candidate in candidates
+            if str(candidate.get("name") or "").strip() == place
+        ]
+        if exact_candidates:
+            unique_candidates = {
+                (
+                    str(candidate.get("poi_id") or ""),
+                    str(candidate.get("address") or ""),
+                ): candidate
+                for candidate in exact_candidates
+            }
+            candidate_values = list(unique_candidates.values())
+        else:
+            candidate_values, issue, downgraded = self._fallback_poi_candidates(
+                entry,
+                candidates=candidates,
+                allow_safe_corrections=allow_safe_corrections,
+                state=state,
+            )
+            if issue or downgraded:
+                return {}, issue, downgraded
+
+        candidate, issue = self._disambiguate_poi_candidate(
+            entry,
+            candidate_values,
+            allow_safe_corrections=allow_safe_corrections,
+        )
+        if issue:
+            return {}, issue, False
+        candidate_city = str(candidate.get("city") or "").strip()
+        if target_city and not self._cities_match(candidate_city, target_city):
+            issue = (
+                f"地点“{entry['place']}”解析到{candidate_city or '未知城市'}，"
+                f"与日程声明的{target_city}不一致"
+            )
+            if not allow_safe_corrections:
+                return {}, issue, False
+            self._downgrade_unverified_place(
+                item,
+                entry,
+                canonical_places=state.canonical_places,
+                seen_places=state.seen_places,
+            )
+            state.downgraded_places.append(entry["place"])
+            logger.warning(
+                f"[日程生成] {issue}，已由地图校正按日程声明城市的"
+                "泛化场景保留，不采用异地坐标。"
+            )
+            return {}, "", True
+        return candidate, "", False
+
+    def _fallback_poi_candidates(
+        self,
+        entry: dict[str, Any],
+        *,
+        candidates: list[dict[str, Any]],
+        allow_safe_corrections: bool,
+        state: _LocationAuditState,
+    ) -> tuple[list[dict[str, Any]], str, bool]:
+        place = entry["place"]
+        target_city = entry["city"]
+        same_city_candidates = [
+            candidate
+            for candidate in candidates
+            if self._cities_match(str(candidate.get("city") or "").strip(), target_city)
+        ]
+        suggestions = "、".join(
+            str(candidate.get("name") or "").strip()
+            for candidate in same_city_candidates[:3]
+        )
+        suffix = f"；地图候选为：{suggestions}" if suggestions else ""
+        issue = (
+            f"地图未能在{target_city}确认地点“{place}”的精确名称{suffix}。"
+            "请改用地图中的完整名称；若本来只是泛化场景，请改为 generic。"
+        )
+        if not allow_safe_corrections:
+            return [], issue, False
+        if same_city_candidates:
+            candidate = same_city_candidates[0]
+            canonical_name = str(candidate.get("name") or "").strip()
+            state.substituted_places.append(
+                {"original": place, "canonical": canonical_name}
+            )
+            entry["item"]["place"] = canonical_name
+            entry["place"] = canonical_name
+            logger.warning(
+                f"[日程生成] 地点“{place}”未能精确确认，地图校正改用"
+                f"同城地图候选“{canonical_name}”。"
+            )
+            return [candidate], "", False
+        self._downgrade_unverified_place(
+            entry["item"],
+            entry,
+            canonical_places=state.canonical_places,
+            seen_places=state.seen_places,
+        )
+        state.downgraded_places.append(place)
+        logger.warning(
+            f"[日程生成] {issue} 已由地图校正按泛化场景保留，不写入导航坐标。"
+        )
+        return [], "", True
+
+    @staticmethod
+    def _disambiguate_poi_candidate(
+        entry: dict[str, Any],
+        candidate_values: list[dict[str, Any]],
+        *,
+        allow_safe_corrections: bool,
+    ) -> tuple[dict[str, Any], str]:
+        if len(candidate_values) == 1:
+            return candidate_values[0], ""
+        hint = entry["hint"]
+        matched_candidates = [
+            value
+            for value in candidate_values
+            if hint
+            and (
+                hint in str(value.get("address") or "")
+                or hint in str(value.get("district") or "")
+            )
+        ]
+        if len(matched_candidates) == 1:
+            return matched_candidates[0], ""
+        suggestions = "；".join(
+            f"{value.get('name')}（{value.get('address') or value.get('district') or '地址未知'}）"
+            for value in candidate_values[:3]
+        )
+        issue = (
+            f"地点“{entry['place']}”在{entry['city']}存在多个同名候选：{suggestions}。"
+            "请在 place_hint 中补充能够唯一定位的区县、商圈或地址。"
+        )
+        if not allow_safe_corrections:
+            return {}, issue
+        logger.warning(f"[日程生成] {issue} 地图校正采用排序第一的候选地址。")
+        return candidate_values[0], ""
+
+    def _apply_verified_poi_entry(
+        self,
+        entry: dict[str, Any],
+        candidate: dict[str, Any],
+        *,
+        state: _LocationAuditState,
+    ) -> None:
+        item = entry["item"]
+        place = entry["place"]
+        target_city = entry["city"]
+        candidate_city = str(candidate.get("city") or "").strip()
+        coordinate = candidate["coordinate"]
+        address = str(candidate.get("address") or "").strip()
+        candidate_mode = str(candidate.get("travel_mode") or "").strip().lower()
+        if candidate_mode in _TRAVEL_MODES:
+            entry["mode"] = candidate_mode
+            entry["mode_locked"] = bool(candidate.get("travel_mode_locked"))
+            item["travel_mode"] = candidate_mode
+            item["travel_detail"] = (
+                str(candidate.get("travel_detail") or "").strip()
+                if candidate_mode == "transit"
+                else ""
+            )
+        item.update(
+            {
+                "place": place,
+                "place_kind": "poi",
+                "place_scope": entry["scope"],
+                "place_city": candidate_city or target_city,
+                "place_address": address,
+                "place_latitude": float(coordinate[0]),
+                "place_longitude": float(coordinate[1]),
+                "place_coordinate_source": f"{self.map_provider}_poi",
+            }
+        )
+        entry.update(
+            {
+                "city": candidate_city or target_city,
+                "coordinate": coordinate,
+            }
+        )
+        state.verified_count += 1
+        if place in state.seen_places:
+            return
+        state.seen_places.add(place)
+        state.canonical_places.append(
+            {
+                "name": place,
+                "type": str(candidate.get("category") or "poi").strip(),
+                "hint": address or entry["hint"],
+                "latitude": float(coordinate[0]),
+                "longitude": float(coordinate[1]),
+                "coordinate_source": f"{self.map_provider}_poi",
+            }
+        )
+
+    @staticmethod
+    def _apply_non_poi_location_entry(
+        entry: dict[str, Any], *, state: _LocationAuditState
+    ) -> None:
+        item = entry["item"]
+        kind = entry["kind"]
+        place = entry["place"]
+        target_city = entry["city"]
+        item.update(
+            {
+                "place_kind": kind,
+                "place_scope": entry["scope"],
+                "place_city": target_city if entry["scope"] == "travel" else "",
+                "place_address": "",
+                "place_latitude": None,
+                "place_longitude": None,
+                "place_coordinate_source": "",
+            }
+        )
+        if kind in {"transit", "online", "none"}:
+            item["place"] = ""
+            entry["place"] = ""
+        elif place not in state.seen_places:
+            state.seen_places.add(place)
+            state.canonical_places.append(
                 {
-                    "place_kind": kind,
-                    "place_scope": entry["scope"],
-                    "place_city": target_city if entry["scope"] == "travel" else "",
-                    "place_address": "",
-                    "place_latitude": None,
-                    "place_longitude": None,
-                    "place_coordinate_source": "",
+                    "name": place,
+                    "type": "generic",
+                    "hint": entry["hint"],
                 }
             )
-            if kind in {"transit", "online", "none"}:
-                item["place"] = ""
-                entry["place"] = ""
-            elif place not in seen_places:
-                seen_places.add(place)
-                canonical_places.append(
-                    {
-                        "name": place,
-                        "type": "generic",
-                        "hint": entry["hint"],
-                    }
-                )
-
-        transitions, route_by_index, issue = await self._audit_location_routes(
-            entries,
-            allow_safe_corrections=allow_safe_corrections,
-            context=route_context,
-        )
-        if issue:
-            return payload, issue
-
-        issue = self._synchronize_travel_actions(
-            revised,
-            entries=entries,
-            route_by_index=route_by_index,
-            allow_safe_corrections=allow_safe_corrections,
-        )
-        if issue:
-            return payload, issue
-
-        revised["places"] = canonical_places
-        self._replace_place_references(revised, substituted_places)
-        revised["location_audit"] = {
-            "map_provider": self.map_provider_label,
-            "home_city": home_city,
-            "verified_places": verified_count,
-            "checked_routes": len(transitions),
-            "substituted_places": len(substituted_places),
-            "place_substitutions": substituted_places,
-            "downgraded_places": len(downgraded_places),
-            "downgraded_place_names": downgraded_places,
-        }
-        logger.debug(
-            f"[日程生成] 地图地点校正通过：地点={verified_count}；路线={len(transitions)}；"
-            f"地图替代={len(substituted_places)}；泛化降级={len(downgraded_places)}；"
-            f"服务={self.map_provider_label}"
-        )
-        return revised, ""
 
     @staticmethod
     def _normalize_location_entries(

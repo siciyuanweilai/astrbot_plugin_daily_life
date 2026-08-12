@@ -4,6 +4,7 @@ import types
 import unittest
 
 from core.models import (
+    CommitmentRecord,
     DayRecord,
     EventRecord,
     LifeState,
@@ -22,6 +23,100 @@ from support import (
 
 
 class LifeCommandsTest(unittest.IsolatedAsyncioTestCase):
+    async def test_member_cannot_clear_global_life_data(self):
+        class Archive:
+            def __init__(self):
+                self.reset_calls = 0
+
+            async def reset_all(self):
+                self.reset_calls += 1
+
+        archive = Archive()
+        runtime = types.SimpleNamespace(
+            archive=archive,
+            _get_curr_period=lambda: "afternoon",
+            _resolve_command_target_date=lambda now: async_return(
+                ("2026-05-24", False)
+            ),
+        )
+        center = DailyLifeCommandCenter(runtime)
+        event = Event(role="member")
+        event.message_str = "/生活 清空"
+
+        result = await center.dispatch(event).__anext__()
+
+        self.assertIn("管理员", result)
+        self.assertEqual(archive.reset_calls, 0)
+
+    async def test_group_member_cannot_change_global_life_state(self):
+        center = DailyLifeCommandCenter(types.SimpleNamespace())
+        event = Event(
+            role="member",
+            unified_msg_origin="aiocqhttp:GroupMessage:20001",
+            group_id="20001",
+        )
+
+        result = await center.adjust_life(
+            event,
+            action="update_outfit",
+            detail="换成测试穿搭",
+        )
+
+        self.assertIn("请在私聊中操作", result)
+
+    async def test_commitments_are_scoped_to_their_source_session(self):
+        archive = DataManager()
+        own_scope = "aiocqhttp:FriendMessage:10001"
+        other_scope = "aiocqhttp:FriendMessage:20002"
+        own = await archive.save_commitment(
+            CommitmentRecord(
+                content="整理测试资料",
+                source="manual",
+                source_session=own_scope,
+                source_message_id="own-message",
+            )
+        )
+        other = await archive.save_commitment(
+            CommitmentRecord(
+                content="准备另一份测试资料",
+                source="manual",
+                source_session=other_scope,
+                source_message_id="other-message",
+            )
+        )
+        runtime = types.SimpleNamespace(
+            config=LifeSettings.from_dict({}),
+            archive=archive,
+            _get_curr_period=lambda: "afternoon",
+            _resolve_command_target_date=lambda now: async_return(
+                ("2026-05-24", False)
+            ),
+        )
+        center = DailyLifeCommandCenter(runtime)
+        event = Event(
+            role="member",
+            unified_msg_origin=own_scope,
+        )
+
+        listed = await center.manage_commitment(event, action="list")
+        denied = await center.manage_commitment(
+            event,
+            action="done",
+            commitment_id=other.id,
+        )
+        completed = await center.manage_commitment(
+            event,
+            action="done",
+            commitment_id=own.id,
+        )
+
+        self.assertIn("整理测试资料", listed)
+        self.assertNotIn("另一份测试资料", listed)
+        self.assertIn("无权操作", denied)
+        self.assertEqual((await archive.get_commitment(other.id)).status, "active")
+        self.assertIn("已更新", completed)
+        self.assertEqual((await archive.get_commitment(own.id)).status, "done")
+
     async def test_life_query_displays_config_vision_provider(self):
         runtime = types.SimpleNamespace(
             config=LifeSettings.from_dict(

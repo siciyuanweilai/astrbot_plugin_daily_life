@@ -140,7 +140,7 @@ class ImprintDepositMixin:
         await self._save_memory_correction_payloads(payload, meta)
         await self._save_life_adjustment_payloads(payload, meta, scope, saved_records)
         await self._save_expression_intent_payload(payload, meta, scope)
-        await self._save_life_term_payloads(payload, meta)
+        await self._save_life_term_payloads(payload, meta, scope)
         await self._save_memory_boundary_payloads(payload)
         return saved_records
 
@@ -238,6 +238,7 @@ class ImprintDepositMixin:
                 {
                     **raw_feedback,
                     "date": raw_feedback.get("date") or meta["date"],
+                    "target_id": meta.get("group_id") or meta.get("session_id") or "",
                     "source": raw_feedback.get("source") or "chat_memory",
                 }
             )
@@ -272,7 +273,7 @@ class ImprintDepositMixin:
             record = ExpressionProfileRecord.from_value(
                 {
                     **raw_expression,
-                    "scope": raw_expression.get("scope") or scope,
+                    "scope": scope,
                     "profile_id": raw_expression.get("profile_id")
                     or meta.get("sender_profile_id", ""),
                     "label": raw_expression.get("label") or meta.get("sender_name", ""),
@@ -319,7 +320,7 @@ class ImprintDepositMixin:
                 BehaviorPatternRecord.from_value(
                     {
                         **raw_pattern,
-                        "scope": raw_pattern.get("scope") or scope,
+                        "scope": scope,
                         "last_seen": raw_pattern.get("last_seen") or meta["date"],
                         "source": raw_pattern.get("source") or "chat_memory",
                     },
@@ -332,7 +333,7 @@ class ImprintDepositMixin:
                 BehaviorSceneRecord.from_value(
                     {
                         **raw_scene,
-                        "scope": raw_scene.get("scope") or scope,
+                        "scope": scope,
                         "last_seen": raw_scene.get("last_seen") or meta["date"],
                         "source": raw_scene.get("source") or "chat_memory",
                     },
@@ -372,7 +373,7 @@ class ImprintDepositMixin:
                 TemporaryExpressionStateRecord.from_value(
                     {
                         **raw_state,
-                        "scope": raw_state.get("scope") or scope,
+                        "scope": scope,
                         "source": raw_state.get("source") or "chat_memory",
                     }
                 )
@@ -382,7 +383,7 @@ class ImprintDepositMixin:
         self, payload: dict, meta: dict[str, str], scope: str
     ) -> None:
         for raw_focus in self._dict_payloads(payload.get("focus_updates"))[:6]:
-            record = FocusTargetRecord.from_value(raw_focus)
+            record = FocusTargetRecord.from_value({**raw_focus, "scope": scope})
             if not record:
                 continue
             await self.archive.upsert_focus_target(record)
@@ -392,7 +393,7 @@ class ImprintDepositMixin:
                 FocusSlotRecord.from_value(
                     {
                         **raw_slot,
-                        "scope": raw_slot.get("scope") or scope,
+                        "scope": scope,
                         "last_active_at": raw_slot.get("last_active_at")
                         or life_now().strftime("%Y-%m-%d %H:%M"),
                     }
@@ -717,13 +718,14 @@ class ImprintDepositMixin:
             )
 
     async def _save_life_term_payloads(
-        self, payload: dict, meta: dict[str, str]
+        self, payload: dict, meta: dict[str, str], scope: str
     ) -> None:
         for raw_term in self._dict_payloads(payload.get("life_terms"))[:8]:
             await self.archive.upsert_life_term(
                 LifeTermRecord.from_value(
                     {
                         **raw_term,
+                        "scope": scope,
                         "last_seen": raw_term.get("last_seen") or meta["date"],
                         "source": raw_term.get("source") or "chat_memory",
                     }

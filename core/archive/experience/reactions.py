@@ -87,15 +87,19 @@ class FeedbackArchiveMixin:
         return await self._run_db(dbwork)
 
     async def get_behavior_feedback(
-        self, limit: int = 20
+        self, limit: int = 20, *, target_id: str = ""
     ) -> list[BehaviorFeedbackRecord]:
         def dbwork():
-            sql = "SELECT * FROM behavior_feedback ORDER BY date DESC, id DESC"
-            params: tuple[Any, ...] = ()
+            sql = "SELECT * FROM behavior_feedback"
+            params: list[Any] = []
+            if target_id:
+                sql += " WHERE target_id = ?"
+                params.append(self._text(target_id))
+            sql += " ORDER BY date DESC, id DESC"
             if limit > 0:
                 sql += " LIMIT ?"
-                params = (limit,)
-            rows = self._conn.execute(sql, params).fetchall()
+                params.append(limit)
+            rows = self._conn.execute(sql, tuple(params)).fetchall()
             return [self._compose_behavior_feedback(row) for row in rows]
 
         return await self._run_db(dbwork)

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import sys
 import threading
 import types
@@ -57,6 +58,57 @@ def patched_follow_up_runners(runners):
 
 
 class PluginLifecycleTest(unittest.IsolatedAsyncioTestCase):
+    def test_model_sdk_debug_logs_are_suppressed(self):
+        astrbot_logger = logging.getLogger("astrbot")
+        previous_filters = list(astrbot_logger.filters)
+        previous = {
+            name: logging.getLogger(name).level
+            for name in plugin_module.SENSITIVE_SDK_LOG_LEVELS
+        }
+        try:
+            for name in previous:
+                logging.getLogger(name).setLevel(logging.DEBUG)
+
+            DailyLifePlugin._protect_model_request_logs()
+
+            self.assertEqual(logging.getLogger("openai").level, logging.WARNING)
+            self.assertEqual(logging.getLogger("httpcore").level, logging.WARNING)
+            self.assertEqual(logging.getLogger("httpx").level, logging.INFO)
+            filters = [
+                item
+                for item in astrbot_logger.filters
+                if getattr(
+                    item,
+                    plugin_module._SensitiveProviderPayloadFilter._MARKER,
+                    False,
+                )
+            ]
+            self.assertEqual(len(filters), 1)
+            sensitive_record = logging.LogRecord(
+                "astrbot",
+                logging.DEBUG,
+                "/AstrBot/astrbot/core/provider/sources/openai_source.py",
+                583,
+                "completion: %s",
+                ("完整模型响应",),
+                None,
+            )
+            normal_record = logging.LogRecord(
+                "astrbot",
+                logging.DEBUG,
+                "/AstrBot/astrbot/core/runtime/task.py",
+                1,
+                "普通调试日志",
+                (),
+                None,
+            )
+            self.assertFalse(filters[0].filter(sensitive_record))
+            self.assertTrue(filters[0].filter(normal_record))
+        finally:
+            for name, level in previous.items():
+                logging.getLogger(name).setLevel(level)
+            astrbot_logger.filters[:] = previous_filters
+
     async def test_expressive_send_tool_routes_current_session_plain_text(self):
         calls = []
 

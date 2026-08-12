@@ -241,17 +241,9 @@ const TODAY_FACT_EMPTY_TEXT = {
   currentOutfitText: "暂无穿搭",
   outfitDecisionText: "暂无判断",
 };
-const FACT_CARD_ORDER = [
-  "weather",
-  "theme",
-  "week",
-  "mood",
-  "schedule-type",
-  "schedule-tone",
-  "schedule-intent",
-  "outfit",
-  "outfit-decision",
-  "memo",
+const FACT_CARD_COLUMNS = [
+  ["weather", "theme", "week", "mood", "schedule-type", "memo"],
+  ["schedule-tone", "schedule-intent", "outfit", "outfit-decision"],
 ];
 
 const HERO_COPY = {
@@ -1413,9 +1405,9 @@ function layoutTodayFacts() {
       .map((card) => [card.dataset.factCard, card])
       .filter(([key, card]) => key && card)
   );
-  const leftSize = Math.ceil(FACT_CARD_ORDER.length / 2);
-  const left = FACT_CARD_ORDER.slice(0, leftSize).map((key) => cards.get(key)).filter(Boolean);
-  const right = FACT_CARD_ORDER.slice(leftSize).map((key) => cards.get(key)).filter(Boolean);
+  const [leftKeys = [], rightKeys = []] = FACT_CARD_COLUMNS;
+  const left = leftKeys.map((key) => cards.get(key)).filter(Boolean);
+  const right = rightKeys.map((key) => cards.get(key)).filter(Boolean);
   columns[0].replaceChildren(...left);
   columns[1].replaceChildren(...right);
 }

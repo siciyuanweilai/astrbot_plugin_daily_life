@@ -8,6 +8,7 @@ from ..runtime import DailyLifeRuntime
 from ..runtime.generation import DailyGenerationBusy
 from .display import DisplayCommandMixin
 from .operate import OperateCommandMixin
+from .policy import LifeAccessPolicy, LifeActionProposal, LifeActionScope
 from .preferences import SettingsCommandMixin
 from .request import CommandHandler, CommandRequest
 from .social import SocialCommandMixin
@@ -32,18 +33,70 @@ class DailyLifeCommandCenter(
 ):
     """日常生活背景指令路由器。"""
 
-    def __init__(self, runtime: DailyLifeRuntime):
+    _SENSITIVE_QUERY_TARGETS = {
+        "history",
+        "历史",
+        "world",
+        "世界",
+        "preferences",
+        "preference",
+        "偏好",
+        "events",
+        "event",
+        "事件",
+        "config",
+        "配置",
+    }
+
+    def __init__(
+        self,
+        runtime: DailyLifeRuntime,
+        policy: LifeAccessPolicy | None = None,
+    ):
         self.runtime = runtime
+        self.policy = policy or LifeAccessPolicy()
         self.handlers: dict[str, CommandHandler] = {
             "帮助": self._help,
             "清空": self._clear,
             "存储": self._storage,
         }
 
+    def permission_denial(
+        self,
+        event: Any,
+        action: str,
+        scope: LifeActionScope,
+        *,
+        payload: dict[str, Any] | None = None,
+        resource_owner: str = "",
+        reason: str = "",
+    ) -> str:
+        proposal = LifeActionProposal.build(
+            action,
+            scope,
+            payload=payload,
+            resource_owner=resource_owner,
+            reason=reason,
+        )
+        return self.policy.denial(event, proposal)
+
     async def dispatch(self, event: Any) -> AsyncIterator[Any]:
         req = await self._build_request(event)
         handler = self.handlers.get(req.action)
         if handler:
+            protected_scope = {
+                "清空": LifeActionScope.ADMIN,
+                "存储": LifeActionScope.ADMIN,
+            }.get(req.action)
+            if protected_scope:
+                denial = self.permission_denial(
+                    event,
+                    f"command:{req.action}",
+                    protected_scope,
+                )
+                if denial:
+                    yield event.plain_result(denial)
+                    return
             async for item in handler(event, req):
                 yield item
             return
@@ -127,6 +180,15 @@ class DailyLifeCommandCenter(
         pair = target_map.get(target_key)
         if not pair:
             return "未能确认要查看的生活信息类型。"
+        if target_key in self._SENSITIVE_QUERY_TARGETS:
+            denial = self.permission_denial(
+                event,
+                f"query:{target_key}",
+                LifeActionScope.ADMIN,
+                payload={"target": target_key},
+            )
+            if denial:
+                return denial
         handler, parts = pair
         req = await self._make_request(parts, target_date=date)
         return await self._run_text_handler(event, handler, req)
@@ -142,6 +204,50 @@ class DailyLifeCommandCenter(
         date: str = "",
     ) -> str:
         action_key = str(action or "").strip().lower()
+        action_scope = (
+            LifeActionScope.ADMIN
+            if action_key
+            in {
+                "reset_day",
+                "regenerate",
+                "重生成",
+                "重置",
+                "set_schedule_time",
+                "schedule_time",
+                "生成时间",
+                "时间",
+            }
+            else LifeActionScope.PRIVATE
+        )
+        if action_key in {
+            "refresh_state",
+            "刷新状态",
+            "reset_day",
+            "regenerate",
+            "重生成",
+            "重置",
+            "update_outfit",
+            "outfit",
+            "换装",
+            "更新穿搭",
+            "set_schedule_time",
+            "schedule_time",
+            "生成时间",
+            "时间",
+        }:
+            denial = self.permission_denial(
+                event,
+                f"adjust:{action_key}",
+                action_scope,
+                payload={
+                    "date": date,
+                    "period": period,
+                    "detail": detail,
+                    "schedule_time": schedule_time,
+                },
+            )
+            if denial:
+                return denial
         if action_key in {"refresh_state", "刷新状态"}:
             parts = ["/生活", "刷新状态", str(detail or "").strip()]
             req = await self._make_request(parts, target_date=date)
@@ -186,12 +292,28 @@ class DailyLifeCommandCenter(
     ) -> str:
         action_key = str(action or "list").strip().lower()
         if action_key in {"memo_tomorrow", "tomorrow_memo", "明日备忘"}:
+            denial = self.permission_denial(
+                event,
+                "commitment:memo_tomorrow",
+                LifeActionScope.PRIVATE,
+                payload={"content": content},
+            )
+            if denial:
+                return denial
             parts = ["/生活", "备忘录", str(content or "").strip()]
             req = await self._make_request(parts)
             return await self._run_text_handler(event, self._memo, req)
         if action_key in {"list", "列表", "query", "查询"}:
             parts = ["/生活", "承诺"]
         elif action_key in {"add", "新增", "添加"}:
+            denial = self.permission_denial(
+                event,
+                "commitment:add",
+                LifeActionScope.PRIVATE,
+                payload={"content": content, "target_date": target_date},
+            )
+            if denial:
+                return denial
             parts = ["/生活", "承诺", "添加", str(content or "").strip()]
         elif action_key in {"done", "complete", "完成"}:
             parts = ["/生活", "承诺", "完成", str(int(commitment_id or 0))]
@@ -223,6 +345,14 @@ class DailyLifeCommandCenter(
         self, event: Any, action: str = "show", date: str = ""
     ) -> str:
         action_key = str(action or "show").strip().lower()
+        denial = self.permission_denial(
+            event,
+            f"review:{action_key}",
+            LifeActionScope.ADMIN,
+            payload={"date": date},
+        )
+        if denial:
+            return denial
         parts = ["/生活", "复盘"]
         if action_key in {"generate", "refresh", "生成", "刷新", "重做"}:
             parts.append("生成")

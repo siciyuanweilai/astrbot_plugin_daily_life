@@ -196,7 +196,7 @@
 
 .facts-column-fill > [data-fact-card="outfit"],
 .facts-column-fill > [data-fact-card="outfit-decision"],
-.facts-column-fill > [data-fact-card="memo"] {
+.facts-column > [data-fact-card="memo"] {
   display: grid;
   align-content: start;
 }

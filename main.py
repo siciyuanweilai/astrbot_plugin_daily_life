@@ -1,5 +1,6 @@
 import asyncio
 import inspect
+import logging
 import time
 from contextlib import asynccontextmanager
 from functools import wraps
@@ -17,7 +18,13 @@ try:
 except (AttributeError, ImportError):  # AstrBot 精简运行时可能没有完整工具包
     WEB_SEARCH_TOOL_NAMES: tuple[str, ...] = ()
 
-from .core.interface import DailyLifeCommandCenter, DailyLifeDashboardMixin
+from .core.interface import (
+    DailyLifeCommandCenter,
+    DailyLifeDashboardMixin,
+    LifeAccessPolicy,
+    LifeActionProposal,
+    LifeActionScope,
+)
 from .core.runtime import PLUGIN_ID, DailyLifeRuntime
 from .core.runtime.markers import LOG_PREFIX
 from .core.runtime.send_message_tool import install_expressive_send_message_tool
@@ -29,6 +36,31 @@ MAP_LLM_TOOL_NAMES = (
     "life_place_detail",
     "life_outing_plan",
 )
+SENSITIVE_SDK_LOG_LEVELS = {
+    "openai": logging.WARNING,
+    "anthropic": logging.WARNING,
+    "google.genai": logging.WARNING,
+    "google.generativeai": logging.WARNING,
+    "httpcore": logging.WARNING,
+    "httpx": logging.INFO,
+}
+
+
+class _SensitiveProviderPayloadFilter(logging.Filter):
+    """隐藏 Provider 调试日志中的完整请求和响应正文。"""
+
+    _MARKER = "_daily_life_sensitive_provider_payload_filter"
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno != logging.DEBUG:
+            return True
+        source = str(getattr(record, "pathname", "") or "").replace("\\", "/")
+        if "/core/provider/sources/" not in source:
+            return True
+        message = record.getMessage().lstrip().lower()
+        return not (
+            message.startswith("completion:") or message.startswith("response:")
+        )
 
 
 class DailyLifePlugin(DailyLifeDashboardMixin, Star):
@@ -133,10 +165,25 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         self._terminating = False
         self._external_search_turns: dict[str, None] = {}
 
+    @staticmethod
+    def _protect_model_request_logs() -> None:
+        """阻止第三方 SDK 在 AstrBot 控制台 sink 中输出完整请求体。"""
+        for name, level in SENSITIVE_SDK_LOG_LEVELS.items():
+            logging.getLogger(name).setLevel(level)
+        astrbot_logger = logging.getLogger("astrbot")
+        if not any(
+            getattr(item, _SensitiveProviderPayloadFilter._MARKER, False)
+            for item in astrbot_logger.filters
+        ):
+            payload_filter = _SensitiveProviderPayloadFilter()
+            setattr(payload_filter, _SensitiveProviderPayloadFilter._MARKER, True)
+            astrbot_logger.addFilter(payload_filter)
+
     async def initialize(self):
         async with self._initialize_lock:
             if self.runtime is not None and self.commands is not None:
                 return
+            self._protect_model_request_logs()
             data_path = await asyncio.to_thread(self._prepare_database)
             runtime = DailyLifeRuntime(
                 self._plugin_context,
@@ -310,9 +357,10 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
 
         return guarded
 
-    async def get_life_context(self, target_umo: str = "") -> dict:
+    async def get_share_context(self, target_umo: str = "") -> dict:
+        """为分享类插件返回目标隔离且已提炼的生活上下文。"""
         async with self._external_runtime_lease() as runtime:
-            return await runtime.get_life_context(target_umo)
+            return await runtime.get_share_context(target_umo)
 
     async def search_share_evidence(
         self,
@@ -421,6 +469,33 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         text = str(value or "").strip().lower()
         return text in {"1", "true", "yes", "y", "on"}
 
+    def _life_permission_denial(
+        self,
+        event: AstrMessageEvent,
+        action: str,
+        scope: LifeActionScope,
+        *,
+        payload: dict | None = None,
+        resource_owner: str = "",
+    ) -> str:
+        commands = getattr(self, "commands", None)
+        permission_denial = getattr(commands, "permission_denial", None)
+        if callable(permission_denial):
+            return permission_denial(
+                event,
+                action,
+                scope,
+                payload=payload,
+                resource_owner=resource_owner,
+            )
+        proposal = LifeActionProposal.build(
+            action,
+            scope,
+            payload=payload,
+            resource_owner=resource_owner,
+        )
+        return LifeAccessPolicy().denial(event, proposal)
+
     @staticmethod
     def _tool_int(value: object, default: int = 0) -> int:
         try:
@@ -477,6 +552,11 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         Args:
             invite_details(string): 当前邀约或对上一条改约方案的确认，例如“晚上8点一起看电影”“现在上号双排”或“好，按你说的傍晚安排”。
         """
+        denial = self._life_permission_denial(
+            event, "invite:respond", LifeActionScope.PRIVATE
+        )
+        if denial:
+            return denial
         return await self.runtime.accept_user_invite(
             event, str(invite_details or "").strip()
         )
@@ -496,6 +576,11 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         Args:
             memo_details(string): 用户提到的明天或未来计划，例如“和用户去草坪野餐，负责做三明治”。
         """
+        denial = self._life_permission_denial(
+            event, "memo:add", LifeActionScope.PRIVATE
+        )
+        if denial:
+            return denial
         return await self.runtime.add_memo_for_tomorrow(
             event, str(memo_details or "").strip()
         )
@@ -622,7 +707,11 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             radius_meters(int): near 不为空时的搜索半径，默认 3000，范围 100 到 50000。
             limit(int): 返回地点数，默认 5，最多 10。
         """
-        del event
+        denial = self._life_permission_denial(
+            event, "map:place_search", LifeActionScope.PRIVATE
+        )
+        if denial:
+            return denial
         return await self.runtime.domains.tool_place_search(
             str(query or "").strip(),
             near=str(near or "").strip(),
@@ -649,7 +738,11 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             destination(string): 目的地名称或地址。
             mode(string): walking 步行；cycling 骑行；driving 驾车；transit 公交；compare 比较全部方式。
         """
-        del event
+        denial = self._life_permission_denial(
+            event, "map:route_plan", LifeActionScope.PRIVATE
+        )
+        if denial:
+            return denial
         return await self.runtime.domains.tool_route_plan(
             str(origin or "").strip(),
             str(destination or "").strip(),
@@ -670,7 +763,11 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         Args:
             poi_id(string): 地点搜索结果中的 POI ID。
         """
-        del event
+        denial = self._life_permission_denial(
+            event, "map:place_detail", LifeActionScope.PRIVATE
+        )
+        if denial:
+            return denial
         return await self.runtime.domains.tool_place_detail(str(poi_id or "").strip())
 
     @filter.llm_tool(name="life_outing_plan")
@@ -697,7 +794,11 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             duration_minutes(int): 总时间预算，默认 120，范围 30 到 1440。
             max_stops(int): 最多停靠数，默认 3，范围 1 到 5。
         """
-        del event
+        denial = self._life_permission_denial(
+            event, "map:outing_plan", LifeActionScope.PRIVATE
+        )
+        if denial:
+            return denial
         return await self.runtime.domains.tool_outing_plan(
             str(request or "").strip(),
             list(stops or []),
@@ -1080,7 +1181,28 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             resolution(string): 可选输出分辨率，只能填 1K、2K 或 4K；仅当用户明确要求输出分辨率时填写，“高清”等模糊描述不要推断，其他语境里的 1K、2K、4K 也不要误填。
             provider(string): 可选图片接口，只能填 auto、gpt、gemini 或 grok；仅当用户明确要求使用指定图片接口时填写，否则留空。
         """
+        if str(subject_route or "free").strip() == "group":
+            denial = self._life_permission_denial(
+                event,
+                "image:friend_reference",
+                LifeActionScope.PRIVATE,
+            )
+            if denial:
+                return denial
         use_reverse_cache = self._tool_bool(use_last_reverse_prompt)
+        changes_life_state = bool(
+            self._tool_bool(current_outfit_change)
+            or str(friend_outfit or "").strip()
+            or str(friend_hair or "").strip()
+        )
+        if changes_life_state:
+            denial = self._life_permission_denial(
+                event,
+                "image:update_appearance",
+                LifeActionScope.PRIVATE,
+            )
+            if denial:
+                return denial
         options = {
             "use_last_reverse_prompt": use_reverse_cache,
             "subject_route": str(subject_route or "free").strip(),
@@ -1157,6 +1279,25 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             resolution(string): 可选输出分辨率，只能填 1K、2K 或 4K；仅当用户明确要求整组照片的输出分辨率时填写，“高清”等模糊描述不要推断。
             provider(string): 可选图片接口，只能填 auto、gpt、gemini 或 grok；仅当用户明确要求使用指定图片接口时填写，否则留空。
         """
+        if str(subject_route or "free").strip() == "group":
+            denial = self._life_permission_denial(
+                event,
+                "photo_suite:friend_reference",
+                LifeActionScope.PRIVATE,
+            )
+            if denial:
+                return denial
+        changes_friend_state = bool(
+            str(friend_outfit or "").strip() or str(friend_hair or "").strip()
+        )
+        if changes_friend_state:
+            denial = self._life_permission_denial(
+                event,
+                "photo_suite:update_friend_appearance",
+                LifeActionScope.PRIVATE,
+            )
+            if denial:
+                return denial
         options = {
             "count": self._tool_int(count, 3),
             "reference_image": str(reference_image or "").strip(),
@@ -1218,6 +1359,14 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             resolution(string): 可选输出分辨率，只能填 1K、2K 或 4K；仅当用户明确要求修改后图片的输出分辨率时填写，“高清”等模糊描述不要推断，不能把原图或画面内容里的分辨率当成输出要求。
             provider(string): 可选图片接口，只能填 auto、gpt、gemini 或 grok；仅当用户明确要求使用指定图片接口时填写，否则留空。
         """
+        if participants:
+            denial = self._life_permission_denial(
+                event,
+                "image_edit:friend_reference",
+                LifeActionScope.PRIVATE,
+            )
+            if denial:
+                return denial
         options = {
             "continue_last_result": self._tool_bool(continue_last_result),
             "generate_without_reference": self._tool_bool(generate_without_reference),
@@ -1287,6 +1436,11 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             note(string): 用户指定的学习重点或商品说明；只辅助取舍，不能覆盖图片可见事实。
             kind(string): 学习范围，只能是 auto、outfit、hair 或 both；默认 auto。
         """
+        denial = self._life_permission_denial(
+            event, "style:learn", LifeActionScope.PRIVATE
+        )
+        if denial:
+            return denial
         return await self.runtime.life_style_learn(
             event,
             str(reference_image or "").strip(),
@@ -1319,6 +1473,11 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             count(int): 需要分析的候选图片数量，默认 3，最多 6。
             note(string): 可选补充取舍要求，不得加入用户未提出的限制。
         """
+        denial = self._life_permission_denial(
+            event, "style:browse_learn", LifeActionScope.PRIVATE
+        )
+        if denial:
+            return denial
         return await self.runtime.life_style_browse_learn(
             event,
             str(query or "").strip(),
@@ -1344,6 +1503,11 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             kind(string): 可选 outfit 或 hair；留空同时查看服装和发型。
             limit(int): 最多返回多少条候选，默认 8。
         """
+        denial = self._life_permission_denial(
+            event, "style:catalog", LifeActionScope.PRIVATE
+        )
+        if denial:
+            return denial
         return await self.runtime.life_style_catalog_list(
             event,
             kind=str(kind or "").strip(),
@@ -1367,6 +1531,11 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             feedback(string): 用户对候选的完整原始反馈，不要改写成简单关键词。
             item_ids(array[int]): 需要调整的视觉衣橱候选编号。
         """
+        denial = self._life_permission_denial(
+            event, "style:feedback", LifeActionScope.PRIVATE
+        )
+        if denial:
+            return denial
         return await self.runtime.life_style_feedback(
             event,
             str(feedback or "").strip(),
@@ -1413,6 +1582,14 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             friend_scene_category(string): 新生成首帧时人物 B 的当前场景，只能填 home、sleep、outdoor、public 或 mixed；使用现成首帧时留空。
             continue_last_result(bool): 本轮没有新图片且用户明确要求沿用上一张时，是否使用当前会话上一张成功生成的图片作为视频首帧；不能仅因上一轮刚发送过图片就设为 true。
         """
+        if str(subject_route or "free").strip() == "group" or participants:
+            denial = self._life_permission_denial(
+                event,
+                "video:friend_reference",
+                LifeActionScope.PRIVATE,
+            )
+            if denial:
+                return denial
         options = {
             "subject_route": str(subject_route or "free").strip(),
             "continue_last_result": self._tool_bool(continue_last_result),
@@ -1941,15 +2118,33 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
     @filter.command("B站登录")
     @_runtime_guard
     async def bili_login_command(self, event: AstrMessageEvent):
+        denial = self._life_permission_denial(
+            event, "bilibili:login", LifeActionScope.ADMIN
+        )
+        if denial:
+            yield event.plain_result(denial)
+            return
         async for result in self.runtime.bili_login(event):
             yield result
 
     @filter.command("B站登出")
     @_runtime_guard
     async def bili_logout_command(self, event: AstrMessageEvent):
+        denial = self._life_permission_denial(
+            event, "bilibili:logout", LifeActionScope.ADMIN
+        )
+        if denial:
+            yield event.plain_result(denial)
+            return
         yield await self.runtime.bili_logout(event)
 
     @filter.command("B站状态")
     @_runtime_guard
     async def bili_status_command(self, event: AstrMessageEvent):
+        denial = self._life_permission_denial(
+            event, "bilibili:status", LifeActionScope.ADMIN
+        )
+        if denial:
+            yield event.plain_result(denial)
+            return
         yield await self.runtime.bili_status(event)

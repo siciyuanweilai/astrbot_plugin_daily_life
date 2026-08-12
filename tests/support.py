@@ -1421,7 +1421,11 @@ class DataManager:
                     item = by_id.get(int(value))
                 except (TypeError, ValueError):
                     item = None
-                if item and item.category == canonical.category and item.id != canonical_id:
+                if (
+                    item
+                    and item.category == canonical.category
+                    and item.id != canonical_id
+                ):
                     valid.append(item)
             if not valid:
                 continue
@@ -1606,9 +1610,12 @@ class DataManager:
         self.behavior_feedback[item.id] = item
         return item
 
-    async def get_behavior_feedback(self, limit=20):
+    async def get_behavior_feedback(self, limit=20, *, target_id=""):
+        values = list(self.behavior_feedback.values())
+        if target_id:
+            values = [item for item in values if item.target_id == target_id]
         values = sorted(
-            self.behavior_feedback.values(),
+            values,
             key=lambda item: (item.date, item.id),
             reverse=True,
         )
@@ -3629,6 +3636,7 @@ class Event:
         group_name="",
         message_id="",
         self_id="",
+        role="admin",
     ):
         self.bot = bot
         self._sender_name = sender_name
@@ -3638,6 +3646,7 @@ class Event:
         self._group_id = group_id
         self._group_name = group_name
         self.message_id = message_id
+        self.role = str(role or "member")
         self.unified_msg_origin = unified_msg_origin
         self.message_str = ""
         self.message_items = []
@@ -3669,6 +3678,12 @@ class Event:
 
     def get_message_id(self):
         return self.message_id
+
+    def is_admin(self):
+        return self.role == "admin"
+
+    def is_private_chat(self):
+        return ":FriendMessage:" in str(self.unified_msg_origin or "")
 
     def get_messages(self):
         return list(self.message_items)

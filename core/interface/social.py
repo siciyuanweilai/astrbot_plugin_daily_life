@@ -5,6 +5,7 @@ from typing import Any
 
 from ..labels import commitment_kind_label, time_window_label
 from ..models import CommitmentRecord, EventRecord, PlaceRecord
+from .policy import LifeActionScope
 from .request import CommandRequest
 
 
@@ -46,6 +47,11 @@ class SocialCommandMixin:
             items = await self.runtime.archive.get_commitments(
                 status="active", limit=20
             )
+            items = [
+                item
+                for item in items
+                if self.policy.owns(event, item.source_session)
+            ]
             if not items:
                 yield event.plain_result("当前没有未完成承诺。")
                 return
@@ -115,6 +121,17 @@ class SocialCommandMixin:
             if not commitment_id:
                 yield event.plain_result("请指定承诺标识，例如：完成 3。")
                 return
+            commitment = await self.runtime.archive.get_commitment(commitment_id)
+            denial = self.permission_denial(
+                event,
+                f"commitment:{action}",
+                LifeActionScope.OWNED,
+                resource_owner=(commitment.source_session if commitment else ""),
+                payload={"commitment_id": commitment_id},
+            )
+            if denial:
+                yield event.plain_result(denial)
+                return
             status = "done" if action == "完成" else "cancelled"
             ok = await self.runtime.archive.set_commitment_status(
                 commitment_id,
@@ -137,6 +154,20 @@ class SocialCommandMixin:
             date_str = self._infer_manual_commitment_date(target, req.now)
             if not date_str:
                 yield event.plain_result("无法识别日期，请使用 明天/周末/YYYY-MM-DD")
+                return
+            commitment = await self.runtime.archive.get_commitment(commitment_id)
+            denial = self.permission_denial(
+                event,
+                f"commitment:{action}",
+                LifeActionScope.OWNED,
+                resource_owner=(commitment.source_session if commitment else ""),
+                payload={
+                    "commitment_id": commitment_id,
+                    "target_date": date_str,
+                },
+            )
+            if denial:
+                yield event.plain_result(denial)
                 return
             ok = await self.runtime.archive.reschedule_commitment(
                 commitment_id, date_str, "weekend" if "周末" in target else ""

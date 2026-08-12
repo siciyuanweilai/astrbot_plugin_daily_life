@@ -169,6 +169,8 @@ class FocusArchiveMixin:
         limit: int = 20,
         enabled_only: bool = True,
         include_expired: bool = False,
+        *,
+        scope: str = "",
     ) -> list[FocusTargetRecord]:
         def dbwork():
             sql = "SELECT * FROM focus_targets"
@@ -179,6 +181,9 @@ class FocusArchiveMixin:
                 params.append(life_today().isoformat())
             if enabled_only:
                 clauses.append("enabled = 1")
+            if scope:
+                clauses.append("(scope = ? OR scope = '')")
+                params.append(self._text(scope))
             if clauses:
                 sql += " WHERE " + " AND ".join(clauses)
             sql += " ORDER BY priority DESC, updated_at DESC, id DESC"

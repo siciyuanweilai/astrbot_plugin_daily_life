@@ -213,12 +213,18 @@ class SnapshotExportMixin:
     def _life_context_people_keys(relationships: list[Any]) -> set[str]:
         keys: set[str] = set()
         for relationship in relationships:
+
+            def field_value(key: str) -> Any:
+                if isinstance(relationship, dict):
+                    return relationship.get(key, "")
+                return getattr(relationship, key, "")
+
             for value in (
-                getattr(relationship, "id", ""),
-                getattr(relationship, "name", ""),
-                getattr(relationship, "alias", ""),
-                getattr(relationship, "subjective_name", ""),
-                getattr(relationship, "user_id", ""),
+                field_value("id"),
+                field_value("name"),
+                field_value("alias"),
+                field_value("subjective_name"),
+                field_value("user_id"),
             ):
                 text = str(value or "").strip()
                 if text:
@@ -293,8 +299,341 @@ class SnapshotExportMixin:
             "experience": {},
         }
 
-    async def get_life_context(self, target_umo: str = "") -> dict[str, Any]:
-        """向其他插件暴露当前生活状态。"""
+    @staticmethod
+    def _share_record_value(item: Any, key: str, default: Any = "") -> Any:
+        if isinstance(item, dict):
+            return item.get(key, default)
+        return getattr(item, key, default)
+
+    @classmethod
+    def _share_text(cls, item: Any, key: str, limit: int = 160) -> str:
+        value = cls._share_record_value(item, key)
+        return " ".join(str(value or "").split())[:limit]
+
+    @classmethod
+    def _share_exact_scope(cls, records: list[Any], scope: str) -> list[Any]:
+        return [
+            item for item in records if cls._share_text(item, "scope", 180) == scope
+        ]
+
+    @classmethod
+    def _share_scope_context(cls, target_umo: str) -> tuple[str, str, bool, bool]:
+        scope = str(target_umo or "").strip()
+        _, real_id = parse_unified_origin(scope)
+        is_group = ":GroupMessage:" in scope
+        is_private = ":FriendMessage:" in scope
+        experience_scope = real_id if is_group and real_id else scope
+        return scope, experience_scope, is_group, not (is_group or is_private)
+
+    @classmethod
+    def _share_episode_payload(
+        cls,
+        episodes: list[Any],
+        people_keys: set[str],
+        *,
+        is_private: bool,
+    ) -> list[dict[str, str]]:
+        result: list[dict[str, str]] = []
+        for item in episodes:
+            related_people = {
+                str(value or "").strip()
+                for value in (cls._share_record_value(item, "related_people", []) or [])
+                if str(value or "").strip()
+            }
+            source = cls._share_text(item, "source", 40)
+            if related_people:
+                if not is_private or not related_people.intersection(people_keys):
+                    continue
+            elif source != "daily":
+                continue
+            payload = {
+                "date": cls._share_text(item, "date", 20),
+                "title": cls._share_text(item, "title", 100),
+                "summary": cls._share_text(item, "summary", 240),
+                "impact": cls._share_text(item, "impact", 120),
+            }
+            if payload["title"] or payload["summary"]:
+                result.append(payload)
+            if len(result) >= 3:
+                break
+        return result
+
+    @classmethod
+    def _share_focus_payload(
+        cls, targets: list[Any], slots: list[Any]
+    ) -> list[dict[str, str]]:
+        result: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for item in [*targets, *slots]:
+            label = cls._share_text(item, "label", 80)
+            if not label or label in seen:
+                continue
+            seen.add(label)
+            result.append(
+                {
+                    "label": label,
+                    "reason": cls._share_text(item, "reason", 120),
+                }
+            )
+            if len(result) >= 4:
+                break
+        return result
+
+    @classmethod
+    def _share_expression_payload(
+        cls, profiles: list[Any], temporary_states: list[Any]
+    ) -> dict[str, list[str]]:
+        result: dict[str, list[str]] = {
+            "tones": [],
+            "habits": [],
+            "avoid": [],
+            "temporary": [],
+        }
+
+        def append_unique(key: str, value: Any, limit: int = 4) -> None:
+            text = " ".join(str(value or "").split())[:100]
+            if text and text not in result[key] and len(result[key]) < limit:
+                result[key].append(text)
+
+        for item in profiles:
+            append_unique("tones", cls._share_record_value(item, "tone"))
+            for value in cls._share_record_value(item, "habits", []) or []:
+                append_unique("habits", value)
+            for value in cls._share_record_value(item, "avoid", []) or []:
+                append_unique("avoid", value)
+        for item in temporary_states:
+            label = cls._share_text(item, "label", 60)
+            tone = cls._share_text(item, "tone", 80)
+            append_unique(
+                "temporary", "：".join(value for value in (label, tone) if value)
+            )
+        return {key: values for key, values in result.items() if values}
+
+    @classmethod
+    def _share_behavior_payload(
+        cls, patterns: list[Any], scenes: list[Any]
+    ) -> list[dict[str, str]]:
+        result: list[dict[str, str]] = []
+        seen: set[tuple[str, str, str]] = set()
+        for item in patterns:
+            payload = {
+                "scene": cls._share_text(item, "scene", 80),
+                "preferred": cls._share_text(item, "suggested_action", 100)
+                or cls._share_text(item, "pattern", 100),
+                "avoid": "",
+                "outcome": "",
+            }
+            key = (payload["scene"], payload["preferred"], payload["avoid"])
+            if any(key) and key not in seen:
+                seen.add(key)
+                result.append(payload)
+        for item in scenes:
+            payload = {
+                "scene": cls._share_text(item, "scene", 80),
+                "preferred": cls._share_text(item, "preferred_action", 100),
+                "avoid": cls._share_text(item, "avoid_action", 100),
+                "outcome": cls._share_text(item, "outcome_hint", 120),
+            }
+            key = (payload["scene"], payload["preferred"], payload["avoid"])
+            if any(key) and key not in seen:
+                seen.add(key)
+                result.append(payload)
+            if len(result) >= 4:
+                break
+        return result[:4]
+
+    @classmethod
+    def _share_terms_payload(cls, terms: list[Any]) -> list[dict[str, str]]:
+        result: list[dict[str, str]] = []
+        for item in terms:
+            term = cls._share_text(item, "term", 50)
+            meaning = cls._share_text(item, "meaning", 120)
+            if not term or not meaning:
+                continue
+            examples = cls._share_record_value(item, "examples", []) or []
+            result.append(
+                {
+                    "term": term,
+                    "meaning": meaning,
+                    "scene": cls._share_text(item, "scene", 80),
+                    "example": " ".join(str(examples[0] or "").split())[:100]
+                    if examples
+                    else "",
+                }
+            )
+            if len(result) >= 3:
+                break
+        return result
+
+    @classmethod
+    def _share_interaction_payload(
+        cls, effects: list[Any], feedback: list[Any]
+    ) -> dict[str, Any]:
+        outcomes = [
+            cls._share_text(item, "outcome", 20)
+            for item in effects
+            if cls._share_text(item, "outcome", 20) != "pending"
+        ]
+        outcomes.extend(
+            cls._share_text(item, "result", 20)
+            for item in feedback
+            if cls._share_text(item, "result", 20)
+        )
+        if not outcomes:
+            return {}
+        counts: dict[str, int] = {}
+        for outcome in outcomes:
+            key = outcome or "neutral"
+            counts[key] = counts.get(key, 0) + 1
+        positive = counts.get("positive", 0)
+        negative = counts.get("negative", 0)
+        if positive > negative:
+            summary = "近期互动反馈整体积极，可保持当前自然表达方式"
+        elif negative > positive:
+            summary = "近期互动反馈偏弱，应缩短表达并减少主动推进"
+        else:
+            summary = "近期互动反馈平稳，保持轻量自然即可"
+        return {
+            "summary": summary,
+            "positive": positive,
+            "neutral": counts.get("neutral", 0),
+            "negative": negative,
+        }
+
+    async def _share_guidance(
+        self, target_umo: str, relationships: list[Any]
+    ) -> dict[str, Any]:
+        scope, experience_scope, is_group, is_public = self._share_scope_context(
+            target_umo
+        )
+        is_private = bool(scope and not (is_group or is_public))
+        people_keys = self._life_context_people_keys(relationships)
+        profile_ids = [
+            self._share_text(item, "id", 120) or self._share_text(item, "user_id", 120)
+            for item in relationships
+        ]
+        profile_id = next((value for value in profile_ids if value), "")
+        _, real_id = parse_unified_origin(scope)
+
+        await self._settle_stale_reply_effects()
+        (
+            episodes,
+            rhythm_trend,
+            focus_targets,
+            focus_slots,
+            scoped_profiles,
+            person_profiles,
+            temporary_states,
+            behavior_patterns,
+            behavior_scenes,
+            reply_effects,
+            behavior_feedback,
+            session_behavior_feedback,
+            terms,
+        ) = await asyncio.gather(
+            self.archive.get_life_episodes(limit=16),
+            self.archive.get_physiological_rhythm_trend(days=7, limit=8),
+            self.archive.get_focus_targets(limit=6, scope=experience_scope)
+            if experience_scope
+            else asyncio.sleep(0, result=[]),
+            self.archive.get_focus_slots(limit=6, scope=experience_scope)
+            if experience_scope
+            else asyncio.sleep(0, result=[]),
+            self.archive.get_expression_profiles(limit=4, scope=experience_scope)
+            if experience_scope
+            else asyncio.sleep(0, result=[]),
+            self.archive.get_expression_profiles(limit=4, profile_id=profile_id)
+            if is_private and profile_id
+            else asyncio.sleep(0, result=[]),
+            self.archive.get_temporary_expression_states(
+                limit=3, scope=experience_scope
+            )
+            if experience_scope
+            else asyncio.sleep(0, result=[]),
+            self.archive.get_behavior_patterns(limit=4, scope=experience_scope)
+            if experience_scope
+            else asyncio.sleep(0, result=[]),
+            self.archive.get_behavior_scenes(limit=4, scope=experience_scope)
+            if experience_scope
+            else asyncio.sleep(0, result=[]),
+            self.archive.get_reply_effects(limit=8, scope=scope)
+            if scope
+            else asyncio.sleep(0, result=[]),
+            self.archive.get_behavior_feedback(
+                limit=8,
+                target_id=(real_id if is_group else scope),
+            )
+            if scope
+            else asyncio.sleep(0, result=[]),
+            self.archive.get_behavior_feedback(limit=8, target_id=scope)
+            if is_group and real_id and real_id != scope
+            else asyncio.sleep(0, result=[]),
+            self.archive.get_life_terms(limit=4, scope=experience_scope)
+            if experience_scope
+            else asyncio.sleep(0, result=[]),
+        )
+
+        profiles = []
+        profile_keys: set[tuple[str, str, str]] = set()
+        for item in [*scoped_profiles, *person_profiles]:
+            key = (
+                self._share_text(item, "scope", 160),
+                self._share_text(item, "profile_id", 120),
+                self._share_text(item, "label", 80),
+            )
+            if key not in profile_keys:
+                profile_keys.add(key)
+                profiles.append(item)
+
+        focus_targets = self._share_exact_scope(focus_targets, experience_scope)
+        focus_slots = self._share_exact_scope(focus_slots, experience_scope)
+        scoped_profiles = self._share_exact_scope(scoped_profiles, experience_scope)
+        temporary_states = self._share_exact_scope(temporary_states, experience_scope)
+        behavior_patterns = self._share_exact_scope(behavior_patterns, experience_scope)
+        behavior_scenes = self._share_exact_scope(behavior_scenes, experience_scope)
+        terms = self._share_exact_scope(terms, experience_scope)
+
+        profiles = [
+            item
+            for item in profiles
+            if item in scoped_profiles
+            or (is_private and self._share_text(item, "profile_id", 120) == profile_id)
+        ]
+
+        trend_summary = ""
+        if isinstance(rhythm_trend, dict):
+            trend_summary = " ".join(str(rhythm_trend.get("summary") or "").split())[
+                :240
+            ]
+        return {
+            "version": 1,
+            "episodes": self._share_episode_payload(
+                episodes, people_keys, is_private=is_private
+            ),
+            "rhythm_trend": trend_summary,
+            "focus": self._share_focus_payload(focus_targets, focus_slots),
+            "expression": self._share_expression_payload(profiles, temporary_states),
+            "behavior": self._share_behavior_payload(
+                behavior_patterns, behavior_scenes
+            ),
+            "interaction": self._share_interaction_payload(
+                reply_effects, [*behavior_feedback, *session_behavior_feedback]
+            ),
+            "terms": self._share_terms_payload(terms),
+        }
+
+    async def get_share_context(self, target_umo: str = "") -> dict[str, Any]:
+        """向分享类插件暴露目标隔离且已提炼的生活上下文。"""
+        context = await self._build_share_base_context(target_umo)
+        if not context:
+            return {}
+        context["share_guidance"] = await self._share_guidance(
+            target_umo, list(context.get("relationships") or [])
+        )
+        return context
+
+    async def _build_share_base_context(self, target_umo: str = "") -> dict[str, Any]:
+        """组装分享专用上下文的基础生活状态。"""
         now = life_now()
         (
             data,

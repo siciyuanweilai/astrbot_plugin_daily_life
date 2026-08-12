@@ -17,6 +17,13 @@ from .invite import InviteMixin
 from .outfit import OutfitMixin
 from .people import PersonFactMixin
 from .reference import ReferenceMixin
+from .reliability import (
+    ProviderCircuit,
+    exception_status,
+    is_non_retryable_provider_error,
+    is_transient_provider_error,
+    retry_delay,
+)
 from .rhythm import LifecycleMixin
 from .style_catalog import StyleCatalogMixin
 from .tools import extract_json_from_text, get_time_period
@@ -57,6 +64,7 @@ class LifeBackgroundComposer(
         self._reference_name_cache = {}
         self._gen_lock = asyncio.Lock()
         self._preference_maintenance_done = False
+        self._provider_circuit = ProviderCircuit()
 
     def _get_curr_period(self, target_dt=None) -> str:
         return get_time_period(target_dt)
@@ -219,6 +227,13 @@ class LifeBackgroundComposer(
             current_provider_id = temporary_id
             return True
 
+        if self._provider_circuit.is_open(current_provider_id):
+            if not await switch_to_temporary_provider("连续失败熔断"):
+                logger.warning(
+                    f"[日常生活] 大语言模型服务暂时熔断：提供商={current_provider_id or '默认'}"
+                )
+                return ""
+
         attempt = 0
         while attempt <= empty_retries:
             if attempt > 0 and attempt == empty_retries:
@@ -231,14 +246,32 @@ class LifeBackgroundComposer(
                 )
             except Exception as exc:
                 err_text = str(exc)
-                if "401" in err_text and await switch_to_temporary_provider("401"):
+                status = exception_status(exc)
+                if status == 401 and await switch_to_temporary_provider("401"):
                     continue
+                if is_non_retryable_provider_error(exc):
+                    logger.warning(
+                        f"[日常生活] 大语言模型请求不可重试：状态={status or '未知'}；"
+                        f"提供商={current_provider_id or '默认'}；错误={err_text[:300]}"
+                    )
+                    return ""
+                transient = is_transient_provider_error(exc)
+                if transient:
+                    opened = self._provider_circuit.record_failure(current_provider_id)
+                else:
+                    opened = False
                 if attempt < empty_retries:
                     logger.warning(
-                        f"[日常生活] 大语言模型调用异常（第 {attempt + 1} 次）：{exc}"
+                        f"[日常生活] 大语言模型调用异常（第 {attempt + 1} 次；"
+                        f"{'瞬时故障' if transient else '未知故障'}）：{err_text[:300]}"
                     )
+                    await asyncio.sleep(retry_delay(attempt))
                     attempt += 1
                     continue
+                if opened:
+                    logger.warning(
+                        f"[日常生活] 大语言模型服务已短暂熔断：提供商={current_provider_id or '默认'}"
+                    )
                 if await switch_to_temporary_provider("调用异常"):
                     continue
                 logger.warning(
@@ -248,6 +281,7 @@ class LifeBackgroundComposer(
 
             text = self._extract_completion_text(resp)
             if text:
+                self._provider_circuit.record_success(current_provider_id)
                 return text
             if attempt < empty_retries:
                 logger.warning("[日常生活] 大语言模型返回为空，准备重试一次")

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sys
 import tempfile
 import types
@@ -76,6 +77,130 @@ class _Snapshot(SnapshotExportMixin):
         self.archive = _TargetArchive()
 
 
+class _ShareArchive:
+    def __init__(self):
+        self.calls = []
+
+    async def get_life_episodes(self, limit=16):
+        return [
+            {
+                "date": "2026-08-12",
+                "title": "公共日程片段",
+                "summary": "午后在窗边整理照片",
+                "source": "daily",
+                "related_people": [],
+            },
+            {
+                "date": "2026-08-11",
+                "title": "甲的私聊片段",
+                "summary": "和联系人甲聊到周末看展",
+                "source": "chat_memory",
+                "related_people": ["联系人甲"],
+            },
+            {
+                "date": "2026-08-10",
+                "title": "乙的私聊片段",
+                "summary": "和联系人乙约好吃饭",
+                "source": "chat_memory",
+                "related_people": ["联系人乙"],
+            },
+            {
+                "date": "2026-08-09",
+                "title": "无归属私聊片段",
+                "summary": "不应作为公共生活片段",
+                "source": "chat_memory",
+                "related_people": [],
+            },
+        ]
+
+    async def get_physiological_rhythm_trend(self, days=7, *, limit=8):
+        return {"summary": "最近几天午后精力偏低"}
+
+    async def get_focus_targets(self, limit=6, *, scope=""):
+        self.calls.append(("focus_targets", scope))
+        return [
+            {"scope": scope, "label": "当前目标", "reason": "本轮仍在关注"},
+            {"scope": "", "label": "未归属目标", "reason": "不得透传"},
+        ]
+
+    async def get_focus_slots(self, limit=6, *, scope=""):
+        self.calls.append(("focus_slots", scope))
+        return []
+
+    async def get_expression_profiles(self, limit=4, *, scope="", profile_id=""):
+        if profile_id:
+            self.calls.append(("person_profiles", profile_id))
+            return [
+                {
+                    "scope": "other-scope",
+                    "profile_id": profile_id,
+                    "label": "联系人甲",
+                    "tone": "自然熟悉",
+                    "habits": ["简短回应"],
+                    "evidence": "原始表达证据不得透传",
+                }
+            ]
+        self.calls.append(("expression_profiles", scope))
+        return [
+            {
+                "scope": scope,
+                "profile_id": "",
+                "label": "当前会话",
+                "tone": "轻松",
+            },
+            {"scope": "", "label": "未归属画像", "tone": "不得透传"},
+        ]
+
+    async def get_temporary_expression_states(self, limit=3, *, scope=""):
+        self.calls.append(("temporary_states", scope))
+        return []
+
+    async def get_behavior_patterns(self, limit=4, *, scope=""):
+        self.calls.append(("behavior_patterns", scope))
+        return [
+            {
+                "scope": scope,
+                "scene": "日常分享",
+                "pattern": "先说结论",
+                "evidence": "内部模式证据不得透传",
+            },
+            {"scope": "", "scene": "未归属模式", "pattern": "不得透传"},
+        ]
+
+    async def get_behavior_scenes(self, limit=4, *, scope=""):
+        self.calls.append(("behavior_scenes", scope))
+        return []
+
+    async def get_reply_effects(self, limit=8, *, scope=""):
+        self.calls.append(("reply_effects", scope))
+        return [
+            {
+                "scope": scope,
+                "outcome": "positive",
+                "reply_text": "原始回复不得透传",
+            }
+        ]
+
+    async def get_behavior_feedback(self, limit=8, *, target_id=""):
+        self.calls.append(("behavior_feedback", target_id))
+        return [{"target_id": target_id, "result": "neutral"}]
+
+    async def get_life_terms(self, limit=4, *, scope=""):
+        self.calls.append(("life_terms", scope))
+        return [
+            {"scope": scope, "term": "约饭", "meaning": "约好一起吃饭"},
+            {"scope": "", "term": "未归属用语", "meaning": "不得透传"},
+        ]
+
+
+class _ShareSnapshot(SnapshotExportMixin):
+    def __init__(self):
+        self.archive = _ShareArchive()
+
+    async def _settle_stale_reply_effects(self):
+        return 0
+
+
 class TargetLifeContextTests(unittest.IsolatedAsyncioTestCase):
     async def test_archive_queries_relationship_and_summary_by_exact_target(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -145,8 +270,84 @@ class TargetLifeContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["relationships"], [])
         self.assertEqual([item.summary for item in result["events"]], ["公共事件"])
 
+    async def test_private_share_guidance_is_target_scoped_and_sanitized(self):
+        snapshot = _ShareSnapshot()
+        target = "bot-test:FriendMessage:user-test-a"
+
+        result = await snapshot._share_guidance(
+            target,
+            [{"id": "user-test-a", "name": "联系人甲"}],
+        )
+
+        self.assertEqual(
+            [item["title"] for item in result["episodes"]],
+            ["公共日程片段", "甲的私聊片段"],
+        )
+        self.assertEqual(result["focus"][0]["label"], "当前目标")
+        self.assertEqual(result["behavior"][0]["preferred"], "先说结论")
+        self.assertEqual(result["interaction"]["positive"], 1)
+        self.assertEqual(result["interaction"]["neutral"], 1)
+        self.assertIn(("reply_effects", target), snapshot.archive.calls)
+        self.assertIn(("behavior_feedback", target), snapshot.archive.calls)
+
+        serialized = json.dumps(result, ensure_ascii=False)
+        for forbidden in (
+            "乙的私聊片段",
+            "无归属私聊片段",
+            "未归属",
+            "原始回复",
+            "原始表达证据",
+            "内部模式证据",
+        ):
+            self.assertNotIn(forbidden, serialized)
+        for internal_field in ("reply_text", "evidence", "id", "target_id"):
+            self.assertNotIn(f'"{internal_field}"', serialized)
+
+    async def test_group_share_guidance_uses_group_scope_without_private_episodes(self):
+        snapshot = _ShareSnapshot()
+        target = "bot-test:GroupMessage:group-test-a"
+
+        result = await snapshot._share_guidance(target, [])
+
+        self.assertEqual(
+            [item["title"] for item in result["episodes"]], ["公共日程片段"]
+        )
+        self.assertIn(("focus_targets", "group-test-a"), snapshot.archive.calls)
+        self.assertIn(("reply_effects", target), snapshot.archive.calls)
+        self.assertIn(("behavior_feedback", "group-test-a"), snapshot.archive.calls)
+        self.assertIn(("behavior_feedback", target), snapshot.archive.calls)
+        self.assertNotIn(
+            "person_profiles", [item[0] for item in snapshot.archive.calls]
+        )
+
+    async def test_public_share_guidance_contains_only_public_daily_episode(self):
+        snapshot = _ShareSnapshot()
+
+        result = await snapshot._share_guidance("qzone_broadcast", [])
+
+        self.assertEqual(
+            [item["title"] for item in result["episodes"]], ["公共日程片段"]
+        )
+
 
 class ExternalLeaseTests(unittest.IsolatedAsyncioTestCase):
+    async def test_share_context_contract_delegates_to_runtime(self):
+        plugin = DailyLifePlugin(types.SimpleNamespace(), {})
+
+        class Runtime:
+            async def get_share_context(self, target_umo=""):
+                return {"target": target_umo, "share_guidance": {"version": 1}}
+
+        plugin.runtime = Runtime()
+        plugin.commands = object()
+
+        target = "bot-test:FriendMessage:user-test-a"
+        self.assertEqual(
+            await plugin.get_share_context(target),
+            {"target": target, "share_guidance": {"version": 1}},
+        )
+        self.assertFalse(hasattr(plugin, "get_life_context"))
+
     async def test_share_image_contract_passes_separate_and_legacy_models(self):
         plugin = DailyLifePlugin(types.SimpleNamespace(), {})
         calls = []
@@ -224,14 +425,14 @@ class ExternalLeaseTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
-    async def test_terminate_waits_for_external_public_call(self):
+    async def test_terminate_waits_for_external_share_context_call(self):
         plugin = DailyLifePlugin(types.SimpleNamespace(), {})
         entered = asyncio.Event()
         release = asyncio.Event()
         terminated = asyncio.Event()
 
         class Runtime:
-            async def get_life_context(self, target_umo=""):
+            async def get_share_context(self, target_umo=""):
                 entered.set()
                 await release.wait()
                 return {"target": target_umo}
@@ -242,7 +443,7 @@ class ExternalLeaseTests(unittest.IsolatedAsyncioTestCase):
         plugin.runtime = Runtime()
         plugin.commands = object()
         context_task = asyncio.create_task(
-            plugin.get_life_context("bot-test:FriendMessage:user-test-a")
+            plugin.get_share_context("bot-test:FriendMessage:user-test-a")
         )
         await entered.wait()
         terminate_task = asyncio.create_task(plugin.terminate())
@@ -258,14 +459,14 @@ class ExternalLeaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(terminated.is_set())
         self.assertIsNone(plugin.runtime)
 
-    async def test_terminate_cancels_external_call_after_grace_period(self):
+    async def test_terminate_cancels_share_context_call_after_grace_period(self):
         plugin = DailyLifePlugin(types.SimpleNamespace(), {})
         entered = asyncio.Event()
         cancelled = asyncio.Event()
         terminated = asyncio.Event()
 
         class Runtime:
-            async def get_life_context(self, target_umo=""):
+            async def get_share_context(self, target_umo=""):
                 entered.set()
                 try:
                     await asyncio.Event().wait()
@@ -279,7 +480,7 @@ class ExternalLeaseTests(unittest.IsolatedAsyncioTestCase):
         plugin.runtime = Runtime()
         plugin.commands = object()
         context_task = asyncio.create_task(
-            plugin.get_life_context("bot-test:FriendMessage:user-test-a")
+            plugin.get_share_context("bot-test:FriendMessage:user-test-a")
         )
         await entered.wait()
 

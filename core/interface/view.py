@@ -158,6 +158,46 @@ class PageViewMixin:
         target_date, extended_night = await self.runtime.resolve_injection_target(now)
         data = await self.runtime.archive.get_day(target_date)
         week_plan = await self.runtime.composer._get_week_plan()
+        world, world_context = await self._page_world_snapshot(target_date)
+        experience = await self._page_experience_snapshot(
+            target_date,
+            relationship_records=world_context["relationship_records"],
+            summaries=world_context["summaries"],
+        )
+        runtime_status = await self._page_runtime_snapshot(target_date, data, now)
+        rhythm = getattr(self.runtime, "rhythm", None)
+        return {
+            "now": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "status_version": getattr(self.runtime, "page_status_version", 0),
+            "target_date": target_date,
+            "extended_night": extended_night,
+            "memo": runtime_status["memo"],
+            "daily_generation": runtime_status["daily_generation"],
+            "config": {
+                "schedule_time": self.runtime.config.schedule_time,
+                "state_enabled": self.runtime.config.state.enabled,
+                "diagnostics_enabled": False,
+                "scheduler_running": bool(getattr(rhythm, "healthy", False)),
+                "scheduler_error": str(getattr(rhythm, "last_error", "") or ""),
+            },
+            "background_tasks": runtime_status["background_tasks"],
+            "semantic_segments": runtime_status["semantic_segments"],
+            "domains": runtime_status["domains"],
+            "day": self._page_day(data, now, extended_night) if data else None,
+            "week_plan": self._page_week_plan(week_plan),
+            "world": world,
+            "lifecycle": experience["lifecycle"],
+            "experience": experience["experience"],
+            "observatory": await self._page_observatory(
+                target_date,
+                world_context["life_decisions"],
+                experience["evidence"],
+            ),
+        }
+
+    async def _page_world_snapshot(self, target_date: str) -> tuple[dict, dict]:
+        """读取面板中的人物、地点与当天会话事实。"""
+
         relationship_records = await self.runtime.archive.get_recent_relationships(PAGE_WORLD_RECORD_LIMIT)  # fmt: skip
         relationships = await self._page_relationships(relationship_records)
         places = await self.runtime.archive.get_recent_places(PAGE_WORLD_RECORD_LIMIT)
@@ -167,12 +207,16 @@ class PageViewMixin:
             "date",
         )
         summaries = self._page_records_for_date(
-            await self.runtime.archive.get_recent_chat_summaries(PAGE_WORLD_RECORD_LIMIT),
+            await self.runtime.archive.get_recent_chat_summaries(
+                PAGE_WORLD_RECORD_LIMIT
+            ),
             target_date,
             "date",
         )
         group_environment_records = self._page_records_for_date(
-            await self.runtime.archive.get_recent_group_environments(PAGE_WORLD_RECORD_LIMIT),
+            await self.runtime.archive.get_recent_group_environments(
+                PAGE_WORLD_RECORD_LIMIT
+            ),
             target_date,
             "date",
             "created_at",
@@ -197,6 +241,32 @@ class PageViewMixin:
             limit=PAGE_WORLD_RECORD_LIMIT,
         )
         life_decisions = await self._page_daily_decision_candidates(target_date)
+        return (
+            {
+                "relationships": relationships,
+                "places": [item.as_dict() for item in places],
+                "events": [item.as_dict() for item in events],
+                "summaries": [item.as_dict() for item in summaries],
+                "group_environments": group_environments,
+                "message_visibility": [item.as_dict() for item in message_visibility],
+                "action_decisions": [item.as_dict() for item in action_decisions],
+            },
+            {
+                "relationship_records": relationship_records,
+                "summaries": summaries,
+                "life_decisions": life_decisions,
+            },
+        )
+
+    async def _page_experience_snapshot(
+        self,
+        target_date: str,
+        *,
+        relationship_records: list,
+        summaries: list,
+    ) -> dict:
+        """读取面板中的生命周期、记忆与行为体验。"""
+
         reviews = self._page_records_for_date(
             await self.runtime.archive.get_recent_daily_reviews(7),
             target_date,
@@ -321,6 +391,65 @@ class PageViewMixin:
             "date",
         )
         durable_tasks = await self._page_archive_records("get_durable_tasks", limit=20)
+        health = await self.runtime.archive.get_life_health_report(
+            self.runtime.config.storage
+        )
+        lifecycle = {
+            "reviews": [item.as_dict() for item in reviews],
+            "reflections": [item.as_dict() for item in reflections],
+            "grounded_diary": [item.as_dict() for item in grounded_diary],
+            "durable_tasks": [item.as_dict() for item in durable_tasks],
+            "preferences": [
+                self._page_readable_evidence_record(item.as_dict())
+                for item in preferences
+            ],
+            "life_events": [item.as_dict() for item in life_events],
+        }
+        experience = {
+            "episodes": [item.as_dict() for item in episodes],
+            "temporal_facts": [item.as_dict() for item in temporal_facts],
+            "persona_assertions": [item.as_dict() for item in persona_assertions],
+            "decision_traces": [item.as_dict() for item in decision_traces],
+            "action_outcomes": [item.as_dict() for item in action_outcomes],
+            "action_receipts": [item.as_dict() for item in action_receipts],
+            "affective_states": [item.as_dict() for item in affective_states],
+            "emotion_arcs": [
+                self._page_readable_evidence_record(item.as_dict())
+                for item in emotion_arcs
+            ],
+            "physiological_rhythm_logs": [
+                item.as_dict() for item in physiological_rhythm_logs
+            ],
+            "physiological_rhythm_trend": physiological_rhythm_trend,
+            "evidence": evidence,
+            "feedback": [item.as_dict() for item in feedback],
+            "expression_profiles": [item.as_dict() for item in expression_profiles],
+            "behavior_patterns": [item.as_dict() for item in behavior_patterns],
+            "mid_summaries": [item.as_dict() for item in mid_summaries],
+            "temporary_expression_states": [
+                item.as_dict() for item in temporary_expression_states
+            ],
+            "focus_targets": [item.as_dict() for item in focus_targets],
+            "terms": [
+                self._page_readable_evidence_record(item.as_dict())
+                for item in life_terms
+            ],
+            "boundaries": [item.as_dict() for item in memory_boundaries],
+            "long_term_memories": [item.as_dict() for item in long_term_memories],
+            "memory_clusters": [item.as_dict() for item in memory_clusters],
+            "memory_entities": [item.as_dict() for item in memory_entities],
+            "memory_conflicts": [item.as_dict() for item in memory_conflicts],
+            "health": health,
+        }
+        return {
+            "lifecycle": lifecycle,
+            "experience": experience,
+            "evidence": evidence,
+        }
+
+    async def _page_runtime_snapshot(self, target_date: str, data, now) -> dict:
+        """读取面板中的调度器、领域服务和生成运行状态。"""
+
         domain_service = getattr(self.runtime, "domains", None)
         domain_snapshot = {}
         domain_snapshot_getter = getattr(domain_service, "snapshot", None)
@@ -329,9 +458,6 @@ class PageViewMixin:
             domain_snapshot = await self._page_domain_snapshot(
                 domain_snapshot, target_date
             )
-        health = await self.runtime.archive.get_life_health_report(
-            self.runtime.config.storage
-        )
         memo_status = await self._page_memo_status(target_date, data, now)
         generation_status = {}
         generation_status_getter = getattr(
@@ -339,7 +465,6 @@ class PageViewMixin:
         )
         if callable(generation_status_getter):
             generation_status = generation_status_getter(target_date)
-        rhythm = getattr(self.runtime, "rhythm", None)
         background_scheduler = getattr(self.runtime, "_background_scheduler", None)
         background_tasks = {}
         snapshot = getattr(background_scheduler, "snapshot", None)
@@ -353,85 +478,11 @@ class PageViewMixin:
         if callable(semantic_status_getter):
             semantic_segments = semantic_status_getter()
         return {
-            "now": now.strftime("%Y-%m-%d %H:%M:%S"),
-            "status_version": getattr(self.runtime, "page_status_version", 0),
-            "target_date": target_date,
-            "extended_night": extended_night,
             "memo": memo_status,
             "daily_generation": generation_status,
-            "config": {
-                "schedule_time": self.runtime.config.schedule_time,
-                "state_enabled": self.runtime.config.state.enabled,
-                "diagnostics_enabled": False,
-                "scheduler_running": bool(getattr(rhythm, "healthy", False)),
-                "scheduler_error": str(getattr(rhythm, "last_error", "") or ""),
-            },
             "background_tasks": background_tasks,
             "semantic_segments": semantic_segments,
             "domains": domain_snapshot,
-            "day": self._page_day(data, now, extended_night) if data else None,
-            "week_plan": self._page_week_plan(week_plan),
-            "world": {
-                "relationships": relationships,
-                "places": [item.as_dict() for item in places],
-                "events": [item.as_dict() for item in events],
-                "summaries": [item.as_dict() for item in summaries],
-                "group_environments": group_environments,
-                "message_visibility": [item.as_dict() for item in message_visibility],
-                "action_decisions": [item.as_dict() for item in action_decisions],
-            },
-            "lifecycle": {
-                "reviews": [item.as_dict() for item in reviews],
-                "reflections": [item.as_dict() for item in reflections],
-                "grounded_diary": [item.as_dict() for item in grounded_diary],
-                "durable_tasks": [item.as_dict() for item in durable_tasks],
-                "preferences": [
-                    self._page_readable_evidence_record(item.as_dict())
-                    for item in preferences
-                ],
-                "life_events": [item.as_dict() for item in life_events],
-            },
-            "experience": {
-                "episodes": [item.as_dict() for item in episodes],
-                "temporal_facts": [item.as_dict() for item in temporal_facts],
-                "persona_assertions": [item.as_dict() for item in persona_assertions],
-                "decision_traces": [item.as_dict() for item in decision_traces],
-                "action_outcomes": [item.as_dict() for item in action_outcomes],
-                "action_receipts": [item.as_dict() for item in action_receipts],
-                "affective_states": [item.as_dict() for item in affective_states],
-                "emotion_arcs": [
-                    self._page_readable_evidence_record(item.as_dict())
-                    for item in emotion_arcs
-                ],
-                "physiological_rhythm_logs": [
-                    item.as_dict() for item in physiological_rhythm_logs
-                ],
-                "physiological_rhythm_trend": physiological_rhythm_trend,
-                "evidence": evidence,
-                "feedback": [item.as_dict() for item in feedback],
-                "expression_profiles": [item.as_dict() for item in expression_profiles],
-                "behavior_patterns": [item.as_dict() for item in behavior_patterns],
-                "mid_summaries": [item.as_dict() for item in mid_summaries],
-                "temporary_expression_states": [
-                    item.as_dict() for item in temporary_expression_states
-                ],
-                "focus_targets": [item.as_dict() for item in focus_targets],
-                "terms": [
-                    self._page_readable_evidence_record(item.as_dict())
-                    for item in life_terms
-                ],
-                "boundaries": [item.as_dict() for item in memory_boundaries],
-                "long_term_memories": [item.as_dict() for item in long_term_memories],
-                "memory_clusters": [item.as_dict() for item in memory_clusters],
-                "memory_entities": [item.as_dict() for item in memory_entities],
-                "memory_conflicts": [item.as_dict() for item in memory_conflicts],
-                "health": health,
-            },
-            "observatory": await self._page_observatory(
-                target_date,
-                life_decisions,
-                evidence,
-            ),
         }
 
     @staticmethod
