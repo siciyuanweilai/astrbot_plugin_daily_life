@@ -292,6 +292,13 @@ class RuntimePhotoSuiteMediaMixin:
             current_appearance = ""
             if not reference_image and not continue_last_result:
                 current_appearance = await self._current_life_appearance_snapshot(route)
+            source_request = self._event_current_image_request_text(event)
+            if current_appearance and route in {"current_character", "group"}:
+                prompt = await self._align_current_appearance_scene_prompt(
+                    prompt,
+                    source_request,
+                    route,
+                )
             task_id = uuid.uuid4().hex
             task_dir = self._photo_suite_root() / task_id
             manifest_path = task_dir / "manifest.json"
@@ -315,7 +322,7 @@ class RuntimePhotoSuiteMediaMixin:
                     event, route
                 ),
                 "current_appearance": current_appearance,
-                "source_request": self._event_current_image_request_text(event),
+                "source_request": source_request,
                 "friend_look": friend_look,
                 "friend_look_persist": friend_look_persist,
                 "reference_path": "",
@@ -822,10 +829,11 @@ class RuntimePhotoSuiteMediaMixin:
         if not callable(get_provider) or not callable(call_llm):
             return fallback
         timeout_seconds = self._photo_suite_planning_timeout_seconds()
+        provider_id = self._media_image_director_provider_id()
         provider_label = "当前默认模型"
         started_at = time.monotonic()
         try:
-            provider = await get_provider("")
+            provider = await get_provider(provider_id)
             if provider is None:
                 return fallback
             provider_label = self._photo_suite_provider_label(provider)
@@ -871,7 +879,7 @@ shots 数量必须与要求一致。每个 prompt 都必须独立完整，不能
                     planner_prompt,
                     f"daily_life_photo_suite_plan_{uuid.uuid4().hex[:8]}",
                     empty_retries=0,
-                    primary_provider_id="",
+                    primary_provider_id=provider_id,
                 ),
                 timeout=timeout_seconds,
             )
@@ -883,7 +891,7 @@ shots 数量必须与要求一致。每个 prompt 都必须独立完整，不能
                         context=person_facts,
                         patterns=MEDIA_PERSON_TEXT_PATHS,
                         provider=provider,
-                        provider_id="",
+                        provider_id=provider_id,
                         subject="合影套图镜头规划",
                     )
                     if audit.unresolved:
@@ -1071,7 +1079,7 @@ shots 数量必须与要求一致。每个 prompt 都必须独立完整，不能
             elif sent_count:
                 text = "先把拍好的这几张发给你。"
             else:
-                text = "这次没拍出来，晚点我再试试。"
+                text = "这次没拍出来，整组都没有生成成功。"
         try:
             sent = await self.send_background_text(
                 scope,
@@ -1117,7 +1125,8 @@ shots 数量必须与要求一致。每个 prompt 都必须独立完整，不能
                 ).strip()
             fixed = """你正在给刚刚交付的一组生活照片补一句自然回复。严格只输出一个 JSON 对象，不要使用 Markdown 代码块：
 {"reply_text":"角色真正说出口的一句中文短回复"}
-JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}根据当前对话和实际交付结果自然承接，不预设固定话术或互动动作；只有部分送达时如实表达当前结果，全部失败时自然说明这次没拍成。""".replace(
+JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}根据当前对话和实际交付结果自然承接，不预设固定话术或互动动作；只有部分送达时如实表达当前结果，全部失败时自然说明这次没拍成。
+全部失败时没有登记自动重试任务，不得承诺晚点、稍后或之后会自行重试、补发或再联系。""".replace(
                 "{CORE_MEDIA_REPLY_RULES}", CORE_MEDIA_REPLY_RULES
             )
             dynamic = (

@@ -207,7 +207,20 @@ class LifeCommandsTest(unittest.IsolatedAsyncioTestCase):
                         TimelineItem(time="15:00", activity="整理测试资料"),
                         TimelineItem(time="18:00", activity="去测试公园散步"),
                     ],
-                    {"decision": "accept", "accept": True},
+                    {
+                        "decision": "accept",
+                        "accept": True,
+                        "timeline_edits": [
+                            {
+                                "operation": "insert",
+                                "target_time": "",
+                                "item": {
+                                    "time": "18:00",
+                                    "activity": "去测试公园散步",
+                                },
+                            }
+                        ],
+                    },
                 )
 
             async def learn_preferences_from_payload(self, *args, **kwargs):
@@ -215,6 +228,12 @@ class LifeCommandsTest(unittest.IsolatedAsyncioTestCase):
 
             async def persist_life_events_from_payload(self, *args, **kwargs):
                 return None
+
+        scheduled_contacts = []
+
+        async def schedule_invite_contact(commitment, **kwargs):
+            scheduled_contacts.append((commitment, kwargs))
+            return True
 
         runtime = types.SimpleNamespace(
             config=LifeSettings.from_dict({"state_config": {"enabled": False}}),
@@ -225,6 +244,7 @@ class LifeCommandsTest(unittest.IsolatedAsyncioTestCase):
             ),
             remember_interaction=lambda *args, **kwargs: async_return(None),
             schedule_invite_outfit_sync=lambda *args, **kwargs: None,
+            schedule_invite_contact=schedule_invite_contact,
             _get_curr_period=lambda: "afternoon",
             _resolve_command_target_date=lambda now: async_return(
                 ("2026-05-24", False)
@@ -246,6 +266,13 @@ class LifeCommandsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(commitments[0].source, "invite")
         self.assertEqual(commitments[0].source_message_id, "command-invite-1")
         self.assertEqual(commitments[0].content, "傍晚一起去测试公园")
+        self.assertEqual(len(scheduled_contacts), 1)
+        scheduled_commitment, scheduled_kwargs = scheduled_contacts[0]
+        self.assertEqual(scheduled_commitment.id, commitments[0].id)
+        self.assertEqual(
+            scheduled_kwargs["timeline_edits"][0]["item"]["time"], "18:00"
+        )
+        self.assertEqual(scheduled_kwargs["observed_at"], req.now)
         day = await archive.get_day("2026-05-24")
         self.assertEqual(day.timeline[-1].activity, "去测试公园散步")
 

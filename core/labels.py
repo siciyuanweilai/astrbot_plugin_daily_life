@@ -218,7 +218,13 @@ VISIBILITY_LABELS = {
 PREFERENCE_CATEGORY_LABELS = {
     "activity": "活动",
     "outfit": "穿搭",
+    "top": "上装",
+    "bottom": "下装",
+    "footwear": "鞋袜",
+    "accessory": "配饰",
     "hair": "发型",
+    "makeup": "妆容",
+    "nails": "美甲",
     "social": "社交",
     "sleep": "睡眠",
     "place": "地点",

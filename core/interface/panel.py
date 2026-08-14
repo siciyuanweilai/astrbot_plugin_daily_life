@@ -2,6 +2,7 @@ from ..runtime import PLUGIN_ID
 from .portal import (
     PortalActionMixin,
     PortalBaseMixin,
+    PortalClosetMixin,
     PortalEmojiMixin,
     PortalLineMixin,
     PortalMemoryMixin,
@@ -14,6 +15,7 @@ class DailyLifeDashboardMixin(
     PageViewMixin,
     PortalBaseMixin,
     PortalReferenceMixin,
+    PortalClosetMixin,
     PortalEmojiMixin,
     PortalActionMixin,
     PortalLineMixin,
@@ -88,6 +90,16 @@ class DailyLifeDashboardMixin(
             ),
             ("page/emoji/backup", self.page_emoji_backup, ["GET"], "备份表情素材"),
             ("page/emoji/restore", self.page_emoji_restore, ["POST"], "还原表情素材"),
+            ("page/closet/list", self.page_closet_list, ["GET"], "视觉衣橱列表"),
+            ("page/closet/import", self.page_closet_import, ["POST"], "导入衣橱图片"),
+            ("page/closet/browse", self.page_closet_browse, ["POST"], "联网学习衣橱"),
+            ("page/closet/preview", self.page_closet_preview, ["POST"], "预览衣橱图片"),
+            ("page/closet/status", self.page_closet_status, ["POST"], "更新衣橱状态"),
+            ("page/closet/feedback", self.page_closet_feedback, ["POST"], "保存衣橱反馈"),
+            ("page/closet/review", self.page_closet_review, ["POST"], "重新识别衣橱素材"),
+            ("page/closet/delete", self.page_closet_delete, ["POST"], "删除衣橱素材"),
+            ("page/closet/backup", self.page_closet_backup, ["GET"], "备份视觉衣橱"),
+            ("page/closet/restore", self.page_closet_restore, ["POST"], "还原视觉衣橱"),
         )
         # 这些接口供自动流程、命令或外部管理调用，不在 Dashboard 中重复放置入口。
         programmatic_routes = (

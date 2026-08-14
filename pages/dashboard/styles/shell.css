@@ -226,6 +226,7 @@ h2 {
   position: relative;
   z-index: 1;
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   align-content: center;
   justify-items: stretch;
   gap: 10px;
@@ -368,6 +369,8 @@ h2 {
 }
 
 .bento-ribbon .dashboard-toggle {
+  grid-column: 1;
+  grid-row: 1;
   --ribbon-width: 318px;
   --ribbon-x: -10px;
   --ribbon-tilt: -2.6deg;
@@ -383,6 +386,8 @@ h2 {
 }
 
 .bento-ribbon .emoji-toggle {
+  grid-column: 1;
+  grid-row: 2;
   --ribbon-width: 306px;
   --ribbon-x: 8px;
   --ribbon-y: -2px;
@@ -394,10 +399,28 @@ h2 {
   --ribbon-dot-shadow:
     0 0 0 4px rgba(158, 230, 209, 0.14),
     0 0 16px rgba(158, 230, 209, 0.4);
+  justify-self: start;
+}
+
+.bento-ribbon .closet-toggle {
+  grid-column: 2;
+  grid-row: 1;
+  --ribbon-width: 308px;
+  --ribbon-x: -3px;
+  --ribbon-y: -3px;
+  --ribbon-tilt: -0.8deg;
+  --ribbon-accent: #397967;
+  --ribbon-wash: rgba(229, 255, 244, 0.84);
+  --ribbon-dot: linear-gradient(135deg, var(--diary-mint), var(--diary-lemon));
+  --ribbon-dot-shadow:
+    0 0 0 4px rgba(158, 230, 209, 0.14),
+    0 0 16px rgba(158, 230, 209, 0.38);
   justify-self: center;
 }
 
 .bento-ribbon .settings-toggle {
+  grid-column: 2;
+  grid-row: 2;
   --ribbon-width: 304px;
   --ribbon-x: 18px;
   --ribbon-y: -5px;
@@ -410,7 +433,7 @@ h2 {
     0 0 0 4px rgba(148, 218, 242, 0.14),
     0 0 16px rgba(148, 218, 242, 0.42);
   --ribbon-radius: 44px 999px 42px 999px / 54% 70% 48% 82%;
-  justify-self: end;
+  justify-self: center;
 }
 
 .bento-ribbon .view-button.active {
@@ -495,6 +518,12 @@ h2 {
 [data-theme="dark"] .bento-ribbon .emoji-toggle {
   --ribbon-accent: #c9ffe9;
   --ribbon-wash: rgba(40, 62, 58, 0.9);
+  --ribbon-dot: rgba(158, 230, 209, 0.22);
+}
+
+[data-theme="dark"] .bento-ribbon .closet-toggle {
+  --ribbon-accent: #c9ffe9;
+  --ribbon-wash: rgba(37, 66, 58, 0.9);
   --ribbon-dot: rgba(158, 230, 209, 0.22);
 }
 

@@ -126,19 +126,42 @@ class ResponseGateApplyMixin:
             list(wait_state.get("messages") or []) if wait_state else []
         )
         accumulated_messages.extend(turn_messages or [current_message])
+        interaction_context = await self.resolve_interaction_context(
+            event=event,
+            now=life_now(),
+        )
         fixed = f"""判断当前角色在这一轮对话中应当立即回复、短暂等待对方补充，还是只看见但不打断。
 
 JSON 输出要求：
 {CORE_JSON_OUTPUT_RULES}
 
 只输出 JSON：
-{{"action":"reply|wait|observe","confidence":0.0,"reason":"基于当前话轮语义和状态的简短理由"}}
+{{
+  "action":"reply|wait|observe",
+  "confidence":0.0,
+  "reason":"基于当前话轮语义和状态的简短理由",
+  "interaction":{{
+    "decision":"keep|set|clear",
+    "mode":"co_present|remote|unknown",
+    "confidence":0.0,
+    "reason":"当前话轮对现实互动方式的简短语义依据"
+  }}
+}}
 
 边界：
 - 命令、明确指向当前角色、平台状态和发送许可已经由代码处理，这里只判断模糊话轮。
 - reply 表示现在接话自然；wait 表示当前表达像仍会继续，适合短暂聚合；observe 表示看见但不介入更自然。
+- 消息传输范围只说明平台通道，不能据此推断双方现实分开或正在远程收发消息；现实互动方式以结构化依据为准。
+- interaction 只审阅当前完整话轮是否提供了新的现实互动证据：没有新证据用 keep；明确同处现场或明确远程交流用 set；明确推翻旧状态但无法确认新状态才用 clear。
+- 当前话轮中时间更晚、指向更明确的陈述优先；不能因为私聊、群聊、user/assistant、收到消息或平台标识推断正在使用手机、屏幕或远程通信。
 - 不根据单个词、标点或固定句式裁定，也不要改写或回答消息。"""
-        dynamic = f"""场景：{"群聊" if is_group else "私聊"}
+        previous_mode_label = (
+            interaction_context.previous_mode_label
+            if bool(getattr(interaction_context, "pending_current", False))
+            else interaction_context.mode_label
+        )
+        dynamic = f"""消息传输范围：{"群聊" if is_group else "私聊"}
+本轮开始前最近互动方式：{previous_mode_label}
 当前消息：{current_message}
 本轮连续内容：{json.dumps(accumulated_messages[-3:], ensure_ascii=False)}
 本轮累计消息：{pending_count}
@@ -163,6 +186,13 @@ JSON 输出要求：
             if not isinstance(payload, dict):
                 self._response_gate_semantic_metrics["invalid"] += 1
                 return None
+            interaction_applier = getattr(self, "apply_interaction_turn_decision", None)
+            if callable(interaction_applier):
+                await interaction_applier(
+                    event,
+                    payload.get("interaction"),
+                    now=life_now(),
+                )
             action = str(payload.get("action") or "").strip().lower()
             try:
                 confidence = max(0.0, min(float(payload.get("confidence") or 0.0), 1.0))

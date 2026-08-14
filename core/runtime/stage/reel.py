@@ -85,6 +85,9 @@ class StageReelMixin:
         mood = clean_director_text(payload.get("mood"))
         render_style = clean_director_text(payload.get("render_style"), 80)
         constraints = clean_director_text(payload.get("constraints"), 220)
+        continuity_constraints = clean_director_text(
+            payload.get("continuity_constraints"), 220
+        )
         if not any((subject, scene, composition, frame_logic, action)):
             raise MediaPromptExtractionError("图片智能提取没有返回有效画面字段")
         tags = [
@@ -110,11 +113,32 @@ class StageReelMixin:
             mood,
             render_style,
             constraints,
+            (
+                f"连续性约束：{continuity_constraints}"
+                if continuity_constraints
+                else ""
+            ),
         ]
         prompt = "，".join(item for item in tags if item)
         if not prompt:
             raise MediaPromptExtractionError("图片智能提取结果为空")
         return prompt
+
+    @staticmethod
+    def _media_image_preserve_user_request(
+        original_prompt: str, directed_prompt: str
+    ) -> str:
+        """将用户原始画面要求作为不可丢失的硬约束保留在导演结果前。"""
+        original = clean_director_text(original_prompt, 600)
+        directed = str(directed_prompt or "").strip()
+        if not original:
+            return directed
+        if not directed or directed == original:
+            return original or directed
+        return (
+            f"用户明确要求（最高优先级）：{original}；"
+            f"导演构图补充（不得覆盖用户要求）：{directed}"
+        )
 
     @staticmethod
     def _media_image_identity_route(payload: dict[str, Any]) -> str:
@@ -189,13 +213,15 @@ JSON 字段：
 - appearance_style 写人物当前造型的简短审美风格；不要与 render_style 的摄影或画面风格混同。
 - body_presentation 只在当前角色本人入镜、实际可见范围能呈现身体轮廓、且给出了稳定体貌时填写。它只说明本轮服装、姿势或景别如何自然呈现既有比例；不得新增身体特征，不得刻意突出局部，也不得把遮挡、远景或宽松衣物改成贴身展示。其他情况留空。
 - render_style 写用户明确要求的画面风格；没有明确要求时留空。
+- constraints 只写用户原始要求中的限制；不要把模型自行补充的审美偏好伪装成用户要求。
+- continuity_constraints 只写身份参考图、当前外观、场景关系和跨画面需要保持不变的事实；没有可靠连续性依据时留空。
 - subject_kind 必须与 identity_route 一致：角色本人写 character，其他人物写 person，无人物画面不得写 character 或 person。
 - 优先级是原始画面要求 > 真实参考图 > 当前生活外观。只有当前角色本人入镜、原始要求没有另行指定且对应部分可见时，才用生活上下文补足穿搭、发型和简短风格；不得补充实际取景范围外的鞋袜、配饰、妆容或指甲细节。
 - appearance_profile 只提取当前人设明确写出的跨场景稳定体貌，排除五官、发型、服装、姿势、镜头和临时状态；没有明确内容时留空。该字段只供系统缓存，不代替本轮 body_presentation。
 - 输出字段尽量短，最终会被拼成图片提示词。
 {CORE_JSON_OUTPUT_RULES}
 JSON 字段：
-{{"identity_route":"不确定","contains_character":false,"needs_character_reference":false,"appearance_profile":"","subject":"","subject_kind":"unknown","scene":"","scene_type":"","temperature_feel":"","weather_condition":"","composition":"","visible_scope":"","frame_logic":"","lighting":"","outfit":"","hair":"","makeup":"","nails":"","appearance_style":"","body_presentation":"","outfit_visibility":"","outfit_logic":"","action":"","weather_vibe":"","mood":"","render_style":"","constraints":""}}"""
+{{"identity_route":"不确定","contains_character":false,"needs_character_reference":false,"appearance_profile":"","subject":"","subject_kind":"unknown","scene":"","scene_type":"","temperature_feel":"","weather_condition":"","composition":"","visible_scope":"","frame_logic":"","lighting":"","outfit":"","hair":"","makeup":"","nails":"","appearance_style":"","body_presentation":"","outfit_visibility":"","outfit_logic":"","action":"","weather_vibe":"","mood":"","render_style":"","constraints":"","continuity_constraints":""}}"""
         appearance_context = (
             "\n\n当前角色稳定体貌（仅在身份路线为当前角色本人且可见时使用；"
             "只能如实呈现，不得推断或强化）：\n"
@@ -299,7 +325,8 @@ JSON 字段：
                         original_prompt=original_prompt,
                         reference=reference,
                         judge_only=True,
-                    )
+                    ),
+                    provider_id=self._media_image_director_provider_id(),
                 )
                 identity_route = self._media_image_identity_route(route_payload)
                 contains_character = self._media_image_contains_character(route_payload)
@@ -332,7 +359,8 @@ JSON 字段：
                     reference=reference,
                     persona=persona,
                     appearance_profile=appearance_profile,
-                )
+                ),
+                provider_id=self._media_image_director_provider_id(),
             )
             identity_route = self._media_image_identity_route(payload)
             contains_character = self._media_image_contains_character(payload)
@@ -365,6 +393,7 @@ JSON 字段：
                 payload,
                 identity_route=identity_route,
             )
+            prompt = self._media_image_preserve_user_request(original_prompt, prompt)
             logger.debug(f"{LOG_PREFIX} 图片智能提取：{prompt[:180]}")
             return DirectedImagePrompt(
                 prompt=prompt,

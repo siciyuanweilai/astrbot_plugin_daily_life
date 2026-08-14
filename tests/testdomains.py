@@ -8,15 +8,15 @@ from unittest.mock import AsyncMock, patch
 
 from core.archive.schema import SCHEMA_VERSION
 from core.config.options import LifeDomainSettings
-from core.life.actions import LifeActionMixin
 from core.life.amap import AmapWebServiceClient
-from core.life.baidu_map import (
+from core.life.baidu import (
     BaiduMapWebServiceClient,
     bd09_to_gcj02,
     gcj02_to_bd09,
 )
-from core.life.domains import LifeDomainService
-from core.life.tencent_map import TencentMapWebServiceClient
+from core.life.domain import LifeDomainService
+from core.life.settlement import LifeActionMixin
+from core.life.tencent import TencentMapWebServiceClient
 from core.life.transit import transit_route_detail
 from core.models import (
     CommitmentRecord,
@@ -1378,7 +1378,7 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
         )
 
         with patch(
-            "core.archive.domains.life_today",
+            "core.archive.activity.life_today",
             return_value=datetime.date(2026, 8, 4),
         ):
             snapshot = await self.domains.snapshot()
@@ -1963,13 +1963,23 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
             }
         )
 
-        search = await service.tool_place_search("安静咖啡店", near="测试中心")
-        detail = await service.tool_place_detail("poi-1")
+        search = await service.tool_place_search(
+            "安静咖啡店", scope="private:test-user", near="测试中心"
+        )
+        detail = await service.tool_place_detail(
+            "poi-1", scope="private:test-user"
+        )
+        denied = await service.tool_place_detail(
+            "poi-1", scope="private:other-user"
+        )
 
         self.assertTrue(search["ok"])
         self.assertNotIn("coordinate", search["places"][0])
         self.assertNotIn("coordinate", detail["place"])
         self.assertEqual(detail["place"]["photos"], ["https://example.com/coffee.jpg"])
+        self.assertFalse(denied["ok"])
+        self.assertIn("本会话最近一次地点搜索", denied["reason"])
+        self.assertEqual(service._map.place_detail.await_count, 1)
 
     async def test_natural_language_route_tool_compares_modes_and_adds_traffic(self):
         service = LifeDomainService(

@@ -7,6 +7,7 @@ from typing import Any
 
 from astrbot.api import logger
 
+from ..sources.dispatch import send_message_to_scope
 from .markers import LOG_PREFIX
 
 
@@ -232,8 +233,11 @@ class RecallMixin:
             scope, source_event=source_event, source_message_id=source_message_id
         ):
             return False
-        await self.context.send_message(scope, chain)
-        return True
+        event_sender = getattr(source_event, "send", None)
+        if callable(event_sender):
+            await event_sender(chain)
+            return True
+        return await send_message_to_scope(self.context, scope, chain)
 
     def suppress_recalled_event_result(self, event: Any) -> bool:
         if not self._event_message_was_recalled(event):

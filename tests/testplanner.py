@@ -1,5 +1,6 @@
 # ruff: noqa: I001
 
+import asyncio
 import datetime
 import types
 import unittest
@@ -15,6 +16,7 @@ from support import (
     make_composer,
 )
 from core.life import LifeBackgroundComposer
+from core.life.reliability import NonRetryableProviderError
 from core.life.people import DAILY_PERSON_TEXT_PATHS
 from core.facts import PersonFact, PersonFactContext, apply_string_replacements
 from core.life.surroundings import choose_place_candidates
@@ -22,6 +24,7 @@ from core.models import (
     ChatSummaryRecord,
     CommitmentRecord,
     DayRecord,
+    DailyReviewRecord,
     EventRecord,
     FocusSlotRecord,
     LifeEpisodeRecord,
@@ -857,6 +860,42 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(text, "")
         self.assertEqual(provider.prompts, ["测试请求"])
         sleep.assert_not_awaited()
+
+    async def test_provider_http_404_can_propagate_permanent_failure(self):
+        composer, provider, _, _ = make_composer(
+            [RuntimeError("HTTP 404: model not found")]
+        )
+
+        with self.assertRaises(NonRetryableProviderError) as raised:
+            await composer._call_llm_text(
+                provider,
+                "测试不可重试请求",
+                "daily_life_non_retryable_task",
+                empty_retries=2,
+                propagate_non_retryable=True,
+            )
+
+        self.assertEqual(raised.exception.status, 404)
+        self.assertEqual(provider.prompts, ["测试不可重试请求"])
+
+    async def test_provider_call_obeys_plugin_timeout(self):
+        composer, provider, _, _ = make_composer([])
+
+        async def delayed_text_chat(*args, **kwargs):
+            del args, kwargs
+            await asyncio.sleep(0.05)
+            return "不应返回"
+
+        provider.text_chat = delayed_text_chat
+        text = await composer._call_llm_text(
+            provider,
+            "测试超时",
+            "daily_life_timeout",
+            empty_retries=0,
+            timeout_seconds=0.01,
+        )
+
+        self.assertEqual(text, "")
 
     async def test_provider_http_429_uses_backoff_then_retries(self):
         composer, provider, _, _ = make_composer(
@@ -2350,6 +2389,54 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stored.meta["makeup"], "清透淡妆")
         self.assertEqual(stored.meta["nails"], "奶白色短圆甲")
 
+    async def test_update_outfit_applies_makeup_only_adjustment(self):
+        composer, _, _, archive = make_composer(
+            [
+                '{"outfit_decision":"keep","current_outfit_basis":"stored",'
+                '"scene_category":"home","style_pool":"outfit_styles",'
+                '"component_review":{"main_clothing":"keep","footwear":"keep",'
+                '"outer_layer":"not_present","carried_accessories":"keep",'
+                '"hair":"keep","makeup":"keep","nails":"keep"},'
+                '"outfit":"米白色细吊带褶皱短连衣裙","style":"清爽甜美",'
+                '"hair_style":"低扎发","hair":"黑色长发低扎在脑后",'
+                '"makeup":"夏日橘粉水光妆","nails":"浅蓝色短圆甲",'
+                '"reason":"保持服装和发型，只更新已确认的妆容"}'
+            ]
+        )
+        await archive.save_day(
+            DayRecord(
+                date="2026-07-18",
+                outfit="米白色细吊带褶皱短连衣裙",
+                timeline=[
+                    TimelineItem(time="11:30", activity="在家休息", status="放松")
+                ],
+                meta={
+                    "outfit_scene_category": "home",
+                    "outfit_style_pool": "outfit_styles",
+                    "style": "清爽甜美",
+                    "hair_style": "低扎发",
+                    "hair": "黑色长发低扎在脑后",
+                    "makeup": "未知",
+                    "nails": "浅蓝色短圆甲",
+                    "outfit_fact_source": "user_instruction",
+                },
+            )
+        )
+
+        result = await composer.update_outfit(
+            "2026-07-18",
+            "forenoon",
+            current_time=datetime.datetime(2026, 7, 18, 11, 40),
+            instruction="保持当前服装，只记录新妆容",
+        )
+
+        self.assertIsNotNone(result)
+        stored = await archive.get_day("2026-07-18")
+        self.assertEqual(stored.outfit, "米白色细吊带褶皱短连衣裙")
+        self.assertEqual(stored.meta["outfit_decision"], "partial_change")
+        self.assertEqual(stored.meta["makeup"], "夏日橘粉水光妆")
+        self.assertNotEqual(stored.meta["makeup"], "未知")
+
     async def test_update_outfit_clears_replaced_optional_appearance_fields(self):
         composer, _, _, archive = make_composer(
             [
@@ -2869,6 +2956,132 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(review_provider.prompts), 1)
         self.assertEqual(len(default_provider.prompts), 0)
 
+    async def test_existing_daily_review_finishes_missing_timeline_settlement(self):
+        composer, provider, _, archive = make_composer()
+        await archive.save_day(
+            DayRecord(
+                date="2026-05-24",
+                timeline=[
+                    TimelineItem(
+                        time="23:40",
+                        activity="整理照片后准备休息",
+                        execution_state="active",
+                    )
+                ],
+            )
+        )
+        await archive.save_daily_review(
+            DailyReviewRecord(
+                date="2026-05-24",
+                summary="复盘已经保存",
+                payload={
+                    "timeline_updates": [
+                        {
+                            "item_index": 0,
+                            "status": "skipped",
+                            "reason": "临时安排取消",
+                            "evidence": "当晚记录",
+                        }
+                    ]
+                },
+            )
+        )
+
+        review = await composer.compose_daily_review("2026-05-24")
+
+        stored = await archive.get_day("2026-05-24")
+        self.assertEqual(review.summary, "复盘已经保存")
+        self.assertEqual(stored.timeline[0].execution_state, "skipped")
+        self.assertEqual(
+            stored.meta["daily_review_timeline_settled_at"],
+            "2026-05-25 00:00:00",
+        )
+        self.assertEqual(
+            stored.meta["daily_review_completed_at"],
+            "2026-05-25 00:00:00",
+        )
+        self.assertEqual(len(provider.prompts), 0)
+
+    async def test_daily_review_retry_reuses_saved_payload_without_second_llm_call(self):
+        composer, provider, _, archive = make_composer(
+            [
+                '{"summary":"复盘完成","timeline_updates":['
+                '{"item_index":0,"status":"skipped","reason":"临时取消",'
+                '"evidence":"当晚记录"}]}'
+            ]
+        )
+        await archive.save_day(
+            DayRecord(
+                date="2026-05-24",
+                timeline=[
+                    TimelineItem(
+                        time="22:00",
+                        activity="原定整理照片",
+                        execution_state="active",
+                    )
+                ],
+            )
+        )
+
+        with patch(
+            "core.life.rhythm.LifeEvolutionService.settle_review",
+            new=AsyncMock(side_effect=[RuntimeError("模拟后处理失败"), {}]),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "模拟后处理失败"):
+                await composer.compose_daily_review("2026-05-24")
+
+            stored_review = await archive.get_daily_review("2026-05-24")
+            interrupted_day = await archive.get_day("2026-05-24")
+            self.assertEqual(
+                stored_review.payload["timeline_updates"][0]["status"], "skipped"
+            )
+            self.assertNotIn("daily_review_completed_at", interrupted_day.meta)
+
+            review = await composer.compose_daily_review("2026-05-24")
+
+        stored_day = await archive.get_day("2026-05-24")
+        self.assertEqual(review.summary, "复盘完成")
+        self.assertEqual(stored_day.timeline[0].execution_state, "skipped")
+        self.assertEqual(
+            stored_day.meta["daily_review_completed_at"],
+            "2026-05-25 00:00:00",
+        )
+        self.assertEqual(len(provider.prompts), 1)
+
+    async def test_daily_review_settles_latest_timeline_revision(self):
+        composer, _, _, archive = make_composer()
+        stale = DayRecord(
+            date="2026-05-24",
+            timeline=[
+                TimelineItem(
+                    time="21:00",
+                    activity="旧快照中的活动",
+                    execution_state="active",
+                )
+            ],
+        )
+        await archive.save_day(stale)
+        archive.days["2026-05-24"] = DayRecord(
+            date="2026-05-24",
+            timeline=[
+                TimelineItem(
+                    time="21:00",
+                    activity="其他任务更新后的活动",
+                    execution_state="active",
+                )
+            ],
+        )
+
+        await composer._apply_timeline_review_updates(stale, {})
+
+        stored = await archive.get_day("2026-05-24")
+        self.assertEqual(stored.timeline[0].activity, "其他任务更新后的活动")
+        self.assertEqual(stored.timeline[0].execution_state, "completed")
+        self.assertEqual(
+            stored.meta["daily_review_timeline_settled_at"],
+            "2026-05-25 00:00:00",
+        )
+
     async def test_daily_review_updates_only_supplied_open_life_events(self):
         composer, _, _, archive = make_composer(
             [
@@ -2978,6 +3191,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reason, "当前状态适合轻松出门")
         self.assertTrue(result["accept"])
         self.assertIsNotNone(new_timeline)
+        self.assertEqual(result["timeline_edits"][0]["item"]["time"], "16:00")
         self.assertEqual(len(invite_provider.prompts), 1)
         self.assertEqual(len(default_provider.prompts), 0)
 

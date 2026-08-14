@@ -7,13 +7,13 @@ from astrbot.api import logger
 from ...clock import now as life_now
 from ...life.condition import format_state_prompt, normalize_state
 from ...life.people import PROACTIVE_PERSON_TEXT_PATHS
-from ...life.tools import extract_json_from_text
 from ...prompts import (
     CORE_HIDDEN_CONTEXT_RULES,
     CORE_JSON_OUTPUT_RULES,
     CORE_PERSONA_PRONOUN_RULES,
     cache_friendly_prompt,
 )
+from ..capture.jsonclean import call_pure_json
 from ..markers import LOG_PREFIX
 
 
@@ -202,6 +202,11 @@ class ProactiveRevisitMixin:
             or str(getattr(item, "source_session", "") or "").strip() == target_scope
         ][:5]
         lines = [f"- 当前时间：{now.strftime('%Y-%m-%d %H:%M')}"]
+        interaction_context = await self.resolve_interaction_context(
+            target_scope=target_scope,
+            now=now,
+        )
+        lines.append(f"- 现实互动方式：{interaction_context.mode_label}")
         if day:
             lines.append(
                 f"- 生活记录：{target_date_str}"
@@ -228,7 +233,9 @@ class ProactiveRevisitMixin:
             )
         else:
             lines.append("- 尚未完成的承诺/约定：暂无可读取记录")
-        return "\n".join(lines), bool(day or commitments)
+        return "\n".join(lines), bool(
+            day or commitments or interaction_context.has_authoritative_mode
+        )
 
     async def _audit_private_revisit_continuity(
         self,
@@ -282,14 +289,13 @@ JSON 输出要求：
         )
         session_id = f"daily_life_revisit_continuity_{uuid.uuid4().hex[:8]}"
         try:
-            text = await self.call_text_model(
+            audit = await call_pure_json(
+                self,
                 provider,
                 prompt,
                 session_id,
-                empty_retries=0,
                 primary_provider_id=provider_id,
             )
-            audit = extract_json_from_text(text)
             if not isinstance(audit, dict) or not isinstance(audit.get("valid"), bool):
                 return False, "连续性审计未返回有效结果"
             return bool(audit["valid"]), str(audit.get("reason") or "").strip()[:240]
@@ -553,6 +559,24 @@ JSON 输出要求：
         relationship: Any | None,
         now: datetime.datetime,
     ) -> dict[str, Any]:
+        relationship_profile_id = str(
+            getattr(relationship, "user_id", "")
+            or getattr(relationship, "id", "")
+            or ""
+        ).strip()
+        interaction_context = await self.resolve_interaction_context(
+            target_scope=target_scope,
+            profile_id=relationship_profile_id,
+            now=now,
+        )
+        if interaction_context.mode == "co_present":
+            return {
+                "should_reply": False,
+                "decision": "observe",
+                "reason": "双方当前同处现场，不额外发起线上私聊回访",
+                "reason_code": "co_present_interaction",
+                "reply_text": "",
+            }
         provider = await self._get_proactive_provider()
         if not provider:
             return {"should_reply": False, "decision": "skip", "reason": "没有可用模型"}
@@ -615,14 +639,13 @@ JSON 输出要求：
         session_id = f"daily_life_private_revisit_{uuid.uuid4().hex[:8]}"
         try:
             provider_id = self.config.proactive.provider
-            text = await self.call_text_model(
+            payload = await call_pure_json(
+                self,
                 provider,
                 prompt,
                 session_id,
-                empty_retries=0,
                 primary_provider_id=provider_id,
             )
-            payload = extract_json_from_text(text)
             if not isinstance(payload, dict):
                 return {
                     "should_reply": False,
@@ -904,6 +927,42 @@ JSON 输出要求：
                     outcome="发送前会话或生活状态已变化",
                 )
                 continue
+            latest_interaction = await self.resolve_interaction_context(
+                target_scope=target_scope,
+                profile_id=str(
+                    getattr(relationship, "user_id", "")
+                    or getattr(relationship, "id", "")
+                    or ""
+                ).strip(),
+                now=life_now(),
+            )
+            if latest_interaction.mode == "co_present":
+                payload.update(
+                    {
+                        "should_reply": False,
+                        "decision": "observe",
+                        "reason": "发送前确认双方已同处现场，不再发送线上私聊回访",
+                        "reply_text": "",
+                        "stage": "proposal",
+                        "reason_code": "co_present_before_send",
+                    }
+                )
+                self._update_proactive_air_after_decision(key, payload, now, sent=False)
+                self._transition_proactive_lifecycle(
+                    key,
+                    "interrupted",
+                    event="interaction_mode_changed",
+                    reason="发送前现实互动方式已变为同处现场",
+                    now=now,
+                )
+                await self._advance_proactive_decision_trace(
+                    event,
+                    payload,
+                    stage="interrupted",
+                    reason_code="co_present_before_send",
+                    outcome="发送前现实互动方式已变为同处现场",
+                )
+                continue
             self._transition_proactive_lifecycle(
                 key,
                 "sending",
@@ -924,7 +983,7 @@ JSON 输出要求：
                 "私聊回访发送失败",
                 relationship=relationship,
                 contact_type="friend",
-                send_payload=payload,
+                send_payload={**payload, "source": "private_revisit"},
             ):
                 await self._commit_proactive_decision(
                     event,

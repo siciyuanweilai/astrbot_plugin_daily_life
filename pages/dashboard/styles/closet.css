@@ -1,0 +1,375 @@
+.closet-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.closet-panel {
+  min-height: 0;
+  align-content: start;
+  grid-auto-rows: max-content;
+  gap: 10px;
+  padding: clamp(14px, 1.5vw, 20px);
+  background:
+    radial-gradient(circle at 9% 8%, rgba(158, 230, 209, 0.26), transparent 25%),
+    radial-gradient(circle at 92% 4%, rgba(255, 184, 205, 0.24), transparent 25%),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.91), rgba(242, 255, 250, 0.64)),
+    var(--diary-card);
+}
+
+.closet-head {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.38fr) minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.closet-detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.closet-detail-actions button {
+  min-height: 34px;
+  border-radius: 999px;
+  padding-inline: 10px;
+  font-weight: 850;
+}
+
+.closet-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 12px;
+  margin-block-start: 4px;
+  padding-block-start: 16px;
+}
+
+.closet-record {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--diary-line);
+  border-radius: var(--diary-radius-md);
+  background: rgba(255, 255, 255, 0.58);
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.closet-record:hover {
+  border-color: rgba(84, 177, 156, 0.58);
+  box-shadow: 0 12px 26px rgba(64, 121, 107, 0.12);
+  transform: translateY(-1px);
+}
+
+.closet-record.is-selected {
+  border-color: rgba(217, 68, 126, 0.72);
+  box-shadow: var(--diary-focus), var(--diary-shadow-soft);
+}
+
+.closet-thumb {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 4 / 5;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: rgba(239, 245, 242, 0.8);
+  cursor: pointer;
+}
+
+.closet-thumb img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+}
+
+.closet-thumb:focus-visible {
+  outline: 3px solid rgba(148, 218, 242, 0.64);
+  outline-offset: -3px;
+}
+
+.closet-thumb-empty {
+  display: grid;
+  height: 100%;
+  place-items: center;
+  color: var(--diary-muted);
+}
+
+.closet-select {
+  position: absolute;
+  z-index: 2;
+  inset-block-start: 8px;
+  inset-inline-start: 8px;
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 4px 12px rgba(61, 42, 53, 0.16);
+}
+
+.closet-select input {
+  width: 17px;
+  height: 17px;
+  margin: 0;
+}
+
+.closet-record-body {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+}
+
+.closet-record-title,
+.closet-record-meta {
+  min-width: 0;
+}
+
+.closet-record-title {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.closet-record-title strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.closet-record-meta {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--diary-muted);
+  font-size: 12px;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.closet-badges {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.closet-badge {
+  max-width: 100%;
+  overflow: hidden;
+  border-radius: 999px;
+  padding: 3px 7px;
+  background: rgba(158, 230, 209, 0.22);
+  color: #397967;
+  font-size: 11px;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.closet-badge.is-pending {
+  background: rgba(255, 226, 122, 0.28);
+  color: #8b6825;
+}
+
+.closet-badge.is-archived,
+.closet-badge.is-rejected {
+  background: rgba(206, 196, 203, 0.26);
+  color: var(--diary-muted);
+}
+
+.closet-selected-summary {
+  border-radius: 999px;
+  padding: 7px 10px;
+  background: rgba(255, 255, 255, 0.58);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.closet-manage-button.is-active {
+  border-color: rgba(217, 68, 126, 0.62);
+  color: var(--diary-berry);
+}
+
+.closet-dialog {
+  position: fixed;
+  z-index: 1200;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 14px;
+  background: rgba(35, 25, 31, 0.38);
+  backdrop-filter: blur(8px);
+}
+
+.closet-dialog-card {
+  width: min(760px, calc(100vw - 28px));
+  max-height: min(86vh, 900px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  border: 1px solid rgba(255, 255, 255, 0.76);
+  border-radius: var(--diary-radius-lg);
+  padding: clamp(16px, 2vw, 24px);
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.96), rgba(242, 255, 250, 0.88)),
+    var(--diary-card);
+  box-shadow: 0 24px 70px rgba(47, 72, 65, 0.24);
+}
+
+.closet-dialog-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-block-end: 14px;
+}
+
+.closet-detail-body {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.75fr) minmax(0, 1.25fr);
+  gap: 16px;
+}
+
+.closet-detail-preview {
+  overflow: hidden;
+  aspect-ratio: 4 / 5;
+  border-radius: var(--diary-radius-md);
+  background: rgba(239, 245, 242, 0.8);
+}
+
+.closet-detail-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.closet-detail-copy {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.closet-detail-description {
+  margin: 0;
+  line-height: 1.7;
+}
+
+.closet-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.closet-detail-grid div {
+  min-width: 0;
+  border-bottom: 1px dashed var(--diary-line);
+  padding-block: 5px;
+}
+
+.closet-detail-grid dt {
+  color: var(--diary-muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.closet-detail-grid dd {
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.closet-detail-actions {
+  flex-wrap: wrap;
+}
+
+.closet-browse-card {
+  width: min(520px, calc(100vw - 28px));
+}
+
+.closet-form,
+.closet-form label {
+  display: grid;
+  gap: 7px;
+}
+
+.closet-form {
+  gap: 14px;
+}
+
+.closet-form-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(96px, 0.34fr);
+  gap: 12px;
+}
+
+.closet-form input,
+.closet-form select,
+.closet-form textarea {
+  width: 100%;
+  min-width: 0;
+}
+
+[data-theme="dark"] .closet-panel,
+[data-theme="dark"] .closet-dialog-card,
+[data-theme="dark"] .closet-record {
+  background: rgba(55, 41, 50, 0.92);
+}
+
+[data-theme="dark"] .closet-badge {
+  color: #c9ffe9;
+}
+
+@media (max-width: 980px) {
+  .closet-head {
+    grid-template-columns: 1fr;
+  }
+
+  .closet-list {
+    grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  }
+}
+
+@media (max-width: 680px) {
+  .closet-panel,
+  .closet-head,
+  .closet-stats,
+  .closet-list {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .closet-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .closet-stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .closet-record-body {
+    padding: 8px;
+  }
+
+  .closet-detail-body,
+  .closet-detail-grid,
+  .closet-form-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 420px) {
+  .closet-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .closet-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

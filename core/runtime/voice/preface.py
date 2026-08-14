@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from astrbot.api import logger
@@ -18,7 +19,37 @@ from ..markers import LOG_PREFIX
 VOICE_TOOL_NAME = "life_voice_generate"
 EMOJI_TOOL_NAME = "life_emoji_send"
 SEND_MESSAGE_TOOL_NAME = "send_message_to_user"
-SILENT_TOOL_PREFACE_NAMES = frozenset({VOICE_TOOL_NAME, EMOJI_TOOL_NAME})
+
+
+@dataclass(frozen=True, slots=True)
+class ToolReplyPolicy:
+    preface_silent: bool = False
+    replaces_text: bool = False
+    post_send_comment: bool = True
+
+
+TOOL_REPLY_POLICIES = {
+    VOICE_TOOL_NAME: ToolReplyPolicy(
+        preface_silent=True,
+        replaces_text=True,
+        post_send_comment=False,
+    ),
+    EMOJI_TOOL_NAME: ToolReplyPolicy(preface_silent=True),
+    "life_image_generate": ToolReplyPolicy(),
+    "life_photo_suite_generate": ToolReplyPolicy(),
+    "edit_life_image": ToolReplyPolicy(),
+    "life_video_generate": ToolReplyPolicy(post_send_comment=False),
+}
+DEFAULT_TOOL_REPLY_POLICY = ToolReplyPolicy()
+SILENT_TOOL_PREFACE_NAMES = frozenset(
+    name for name, policy in TOOL_REPLY_POLICIES.items() if policy.preface_silent
+)
+
+
+def tool_reply_policy(tool_name: str) -> ToolReplyPolicy:
+    return TOOL_REPLY_POLICIES.get(
+        str(tool_name or "").strip(), DEFAULT_TOOL_REPLY_POLICY
+    )
 
 
 class SilentToolPrefaceMixin:
@@ -219,7 +250,9 @@ class SilentToolPrefaceMixin:
         if state is None:
             return
         name = self._tool_name(tool)
+        policy = tool_reply_policy(name)
         state["tool_name"] = name
+        state["reply_policy"] = policy
         state["tool_completed"] = False
         chain = state.pop("preface", None)
         preface_text = str(state.get("preface_text") or "").strip()
@@ -235,7 +268,7 @@ class SilentToolPrefaceMixin:
             state["preface_duplicate_owned_by_tool"] = True
             logger.debug(f"{LOG_PREFIX} 工具前置回复与发送工具内容一致，跳过重复发送。")
             return
-        if name in SILENT_TOOL_PREFACE_NAMES:
+        if policy.preface_silent:
             state["preface_suppressed"] = True
             logger.debug(f"{LOG_PREFIX} 工具调用前回复已静默：{name}")
             return
@@ -325,14 +358,15 @@ class SilentToolPrefaceMixin:
             return False
         name = str(state.get("tool_name") or "").strip()
         outcome = str(state.get("outcome") or "").strip().lower()
-        if name not in SILENT_TOOL_PREFACE_NAMES or outcome != "sent":
+        policy = tool_reply_policy(name)
+        if not policy.preface_silent or outcome != "sent":
             if state.get("final_response_pending"):
                 state["final_response_pending"] = False
                 self._tool_reply_round_store().pop(scope, None)
             return False
-        if name == EMOJI_TOOL_NAME:
+        if not policy.replaces_text:
             self._tool_reply_round_store().pop(scope, None)
-            logger.debug(f"{LOG_PREFIX} 表情已发送，保留后续文字回复")
+            logger.debug(f"{LOG_PREFIX} 媒体已发送，保留后续文字回复：{name}")
             return False
         clearer = getattr(event, "clear_result", None)
         if callable(clearer):

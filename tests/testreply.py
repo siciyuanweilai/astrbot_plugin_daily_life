@@ -182,8 +182,9 @@ class SemanticSegmentTest(unittest.TestCase):
         )
 
         self.assertTrue(sent)
+        self.assertEqual(runtime.context.sent_messages, [])
         self.assertEqual(
-            [chain.items for _, chain in runtime.context.sent_messages],
+            [chain.items for chain in event.sent_messages],
             [["江边这套"], ["对岸灯挺好看"]],
         )
 

@@ -30,7 +30,7 @@ from ..base import (
     image_mime_and_ext,
     upstream_error_text,
 )
-from . import gemini, grok, openai, routes
+from . import gemini, imagine, openai, routes
 from .pipe import ImageRoute
 
 _SUPPORTED_ASPECT_RATIO_VALUES = {
@@ -937,7 +937,7 @@ class GeminiImageService:
         kwargs = {"resolution": route.resolution, "aspect_ratio": route.aspect_ratio}
         builder = {
             "openai": openai.build_request,
-            "grok": grok.build_request,
+            "grok": imagine.build_request,
         }.get(route.protocol, gemini.build_request)
         return builder(route, parts, **kwargs)
 
@@ -962,7 +962,7 @@ class GeminiImageService:
             return openai.extract_image(data)
         if route.protocol == "gemini":
             return gemini.extract_image(data)
-        image_bytes, image_url = grok.extract_image(data, route.api_url)
+        image_bytes, image_url = imagine.extract_image(data, route.api_url)
         if image_bytes or not image_url:
             return image_bytes
         return await self._download_generated_image(image_url, timeout=timeout)

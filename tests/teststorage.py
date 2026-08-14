@@ -14,6 +14,11 @@ import support  # noqa: F401 - 安装轻量级 AstrBot 测试替身
 from core.archive.categories import STORAGE_CATEGORIES, validate_storage_categories
 from core.archive.ddl import iter_schema_sql
 from core.archive import DayRevisionConflict
+from core.archive.migrations import (
+    CURRENT_SCHEMA_FINGERPRINT,
+    infer_schema_version,
+    schema_fingerprint,
+)
 from core.archive.schema import SCHEMA_VERSION, ArchiveSchemaError
 from core.clock import today as life_today
 from core.labels import event_status_label
@@ -94,6 +99,17 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                         confidence=0.9,
                     )
                 )
+                top = await archive.upsert_style_catalog_item(
+                    StyleCatalogItemRecord(
+                        kind="top",
+                        title="测试浅色短外套",
+                        description="浅色短外套",
+                        source_scope="private:test-user",
+                        source_image_hash="a" * 64,
+                        attributes={"scenes": ["通勤"]},
+                        confidence=0.88,
+                    )
+                )
                 repeated = await archive.upsert_style_catalog_item(
                     StyleCatalogItemRecord(
                         kind="outfit",
@@ -111,6 +127,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(repeated.id, outfit.id)
                 self.assertEqual(repeated.seen_count, 2)
                 self.assertNotEqual(outfit.id, hair.id)
+                self.assertNotEqual(outfit.id, top.id)
 
                 updated = await archive.add_style_catalog_feedback(
                     outfit.id,
@@ -125,13 +142,71 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(updated.feedback_count, 1)
 
                 active = await archive.get_style_catalog_items(limit=10)
-                self.assertEqual({item.kind for item in active}, {"outfit", "hair"})
+                self.assertEqual(
+                    {item.kind for item in active}, {"outfit", "top", "hair"}
+                )
+                self.assertEqual(
+                    (await archive.get_style_catalog_items(kind="top", limit=5))[0].id,
+                    top.id,
+                )
                 self.assertEqual(active[0].id, outfit.id)
                 self.assertEqual(await archive.mark_style_catalog_used([outfit.id]), 1)
                 used = await archive.get_style_catalog_items(
                     status="", ids=[outfit.id], limit=1
                 )
                 self.assertTrue(used[0].last_used_at)
+                self.assertEqual(used[0].attributes["used_count"], 1)
+            finally:
+                archive.close()
+
+    async def test_style_catalog_supports_review_similarity_and_batch_cleanup(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(f"{tmpdir}/daily_life.db")
+            try:
+                pending = await archive.upsert_style_catalog_item(
+                    {
+                        "kind": "outfit",
+                        "title": "测试待确认造型",
+                        "description": "浅色短袖搭直筒短裤",
+                        "source_image_hash": "d" * 64,
+                        "attributes": {"perceptual_hash": "0000000000000000"},
+                        "confidence": 0.61,
+                        "status": "pending",
+                    }
+                )
+                similar = await archive.find_similar_style_catalog_item(
+                    "outfit", "0000000000000001", max_distance=2
+                )
+                self.assertEqual(similar.id, pending.id)
+
+                merged = await archive.merge_style_catalog_item(
+                    pending.id,
+                    {
+                        "kind": "outfit",
+                        "title": "测试清晰造型",
+                        "description": "浅色短袖搭高腰直筒短裤",
+                        "source_image_hash": "e" * 64,
+                        "attributes": {"perceptual_hash": "0000000000000001"},
+                        "confidence": 0.91,
+                        "status": "active",
+                    },
+                )
+                self.assertEqual(merged.id, pending.id)
+                self.assertEqual(merged.status, "active")
+                self.assertEqual(merged.title, "测试清晰造型")
+                self.assertEqual(merged.seen_count, 2)
+                self.assertEqual(
+                    await archive.set_style_catalog_status([merged.id], "archived"),
+                    1,
+                )
+                self.assertEqual(
+                    (await archive.get_style_catalog_item(merged.id)).status,
+                    "archived",
+                )
+                self.assertEqual(
+                    await archive.delete_style_catalog_items([merged.id]), 1
+                )
+                self.assertIsNone(await archive.get_style_catalog_item(merged.id))
             finally:
                 archive.close()
 
@@ -166,6 +241,65 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                 preferences = await migrated.get_preferences(5, "outfit")
                 self.assertEqual(preferences[0].content, "测试偏好")
                 self.assertEqual(await migrated.get_style_catalog_items(limit=5), [])
+                version = migrated._conn.execute(
+                    "SELECT value FROM meta WHERE key = 'schema_version'"
+                ).fetchone()
+                self.assertEqual(version[0], str(SCHEMA_VERSION))
+            finally:
+                migrated.close()
+
+    async def test_v12_closet_migrates_to_eight_categories_with_feedback(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = f"{tmpdir}/daily_life.db"
+            archive = LifeArchive(path)
+            existing = await archive.upsert_style_catalog_item(
+                {
+                    "kind": "outfit",
+                    "title": "测试旧套装",
+                    "description": "测试上装搭测试下装",
+                    "source_image_hash": "2" * 64,
+                    "confidence": 0.9,
+                }
+            )
+            await archive.add_style_catalog_feedback(
+                existing.id,
+                scope="private:test-user",
+                feedback="测试喜欢这套",
+                sentiment="prefer",
+                score_delta=0.4,
+                reason="测试反馈",
+            )
+            archive.close()
+
+            conn = sqlite3.connect(path)
+            try:
+                conn.execute(
+                    "UPDATE meta SET value = '12' WHERE key = 'schema_version'"
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            migrated = LifeArchive(path)
+            try:
+                old_item = await migrated.get_style_catalog_item(existing.id)
+                self.assertEqual(old_item.title, "测试旧套装")
+                self.assertEqual(old_item.feedback_count, 1)
+                top = await migrated.upsert_style_catalog_item(
+                    {
+                        "kind": "top",
+                        "title": "测试独立上装",
+                        "description": "测试短袖上装",
+                        "source_image_hash": "3" * 64,
+                        "confidence": 0.9,
+                    }
+                )
+                self.assertEqual(top.kind, "top")
+                feedback = migrated._conn.execute(
+                    "SELECT item_id, feedback FROM style_catalog_feedback"
+                ).fetchone()
+                self.assertEqual(int(feedback[0]), existing.id)
+                self.assertEqual(str(feedback[1]), "测试喜欢这套")
                 version = migrated._conn.execute(
                     "SELECT value FROM meta WHERE key = 'schema_version'"
                 ).fetchone()
@@ -454,16 +588,32 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 archive.close()
 
-    async def test_context_snapshot_does_not_create_nested_event_loop(self):
+    async def test_context_snapshot_uses_isolated_worker_runner(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             archive = LifeArchive(f"{tmpdir}/daily_life.db")
             try:
                 with patch(
                     "core.archive.store.asyncio.run",
-                    side_effect=AssertionError("不应创建嵌套事件循环"),
+                    side_effect=AssertionError("不应调用全局 asyncio.run"),
                 ):
                     snapshot = await archive.get_context_snapshot(max_summaries=3)
                 self.assertIn("relationships", snapshot)
+            finally:
+                archive.close()
+
+    async def test_context_snapshot_allows_internal_getter_to_suspend(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(f"{tmpdir}/daily_life.db")
+            original = archive.get_recent_relationships
+
+            async def suspended_getter(limit: int = 8):
+                await asyncio.sleep(0)
+                return await original(limit)
+
+            archive.get_recent_relationships = suspended_getter
+            try:
+                snapshot = await archive.get_context_snapshot(max_summaries=3)
+                self.assertEqual(snapshot["relationships"], [])
             finally:
                 archive.close()
 
@@ -865,6 +1015,8 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             conn = sqlite3.connect(db_path)
             for script in iter_schema_sql():
                 conn.executescript(script)
+            self.assertEqual(schema_fingerprint(conn), CURRENT_SCHEMA_FINGERPRINT)
+            self.assertEqual(infer_schema_version(conn), 12)
             conn.commit()
             conn.close()
 
@@ -920,7 +1072,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 archive.close()
 
-    def test_unversioned_baseline_can_upgrade_without_running_baseline_release(self):
+    def test_unversioned_current_schema_only_runs_required_calibration(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = f"{tmpdir}/daily_life.db"
             conn = sqlite3.connect(db_path)
@@ -929,15 +1081,22 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             conn.commit()
             conn.close()
 
-            def migrate_to_two(connection):
-                connection.execute(
-                    "INSERT INTO meta(key, value) VALUES('migration_marker', 'done')"
-                )
+            migration_order = []
+            migrations = {}
+            for version in range(2, 14):
+                def migrate(connection, target=version):
+                    migration_order.append(target)
+                    if target == 13:
+                        connection.execute(
+                            "INSERT INTO meta(key, value) "
+                            "VALUES('migration_marker', 'done')"
+                        )
+
+                migrations[version] = migrate
 
             with (
-                patch("core.archive.schema.SCHEMA_VERSION", 2),
                 patch.dict(
-                    "core.archive.schema.MIGRATIONS", {2: migrate_to_two}, clear=True
+                    "core.archive.schema.MIGRATIONS", migrations, clear=True
                 ),
             ):
                 archive = LifeArchive(db_path)
@@ -945,8 +1104,9 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                 metadata = dict(
                     archive._conn.execute("SELECT key, value FROM meta").fetchall()
                 )
-                self.assertEqual(metadata["schema_version"], "2")
+                self.assertEqual(metadata["schema_version"], str(SCHEMA_VERSION))
                 self.assertEqual(metadata["migration_marker"], "done")
+                self.assertEqual(migration_order, [13])
             finally:
                 archive.close()
 
@@ -3130,6 +3290,15 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                     ],
                     sleep_debt_delta=0.4,
                     energy_carryover=52,
+                    payload={
+                        "timeline_updates": [
+                            {
+                                "item_index": 0,
+                                "status": "completed",
+                                "evidence": "夜间复盘",
+                            }
+                        ]
+                    },
                     life_events=[
                         LifeEventRecord(
                             date="2026-05-24",
@@ -3154,6 +3323,9 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(review.summary, "今天适合低强度恢复。")
             self.assertEqual(review.memory_points, ["雨天更愿意待在室内。"])
+            self.assertEqual(
+                review.payload["timeline_updates"][0]["status"], "completed"
+            )
             self.assertEqual(preferences[0].content, "雨天偏好室内低强度活动")
             self.assertEqual(life_events[0].title, "买了新的手帐贴纸")
             self.assertEqual(day.timeline[0].time, "10:30")

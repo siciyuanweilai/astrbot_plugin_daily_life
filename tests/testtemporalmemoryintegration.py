@@ -18,6 +18,9 @@ class Archive:
         self.signals.append(payload)
         return payload
 
+    async def get_current_temporal_fact(self, scope, subject, predicate):
+        return None
+
 
 class Runtime(ChatMemoryBatchMixin):
     def __init__(self):
@@ -62,6 +65,42 @@ class TemporalMemoryIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("current_temporal_facts", prompt)
         self.assertIn("favorite_food", prompt)
         self.assertIn("不得省略历史变化而直接覆盖", prompt)
+        self.assertIn("predicate 固定为 interaction_mode", prompt)
+        self.assertIn("不表示双方现实分开", prompt)
+
+    async def test_interaction_mode_save_is_limited_to_batch_participant(self):
+        runtime = Runtime()
+        saved = await runtime._save_batch_temporal_facts(
+            {
+                "temporal_facts": [
+                    {
+                        "operation": "ADD",
+                        "subject": "u1",
+                        "predicate": "interaction_mode",
+                        "object_value": {"mode": "co_present"},
+                        "confidence": 0.91,
+                        "source_message_id": "m11",
+                        "evidence_summary": "双方明确已经在同一地点碰面。",
+                    },
+                    {
+                        "operation": "ADD",
+                        "subject": "other-user",
+                        "predicate": "interaction_mode",
+                        "object_value": {"mode": "remote"},
+                        "confidence": 0.99,
+                        "source_message_id": "m11",
+                    },
+                ]
+            },
+            self.batch(),
+        )
+
+        self.assertEqual(len(saved), 1)
+        operation, fact = runtime.archive.writes[0]
+        self.assertEqual(operation, "ADD")
+        self.assertEqual(fact["subject"], "u1")
+        self.assertEqual(fact["object_value"], {"mode": "co_present"})
+        self.assertEqual(len(runtime.archive.signals), 1)
 
     async def test_temporal_fact_save_locks_scope_and_source_message(self):
         runtime = Runtime()

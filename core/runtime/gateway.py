@@ -8,6 +8,8 @@ from typing import Any
 class ModelCallOptions:
     empty_retries: int = 1
     primary_provider_id: str = ""
+    propagate_non_retryable: bool = False
+    timeout_seconds: float | None = None
 
 
 class ModelGateway:
@@ -26,12 +28,19 @@ class ModelGateway:
         session_id: str,
         options: ModelCallOptions,
     ) -> str:
+        kwargs = {
+            "empty_retries": options.empty_retries,
+            "primary_provider_id": options.primary_provider_id,
+        }
+        if options.propagate_non_retryable:
+            kwargs["propagate_non_retryable"] = True
+        if options.timeout_seconds is not None:
+            kwargs["timeout_seconds"] = options.timeout_seconds
         return await self._composer._call_llm_text(
             provider,
             prompt,
             session_id,
-            empty_retries=options.empty_retries,
-            primary_provider_id=options.primary_provider_id,
+            **kwargs,
         )
 
     async def close(self, session_id: str) -> None:

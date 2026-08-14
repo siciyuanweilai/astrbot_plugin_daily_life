@@ -7,8 +7,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from support import async_return
-
 from core.sight import SightClip, SightInsight, TranscriptResult, TranscriptSegment
 from core.sight import sample as sample_module
 from core.sight.auth import enrich_bili_cookies
@@ -45,6 +43,7 @@ from core.sight.sample import (
     select_distinct_frames,
     select_frame_seconds,
 )
+from support import async_return
 
 
 class SightPipelineTest(unittest.TestCase):
@@ -848,6 +847,9 @@ class SightFrameCompatibilityTest(unittest.IsolatedAsyncioTestCase):
                 lambda name: None,
             ),
             patch.dict(sys.modules, {"imageio_ffmpeg": ffmpeg_module}),
+            patch(
+                "core.sight.sample.asyncio.to_thread", wraps=asyncio.to_thread
+            ) as run_in_thread,
         ):
             source_path = Path(tmpdir) / "video.mp4"
             source_path.write_bytes(b"\x00\x00\x00\x18ftypmp42fake-video")
@@ -856,6 +858,12 @@ class SightFrameCompatibilityTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(frames), 2)
         self.assertTrue(calls)
         self.assertTrue(all(call[0] == "D:/tools/ffmpeg.exe" for call in calls))
+        self.assertTrue(
+            any(
+                call.args and call.args[0] is sample_module.select_distinct_frames
+                for call in run_in_thread.call_args_list
+            )
+        )
 
     async def test_prepare_sample_video_source_passes_download_size_limit(self):
         seen = {}

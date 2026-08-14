@@ -4,7 +4,7 @@ import datetime
 from typing import Any
 
 from ..clock import now as life_now
-from ..models.cognition import AffectiveStateRecord, ReflectionRecord
+from ..models.thought import AffectiveStateRecord, ReflectionRecord
 from .affect import AffectEngine, AffectiveSnapshot
 
 

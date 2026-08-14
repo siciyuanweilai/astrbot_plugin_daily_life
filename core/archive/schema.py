@@ -4,12 +4,11 @@ from functools import lru_cache
 from .categories import validate_storage_categories
 from .ddl import DROP_SCHEMA_SQL, iter_schema_sql
 from .migrations import (
-    BASELINE_SCHEMA_VERSION,
     MIGRATIONS,
     SCHEMA_VERSION,
     SchemaMigrationError,
     apply_migrations,
-    is_baseline_schema,
+    infer_schema_version,
     read_schema_version,
     validate_migration_registry,
     write_schema_version,
@@ -145,14 +144,15 @@ def _create_fresh_schema(conn: sqlite3.Connection) -> None:
 def _upgrade_unversioned_baseline(conn: sqlite3.Connection) -> None:
     conn.execute("BEGIN IMMEDIATE")
     try:
-        if not is_baseline_schema(conn):
+        inferred_version = infer_schema_version(conn)
+        if inferred_version is None:
             validate_schema(conn)
             raise SchemaMigrationError("数据库未记录结构版本，且结构不符合当前迁移基线")
-        write_schema_version(conn, BASELINE_SCHEMA_VERSION)
-        if BASELINE_SCHEMA_VERSION < SCHEMA_VERSION:
+        write_schema_version(conn, inferred_version)
+        if inferred_version < SCHEMA_VERSION:
             apply_migrations(
                 conn,
-                BASELINE_SCHEMA_VERSION,
+                inferred_version,
                 target_version=SCHEMA_VERSION,
                 migrations=MIGRATIONS,
             )

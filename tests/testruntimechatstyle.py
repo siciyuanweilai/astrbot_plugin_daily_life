@@ -248,7 +248,6 @@ class RuntimeChatStyleTest(unittest.TestCase):
             datetime.datetime(2026, 5, 24, 12, 30),
             using_extended_night=False,
         )
-
         self.assertIn("[HiddenChatStyle]", text)
         self.assertIn("闲聊轻一点，认真事先给判断。", text)
         self.assertIn("日常闲聊参考长度约 45 字左右", text)

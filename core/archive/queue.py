@@ -105,7 +105,15 @@ class ChatMemoryQueueArchiveMixin:
                 """
                 SELECT s.*,
                        (SELECT COUNT(*) FROM chat_memory_messages m
-                        WHERE m.session_id = s.session_id AND m.id > s.last_processed_row_id) AS pending_count
+                        WHERE m.session_id = s.session_id AND m.id > s.last_processed_row_id) AS pending_count,
+                       (SELECT COUNT(*) FROM chat_memory_messages m
+                        WHERE m.session_id = s.session_id
+                          AND m.id > s.last_processed_row_id
+                          AND m.role = 'user') AS pending_user_count,
+                       (SELECT COUNT(*) FROM chat_memory_messages m
+                        WHERE m.session_id = s.session_id
+                          AND m.id > s.last_processed_row_id
+                          AND m.role = 'assistant') AS pending_assistant_count
                 FROM chat_memory_sessions s
                 WHERE EXISTS (
                     SELECT 1 FROM chat_memory_messages m

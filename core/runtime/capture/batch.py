@@ -13,6 +13,8 @@ from ...clock import now as life_now
 from ...models import ChatSummaryRecord, CommitmentRecord
 from ...models.coerce import compact_explanation_text
 from ...prompts import CORE_PERSONA_PRONOUN_RULES
+from ...sources.platforms import parse_unified_origin
+from ..context import INTERACTION_MODE_PREDICATE, interaction_fact_is_current
 from ..markers import LOG_PREFIX
 from .jsonclean import call_pure_json
 
@@ -137,7 +139,12 @@ class ChatMemoryBatchMixin:
         event: Any,
         now: datetime.datetime | None = None,
     ) -> bool:
-        if not self.config.memory.enabled or event is None:
+        if (
+            not self.config.memory.enabled
+            or event is None
+            or getattr(self, "contact_resolver", None) is None
+            or getattr(self, "archive", None) is None
+        ):
             return False
         if self._event_has_command_handler(event) or self.event_was_recalled(
             event, log_skip=True
@@ -192,6 +199,60 @@ class ChatMemoryBatchMixin:
             self._chat_memory_wakeup.set()
         return inserted
 
+    async def capture_proactive_chat_memory_reply(
+        self,
+        scope: str,
+        message: str,
+        *,
+        media: str = "",
+        now: datetime.datetime | None = None,
+    ) -> bool:
+        """把已成功发送的主动消息纳入同一套语义记忆与承诺提炼。"""
+
+        archive = getattr(self, "archive", None)
+        enqueue = getattr(archive, "enqueue_chat_memory_message", None)
+        if not self.config.memory.enabled or not callable(enqueue):
+            return False
+        scope = str(scope or "").strip()
+        message = str(message or "").strip()
+        if not scope or not message:
+            return False
+        now = now or life_now()
+        occurred_at = now.isoformat(timespec="seconds")
+        identity = json.dumps(
+            [scope, occurred_at, message, str(media or "").strip()],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        platform, user_id = parse_unified_origin(scope)
+        snapshot = {
+            "event_key": "bot:" + hashlib.sha256(identity.encode("utf-8")).hexdigest(),
+            "session_id": scope,
+            "role": "assistant",
+            "message_id": "",
+            "sender_profile_id": "bot",
+            "sender_name": "我",
+            "platform": platform,
+            "user_id": user_id if ":FriendMessage:" in scope else "",
+            "group_id": user_id if ":GroupMessage:" in scope else "",
+            "group_name": "",
+            "is_group": ":GroupMessage:" in scope,
+            "is_directed": False,
+            "is_quoted": False,
+            "message_text": message,
+            "message_facts": f"已发送{media}" if media else "",
+            "quote_context": "",
+            "structured_context": self.format_structured_message_context(
+                scope, limit=6
+            ),
+            "occurred_at": occurred_at,
+        }
+        _, inserted = await enqueue(snapshot)
+        if inserted:
+            self._ensure_chat_memory_worker()
+            self._chat_memory_wakeup.set()
+        return inserted
+
     async def _chat_memory_worker(self) -> None:
         poll = max(2, int(self.config.memory.worker_poll_seconds))
         while not self._chat_memory_stopping:
@@ -230,13 +291,24 @@ class ChatMemoryBatchMixin:
         processed = 0
         for state in await self.archive.list_chat_memory_sessions():
             pending_count = int(state.get("pending_count") or 0)
+            idle_min_messages = self.config.memory.idle_flush_min_messages
+            pending_user_count = int(state.get("pending_user_count") or 0)
+            pending_assistant_count = int(state.get("pending_assistant_count") or 0)
+            if pending_user_count > 0 and pending_assistant_count > 0:
+                # 一轮完整问答已经具备双向语义。即使消息数量低于普通
+                # 沉淀门槛，也应在会话安静后收束，避免遗漏我主动许下的承诺。
+                idle_min_messages = min(idle_min_messages, 2)
+            elif pending_assistant_count > 0 and pending_user_count == 0:
+                # 私聊回访、闲时回复和承诺履约可能没有同批次用户消息，
+                # 但其中仍可能产生新的未来联系承诺，应在安静后独立收束。
+                idle_min_messages = 1
             threshold = (
                 self.config.memory.group_message_threshold
                 if bool(state.get("is_group"))
                 else self.config.memory.private_message_threshold
             )
             idle_due = (
-                pending_count >= self.config.memory.idle_flush_min_messages
+                pending_count >= idle_min_messages
                 and self._chat_memory_elapsed_seconds(
                     str(state.get("last_message_at") or ""), now
                 )
@@ -257,7 +329,7 @@ class ChatMemoryBatchMixin:
                 processed += 1
                 pending_count -= len(batch["messages"])
                 idle_due = (
-                    pending_count >= self.config.memory.idle_flush_min_messages
+                    pending_count >= idle_min_messages
                     and self._chat_memory_elapsed_seconds(
                         str(state.get("last_message_at") or ""), now
                     )
@@ -302,6 +374,7 @@ class ChatMemoryBatchMixin:
             "participants": list(participants.values()),
             "messages": messages,
             "current_temporal_facts": batch.get("current_temporal_facts", []),
+            "current_day_timeline": batch.get("current_day_timeline", []),
         }
         schema = {
             "worth_saving": True,
@@ -388,6 +461,13 @@ class ChatMemoryBatchMixin:
                     "trigger_time": "",
                     "time_window": "",
                     "owner": "当前角色|说话人|共同|未定",
+                    "follow_up": {
+                        "action": "none|contact_person|remind_person",
+                        "message_goal": "",
+                        "execute_at": "YYYY-MM-DD HH:MM 或空字符串",
+                        "condition": "需要满足的客观条件或空字符串",
+                        "check_after_minutes": 0,
+                    },
                     "people": [],
                     "place": "",
                     "confidence": 0.0,
@@ -409,7 +489,7 @@ class ChatMemoryBatchMixin:
         }
         return (
             "你负责把一个连续聊天批次整理成可长期复用的记忆。只依据输入证据，保持每条信息的说话人归属；"
-            "输入中的 role=user 是用户消息，role=assistant 是我实际已经发送的回复；"
+            "输入中的 role=user 表示内容来自用户一侧，role=assistant 表示我实际表达过的内容；这两个角色只标记说话人，不表示双方现实分开或正在使用设备远程收发消息。"
             "区分稳定事实、偏好、关系认识、生活事件、纠错和未来约定。暂时情绪、寒暄、无证据推断与重复信息不保存。"
             "无法可靠归属的信息不要输出。群聊中的人物必须使用输入给出的 profile_id。"
             f"人物称谓与叙述视角规则：\n{CORE_PERSONA_PRONOUN_RULES}\n"
@@ -419,13 +499,26 @@ class ChatMemoryBatchMixin:
             "visibility.reason、action_decision.reason 和生活片段 impact 只写相对场景与判断依据，不复述输入中的具体日期、钟点或时间轴编号；具体时间只进入专用时间字段或证据字段。"
             "输出一个严格 JSON 对象，不要解释，不要 Markdown。没有长期信息时输出 worth_saving=false，其他数组可为空；"
             "即使没有长期摘要，也要保留证据明确的 commitments。brief 是简短主题，long_summary 是忠于证据的批次摘要。"
+            "commitments.owner 必须按实际承诺主体填写：我承诺做的事是当前角色，对方承诺做的事是说话人，双方共同安排才是共同。"
+            "follow_up 只描述需要我在未来主动联系对方才能履行的承诺：我明确说稍后联系、到时通知、完成后告知或提醒对方时，action 使用 contact_person 或 remind_person；"
+            "对方说以后联系我、提醒我或叫我时，owner 必须是说话人且 follow_up.action 必须是 none，绝不能反向创建我的主动联系任务。"
+            "普通共同计划不等于主动联系承诺；证据没有明确要求我未来发起联系时使用 none。"
+            "群聊中无法确认应该向谁履行联系动作时 follow_up.action 使用 none，不把对某个人的承诺误发给整个群。"
+            "需要主动联系时 execute_at 必须依据明确时间证据或 current_day_timeline 中已确认的相关节点给出完整本地日期时间；无法可靠确定执行时间时使用 none，不猜时间。"
+            "若联系承诺明确依赖未来条件但无法换算出钟点，保留 action，execute_at 留空，并填写可由后续聊天或生活状态复核的 condition；check_after_minutes 给出首次复核间隔，范围 5 到 60。"
             "visibility、group_environment、action_decision 只记录批次中有明确依据的实际感知，不生成空壳；私聊不填写 group_environment。"
             "worth_saving 只控制长期摘要；这三个实际感知字段有依据时可以独立输出。"
             "behavior_feedback 只记录发生在我的回复之后、由后续用户消息明确证实的真实反馈；life_terms 只记录后续理解仍有帮助的黑话、梗或代称。"
             "behavior_feedback 或 life_terms 有内容时属于可复用信息，应同时给出有效摘要并设置 worth_saving=true。\n"
+            "scope.type 只是平台传输范围，不是现实互动场景。brief、long_summary、relationship_story、note、points、scene_type 等自然语言字段必须按语义区分现实同处、远程交流和未知；"
+            "没有明确现实互动证据时使用“这轮交流中”“聊天中”等中性叙述，不要仅因 private/group、role 或消息记录写成隔着屏幕发消息。\n"
             "temporal_facts 只记录有明确证据、以后仍需按时间查询的结构化事实；subject 和 predicate 必须是稳定结构键，不得从措辞关键词临时拼接。"
             "对照 current_temporal_facts：新增键用 ADD，同键值改变用 UPDATE，明确失效用 INVALIDATE，没有变化用 NONE；不得省略历史变化而直接覆盖。"
             "source_message_id 必须来自输入批次，evidence_signal 只能是 reinforce 或 dispute；没有可靠消息证据就不要输出该事实。\n"
+            '现实互动方式统一使用 temporal_facts：subject 必须是对应人物的 profile_id，predicate 固定为 interaction_mode，object_value 固定为 {"mode":"co_present"} 或 {"mode":"remote"}。'
+            "只有消息语义明确证明双方当前在同一现实地点并面对面互动时，才能记录 co_present；只有明确证明当前不在同一现场并通过远程方式交流时，才能记录 remote。"
+            "不得从私聊、群聊、role、收到消息、表情、语气或平台本身推断互动方式；证据消失不等于模式改变，明确分开、离场或转为远程时才更新，无法确认时不要输出。\n"
+            "interaction_mode 是短期现场事实：批次出现新的明确当前证据时，即使 mode 与 current_temporal_facts 相同也使用 UPDATE 刷新证据时间；只是在延续旧信息、没有新证据时才使用 NONE。\n"
             f"输出结构：{json.dumps(schema, ensure_ascii=False, separators=(',', ':'))}\n"
             f"输入批次：{json.dumps(source, ensure_ascii=False, separators=(',', ':'))}"
         )
@@ -635,8 +728,11 @@ class ChatMemoryBatchMixin:
             ):
                 continue
             stored = await self.archive.save_commitment(commitment)
+            follow_up = raw.get("follow_up")
+            follow_up = follow_up if isinstance(follow_up, dict) else {}
+            follow_up_action = str(follow_up.get("action") or "none").strip()
             apply_to_day = getattr(self, "apply_commitment_to_current_day", None)
-            if callable(apply_to_day):
+            if callable(apply_to_day) and follow_up_action == "none":
                 try:
                     await apply_to_day(
                         stored,
@@ -651,6 +747,17 @@ class ChatMemoryBatchMixin:
                 if final_commitment is not None:
                     stored = final_commitment
             saved.append(stored)
+            scheduler = getattr(self, "schedule_proactive_commitment", None)
+            if callable(scheduler):
+                try:
+                    await scheduler(
+                        stored,
+                        owner=str(raw.get("owner") or "").strip(),
+                        follow_up=follow_up,
+                        observed_at=observed_at,
+                    )
+                except Exception as exc:
+                    logger.warning(f"{LOG_PREFIX} 主动承诺任务登记失败：{exc}")
             domain_settings = getattr(self.config, "domains", None)
             save_action_item = getattr(
                 self.archive, "save_conversation_action_item", None
@@ -709,6 +816,7 @@ class ChatMemoryBatchMixin:
         """
 
         writer = getattr(self.archive, "write_temporal_fact", None)
+        current_reader = getattr(self.archive, "get_current_temporal_fact", None)
         evidence_saver = getattr(self.archive, "add_fact_evidence_signal", None)
         raw_facts = payload.get("temporal_facts")
         if not callable(writer) or not isinstance(raw_facts, list):
@@ -747,6 +855,85 @@ class ChatMemoryBatchMixin:
             predicate = str(raw.get("predicate") or "").strip()[:120]
             if not subject or not predicate:
                 continue
+            if predicate == INTERACTION_MODE_PREDICATE:
+                interaction_audited = payload.get("_interaction_audited")
+                if interaction_audited is False:
+                    continue
+                participant_ids = {
+                    str(row.get("sender_profile_id") or "").strip()
+                    for row in batch.get("messages", [])
+                    if isinstance(row, dict)
+                    and str(row.get("role") or "").strip().lower() == "user"
+                    and str(row.get("sender_profile_id") or "").strip()
+                }
+                object_value = raw.get("object_value")
+                mode = (
+                    str(object_value.get("mode") or "").strip().lower()
+                    if isinstance(object_value, dict)
+                    else ""
+                )
+                if subject not in participant_ids or confidence < 0.7:
+                    continue
+                if operation in {"ADD", "UPDATE"}:
+                    if mode not in {"co_present", "remote"}:
+                        continue
+                    current = (
+                        await current_reader(
+                            scope,
+                            subject,
+                            INTERACTION_MODE_PREDICATE,
+                        )
+                        if callable(current_reader)
+                        else None
+                    )
+                    fact = await writer(
+                        "UPDATE" if current is not None else "ADD",
+                        {
+                            "scope": scope,
+                            "subject": subject,
+                            "predicate": INTERACTION_MODE_PREDICATE,
+                            "object_value": {"mode": mode},
+                            "observed_at": observed_at,
+                            "valid_from": observed_at,
+                            "confidence": confidence,
+                            "source": (
+                                "chat_batch_audited"
+                                if interaction_audited is True
+                                else "chat_batch"
+                            ),
+                            "source_type": "chat_message",
+                            "source_id": source_message_id,
+                            "provenance": {
+                                "session_id": scope,
+                                "message_id": source_message_id,
+                                "batch_id": batch.get("id"),
+                            },
+                        },
+                    )
+                    if fact is not None:
+                        saved.append(fact)
+                        if callable(evidence_saver) and int(fact.id or 0) > 0:
+                            await evidence_saver(
+                                {
+                                    "fact_id": int(fact.id),
+                                    "signal": "reinforce",
+                                    "weight": 1.0,
+                                    "confidence": confidence,
+                                    "summary": self._chinese_text_payload(
+                                        raw.get("evidence_summary")
+                                    ),
+                                    "source": "chat_batch",
+                                    "source_id": source_message_id,
+                                    "observed_at": observed_at,
+                                    "provenance": {
+                                        "session_id": scope,
+                                        "message_id": source_message_id,
+                                    },
+                                }
+                            )
+                    continue
+                if operation == "NONE":
+                    continue
             try:
                 fact = await writer(
                     operation,
@@ -894,6 +1081,73 @@ class ChatMemoryBatchMixin:
                 meta["current_role_label"] = "我"
         else:
             meta["current_role_label"] = "我"
+        interaction_mode = ""
+        try:
+            interaction_now = datetime.datetime.fromisoformat(
+                str(last.get("occurred_at") or "")
+            )
+        except (TypeError, ValueError):
+            interaction_now = life_now()
+        current_interaction_facts: list[dict[str, Any]] = []
+        for current_fact in list(batch.get("current_temporal_facts") or []):
+            predicate = str(
+                current_fact.get("predicate")
+                if isinstance(current_fact, dict)
+                else getattr(current_fact, "predicate", "")
+            ).strip()
+            if (
+                predicate != INTERACTION_MODE_PREDICATE
+                or not interaction_fact_is_current(
+                    current_fact,
+                    now=interaction_now,
+                )
+            ):
+                continue
+            fact_data = (
+                dict(current_fact)
+                if isinstance(current_fact, dict)
+                else current_fact.as_dict()
+            )
+            current_interaction_facts.append(fact_data)
+            object_value = fact_data.get("object_value")
+            candidate = (
+                str(object_value.get("mode") or "").strip().lower()
+                if isinstance(object_value, dict)
+                else ""
+            )
+            if candidate in {"co_present", "remote"} and not interaction_mode:
+                interaction_mode = candidate
+        meta["interaction_mode_label"] = {
+            "co_present": "同处现场",
+            "remote": "远程交流",
+        }.get(interaction_mode, "未知")
+        meta["interaction_messages_json"] = json.dumps(
+            [
+                {
+                    "message_id": str(row.get("message_id") or row.get("id") or ""),
+                    "occurred_at": str(row.get("occurred_at") or ""),
+                    "role": str(row.get("role") or ""),
+                    "sender_profile_id": str(row.get("sender_profile_id") or ""),
+                    "content": str(row.get("message_text") or ""),
+                }
+                for row in rows
+            ],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        meta["current_interaction_facts_json"] = json.dumps(
+            current_interaction_facts,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=str,
+        )
+        if any(
+            isinstance(item, dict)
+            and str(item.get("predicate") or "").strip() == INTERACTION_MODE_PREDICATE
+            for item in list(payload.get("temporal_facts") or [])
+        ):
+            payload = dict(payload)
+            payload["_interaction_audited"] = False
         payload = await self._calibrate_chat_memory_payload(
             payload,
             meta,
@@ -961,12 +1215,38 @@ class ChatMemoryBatchMixin:
                     scope=str(batch.get("session_id") or ""),
                     limit=30,
                 )
+                try:
+                    fact_now = datetime.datetime.fromisoformat(
+                        str(batch["messages"][-1].get("occurred_at") or "")
+                    )
+                except (IndexError, TypeError, ValueError):
+                    fact_now = life_now()
+                current_facts = [
+                    item
+                    for item in current_facts
+                    if str(getattr(item, "predicate", "") or "").strip()
+                    != INTERACTION_MODE_PREDICATE
+                    or interaction_fact_is_current(item, now=fact_now)
+                ]
                 batch = {
                     **batch,
                     "current_temporal_facts": [
                         item.as_dict() for item in current_facts
                     ],
                 }
+            try:
+                timeline_date = str(batch["messages"][-1].get("occurred_at") or "")[:10]
+            except (IndexError, TypeError):
+                timeline_date = ""
+            if timeline_date:
+                current_day = await self.archive.get_day(timeline_date)
+                if current_day is not None:
+                    batch = {
+                        **batch,
+                        "current_day_timeline": [
+                            item.as_dict() for item in current_day.timeline
+                        ],
+                    }
             payload = await call_pure_json(
                 self,
                 provider,

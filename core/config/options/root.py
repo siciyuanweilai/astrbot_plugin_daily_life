@@ -24,12 +24,12 @@ from .basis import (
     WeatherSettings,
 )
 from .cast import as_int, as_str, as_str_list, dict_section, normalize_time
-from .domains import LifeDomainSettings
 from .generate import (
     ImageGenerationSettings,
     VideoGenerationSettings,
     VoiceGenerationSettings,
 )
+from .realm import LifeDomainSettings
 from .retention import CommitmentSettings, MemorySettings, MemOSSettings
 
 
@@ -43,6 +43,7 @@ class LifeSettings:
     history_hours: int = 24
     history_max_count: int = 50
     llm_provider: str = ""
+    llm_timeout_seconds: int = 120
     location_planning_provider: str = ""
     weather: WeatherSettings = field(default_factory=WeatherSettings)
     state: StateSettings = field(default_factory=StateSettings)
@@ -118,6 +119,9 @@ class LifeSettings:
             rhythm_conf.get("history_max_count", 50), 50, 0, 200
         )
         config.llm_provider = as_str(rhythm_conf.get("llm_provider", ""))
+        config.llm_timeout_seconds = as_int(
+            rhythm_conf.get("llm_timeout_seconds", 120), 120, 10, 600
+        )
         config.location_planning_provider = as_str(
             rhythm_conf.get("location_planning_provider", "")
         ).strip()

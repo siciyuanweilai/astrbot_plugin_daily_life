@@ -203,13 +203,19 @@
 .panel.has-open-select,
 .emoji-tools.has-open-select,
 .emoji-filter-tools.has-open-select,
+.closet-filter-tools.has-open-select,
 .config-cover.has-open-select {
   overflow: visible;
   z-index: 95;
 }
 
-.emoji-filter-tools .life-select-menu {
+.emoji-filter-tools .life-select-menu,
+.closet-filter-tools .life-select-menu {
   min-width: min(240px, calc(100vw - 28px));
+}
+
+.closet-filter-tools .life-select-option {
+  white-space: nowrap;
 }
 
 [data-theme="dark"] .life-select-trigger {

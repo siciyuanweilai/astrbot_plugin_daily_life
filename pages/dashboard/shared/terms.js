@@ -400,7 +400,13 @@ export const FRESHNESS_LABELS = {
 export const PREFERENCE_CATEGORY_LABELS = {
   activity: "活动",
   outfit: "穿搭",
+  top: "上装",
+  bottom: "下装",
+  footwear: "鞋袜",
+  accessory: "配饰",
   hair: "发型",
+  makeup: "妆容",
+  nails: "美甲",
   social: "社交",
   sleep: "睡眠",
   place: "地点",
@@ -603,6 +609,12 @@ export const COGNITION_SUBJECT_LABELS = {
 export const COGNITION_PREDICATE_LABELS = {
   current_place: "当前地点",
   current_outfit: "当前穿搭",
+  interaction_mode: "互动方式",
+  makeup_style_request: "妆容风格需求",
+  accessory_style_request: "配饰风格需求",
+  outfit_change_request: "穿搭更换需求",
+  has_food_item: "持有食物",
+  self_reported_gender: "自述性别",
   favorite_food: "喜欢的食物",
   meal_preference: "饮食偏好",
   latest_change: "最近变化",
@@ -617,7 +629,14 @@ export const COGNITION_VALUE_KEY_LABELS = {
   food: "食物",
   place: "地点",
   outfit: "穿搭",
+  disliked_outfit: "不喜欢的穿搭",
   style: "风格",
+  intent: "意图",
+  request: "请求",
+  note: "备注",
+  mode: "互动方式",
+  type: "类型",
+  preferred_candidates: "候选偏好",
   summary: "摘要",
   change: "变化",
   interaction: "互动",
@@ -629,6 +648,21 @@ export const COGNITION_VALUE_KEY_LABELS = {
   intensity: "强度",
   valence: "正负向",
   arousal: "唤醒度",
+};
+
+export const COGNITION_VALUE_LABELS = {
+  find_and_add_to_wardrobe: "查找并加入衣橱",
+  pending_save_confirmation: "等待保存确认",
+  confirmed: "已确认",
+  pending: "待确认",
+  active: "当前",
+  remote: "远程交流",
+  co_present: "当面交流",
+  summer_sexy: "夏日性感",
+  earrings: "耳饰",
+  female: "女性",
+  male: "男性",
+  unknown: "未知",
 };
 
 export const HEALTH_CHECK_LABELS = {

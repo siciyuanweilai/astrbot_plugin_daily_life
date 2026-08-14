@@ -5,7 +5,17 @@ from typing import Any
 
 from ..models import PreferenceRecord
 
-APPEARANCE_PREFERENCE_CATEGORIES = ("outfit", "hair", "style")
+APPEARANCE_PREFERENCE_CATEGORIES = (
+    "outfit",
+    "top",
+    "bottom",
+    "footwear",
+    "accessory",
+    "hair",
+    "makeup",
+    "nails",
+    "style",
+)
 APPEARANCE_PRIORITY_RULE = (
     "优先级：用户当前明确要求 > 已经发生的当前穿着事实 > 短期生活纠偏 > 场景与天气适配 > "
     "近期重复抑制 > 已学习长期偏好 > 配置审美 > 模型自由发挥。"
@@ -25,10 +35,20 @@ _APPEARANCE_COMPARISON_IGNORED_CHARACTERS = frozenset(
     " ，。；：、！？!?.,;:()（）[]【】{}<>《》‘’“”\n\r\t"
 )
 _APPEARANCE_CLAUSE_BOUNDARIES = frozenset("，。；！？!?.,;\n\r")
+_MISSING_APPEARANCE_FACTS = frozenset({"未知", "unknown"})
 
 
 def _clean_text(value: object, limit: int = 240) -> str:
     return " ".join(str(value or "").strip().split())[:limit]
+
+
+def normalize_appearance_fact(value: object, limit: int = 240) -> str:
+    """规范化可选外观事实，不把结构化缺失标记当作真实描述。"""
+
+    text = _clean_text(value, limit)
+    if text.casefold() in _MISSING_APPEARANCE_FACTS:
+        return ""
+    return text
 
 
 def _appearance_characters(value: object) -> list[str]:
@@ -114,15 +134,15 @@ def current_appearance_values(day: Any) -> dict[str, str]:
     meta = getattr(day, "meta", {}) or {}
     if not isinstance(meta, dict):
         meta = {}
-    hair_style = _clean_text(meta.get("hair_style"), 80)
-    hair = _clean_text(meta.get("hair"), 180)
-    makeup = _clean_text(meta.get("makeup"), 160)
-    nails = _clean_text(meta.get("nails"), 160)
+    hair_style = normalize_appearance_fact(meta.get("hair_style"), 80)
+    hair = normalize_appearance_fact(meta.get("hair"), 180)
+    makeup = normalize_appearance_fact(meta.get("makeup"), 160)
+    nails = normalize_appearance_fact(meta.get("nails"), 160)
     return {
         "outfit": strip_hair_from_outfit(
             getattr(day, "outfit", ""), hair_style, hair
         ),
-        "style": _clean_text(meta.get("style"), 120),
+        "style": normalize_appearance_fact(meta.get("style"), 120),
         "hair_style": hair_style,
         "hair": hair,
         "makeup": makeup,

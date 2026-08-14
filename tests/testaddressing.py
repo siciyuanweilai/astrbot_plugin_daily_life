@@ -358,7 +358,8 @@ class ChatAddressingTest(unittest.TestCase):
         )
 
         self.assertTrue(sent)
-        _, chain = runtime.context.sent_messages[0]
+        self.assertEqual(runtime.context.sent_messages, [])
+        chain = source.sent_messages[0]
         self.assertIn("reply", component_kind(chain.chain[0]))
         self.assertEqual(component_message_id(chain.chain[0]), "m-source")
 

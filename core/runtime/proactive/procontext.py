@@ -138,7 +138,7 @@ class ProactiveContextMixin:
         )
         limit = self._proactive_expression_limit_for_scope(target_scope)
         scope_label = "群聊" if ":GroupMessage:" in str(target_scope or "") else "私聊"
-        lines = [f"- 场景：{scope_label}主动消息。"]
+        lines = [f"- 消息传输范围：{scope_label}主动消息；不代表现实距离。"]
         if limit > 0:
             lines.append(
                 f"- {scope_label}主动消息参考长度约 {limit} 字左右；不是硬截断，但后台主动发言要优先短气口。"

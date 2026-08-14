@@ -1,4 +1,5 @@
 import unittest
+import asyncio
 from unittest.mock import Mock
 
 from support import LifeSettings
@@ -11,7 +12,7 @@ class LifeRhythmClockTest(unittest.TestCase):
     async def _task() -> None:
         return None
 
-    def _job_ids(self, proactive_config: dict) -> set[str]:
+    async def _job_ids(self, proactive_config: dict) -> set[str]:
         config = LifeSettings.from_dict(
             {
                 "state_config": {"enabled": False},
@@ -29,15 +30,18 @@ class LifeRhythmClockTest(unittest.TestCase):
         clock.start()
 
         self.assertTrue(clock.scheduler.running)
-        return set(clock.scheduler.jobs)
+        jobs = getattr(clock.scheduler, "jobs", None)
+        if isinstance(jobs, dict):
+            return set(jobs)
+        return {job.id for job in clock.scheduler.get_jobs()}
 
     def test_idle_job_stays_off_when_both_chat_switches_are_off(self):
-        jobs = self._job_ids(
+        jobs = asyncio.run(self._job_ids(
             {
                 "group_enabled": False,
                 "private_enabled": False,
             }
-        )
+        ))
 
         self.assertNotIn("proactive_idle_check", jobs)
         self.assertNotIn("private_revisit_check", jobs)
@@ -45,21 +49,40 @@ class LifeRhythmClockTest(unittest.TestCase):
     def test_idle_reply_uses_per_conversation_tasks_not_periodic_job(self):
         for field in ("group_enabled", "private_enabled"):
             with self.subTest(field=field):
-                jobs = self._job_ids({field: True})
+                jobs = asyncio.run(self._job_ids({field: True}))
                 self.assertNotIn("proactive_idle_check", jobs)
                 self.assertNotIn("private_revisit_check", jobs)
 
     def test_private_revisit_job_is_independent_from_idle_reply(self):
-        jobs = self._job_ids(
+        jobs = asyncio.run(self._job_ids(
             {
                 "group_enabled": False,
                 "private_enabled": False,
                 "private_revisit_enabled": True,
             }
-        )
+        ))
 
         self.assertNotIn("proactive_idle_check", jobs)
         self.assertIn("private_revisit_check", jobs)
+
+    def test_durable_worker_job_runs_independently(self):
+        jobs = asyncio.run(self._durable_job_ids())
+        self.assertIn("durable_life_tasks", jobs)
+
+    async def _durable_job_ids(self):
+        config = LifeSettings.from_dict({"state_config": {"enabled": False}})
+        clock = LifeRhythmClock(
+            config,
+            self._task,
+            self._task,
+            durable_task=self._task,
+        )
+
+        clock.start()
+        jobs = getattr(clock.scheduler, "jobs", None)
+        if isinstance(jobs, dict):
+            return set(jobs)
+        return {job.id for job in clock.scheduler.get_jobs()}
 
     def test_scheduler_start_failure_is_propagated(self):
         config = LifeSettings.from_dict({})

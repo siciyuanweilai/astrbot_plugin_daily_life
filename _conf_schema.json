@@ -85,6 +85,17 @@
         "default": "",
         "hint": "指定日程生成和周计划维护使用的模型；留空则使用当前默认模型。"
       },
+      "llm_timeout_seconds": {
+        "description": "模型调用超时（秒）",
+        "type": "int",
+        "default": 120,
+        "slider": {
+          "min": 10,
+          "max": 600,
+          "step": 10
+        },
+        "hint": "限制日程、状态、记忆与主动生活裁定的单次模型等待时间。"
+      },
       "location_planning_provider": {
         "description": "地点预选",
         "type": "string",
@@ -1157,6 +1168,13 @@
         "type": "bool",
         "default": false,
         "hint": "开启后，模型可以调用工具生成并发送图片。"
+      },
+      "image_director_provider": {
+        "description": "图片导演",
+        "type": "string",
+        "_special": "select_provider",
+        "default": "",
+        "hint": "指定单图构图、身份路线和套图镜头规划使用的模型；留空则使用当前默认模型。"
       },
       "prompt_rewrite_provider": {
         "description": "轻量润色",

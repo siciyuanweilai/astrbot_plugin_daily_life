@@ -1,10 +1,13 @@
-from typing import Callable, Awaitable
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from collections.abc import Awaitable, Callable
+
 from apscheduler.executors.asyncio import AsyncIOExecutor
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
 from astrbot.api import logger
+
+from ..clock import TIMEZONE
 from ..config.options import LifeSettings
 from ..life.tools import parse_schedule_time
-from ..clock import TIMEZONE
 
 
 class LifeRhythmClock:
@@ -16,6 +19,7 @@ class LifeRhythmClock:
         review_task: Callable[[], Awaitable[None]] | None = None,
         proactive_revisit_task: Callable[[], Awaitable[None]] | None = None,
         proactive_idle_task: Callable[[], Awaitable[None]] | None = None,
+        durable_task: Callable[[], Awaitable[None]] | None = None,
     ):
         self.config = config
         self.scheduler = AsyncIOScheduler(
@@ -32,6 +36,7 @@ class LifeRhythmClock:
         self.review_task = review_task
         self.proactive_revisit_task = proactive_revisit_task
         self.proactive_idle_task = proactive_idle_task
+        self.durable_task = durable_task
         self.last_error = ""
 
     @property
@@ -86,6 +91,15 @@ class LifeRhythmClock:
                     hour=rh,
                     minute=rm,
                     id="daily_review",
+                    replace_existing=True,
+                )
+
+            if self.durable_task:
+                self.scheduler.add_job(
+                    self.durable_task,
+                    "interval",
+                    minutes=1,
+                    id="durable_life_tasks",
                     replace_existing=True,
                 )
 

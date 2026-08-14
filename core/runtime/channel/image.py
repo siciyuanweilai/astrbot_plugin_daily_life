@@ -26,8 +26,10 @@ from ...media.picture.routes import (
     requested_image_provider,
 )
 from ...paths import runtime_data_root
+from ...prompts import CORE_JSON_OUTPUT_RULES, cache_friendly_prompt
 from ..locks import operation_lock
 from ..markers import LOG_PREFIX
+from ..stage.error import MediaPromptExtractionError
 
 
 @dataclass(slots=True)
@@ -53,6 +55,140 @@ class ImageGenerationExecution:
 
 class RuntimeImageMediaMixin:
     _CURRENT_APPEARANCE_PROMPT_MARKER = "当前生活状态权威造型快照"
+
+    @staticmethod
+    def _outfit_change_scene_fallback(subject_route: str) -> str:
+        return (
+            "人物 A 完成换装后与人物 B 自然合影，真实日常抓拍感。"
+            if subject_route == "group"
+            else "当前角色完成换装后的自然生活照，真实日常抓拍感。"
+        )
+
+    async def _isolate_outfit_change_scene_prompt(
+        self,
+        prompt: str,
+        subject_route: str,
+    ) -> str:
+        """只保留真实换装生图中的非造型画面要求。"""
+
+        route = self._normalize_image_subject_route(subject_route)
+        fallback = self._outfit_change_scene_fallback(route)
+        original = str(prompt or "").strip()
+        if not original:
+            return fallback
+
+        rewrite = getattr(self, "_media_director_text_call", None)
+        parse = getattr(self, "_media_rewrite_prompt_from_response", None)
+        if not callable(rewrite) or not callable(parse):
+            return fallback
+
+        subject_rule = (
+            "只移除人物 A 的服装、鞋袜、配饰、发型、妆容、美甲、体貌和身份设计；"
+            "人物 B 已明确给出的独立外观可以保留。"
+            if route == "group"
+            else "移除当前角色的服装、鞋袜、配饰、发型、妆容、美甲、体貌和身份设计。"
+        )
+        fixed = f"""你是生活图片的场景语义整理器。当前角色的真实换装已经由生活状态引擎完成并保存，下面的画面提示只能提供非造型信息。
+
+要求：
+- {subject_rule}
+- 保留明确的地点、环境、时间、天气、动作、姿态、互动、手持物、构图、景别、镜头、光线和氛围。
+- 不新增、改写或概括任何人物造型，也不要用风格词暗示另一套服装。
+- 如果原文只有造型要求而没有可复用的非造型信息，prompt 返回空字符串。
+- 只返回严格 JSON 对象，不要 Markdown、代码块或解释。
+{CORE_JSON_OUTPUT_RULES}
+JSON 字段：
+{{"prompt":"只含非造型画面要求的中文提示词或空字符串"}}"""
+        dynamic = f"需要整理的画面提示：{original}"
+        try:
+            image_config = getattr(
+                getattr(self, "config", None), "image_generation", None
+            )
+            provider_id = str(
+                getattr(image_config, "prompt_rewrite_provider", "") or ""
+            ).strip()
+            response = await rewrite(
+                cache_friendly_prompt(
+                    fixed,
+                    dynamic,
+                    dynamic_title="真实换装场景提纯",
+                ),
+                provider_id=provider_id,
+            )
+            scene_prompt = str(parse(response) or "").strip()
+            if scene_prompt:
+                return scene_prompt
+        except Exception as exc:
+            logger.debug(f"{LOG_PREFIX} 真实换装场景提纯失败，使用通用场景：{exc}")
+        return fallback
+
+    async def _align_current_appearance_scene_prompt(
+        self,
+        prompt: str,
+        source_request: str,
+        subject_route: str,
+        *,
+        final_snapshot: bool = False,
+    ) -> str:
+        """让媒体画面要求与当前权威造型保持一致。"""
+
+        route = self._normalize_image_subject_route(subject_route)
+        if final_snapshot:
+            return await self._isolate_outfit_change_scene_prompt(prompt, route)
+
+        original = str(prompt or "").strip()
+        user_request = str(source_request or "").strip()
+        fallback = user_request or self._outfit_change_scene_fallback(route)
+        if not original:
+            return fallback
+
+        rewrite = getattr(self, "_media_director_text_call", None)
+        parse = getattr(self, "_media_rewrite_prompt_from_response", None)
+        if not callable(rewrite) or not callable(parse):
+            return fallback
+
+        subject_rule = (
+            "人物 A 使用当前生活造型；人物 B 已有的独立造型要求可以保留。"
+            if route == "group"
+            else "当前角色使用当前生活造型。"
+        )
+        fixed = f"""你是生活媒体的造型一致性整理器。请对照用户原始请求，整理工具生成的画面提示。
+
+规则：
+- {subject_rule}
+- 只有用户原始请求明确要求本次画面试穿、换造型或采用另一套外观时，才保留对应的服装、鞋袜、配饰、发型、妆容或美甲要求。
+- 用户没有明确提出外观变化时，移除工具提示中自行补写的人物造型、体貌和身份设计。
+- 保留地点、环境、时间、天气、动作、姿态、互动、手持物、构图、景别、镜头、光线、动态和氛围。
+- 不新增用户没有要求的画面内容，不解释判断过程。
+- 只返回严格 JSON 对象，不要 Markdown 或代码块。
+{CORE_JSON_OUTPUT_RULES}
+JSON 字段：
+{{"prompt":"与用户原始请求一致、且不和当前生活造型冲突的中文画面提示词"}}"""
+        dynamic = (
+            f"用户原始请求：{user_request or '无'}\n"
+            f"工具生成的画面提示：{original}"
+        )
+        try:
+            image_config = getattr(
+                getattr(self, "config", None), "image_generation", None
+            )
+            provider_id = str(
+                getattr(image_config, "prompt_rewrite_provider", "") or ""
+            ).strip()
+            response = await rewrite(
+                cache_friendly_prompt(
+                    fixed,
+                    dynamic,
+                    dynamic_title="当前造型语义对齐",
+                ),
+                provider_id=provider_id,
+            )
+            aligned = str(parse(response) or "").strip()
+            if aligned:
+                return aligned
+        except Exception as exc:
+            logger.debug(f"{LOG_PREFIX} 当前造型语义对齐失败，改用用户原始请求：{exc}")
+        return fallback
 
     @staticmethod
     def _current_character_identity_profiles(value: Any) -> dict[str, str]:
@@ -539,14 +675,18 @@ class RuntimeImageMediaMixin:
             )
         return False
 
-    @staticmethod
-    def _image_tool_failure_text(action: str, error: str) -> str:
+    def _image_tool_failure_text(self, action: str, error: str) -> str:
+        media_name = str(action or "图片").removesuffix("生成") or "图片"
         detail = str(error or "").strip()
-        if not detail:
-            return f"{action}失败，已记录失败原因。"
-        if len(detail) > 500:
-            detail = detail[:500].rstrip() + "..."
-        return f"{action}失败：{detail}"
+        if detail.startswith("图片轻量润色后重试仍失败"):
+            return f"{media_name}生成失败：图片轻量润色后重试仍失败。"
+        if detail in {
+            "超时",
+            "图片触发安全拒绝，轻量润色失败。",
+            "图片触发安全拒绝，轻量润色没有返回可用的新提示词。",
+        }:
+            return f"{media_name}生成失败：{detail}"
+        return self._media_tool_failure_text(media_name, error)
 
     def _image_policy_rewrite_reason(self, exc: Exception) -> str:
         reason = self._image_policy_rejection_detail(exc)
@@ -717,9 +857,16 @@ class RuntimeImageMediaMixin:
                 )
             except Exception:
                 return direct_text, False, False
-        result = await self._direct_life_image_payload(
-            event, prompt, reference=reference
-        )
+        original_prompt = str(prompt or "").strip()
+        try:
+            result = await self._direct_life_image_payload(
+                event, original_prompt, reference=reference
+            )
+        except MediaPromptExtractionError as exc:
+            logger.debug(
+                f"{LOG_PREFIX} 图片导演未返回可用规划，已保持用户原始要求继续生成：{exc}"
+            )
+            return original_prompt, False, False
         directed_prompt = str(getattr(result, "prompt", "") or "").strip()
         contains_character = getattr(result, "contains_character", False) is True
         needs_character_reference = (
@@ -1306,6 +1453,13 @@ class RuntimeImageMediaMixin:
 
         if not current_appearance:
             current_appearance = await self._current_life_appearance_snapshot(route)
+        if current_appearance and route in {"current_character", "group"}:
+            prompt = await self._align_current_appearance_scene_prompt(
+                prompt,
+                self._event_current_image_request_text(event),
+                route,
+                final_snapshot=bool(current_outfit_change),
+            )
 
         plan = await self._prepare_image_generation_plan(
             event,

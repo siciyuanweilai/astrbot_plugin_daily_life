@@ -258,6 +258,9 @@ class DailyEngineMixin:
         catalog_appearance = await self._style_catalog_reference_appearance(
             outfit_decision.get("catalog_reference_ids")
         )
+        catalog_outfit = catalog_appearance.pop("outfit", "")
+        if catalog_outfit and not str(day.outfit or "").strip():
+            day.outfit = catalog_outfit
         for key, value in catalog_appearance.items():
             if not str(day.meta.get(key) or "").strip():
                 day.meta[key] = value

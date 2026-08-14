@@ -666,7 +666,7 @@ async def extract_video_frames(
         if digest:
             seen_hashes.add(digest)
         frames.append(SightFrame(path=target, second=second, label=label))
-    selected = select_distinct_frames(frames, max_frames)
+    selected = await asyncio.to_thread(select_distinct_frames, frames, max_frames)
     selected_paths = {frame.path for frame in selected}
     for frame in frames:
         if frame.path not in selected_paths:

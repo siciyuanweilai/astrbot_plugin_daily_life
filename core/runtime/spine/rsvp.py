@@ -342,6 +342,13 @@ class SpineInviteMixin:
             await self.archive.link_commitments_to_day(
                 today_str, [accepted_commitment.id]
             )
+            schedule_contact = getattr(self, "schedule_invite_contact", None)
+            if callable(schedule_contact):
+                await schedule_contact(
+                    accepted_commitment,
+                    timeline_edits=decision.get("timeline_edits"),
+                    observed_at=now,
+                )
         # 先登记已确认的邀请证据，再提交日程。这样聊天记忆后台即使同时
         # 提炼同一条消息，也会看到权威的 invite 记录，不会把地点改回旧候选。
         await self.archive.save_day(data)

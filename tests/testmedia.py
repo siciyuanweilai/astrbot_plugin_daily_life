@@ -1,6 +1,7 @@
 # ruff: noqa: I001
 
 import base64
+import asyncio
 import tempfile
 import unittest
 from io import BytesIO
@@ -13,17 +14,19 @@ from core.media import GeminiImageService
 from core.media import video as video_module
 from core.media.base import videos_endpoint
 from core.media.picture import canvas as picture_canvas
-from core.media.picture import grok as grok_image
+from core.media.picture import imagine as grok_image
 from core.media.picture import openai as openai_image
 from core.media.picture.pipe import ImageRoute
 from core.media.picture.routes import requested_image_provider
 from core.media.video import GrokVideoService
 from core.media.video.protocol.size import video_aspect_ratio, video_size
-from core.media.video.reference import (
+from core.media.video.keyframe import (
     VIDEO_REFERENCE_MAX_BYTES,
     prepare_video_reference_image,
 )
 from core.media.video.tasks import task_status_url
+from core.media.video.tasks import poll_video_url
+from core.media.video.errors import VideoTaskError
 from core.runtime.proactive.send import ProactiveSendMixin
 from PIL import Image
 
@@ -204,9 +207,7 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
     def test_grok_output_size_validation_checks_ratio_and_resolution(self):
         matches = GeminiImageService._grok_output_matches_request
 
-        self.assertTrue(
-            matches(1152, 2048, resolution="2K", aspect_ratio="9:16")
-        )
+        self.assertTrue(matches(1152, 2048, resolution="2K", aspect_ratio="9:16"))
         self.assertTrue(matches(1024, 1024, resolution="1K", aspect_ratio="1:1"))
         self.assertFalse(matches(1024, 1024, resolution="2K", aspect_ratio="9:16"))
         self.assertFalse(matches(1024, 1024, resolution="2K", aspect_ratio="1:1"))
@@ -1509,6 +1510,90 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
 
 
 class GrokVideoServiceTest(unittest.IsolatedAsyncioTestCase):
+    async def test_poll_timeout_does_not_exceed_total_budget_during_status_request(
+        self,
+    ):
+        settings = LifeSettings.from_dict(
+            {
+                "video_generation_config": {
+                    "enabled": True,
+                    "base_url": "https://relay.example",
+                    "api_keys": ["key-a"],
+                    "timeout_seconds": 30,
+                    "request_timeout_seconds": 60,
+                    "poll_interval_seconds": 5,
+                }
+            }
+        ).video_generation
+        request_timeouts = []
+
+        async def immediate_sleep(_seconds):
+            return None
+
+        async def timeout_request(*_args, timeout_seconds=None, **_kwargs):
+            request_timeouts.append(timeout_seconds)
+            raise asyncio.TimeoutError
+
+        with patch(
+            "core.media.video.tasks.time.monotonic", side_effect=[0.0, 0.0, 5.0]
+        ):
+            with self.assertRaises(asyncio.TimeoutError):
+                await poll_video_url(
+                    settings=settings,
+                    session=object(),
+                    headers={},
+                    endpoint="https://relay.example/v1/videos",
+                    request_id="task-budget",
+                    request=timeout_request,
+                    download=lambda *_args, **_kwargs: None,
+                    sleep=immediate_sleep,
+                    log_debug=lambda _message: None,
+                    log_info=lambda _message: None,
+                )
+
+        self.assertEqual(request_timeouts, [25.0])
+
+    async def test_poll_stops_when_sleep_consumes_remaining_budget(self):
+        settings = LifeSettings.from_dict(
+            {
+                "video_generation_config": {
+                    "enabled": True,
+                    "base_url": "https://relay.example",
+                    "api_keys": ["key-a"],
+                    "timeout_seconds": 30,
+                    "poll_interval_seconds": 5,
+                }
+            }
+        ).video_generation
+        requested = False
+
+        async def immediate_sleep(_seconds):
+            return None
+
+        async def request(*_args, **_kwargs):
+            nonlocal requested
+            requested = True
+            return {}
+
+        with patch(
+            "core.media.video.tasks.time.monotonic", side_effect=[0.0, 29.0, 30.0]
+        ):
+            with self.assertRaisesRegex(VideoTaskError, "Grok 视频任务超时"):
+                await poll_video_url(
+                    settings=settings,
+                    session=object(),
+                    headers={},
+                    endpoint="https://relay.example/v1/videos",
+                    request_id="task-budget",
+                    request=request,
+                    download=lambda *_args, **_kwargs: None,
+                    sleep=immediate_sleep,
+                    log_debug=lambda _message: None,
+                    log_info=lambda _message: None,
+                )
+
+        self.assertFalse(requested)
+
     async def test_generate_video_uses_video_task_endpoint(self):
         settings = LifeSettings.from_dict(
             {

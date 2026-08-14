@@ -118,6 +118,11 @@ const EMOJI_BACKUP_MAX_MB = 200;
 const EMOJI_BACKUP_MAX_BYTES = EMOJI_BACKUP_MAX_MB * 1024 * 1024;
 const EMOJI_ANIMATED_PREVIEW_STAGGER_MS = 80;
 const EMOJI_PAGE_SIZE = 30;
+const CLOSET_PAGE_SIZE = 24;
+const CLOSET_IMPORT_MAX_MB = 20;
+const CLOSET_IMPORT_MAX_BYTES = CLOSET_IMPORT_MAX_MB * 1024 * 1024;
+const CLOSET_BACKUP_MAX_MB = 500;
+const CLOSET_BACKUP_MAX_BYTES = CLOSET_BACKUP_MAX_MB * 1024 * 1024;
 const MEMO_EMPTY_TEXT = "暂无备忘录";
 const CURRENT_ACTIVITY_EMPTY_TEXT = "暂无当前活动";
 const METER_EMPTY_TEXT = "暂无数据";
@@ -257,6 +262,11 @@ const HERO_COPY = {
     title: "表情管理",
     subtitle: "收藏、识图、导入和启停都放在一处，让表情在合适的时候自然出现。",
   },
+  closet: {
+    eyebrow: "视觉衣橱 · 把喜欢的造型收进灵感册",
+    title: "衣橱管理",
+    subtitle: "上传、联网学习、筛选和反馈集中管理，已启用的候选会自然参与日常穿搭与发型决策。",
+  },
   settings: {
     eyebrow: "运行设置 · 把规则整理成抽屉",
     title: "运行规则",
@@ -280,6 +290,16 @@ const state = {
   emojiPreviewCache: new Map(),
   emojiAnimatedPreviewObserver: null,
   emojiAnimatedPreviewSeq: 0,
+  closetItems: [],
+  closetStats: {},
+  closetFilter: "all",
+  closetPage: 1,
+  closetLoaded: false,
+  closetLoading: false,
+  closetDetailId: 0,
+  closetManageMode: false,
+  closetSelectedIds: new Set(),
+  closetPreviewCache: new Map(),
   memoryTab: "world",
   worldTab: "life_decisions",
   experienceTab: "relationships",
@@ -329,6 +349,7 @@ const el = {
   heroSubtitle: byId("heroSubtitle"),
   dashboardView: byId("dashboardView"),
   emojiView: byId("emojiView"),
+  closetView: byId("closetView"),
   settingsView: byId("settingsView"),
   viewButtons: all(".view-button"),
   actionGroups: all("[data-action-view]"),
@@ -390,6 +411,37 @@ const el = {
   emojiDetailTitle: byId("emojiDetailTitle"),
   emojiDetailBody: byId("emojiDetailBody"),
   emojiDetailClose: byId("emojiDetailClose"),
+  closetSummary: byId("closetSummary"),
+  closetFilter: byId("closetFilter"),
+  closetImportButton: byId("closetImportButton"),
+  closetImportFile: byId("closetImportFile"),
+  closetBrowseButton: byId("closetBrowseButton"),
+  closetBackupButton: byId("closetBackupButton"),
+  closetRestoreButton: byId("closetRestoreButton"),
+  closetRestoreFile: byId("closetRestoreFile"),
+  closetManageButton: byId("closetManageButton"),
+  closetSelectedSummary: byId("closetSelectedSummary"),
+  closetBulkEnableButton: byId("closetBulkEnableButton"),
+  closetBulkArchiveButton: byId("closetBulkArchiveButton"),
+  closetBulkDeleteButton: byId("closetBulkDeleteButton"),
+  closetCancelManageButton: byId("closetCancelManageButton"),
+  closetStats: byId("closetStats"),
+  closetPager: byId("closetPager"),
+  closetPrevPage: byId("closetPrevPage"),
+  closetPageInfo: byId("closetPageInfo"),
+  closetNextPage: byId("closetNextPage"),
+  closetList: byId("closetList"),
+  closetDetailDialog: byId("closetDetailDialog"),
+  closetDetailTitle: byId("closetDetailTitle"),
+  closetDetailBody: byId("closetDetailBody"),
+  closetDetailClose: byId("closetDetailClose"),
+  closetBrowseDialog: byId("closetBrowseDialog"),
+  closetBrowseClose: byId("closetBrowseClose"),
+  closetBrowseQuery: byId("closetBrowseQuery"),
+  closetBrowseKind: byId("closetBrowseKind"),
+  closetBrowseCount: byId("closetBrowseCount"),
+  closetBrowseNote: byId("closetBrowseNote"),
+  closetBrowseSubmit: byId("closetBrowseSubmit"),
   configNav: byId("configNav"),
   configSectionTitle: byId("configSectionTitle"),
   configSectionHint: byId("configSectionHint"),
@@ -605,6 +657,7 @@ function syncDailyGenerationButton(status = {}) {
 
 function currentViewElement() {
   if (state.view === "settings") return el.settingsView;
+  if (state.view === "closet") return el.closetView;
   if (state.view === "emoji") return el.emojiView;
   return el.dashboardView;
 }
@@ -704,7 +757,7 @@ function deferConfigLoadForSettings() {
 
 function setView(view) {
   if (state.view === "settings" && view !== "settings") flushConfigAutosave();
-  state.view = view === "settings" || view === "emoji" ? view : "dashboard";
+  state.view = ["settings", "emoji", "closet"].includes(view) ? view : "dashboard";
   if (state.view === "dashboard") {
     startClock();
   } else {
@@ -715,6 +768,7 @@ function setView(view) {
   renderHeroCopy(state.view);
   el.dashboardView.hidden = state.view !== "dashboard";
   el.emojiView.hidden = state.view !== "emoji";
+  el.closetView.hidden = state.view !== "closet";
   el.settingsView.hidden = state.view !== "settings";
   el.viewButtons.forEach((button) => button.classList.toggle("active", button.dataset.view === state.view));
   el.actionGroups.forEach((group) => {
@@ -726,9 +780,16 @@ function setView(view) {
     closeEmojiImport();
     stopEmojiAutoRefresh();
   }
+  if (state.view !== "closet") {
+    resetClosetManageState();
+    closeClosetDetail();
+    closeClosetBrowse();
+  }
   if (state.view === "emoji" && bridge && state.bridgeReady) {
     loadEmojiAssets({ quiet: state.emojiLoaded });
     scheduleEmojiAutoRefresh();
+  } else if (state.view === "closet" && bridge && state.bridgeReady) {
+    loadClosetAssets({ quiet: state.closetLoaded });
   } else if (state.view === "settings" && !state.configLoaded && bridge) {
     deferConfigLoadForSettings();
   } else if (state.view === "dashboard" && bridge && state.bridgeReady) {
@@ -1374,7 +1435,6 @@ function renderFactPair(target, value, emptyText = "暂无内容") {
     }
     if (data.nails) {
       groomingLine.append(
-        document.createTextNode(data.makeup ? " " : ""),
         node("span", "today-week-label", `美甲：${data.nails}`),
       );
     }
@@ -1574,7 +1634,9 @@ function renderWorld(status) {
 function renderLifecycle(status) {
   const lifecycle = status.lifecycle || {};
   const diagnosticsEnabled = Boolean(status.config?.diagnostics_enabled);
-  const relationshipText = relationshipTextResolver(status).text;
+  const relationshipResolver = relationshipTextResolver(status);
+  const relationshipText = relationshipResolver.text;
+  const relationshipNames = relationshipResolver.names;
   const reviews = objectItems(lifecycle.reviews);
   const reflections = diagnosticsEnabled ? objectItems(lifecycle.reflections) : [];
   const diaries = diagnosticsEnabled ? objectItems(lifecycle.grounded_diary) : [];
@@ -1605,7 +1667,7 @@ function renderLifecycle(status) {
     );
     record.append(title, recordLines([
       item.assertion_subject && item.assertion_predicate
-        ? `人格断言：${clean(item.assertion_subject)} · ${cognitionPredicateText(item.assertion_predicate)} · ${cognitionValueText(item.assertion_object)}`
+        ? `人格断言：${cognitionSubjectText(item.assertion_subject, "未指明对象", relationshipNames)} · ${cognitionPredicateText(item.assertion_predicate)} · ${cognitionValueText(item.assertion_object)}`
         : "",
       item.evidence_ids?.length ? `依据 ${item.evidence_ids.length} 条` : "",
     ]));
@@ -1824,7 +1886,10 @@ function experienceGroups(status) {
   temporalFacts.slice(0, 5).forEach((item) => {
     const record = node("div", "record");
     const title = node("div", "record-title");
-    title.append(node("span", "", cognitionSubjectText(item.subject, "时间事实")), node("span", "muted", COGNITION_STATUS_LABELS[item.status] || "当前"));
+    title.append(
+      node("span", "", cognitionSubjectText(item.subject, "时间事实", relationshipNames)),
+      node("span", "muted", COGNITION_STATUS_LABELS[item.status] || "当前")
+    );
     record.append(title, recordLines([
       `${cognitionPredicateText(item.predicate)}：${objectText(item.object_value)}`,
       item.valid_from ? `生效：${clean(item.valid_from)}` : "",
@@ -1838,7 +1903,7 @@ function experienceGroups(status) {
     const title = node("div", "record-title");
     title.append(node("span", "", "已沉淀人格断言"), node("span", "muted", `置信度 ${Math.round(Number(item.confidence || 0) * 100)}%`));
     record.append(title, recordLines([
-      `${cognitionSubjectText(item.subject)} · ${cognitionPredicateText(item.predicate)}：${objectText(item.object_value)}`,
+      `${cognitionSubjectText(item.subject, "未指明对象", relationshipNames)} · ${cognitionPredicateText(item.predicate)}：${objectText(item.object_value)}`,
       item.scope ? `范围：${cognitionScopeText(item.scope)}` : "",
     ]));
     groups.language.push(record);
@@ -1944,7 +2009,7 @@ function experienceGroups(status) {
     const record = node("div", "record");
     const title = node("div", "record-title");
     title.append(
-      node("span", "", evidenceTargetTitle(item, index + 1)),
+      node("span", "", evidenceTargetTitle(item, index + 1, relationshipNames)),
       node("span", "muted", enumLabel(item.evidence_type, EVIDENCE_TYPE_LABELS))
     );
     record.append(title, recordLines([relationshipText(evidenceText(item.summary))]));
@@ -2718,6 +2783,565 @@ async function deleteEmojiAssets(ids) {
   }
 }
 
+const CLOSET_KIND_LABELS = {
+  outfit: "套装",
+  top: "上装",
+  bottom: "下装",
+  footwear: "鞋袜",
+  accessory: "配饰",
+  hair: "发型",
+  makeup: "妆容",
+  nails: "美甲",
+};
+const CLOSET_STATUS_LABELS = {
+  active: "已启用",
+  pending: "待确认",
+  archived: "已归档",
+  rejected: "不采用",
+};
+const CLOSET_SOURCE_LABELS = {
+  manual: "手动上传",
+  user_image: "会话图片",
+  product_image: "商品图片",
+  web_image: "联网图片",
+};
+
+function closetTargetIds(ids) {
+  return Array.from(new Set((Array.isArray(ids) ? ids : [ids])
+    .map((id) => Number(id || 0))
+    .filter((id) => id > 0)));
+}
+
+function closetSelectedIds() {
+  return closetTargetIds(Array.from(state.closetSelectedIds || []));
+}
+
+function closetItem(id) {
+  const itemId = Number(id || 0);
+  return objectItems(state.closetItems).find((item) => Number(item.id || 0) === itemId) || null;
+}
+
+function resetClosetDeleteButton(button = el.closetBulkDeleteButton, label = "删除选中") {
+  if (!button) return;
+  window.clearTimeout(Number(button.dataset.confirmTimer || 0));
+  delete button.dataset.confirmDelete;
+  delete button.dataset.confirmTimer;
+  button.classList.remove("is-confirming");
+  button.textContent = label;
+}
+
+function resetClosetManageState() {
+  resetClosetDeleteButton();
+  state.closetSelectedIds.clear();
+  state.closetManageMode = false;
+}
+
+function beginClosetManage() {
+  state.closetManageMode = true;
+  renderClosetManagement();
+}
+
+function cancelClosetManage() {
+  resetClosetManageState();
+  renderClosetManagement();
+}
+
+function toggleClosetSelected(id) {
+  if (!state.closetManageMode) return;
+  const itemId = Number(id || 0);
+  if (itemId <= 0) return;
+  resetClosetDeleteButton();
+  if (state.closetSelectedIds.has(itemId)) state.closetSelectedIds.delete(itemId);
+  else state.closetSelectedIds.add(itemId);
+  renderClosetManagement();
+}
+
+function pruneClosetSelection() {
+  const live = new Set(objectItems(state.closetItems).map((item) => Number(item.id || 0)));
+  state.closetSelectedIds = new Set(closetSelectedIds().filter((id) => live.has(id)));
+}
+
+function filteredClosetItems() {
+  const filter = text(state.closetFilter || "all");
+  const items = objectItems(state.closetItems);
+  if (["active", "pending", "archived", "rejected"].includes(filter)) {
+    return items.filter((item) => item.status === filter);
+  }
+  if (Object.hasOwn(CLOSET_KIND_LABELS, filter)) return items.filter((item) => item.kind === filter);
+  if (filter === "liked") return items.filter((item) => Number(item.preference_score || 0) > 0);
+  return items;
+}
+
+function closetPageWindow(items = []) {
+  const total = items.length;
+  const pageCount = Math.max(1, Math.ceil(total / CLOSET_PAGE_SIZE));
+  const raw = Number(state.closetPage || 1);
+  const page = Math.min(Math.max(1, Number.isFinite(raw) ? Math.trunc(raw) : 1), pageCount);
+  const start = total ? (page - 1) * CLOSET_PAGE_SIZE : 0;
+  const end = Math.min(start + CLOSET_PAGE_SIZE, total);
+  state.closetPage = page;
+  return { total, page, pageCount, start, end, items: items.slice(start, end) };
+}
+
+function renderClosetSelectionTools() {
+  const selected = closetSelectedIds();
+  const managing = Boolean(state.closetManageMode);
+  if (el.closetManageButton) {
+    el.closetManageButton.classList.toggle("is-active", managing);
+    el.closetManageButton.disabled = state.busy;
+  }
+  if (el.closetSelectedSummary) {
+    el.closetSelectedSummary.hidden = !managing;
+    el.closetSelectedSummary.textContent = `已选 ${selected.length} 条`;
+  }
+  [el.closetBulkEnableButton, el.closetBulkArchiveButton, el.closetBulkDeleteButton].forEach((button) => {
+    if (!button) return;
+    button.hidden = !managing;
+    button.dataset.lockDisabled = managing && selected.length ? "false" : "true";
+    button.disabled = state.busy || !managing || !selected.length;
+  });
+  if (el.closetCancelManageButton) {
+    el.closetCancelManageButton.hidden = !managing;
+    el.closetCancelManageButton.disabled = state.busy || !managing;
+  }
+}
+
+function renderClosetStats() {
+  if (!el.closetStats) return;
+  const stats = state.closetStats || {};
+  const entries = [
+    ["总数", stats.total],
+    ["已启用", stats.active],
+    ["待确认", stats.pending],
+    ["套装", stats.outfit],
+    ["上装", stats.top],
+    ["下装", stats.bottom],
+    ["鞋袜", stats.footwear],
+    ["配饰", stats.accessory],
+    ["发型", stats.hair],
+    ["妆容", stats.makeup],
+    ["美甲", stats.nails],
+  ];
+  el.closetStats.replaceChildren(...entries.map(([label, value]) => {
+    const card = node("div", "closet-stat");
+    card.append(
+      node("span", "closet-stat-label", label),
+      node("strong", "", Number(value || 0))
+    );
+    return card;
+  }));
+}
+
+function closetAttributeText(item = {}, key, limit = 4) {
+  const value = item.attributes?.[key];
+  const values = Array.isArray(value) ? value : value ? [value] : [];
+  return values.map((part) => clean(part, "")).filter(Boolean).slice(0, limit).join("、");
+}
+
+function closetBadges(item = {}) {
+  const status = clean(item.status, "active");
+  const values = [
+    [CLOSET_KIND_LABELS[item.kind] || "造型", ""],
+    [CLOSET_STATUS_LABELS[status] || "其他状态", `is-${status}`],
+  ];
+  if (Number(item.preference_score || 0) > 0) values.push(["喜欢", ""]);
+  return values;
+}
+
+async function loadClosetPreview(img, id) {
+  const itemId = Number(id || 0);
+  if (!img || itemId <= 0) return;
+  const cached = state.closetPreviewCache.get(itemId);
+  if (cached) {
+    img.src = cached;
+    return;
+  }
+  try {
+    const result = await apiPost("page/closet/preview", { id: itemId });
+    if (!result.data_url) throw new Error("衣橱预览为空");
+    state.closetPreviewCache.set(itemId, result.data_url);
+    if (img.isConnected) img.src = result.data_url;
+  } catch (_error) {
+    img.removeAttribute("src");
+    img.closest(".closet-thumb, .closet-detail-preview")?.classList.add("is-error");
+  }
+}
+
+function closetRecord(item = {}) {
+  const itemId = Number(item.id || 0);
+  const record = node("article", "closet-record");
+  const selected = state.closetSelectedIds.has(itemId);
+  record.classList.toggle("is-selected", state.closetManageMode && selected);
+  if (state.closetManageMode) {
+    const selector = node("label", "closet-select");
+    selector.addEventListener("click", (event) => event.stopPropagation());
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = selected;
+    checkbox.setAttribute("aria-label", `选择${clean(item.title || item.description, "衣橱素材")}`);
+    checkbox.addEventListener("change", () => toggleClosetSelected(itemId));
+    selector.append(checkbox);
+    record.append(selector);
+  }
+  const thumb = node("button", "closet-thumb");
+  thumb.type = "button";
+  thumb.setAttribute("aria-label", `${state.closetManageMode ? "选择" : "查看"}${clean(item.title, "衣橱素材")}`);
+  thumb.addEventListener("click", () => state.closetManageMode ? toggleClosetSelected(itemId) : openClosetDetail(itemId));
+  if (item.preview_available) {
+    const image = document.createElement("img");
+    image.alt = clean(item.title, "衣橱预览");
+    image.loading = "lazy";
+    image.decoding = "async";
+    thumb.append(image);
+    loadClosetPreview(image, itemId);
+  } else {
+    thumb.append(node("span", "closet-thumb-empty", "无预览"));
+  }
+  const body = node("div", "closet-record-body");
+  const title = node("div", "closet-record-title");
+  title.append(node("strong", "", clean(item.title || item.description, "未命名造型")), node("span", "muted", `#${itemId}`));
+  const badges = node("div", "closet-badges");
+  closetBadges(item).forEach(([label, className]) => badges.append(node("span", `closet-badge ${className}`.trim(), label)));
+  const usage = Number(item.used_count || 0);
+  const meta = [
+    clean(item.description, "暂无描述"),
+    `偏好 ${Number(item.preference_score || 0).toFixed(1)} · 使用 ${usage} 次`,
+  ].join("\n");
+  body.append(title, badges, node("div", "closet-record-meta", meta));
+  record.append(thumb, body);
+  return record;
+}
+
+function renderClosetPager(pageInfo) {
+  if (!el.closetPager) return;
+  el.closetPager.hidden = pageInfo.total <= 0;
+  if (pageInfo.total <= 0) return;
+  el.closetPrevPage.disabled = state.busy || pageInfo.page <= 1;
+  el.closetNextPage.disabled = state.busy || pageInfo.page >= pageInfo.pageCount;
+  el.closetPageInfo.textContent = "第 " + pageInfo.page + " / " + pageInfo.pageCount + " 页";
+}
+
+function renderClosetManagement() {
+  if (!el.closetList) return;
+  pruneClosetSelection();
+  renderClosetStats();
+  renderClosetSelectionTools();
+  const items = filteredClosetItems();
+  const pageInfo = closetPageWindow(items);
+  renderClosetPager(pageInfo);
+  const total = Number(state.closetStats?.total || 0);
+  if (el.closetSummary) {
+    el.closetSummary.textContent = !total
+      ? "暂无衣橱素材"
+      : !items.length
+        ? `暂无符合条件的素材，共 ${total} 条`
+        : `显示 ${pageInfo.start + 1}-${pageInfo.end} 条，共 ${items.length} 条；总数 ${total} 条`;
+  }
+  el.closetList.replaceChildren(...(pageInfo.items.length ? pageInfo.items.map(closetRecord) : [empty("暂无符合条件的衣橱素材")]));
+  renderClosetDetail();
+}
+
+function applyClosetPayload(payload = {}) {
+  state.closetItems = objectItems(payload.items);
+  state.closetStats = payload.stats && typeof payload.stats === "object" ? payload.stats : {};
+  state.closetLoaded = true;
+  pruneClosetSelection();
+  renderClosetManagement();
+}
+
+async function loadClosetAssets({ quiet = false } = {}) {
+  if (state.closetLoading) return;
+  state.closetLoading = true;
+  try {
+    applyClosetPayload(await apiGet("page/closet/list", { _ts: Date.now() }));
+    if (!quiet) setNotice("");
+  } catch (error) {
+    if (!quiet) setNotice(userErrorMessage(error, "衣橱素材加载失败"), "error");
+  } finally {
+    state.closetLoading = false;
+  }
+}
+
+function closetDetailField(list, label, value) {
+  const textValue = clean(value, "");
+  if (!textValue) return;
+  const wrapper = node("div", "");
+  wrapper.append(node("dt", "", label), node("dd", "", textValue));
+  list.append(wrapper);
+}
+
+function renderClosetDetail() {
+  if (!el.closetDetailDialog || !el.closetDetailBody) return;
+  const item = closetItem(state.closetDetailId);
+  if (!item) {
+    closeClosetDetail();
+    return;
+  }
+  el.closetDetailTitle.textContent = clean(item.title, "衣橱详情");
+  const preview = node("div", "closet-detail-preview");
+  if (item.preview_available) {
+    const image = document.createElement("img");
+    image.alt = clean(item.title, "衣橱预览");
+    preview.append(image);
+    loadClosetPreview(image, item.id);
+  } else preview.append(node("span", "closet-thumb-empty", "无预览"));
+  const copy = node("div", "closet-detail-copy");
+  const badges = node("div", "closet-badges");
+  closetBadges(item).forEach(([label, className]) => badges.append(node("span", `closet-badge ${className}`.trim(), label)));
+  const grid = document.createElement("dl");
+  grid.className = "closet-detail-grid";
+  closetDetailField(grid, "偏好分", Number(item.preference_score || 0).toFixed(2));
+  closetDetailField(grid, "置信度", `${Math.round(Number(item.confidence || 0) * 100)}%`);
+  closetDetailField(grid, "学习次数", Number(item.seen_count || 0));
+  closetDetailField(grid, "使用次数", Number(item.used_count || 0));
+  closetDetailField(grid, "最近使用", clean(item.last_used_at, "尚未使用"));
+  closetDetailField(grid, "色彩", closetAttributeText(item, "colors"));
+  closetDetailField(grid, "服饰类型", closetAttributeText(item, "garment_type"));
+  closetDetailField(grid, "单品", closetAttributeText(item, "pieces"));
+  closetDetailField(grid, "组成", closetAttributeText(item, "items"));
+  closetDetailField(grid, "叠穿", closetAttributeText(item, "layers"));
+  closetDetailField(grid, "鞋袜", closetAttributeText(item, "footwear"));
+  closetDetailField(grid, "袜子", closetAttributeText(item, "socks"));
+  closetDetailField(grid, "配饰", closetAttributeText(item, "accessories"));
+  closetDetailField(grid, "位置", closetAttributeText(item, "placement"));
+  closetDetailField(grid, "领口", closetAttributeText(item, "neckline"));
+  closetDetailField(grid, "袖型", closetAttributeText(item, "sleeve"));
+  closetDetailField(grid, "腰线", closetAttributeText(item, "waist"));
+  closetDetailField(grid, "版型", closetAttributeText(item, "fit"));
+  closetDetailField(grid, "下摆", closetAttributeText(item, "hem"));
+  closetDetailField(grid, "妆效", closetAttributeText(item, "finish"));
+  closetDetailField(grid, "底妆", closetAttributeText(item, "base"));
+  closetDetailField(grid, "眉形", closetAttributeText(item, "brows"));
+  closetDetailField(grid, "眼妆", closetAttributeText(item, "eyes"));
+  closetDetailField(grid, "腮红", closetAttributeText(item, "cheeks"));
+  closetDetailField(grid, "唇妆", closetAttributeText(item, "lips"));
+  closetDetailField(grid, "甲型", closetAttributeText(item, "shape"));
+  closetDetailField(grid, "设计", closetAttributeText(item, "designs"));
+  closetDetailField(grid, "场景", closetAttributeText(item, "scenes"));
+  closetDetailField(
+    grid,
+    "来源",
+    enumLabelStrict(item.source_kind, CLOSET_SOURCE_LABELS, "未知来源")
+  );
+  const actions = node("div", "closet-detail-actions");
+  const like = node("button", "", "喜欢");
+  like.type = "button";
+  like.addEventListener("click", () => setClosetFeedback([item.id], "prefer"));
+  const dislike = node("button", "", "不喜欢");
+  dislike.type = "button";
+  dislike.addEventListener("click", () => setClosetFeedback([item.id], "dislike"));
+  const review = node("button", "", "重新识别");
+  review.type = "button";
+  review.addEventListener("click", () => reviewClosetItem(item.id));
+  const status = node("button", "", item.status === "active" ? "归档" : "启用");
+  status.type = "button";
+  status.addEventListener("click", () => setClosetStatus([item.id], item.status === "active" ? "archived" : "active"));
+  const remove = node("button", "danger", "删除");
+  remove.type = "button";
+  remove.addEventListener("click", () => confirmClosetDelete(remove, [item.id], "删除"));
+  actions.append(like, dislike, review, status, remove);
+  copy.append(badges, node("p", "closet-detail-description", clean(item.description, "暂无描述")), grid, actions);
+  el.closetDetailBody.replaceChildren(preview, copy);
+}
+
+function openClosetDetail(id) {
+  const itemId = Number(id || 0);
+  if (!closetItem(itemId)) return;
+  state.closetDetailId = itemId;
+  el.closetDetailDialog.hidden = false;
+  el.closetDetailDialog.setAttribute("aria-hidden", "false");
+  renderClosetDetail();
+  focusDialog(el.closetDetailDialog, el.closetDetailClose);
+}
+
+function closeClosetDetail() {
+  if (!el.closetDetailDialog) return;
+  const wasOpen = !el.closetDetailDialog.hidden;
+  state.closetDetailId = 0;
+  el.closetDetailDialog.hidden = true;
+  el.closetDetailDialog.setAttribute("aria-hidden", "true");
+  if (wasOpen) restoreDialogFocus();
+}
+
+function openClosetBrowse() {
+  if (!el.closetBrowseDialog) return;
+  el.closetBrowseDialog.hidden = false;
+  el.closetBrowseDialog.setAttribute("aria-hidden", "false");
+  focusDialog(el.closetBrowseDialog, el.closetBrowseQuery);
+}
+
+function closeClosetBrowse() {
+  if (!el.closetBrowseDialog) return;
+  const wasOpen = !el.closetBrowseDialog.hidden;
+  el.closetBrowseDialog.hidden = true;
+  el.closetBrowseDialog.setAttribute("aria-hidden", "true");
+  if (wasOpen) restoreDialogFocus();
+}
+
+async function importClosetFiles(files) {
+  const selected = Array.from(files || []);
+  const valid = selected.filter((file) => String(file.type || "").startsWith("image/") && Number(file.size || 0) <= CLOSET_IMPORT_MAX_BYTES);
+  if (!valid.length) {
+    if (selected.length) setNotice(`请选择不超过 ${CLOSET_IMPORT_MAX_MB} MB 的图片`, "error");
+    return;
+  }
+  setBusy(true);
+  try {
+    let result = null;
+    for (const file of valid) {
+      result = await apiUpload("page/closet/import", file, {
+        timeoutMs: 180000,
+        timeoutMessage: "衣橱图片识别耗时较久，请稍后查看",
+      });
+    }
+    if (result) applyClosetPayload(result);
+    setNotice(valid.length === selected.length ? `已学习 ${valid.length} 张衣橱图片` : `已学习 ${valid.length} 张，跳过 ${selected.length - valid.length} 张`, "success");
+  } catch (error) {
+    setNotice(userErrorMessage(error, "衣橱图片学习失败"), "error");
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function browseCloset() {
+  const query = clean(el.closetBrowseQuery?.value, "");
+  if (!query) {
+    setNotice("请输入要学习的穿搭或发型需求", "error");
+    el.closetBrowseQuery?.focus();
+    return;
+  }
+  setBusy(true);
+  try {
+    const result = await apiPost("page/closet/browse", {
+      query,
+      kind: el.closetBrowseKind?.value || "auto",
+      count: Number(el.closetBrowseCount?.value || 3),
+      note: clean(el.closetBrowseNote?.value, ""),
+    }, { timeoutMs: 300000, timeoutMessage: "联网学习耗时较久，请稍后查看" });
+    applyClosetPayload(result);
+    closeClosetBrowse();
+    setNotice("联网造型学习完成", "success");
+  } catch (error) {
+    setNotice(userErrorMessage(error, "联网学习失败"), "error");
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function setClosetStatus(ids, status) {
+  const targets = closetTargetIds(ids);
+  if (!targets.length) return;
+  setBusy(true);
+  try {
+    applyClosetPayload(await apiPost("page/closet/status", { ids: targets, status }));
+    setNotice(status === "active" ? "衣橱素材已启用" : "衣橱素材已归档", "success");
+  } catch (error) {
+    setNotice(userErrorMessage(error, "衣橱状态保存失败"), "error");
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function setClosetFeedback(ids, sentiment) {
+  const targets = closetTargetIds(ids);
+  if (!targets.length) return;
+  setBusy(true);
+  try {
+    applyClosetPayload(await apiPost("page/closet/feedback", { ids: targets, sentiment }));
+    setNotice(sentiment === "prefer" ? "已提高这组造型的偏好" : "已降低这组造型的偏好", "success");
+  } catch (error) {
+    setNotice(userErrorMessage(error, "衣橱反馈保存失败"), "error");
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function reviewClosetItem(id) {
+  setBusy(true);
+  try {
+    applyClosetPayload(await apiPost("page/closet/review", { id }, {
+      timeoutMs: 180000,
+      timeoutMessage: "衣橱素材重新识别耗时较久，请稍后查看",
+    }));
+    setNotice("衣橱素材已重新识别", "success");
+  } catch (error) {
+    setNotice(userErrorMessage(error, "衣橱素材重新识别失败"), "error");
+  } finally {
+    setBusy(false);
+  }
+}
+
+function confirmClosetDelete(button, ids, label = "删除选中") {
+  const targets = closetTargetIds(ids);
+  if (!button || !targets.length) return;
+  if (button.dataset.confirmDelete === "true") {
+    resetClosetDeleteButton(button, label);
+    deleteClosetItems(targets);
+    return;
+  }
+  button.dataset.confirmDelete = "true";
+  button.classList.add("is-confirming");
+  button.textContent = targets.length > 1 ? `确认删除 ${targets.length} 条` : "确认删除";
+  button.dataset.confirmTimer = String(window.setTimeout(() => resetClosetDeleteButton(button, label), 3200));
+  setNotice("再次点击确认删除衣橱素材");
+}
+
+async function deleteClosetItems(ids) {
+  const targets = closetTargetIds(ids);
+  if (!targets.length) return;
+  setBusy(true);
+  try {
+    const result = await apiPost("page/closet/delete", { ids: targets });
+    targets.forEach((id) => {
+      state.closetPreviewCache.delete(id);
+      state.closetSelectedIds.delete(id);
+    });
+    if (targets.includes(Number(state.closetDetailId || 0))) closeClosetDetail();
+    resetClosetManageState();
+    applyClosetPayload(result);
+    setNotice(targets.length > 1 ? `已删除 ${targets.length} 条衣橱素材` : "衣橱素材已删除", "success");
+  } catch (error) {
+    setNotice(userErrorMessage(error, "衣橱素材删除失败"), "error");
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function backupCloset() {
+  setBusy(true);
+  try {
+    await apiDownload("page/closet/backup", {}, "", { timeoutMs: 180000, timeoutMessage: "衣橱备份耗时较久" });
+    setNotice("衣橱备份已下载", "success");
+  } catch (error) {
+    setNotice(userErrorMessage(error, "衣橱备份失败"), "error");
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function restoreCloset(file) {
+  if (!file) return;
+  if (!String(file.name || "").toLowerCase().endsWith(".zip")) {
+    setNotice("请选择 ZIP 衣橱备份文件", "error");
+    return;
+  }
+  if (Number(file.size || 0) > CLOSET_BACKUP_MAX_BYTES) {
+    setNotice(`衣橱备份不能超过 ${CLOSET_BACKUP_MAX_MB} MB`, "error");
+    return;
+  }
+  setBusy(true);
+  try {
+    const result = await apiUpload("page/closet/restore", file, { timeoutMs: 180000, timeoutMessage: "衣橱还原耗时较久" });
+    state.closetPreviewCache.clear();
+    applyClosetPayload(result);
+    setNotice(`已还原 ${Number(result.restored || 0)} 条衣橱素材`, "success");
+  } catch (error) {
+    setNotice(userErrorMessage(error, "衣橱还原失败"), "error");
+  } finally {
+    setBusy(false);
+  }
+}
+
 function renderDashboard() {
   const status = state.status || {};
   renderDay(status);
@@ -2975,11 +3599,54 @@ function bindEvents() {
   el.emojiDetailDialog?.addEventListener("click", (event) => {
     if (event.target === el.emojiDetailDialog) closeEmojiDetail();
   });
+  el.closetFilter?.addEventListener("change", () => {
+    state.closetFilter = el.closetFilter.value || "all";
+    state.closetPage = 1;
+    renderClosetManagement();
+  });
+  el.closetPrevPage?.addEventListener("click", () => {
+    state.closetPage = Math.max(1, Number(state.closetPage || 1) - 1);
+    renderClosetManagement();
+  });
+  el.closetNextPage?.addEventListener("click", () => {
+    state.closetPage = Number(state.closetPage || 1) + 1;
+    renderClosetManagement();
+  });
+  el.closetImportButton?.addEventListener("click", () => el.closetImportFile?.click());
+  el.closetImportFile?.addEventListener("change", () => {
+    const files = Array.from(el.closetImportFile?.files || []);
+    if (el.closetImportFile) el.closetImportFile.value = "";
+    importClosetFiles(files);
+  });
+  el.closetBrowseButton?.addEventListener("click", openClosetBrowse);
+  el.closetBackupButton?.addEventListener("click", backupCloset);
+  el.closetRestoreButton?.addEventListener("click", () => el.closetRestoreFile?.click());
+  el.closetRestoreFile?.addEventListener("change", () => {
+    const file = Array.from(el.closetRestoreFile?.files || [])[0];
+    if (el.closetRestoreFile) el.closetRestoreFile.value = "";
+    restoreCloset(file);
+  });
+  el.closetManageButton?.addEventListener("click", beginClosetManage);
+  el.closetCancelManageButton?.addEventListener("click", cancelClosetManage);
+  el.closetBulkEnableButton?.addEventListener("click", () => setClosetStatus(closetSelectedIds(), "active"));
+  el.closetBulkArchiveButton?.addEventListener("click", () => setClosetStatus(closetSelectedIds(), "archived"));
+  el.closetBulkDeleteButton?.addEventListener("click", () => confirmClosetDelete(el.closetBulkDeleteButton, closetSelectedIds(), "删除选中"));
+  el.closetDetailClose?.addEventListener("click", closeClosetDetail);
+  el.closetDetailDialog?.addEventListener("click", (event) => {
+    if (event.target === el.closetDetailDialog) closeClosetDetail();
+  });
+  el.closetBrowseClose?.addEventListener("click", closeClosetBrowse);
+  el.closetBrowseDialog?.addEventListener("click", (event) => {
+    if (event.target === el.closetBrowseDialog) closeClosetBrowse();
+  });
+  el.closetBrowseSubmit?.addEventListener("click", browseCloset);
   document.addEventListener("keydown", (event) => {
-    if (trapDialogFocus(event, [el.emojiImportDialog, el.emojiDetailDialog])) return;
+    if (trapDialogFocus(event, [el.emojiImportDialog, el.emojiDetailDialog, el.closetDetailDialog, el.closetBrowseDialog])) return;
     if (event.key !== "Escape") return;
     if (state.emojiDetailId) closeEmojiDetail();
     if (el.emojiImportDialog && !el.emojiImportDialog.hidden) closeEmojiImport();
+    if (state.closetDetailId) closeClosetDetail();
+    if (el.closetBrowseDialog && !el.closetBrowseDialog.hidden) closeClosetBrowse();
   });
   el.settingsView?.addEventListener("focusout", (event) => {
     if (event.relatedTarget && el.settingsView.contains(event.relatedTarget)) return;

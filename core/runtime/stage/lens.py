@@ -12,6 +12,14 @@ def clean_director_text(value: Any, limit: int = 180) -> str:
 
 
 class StageLensMixin:
+    def _media_image_director_provider_id(self) -> str:
+        """读取图片导演专用模型；留空时沿用当前默认模型。"""
+        config = getattr(self, "config", None)
+        image_config = getattr(config, "image_generation", None)
+        return str(
+            getattr(image_config, "image_director_provider", "") or ""
+        ).strip()
+
     async def _media_director_text_call(
         self, prompt: str, provider_id: str = ""
     ) -> str:

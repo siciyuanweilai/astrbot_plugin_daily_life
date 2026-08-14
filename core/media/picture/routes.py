@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ...config.options import ImageGenerationSettings
-from . import gemini, grok, openai
+from . import gemini, imagine, openai
 from .pipe import ImageRoute
 
 
@@ -83,6 +83,6 @@ def make_route(
         timeout_seconds=timeout_seconds,
         origin={
             "openai": openai.origin,
-            "grok": grok.origin,
+            "grok": imagine.origin,
         }.get(protocol, gemini.origin)(api_url),
     )

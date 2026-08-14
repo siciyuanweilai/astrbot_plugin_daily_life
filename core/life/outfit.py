@@ -20,6 +20,7 @@ from .appearance import (
     APPEARANCE_PREFERENCE_CATEGORIES,
     CURRENT_APPEARANCE_GENERATION_RULES,
     format_life_preference_context,
+    normalize_appearance_fact,
     strip_hair_from_outfit,
 )
 from .condition import format_physiological_rhythm_prompt
@@ -439,7 +440,7 @@ class OutfitMixin:
 3. 当前或下一项安排需要外出时，先判断现有穿搭是否适合场景和天气；明显不合适时不能直接 keep。
 4. current_outfit_basis 用于说明最终穿搭依据：stored 表示数据库中的当前穿搭仍有效；occurred_schedule 表示当前或已发生日程明确完成了换装；live_state 表示实时状态明确确认已经换装。未发生日程不能作为依据。
 5. keep 只能与 stored 搭配，并原样返回当前 outfit、style、hair_style、hair、makeup、nails；已经换装则选择 change、partial_change、sleepwear 或 outdoor，不能用 keep 表示“换装后继续穿着”。
-6. component_review 必须分别审视主体服装、鞋履、外层、随身配饰、妆容和美甲；不存在的组成写 not_present，无法确认写 unknown。任一组成需要调整时，不能返回 keep。
+6. component_review 必须分别审视主体服装、鞋履、外层、随身配饰、发型、妆容和美甲；不存在的组成写 not_present，无法确认写 unknown。任一组成需要调整时，不能返回 keep。
 7. partial_change 只写局部调整后的最终状态；component_review 标记 adjust 时，outfit 必须写调整后实际可见的完整穿搭。
 8. outfit/style/hair_style/hair/makeup/nails 只写最终视觉状态；新换装或局部调整时遵循以下描述要求，keep 仍须原样返回已有状态：
 {CURRENT_APPEARANCE_GENERATION_RULES}
@@ -457,7 +458,7 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
   "current_outfit_basis": "{OUTFIT_CURRENT_BASIS_ENUM}",
   "scene_category": "{OUTFIT_SCENE_CATEGORY_ENUM}",
   "style_pool": "sleep_styles | outfit_styles | mixed",
-  "component_review": {{"main_clothing": "keep | adjust | not_present | unknown", "footwear": "keep | adjust | not_present | unknown", "outer_layer": "keep | adjust | not_present | unknown", "carried_accessories": "keep | adjust | not_present | unknown", "makeup": "keep | adjust | not_present | unknown", "nails": "keep | adjust | not_present | unknown"}},
+  "component_review": {{"main_clothing": "keep | adjust | not_present | unknown", "footwear": "keep | adjust | not_present | unknown", "outer_layer": "keep | adjust | not_present | unknown", "carried_accessories": "keep | adjust | not_present | unknown", "hair": "keep | adjust | not_present | unknown", "makeup": "keep | adjust | not_present | unknown", "nails": "keep | adjust | not_present | unknown"}},
   "outfit": "当前实际可见的详细穿搭；keep 时必须原样返回当前穿搭",
   "style": "简短的最终风格",
   "hair_style": "简短发型名称",
@@ -493,7 +494,7 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
 {context["appearance_context"] or "无"}
 视觉衣橱候选：
 {context["style_catalog_context"] or "无"}
-候选仅在本轮确实生成新造型时使用；keep 时必须返回空数组。服装与发型分别选择，实际采用的编号写入 catalog_reference_ids，未采用写空数组。
+候选仅在本轮确实生成新造型时使用；keep 时必须返回空数组。可以采用完整套装，也可以组合上装、下装、鞋袜和配饰；发型、妆容、美甲分别选择。实际采用的编号写入 catalog_reference_ids，未采用写空数组。
 当前实际时间：{current_time.strftime("%Y-%m-%d %H:%M")}
 当前时间范围：{PERIOD_TIME_RANGES.get(target_period, "未知")}
 用户本次明确穿搭要求：{context["instruction"] or "无"}"""
@@ -519,11 +520,13 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
         )
         verified_change_source = self._verified_outfit_change_source(result, context)
         generated_outfit = str(result.get("outfit") or "").strip()
-        generated_style = str(result.get("style") or "").strip()
-        generated_hair_style = str(result.get("hair_style") or "").strip()
-        generated_hair = str(result.get("hair") or "").strip()
-        generated_makeup = str(result.get("makeup") or "").strip()
-        generated_nails = str(result.get("nails") or "").strip()
+        generated_style = normalize_appearance_fact(result.get("style"), 120)
+        generated_hair_style = normalize_appearance_fact(
+            result.get("hair_style"), 80
+        )
+        generated_hair = normalize_appearance_fact(result.get("hair"), 180)
+        generated_makeup = normalize_appearance_fact(result.get("makeup"), 160)
+        generated_nails = normalize_appearance_fact(result.get("nails"), 160)
         component_review = (
             result.get("component_review")
             if isinstance(result.get("component_review"), dict)
@@ -535,6 +538,11 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
             old_meta.get("outfit_scene_category"), default="mixed"
         )
         old_outfit = str(old_data.outfit or "").strip()
+        old_style = normalize_appearance_fact(old_meta.get("style"), 120)
+        old_hair_style = normalize_appearance_fact(old_meta.get("hair_style"), 80)
+        old_hair = normalize_appearance_fact(old_meta.get("hair"), 180)
+        old_makeup = normalize_appearance_fact(old_meta.get("makeup"), 160)
+        old_nails = normalize_appearance_fact(old_meta.get("nails"), 160)
         occurred_outfit_change = (
             decision == "keep"
             and current_basis in {"occurred_schedule", "live_state"}
@@ -554,14 +562,47 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
                 "[穿搭更新] 已按发生后的生活状态校正穿搭决定："
                 f"依据={basis_label}；决定={outfit_decision_label(decision)}"
             )
-        reviewed_partial_change = (
-            decision == "keep"
-            and any(
-                str(value or "").strip().lower() == "adjust"
-                for value in component_review.values()
+        component_states = {
+            str(key or "").strip(): str(value or "").strip().lower()
+            for key, value in component_review.items()
+        }
+        clothing_component_adjusted = any(
+            component_states.get(key) == "adjust"
+            for key in (
+                "main_clothing",
+                "footwear",
+                "outer_layer",
+                "carried_accessories",
             )
-            and bool(generated_outfit)
-            and generated_outfit != old_outfit
+        )
+        generated_appearance_differs = any(
+            (
+                bool(generated_outfit) and generated_outfit != old_outfit,
+                bool(generated_style) and generated_style != old_style,
+                bool(generated_hair_style)
+                and generated_hair_style != old_hair_style,
+                bool(generated_hair) and generated_hair != old_hair,
+                bool(generated_makeup) and generated_makeup != old_makeup,
+                bool(generated_nails) and generated_nails != old_nails,
+            )
+        )
+        reviewed_partial_change = decision == "keep" and any(
+            (
+                clothing_component_adjusted
+                and bool(generated_outfit)
+                and generated_outfit != old_outfit,
+                component_states.get("hair") == "adjust"
+                and bool(generated_hair_style or generated_hair)
+                and (generated_hair_style, generated_hair)
+                != (old_hair_style, old_hair),
+                component_states.get("makeup") == "adjust"
+                and bool(generated_makeup)
+                and generated_makeup != old_makeup,
+                component_states.get("nails") == "adjust"
+                and bool(generated_nails)
+                and generated_nails != old_nails,
+                bool(context.get("instruction")) and generated_appearance_differs,
+            )
         )
         if reviewed_partial_change:
             decision = "partial_change"
@@ -575,6 +616,13 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
             catalog_appearance = await self._style_catalog_reference_appearance(
                 reference_ids
             )
+            generated_outfit = generated_outfit or catalog_appearance.get(
+                "outfit", ""
+            )
+            generated_hair_style = generated_hair_style or catalog_appearance.get(
+                "hair_style", ""
+            )
+            generated_hair = generated_hair or catalog_appearance.get("hair", "")
             generated_makeup = generated_makeup or catalog_appearance.get(
                 "makeup", ""
             )
@@ -582,31 +630,29 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
         if decision == "keep":
             new_outfit = old_outfit
             model_kept_outfit = not generated_outfit or generated_outfit == new_outfit
-            final_style = str(
-                old_meta.get("style") or (generated_style if model_kept_outfit else "")
-            ).strip()
-            final_hair_style = str(
-                old_meta.get("hair_style")
-                or (generated_hair_style if model_kept_outfit else "")
-            ).strip()
-            final_hair = str(
-                old_meta.get("hair") or (generated_hair if model_kept_outfit else "")
-            ).strip()
-            final_makeup = str(
-                old_meta.get("makeup")
-                or (generated_makeup if model_kept_outfit else "")
-            ).strip()
-            final_nails = str(
-                old_meta.get("nails")
-                or (generated_nails if model_kept_outfit else "")
-            ).strip()
+            final_style = old_style or (generated_style if model_kept_outfit else "")
+            final_hair_style = old_hair_style or (
+                generated_hair_style if model_kept_outfit else ""
+            )
+            final_hair = old_hair or (generated_hair if model_kept_outfit else "")
+            final_makeup = old_makeup or (
+                generated_makeup if model_kept_outfit else ""
+            )
+            final_nails = old_nails or (generated_nails if model_kept_outfit else "")
+        elif decision == "partial_change":
+            new_outfit = generated_outfit or old_outfit
+            final_style = generated_style or old_style
+            final_hair_style = generated_hair_style or old_hair_style
+            final_hair = generated_hair or old_hair
+            final_makeup = generated_makeup or old_makeup
+            final_nails = generated_nails or old_nails
         else:
             new_outfit = generated_outfit
             final_style = generated_style
             final_hair_style = generated_hair_style
             final_hair = generated_hair
-            final_makeup = generated_makeup or str(old_meta.get("makeup") or "").strip()
-            final_nails = generated_nails or str(old_meta.get("nails") or "").strip()
+            final_makeup = generated_makeup or old_makeup
+            final_nails = generated_nails or old_nails
         new_outfit = strip_hair_from_outfit(
             new_outfit,
             final_hair_style,
@@ -617,12 +663,11 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
         appearance_changed = any(
             (
                 new_outfit != old_outfit,
-                final_style != str(old_meta.get("style") or "").strip(),
-                final_hair_style
-                != str(old_meta.get("hair_style") or "").strip(),
-                final_hair != str(old_meta.get("hair") or "").strip(),
-                final_makeup != str(old_meta.get("makeup") or "").strip(),
-                final_nails != str(old_meta.get("nails") or "").strip(),
+                final_style != old_style,
+                final_hair_style != old_hair_style,
+                final_hair != old_hair,
+                final_makeup != old_makeup,
+                final_nails != old_nails,
             )
         )
         user_confirmed = (

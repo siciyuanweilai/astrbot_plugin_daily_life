@@ -33,7 +33,7 @@ from astrbot_plugin_daily_life import main as plugin_module  # noqa: E402
 from astrbot_plugin_daily_life.core.runtime.reply import (  # noqa: E402
     SemanticSegmentRuntimeMixin,
 )
-from astrbot_plugin_daily_life.core.runtime.send_message_tool import (  # noqa: E402
+from astrbot_plugin_daily_life.core.runtime.sender import (  # noqa: E402
     ExpressiveSendMessageTool,
 )
 from astrbot_plugin_daily_life.core.runtime.voice import VoiceSwitchMixin  # noqa: E402
@@ -42,6 +42,8 @@ from astrbot_plugin_daily_life.core.runtime.voice import (  # noqa: E402
 )
 from astrbot_plugin_daily_life.core.runtime.voice.preface import (  # noqa: E402
     SILENT_TOOL_PREFACE_NAMES,
+    TOOL_REPLY_POLICIES,
+    tool_reply_policy,
 )  # noqa: E402
 from astrbot_plugin_daily_life.main import DailyLifePlugin  # noqa: E402
 
@@ -241,7 +243,7 @@ class PluginLifecycleTest(unittest.IsolatedAsyncioTestCase):
             "总耗时=1.50 秒；连续消息等待=1.50 秒"
         )
 
-    def test_message_entry_timing_warns_for_real_processing_delay(self):
+    def test_message_entry_timing_debugs_real_processing_delay(self):
         plugin = DailyLifePlugin.__new__(DailyLifePlugin)
         plugin.runtime = types.SimpleNamespace(
             continuous_turn_intentional_wait_seconds=lambda _event: 0.4
@@ -255,11 +257,11 @@ class PluginLifecycleTest(unittest.IsolatedAsyncioTestCase):
         ):
             plugin._log_message_entry_timing(event, 100.0)
 
-        warning.assert_called_once_with(
+        warning.assert_not_called()
+        debug.assert_called_once_with(
             "[日常生活] 消息入口处理耗时：有效耗时=1.20 秒；"
             "总耗时=1.60 秒；连续消息等待=0.40 秒"
         )
-        debug.assert_not_called()
 
     def test_constructor_defers_runtime_and_database_creation(self):
         context = types.SimpleNamespace()
@@ -386,6 +388,19 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaisesRegex(RuntimeError, "缺少必要能力"):
             plugin._validate_runtime_contract()
+
+    def test_validated_runtime_missing_required_hook_fails_fast(self):
+        plugin = DailyLifePlugin.__new__(DailyLifePlugin)
+        plugin.runtime = types.SimpleNamespace()
+        plugin._runtime_contract_validated = True
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "必要方法不可用：settle_continuous_turn",
+        ):
+            plugin._runtime_hook("settle_continuous_turn")
+
+        self.assertIsNone(plugin._runtime_hook("optional_runtime_hook"))
 
     async def test_message_hook_schedules_chat_memory_outside_main_pipeline(self):
         calls = []
@@ -1457,6 +1472,18 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
                 "life_emoji_send",
             },
         )
+        self.assertTrue(tool_reply_policy("life_voice_generate").replaces_text)
+        self.assertFalse(tool_reply_policy("life_emoji_send").replaces_text)
+        self.assertTrue(tool_reply_policy("life_image_generate").post_send_comment)
+        self.assertFalse(tool_reply_policy("life_video_generate").post_send_comment)
+        self.assertEqual(
+            SILENT_TOOL_PREFACE_NAMES,
+            {
+                name
+                for name, policy in TOOL_REPLY_POLICIES.items()
+                if policy.preface_silent
+            },
+        )
 
     def test_runtime_extracts_tool_names_from_response_tool_calls(self):
         response = types.SimpleNamespace(
@@ -1756,8 +1783,8 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
             calls.append(("route", origin, destination, kwargs))
             return {"ok": True, "kind": "route"}
 
-        async def place_detail(poi_id):
-            calls.append(("detail", poi_id))
+        async def place_detail(poi_id, **kwargs):
+            calls.append(("detail", poi_id, kwargs))
             return {"ok": True, "kind": "detail"}
 
         async def outing_plan(request, stops, **kwargs):
@@ -1808,6 +1835,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
                     "search",
                     "安静咖啡店",
                     {
+                        "scope": event.unified_msg_origin,
                         "near": "测试中心",
                         "category": "咖啡厅",
                         "radius_meters": 2000,
@@ -1815,7 +1843,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
                     },
                 ),
                 ("route", "测试起点", "测试终点", {"mode": "compare"}),
-                ("detail", "poi-1"),
+                ("detail", "poi-1", {"scope": event.unified_msg_origin}),
                 (
                     "outing",
                     "逛书店再吃糖水",

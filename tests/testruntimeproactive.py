@@ -1195,9 +1195,7 @@ class RuntimeProactiveAsyncTest(
         self.assertEqual(await runtime.archive.get_life_episodes(10), [])
         self.assertEqual(len(trace_records), 1)
         self.assertEqual(trace_records[0]["stage"], "proposal")
-        self.assertEqual(
-            trace_records[0]["reason_code"], "utility_below_threshold"
-        )
+        self.assertEqual(trace_records[0]["reason_code"], "utility_below_threshold")
         self.assertFalse(trace_records[0]["scores"]["sent"])
 
     async def test_proactive_reply_absorbs_used_short_term_focus(self):
@@ -1829,9 +1827,7 @@ class RuntimeProactiveAsyncTest(
             [item.action for item in decisions],
             ["proactive_reply", "proactive_proposal_reply"],
         )
-        commit_trace = [
-            item for item in trace_records if item["stage"] == "commit"
-        ][0]
+        commit_trace = [item for item in trace_records if item["stage"] == "commit"][0]
         self.assertTrue(commit_trace["scores"]["sent"])
         self.assertIn("会话已安静：21 分钟", provider.prompts[0])
         self._assert_last_assistant_history(
@@ -2477,7 +2473,11 @@ class RuntimeProactiveAsyncTest(
 
     async def test_response_gate_semantic_wait_uses_accumulated_messages(self):
         runtime, provider = self._make_proactive_runtime(
-            ['{"action":"reply","confidence":0.92,"reason":"连续内容已经完整"}']
+            [
+                '{"action":"reply","confidence":0.92,"reason":"连续内容已经完整",'
+                '"interaction":{"decision":"set","mode":"co_present",'
+                '"confidence":0.91,"reason":"当前完整话轮明确双方同处现场"}}'
+            ]
         )
         runtime._init_response_gate_state()
         scope = "aiocqhttp:FriendMessage:10001"
@@ -2507,6 +2507,58 @@ class RuntimeProactiveAsyncTest(
         self.assertEqual(decision["action"], "reply")
         self.assertEqual(len(provider.prompts), 1)
         self.assertIn('"我先说前半句", "再补上后半句"', provider.prompts[0])
+        self.assertIn("消息传输范围：私聊", provider.prompts[0])
+        self.assertIn("本轮开始前最近互动方式：未知", provider.prompts[0])
+        interaction = await runtime.resolve_interaction_context(
+            event=event,
+            now=datetime.datetime(2026, 5, 24, 12, 0),
+        )
+        self.assertEqual(interaction.mode, "co_present")
+
+    async def test_private_idle_reply_observes_when_people_are_co_present(self):
+        runtime, provider = self._make_proactive_runtime(
+            [
+                '{"should_reply":true,"confidence":0.9,"decision":"reply","reply_text":"线上再问一句"}'
+            ]
+        )
+        runtime.resolve_interaction_context = lambda **kwargs: async_return(
+            types.SimpleNamespace(mode="co_present", mode_label="同处现场")
+        )
+        event = Event(
+            unified_msg_origin="aiocqhttp:FriendMessage:10001",
+            sender_id="10001",
+            message_id="m-co-present",
+        )
+        event.message_str = "就在旁边说句话"
+
+        decision = await runtime.evaluate_proactive_reply(
+            event,
+            now=datetime.datetime(2026, 8, 13, 12, 0),
+        )
+
+        self.assertFalse(decision["should_reply"])
+        self.assertEqual(decision["reason_code"], "co_present_interaction")
+        self.assertEqual(provider.prompts, [])
+
+    async def test_private_revisit_skips_model_when_people_are_co_present(self):
+        runtime, provider = self._make_proactive_runtime(
+            [
+                '{"should_reply":true,"confidence":0.9,"decision":"reply","reply_text":"再发一条"}'
+            ]
+        )
+        runtime.resolve_interaction_context = lambda **kwargs: async_return(
+            types.SimpleNamespace(mode="co_present", mode_label="同处现场")
+        )
+
+        decision = await runtime._evaluate_private_revisit_payload(
+            "aiocqhttp:FriendMessage:10001",
+            relationship=types.SimpleNamespace(id="10001", user_id="10001"),
+            now=datetime.datetime(2026, 8, 13, 12, 0),
+        )
+
+        self.assertFalse(decision["should_reply"])
+        self.assertEqual(decision["reason_code"], "co_present_interaction")
+        self.assertEqual(provider.prompts, [])
 
     async def test_stale_reply_effect_settlement_invokes_archive_expirer(self):
         runtime, _ = self._make_proactive_runtime([])
@@ -3306,6 +3358,14 @@ class RuntimeProactiveAsyncTest(
             )
         )
 
+        first_event = Event(
+            unified_msg_origin=scope,
+            message_id="m-proactive-1",
+        )
+        second_event = Event(
+            unified_msg_origin=scope,
+            message_id="m-proactive-2",
+        )
         await runtime._send_proactive_emoji_if_needed(
             scope,
             {
@@ -3318,7 +3378,7 @@ class RuntimeProactiveAsyncTest(
                     "reason": "闲时回复本身需要一个轻松表情动作",
                 }
             },
-            source_event=Event(unified_msg_origin=scope, message_id="m-proactive-1"),
+            source_event=first_event,
             source_message_id="m-proactive-1",
         )
         await runtime._send_proactive_emoji_if_needed(
@@ -3333,17 +3393,17 @@ class RuntimeProactiveAsyncTest(
                     "reason": "下一次主动表达也明确需要表情动作",
                 }
             },
-            source_event=Event(unified_msg_origin=scope, message_id="m-proactive-2"),
+            source_event=second_event,
             source_message_id="m-proactive-2",
         )
 
-        self.assertEqual(len(runtime.context.sent_messages), 2)
+        self.assertEqual(runtime.context.sent_messages, [])
         self.assertEqual(
-            runtime.context.sent_messages[0][1].items,
+            first_event.sent_messages[0].items,
             [{"type": "image", "url": "https://example.com/smile.png"}],
         )
         self.assertEqual(
-            runtime.context.sent_messages[1][1].items,
+            second_event.sent_messages[0].items,
             [{"type": "image", "url": "https://example.com/wow.png"}],
         )
         self.assertEqual(len(provider.prompts), 2)
@@ -3392,7 +3452,8 @@ class RuntimeProactiveAsyncTest(
             source_message_id="m-proactive-same",
         )
 
-        self.assertEqual(len(runtime.context.sent_messages), 1)
+        self.assertEqual(runtime.context.sent_messages, [])
+        self.assertEqual(len(event.sent_messages), 1)
         self.assertEqual(len(provider.prompts), 2)
 
     async def test_life_emoji_send_skips_same_asset_for_same_source_message(self):
@@ -3426,7 +3487,8 @@ class RuntimeProactiveAsyncTest(
             )
 
         self.assertEqual(result, "表情已发送：偷笑")
-        self.assertEqual(len(runtime.context.sent_messages), 1)
+        self.assertEqual(runtime.context.sent_messages, [])
+        self.assertEqual(len(event.sent_messages), 1)
 
         repeated = await runtime.life_emoji_send(
             event,
@@ -3437,7 +3499,8 @@ class RuntimeProactiveAsyncTest(
         )
 
         self.assertEqual(repeated, "同一轮已发送过这个表情")
-        self.assertEqual(len(runtime.context.sent_messages), 1)
+        self.assertEqual(runtime.context.sent_messages, [])
+        self.assertEqual(len(event.sent_messages), 1)
         self.assertEqual(len(provider.prompts), 2)
 
     async def test_private_candidate_is_removed_after_normal_reply(self):

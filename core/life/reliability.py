@@ -1,9 +1,23 @@
 import asyncio
 import time
 
-
 TRANSIENT_PROVIDER_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
 NON_RETRYABLE_PROVIDER_STATUSES = frozenset({400, 402, 403, 404, 405, 409, 422})
+
+
+class NonRetryableProviderError(RuntimeError):
+    """表示继续重试也不会恢复的 Provider 请求错误。"""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: int | None = None,
+        provider_id: str = "",
+    ) -> None:
+        super().__init__(str(message or "大语言模型请求不可重试"))
+        self.status = status
+        self.provider_id = str(provider_id or "").strip()
 
 
 def exception_status(exc: BaseException) -> int | None:
@@ -18,7 +32,7 @@ def exception_status(exc: BaseException) -> int | None:
             return status
     text = str(exc or "")
     for token in text.replace(":", " ").replace("=", " ").split():
-        cleaned = token.strip("()[]{};,\"")
+        cleaned = token.strip('()[]{};,"')
         if cleaned.isdigit():
             status = int(cleaned)
             if 100 <= status <= 599:
@@ -75,3 +89,15 @@ class ProviderCircuit:
             self._opened_until[key] = time.monotonic() + self.cooldown_seconds
             return True
         return False
+
+
+__all__ = [
+    "NON_RETRYABLE_PROVIDER_STATUSES",
+    "TRANSIENT_PROVIDER_STATUSES",
+    "NonRetryableProviderError",
+    "ProviderCircuit",
+    "exception_status",
+    "is_non_retryable_provider_error",
+    "is_transient_provider_error",
+    "retry_delay",
+]

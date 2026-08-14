@@ -1,4 +1,4 @@
-from .grok import GrokVideoService, aiohttp, asyncio, logger
+from .cinema import GrokVideoService, aiohttp, asyncio, logger
 from .errors import VideoAPIError, VideoRequestTimeout, VideoTaskError
 
 __all__ = [

@@ -1,8 +1,8 @@
 from .chronicle import EXPERIENCE_SQL
-from .cognition import COGNITION_INDEX_SQL, COGNITION_SQL
+from .mind import COGNITION_INDEX_SQL, COGNITION_SQL
 from .conversation import CONVERSATION_SQL
 from .cycle import WEEKLY_SQL
-from .domains import DOMAIN_INDEX_SQL, DOMAIN_SQL
+from .living import DOMAIN_INDEX_SQL, DOMAIN_SQL
 from .indexes import INDEX_SQL
 from .kernel import CORE_SQL
 from .outlook import AWARENESS_SQL

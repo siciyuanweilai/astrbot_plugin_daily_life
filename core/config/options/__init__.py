@@ -11,7 +11,7 @@ from .basis import (
     TaskModelSettings,
     WeatherSettings,
 )
-from .domains import LifeDomainSettings
+from .realm import LifeDomainSettings
 from .generate import (
     DEFAULT_VOLCENGINE_FORMAT,
     DEFAULT_VOLCENGINE_SAMPLE_RATE,

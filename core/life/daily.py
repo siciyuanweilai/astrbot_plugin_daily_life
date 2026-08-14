@@ -4,7 +4,7 @@ from .climate import DailyClimateMixin
 from .contract import DailyContractMixin
 from .draft import DailyDraftMixin
 from .engine import DailyEngineMixin
-from .location_planning import DailyLocationGenerationMixin
+from .locator import DailyLocationGenerationMixin
 from .record import DailyRecordMixin
 
 

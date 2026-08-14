@@ -1,5 +1,11 @@
 import unittest
 
+from core.sight.flight import SightFlight
+from core.sight.note import (
+    PROFESSIONAL_NOTE_CACHE_SCHEMA,
+    professional_note_prompt_key,
+)
+from core.sight.reader import SightReader
 from runtimehelpers import (
     CORE_INTERNAL_SYSTEM_PROMPT,
     BiliMetadata,
@@ -35,12 +41,6 @@ from runtimehelpers import (
     tempfile,
     types,
 )
-from core.sight.flight import SightFlight
-from core.sight.note import (
-    PROFESSIONAL_NOTE_CACHE_SCHEMA,
-    professional_note_prompt_key,
-)
-from core.sight.reader import SightReader
 
 
 class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTestCase):
@@ -139,11 +139,12 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(scheduled[0][0], "生活视频生成")
         await scheduled[0][2]
 
-        self.assertEqual(runtime.context.sent_messages[0][0], event.unified_msg_origin)
+        self.assertEqual(runtime.context.sent_messages, [])
+        self.assertEqual(len(event.sent_messages), 1)
         self.assertEqual(video_calls[0][1], b"first-frame")
         self.assertIn(
             {"type": "video", "file": str(video_path)},
-            runtime.context.sent_messages[0][1].items,
+            event.sent_messages[0].items,
         )
         structured = list(runtime._structured_scope_messages(event.unified_msg_origin))
         self.assertTrue(structured)
@@ -168,6 +169,13 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             "当前穿搭：浅杏色吊带搭配白色高腰短裤和米白厚底凉鞋\n"
             "当前发型名称：自然披肩长发"
         )
+        align_calls = []
+
+        async def align_scene(prompt, source_request, route, *, final_snapshot=False):
+            align_calls.append((prompt, source_request, route, final_snapshot))
+            return "公园里自然挥手，傍晚柔光"
+
+        runtime._align_current_appearance_scene_prompt = align_scene
         image_path = Path(tempfile.mkdtemp()) / "first-frame.png"
         image_path.write_bytes(b"\x89PNG\r\n\x1a\nimage")
         image_calls = []
@@ -210,7 +218,10 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         await scheduled[0]
         self.assertIn("当前生活状态权威造型快照", image_calls[0][0])
         self.assertIn("浅杏色吊带搭配白色高腰短裤", image_calls[0][0])
+        self.assertNotIn("浅蓝色衬衫和白色帆布鞋", image_calls[0][0])
+        self.assertNotIn("浅蓝色衬衫和白色帆布鞋", video_calls[0][0])
         self.assertIn("工具整理后的画面提示词本身不能作为换装证据", video_calls[0][0])
+        self.assertEqual(len(align_calls), 1)
 
     async def test_life_video_generate_resolves_agent_context_event(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
@@ -804,14 +815,15 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(video_calls[0][1], b"fresh-frame")
         self.assertNotIn("D:/tmp/old.png", loaded_refs)
         self.assertTrue(image_prompts)
-        self.assertEqual(len(runtime.context.sent_messages), 1)
+        self.assertEqual(runtime.context.sent_messages, [])
+        self.assertEqual(len(event.sent_messages), 1)
         self.assertIn(
             {
                 "type": "video",
                 "url": "https://example.com/life.mp4",
                 "file": "https://example.com/life.mp4",
             },
-            runtime.context.sent_messages[0][1].items,
+            event.sent_messages[0].items,
         )
 
     async def test_life_video_generate_reports_error_when_video_fails(self):
@@ -893,14 +905,14 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
 
         self.assertEqual(json.loads(result)["status"], "pending")
         await scheduled[0][2]
-        self.assertEqual(len(runtime.context.sent_messages), 2)
-        self.assertEqual(runtime.context.sent_messages[0][0], event.unified_msg_origin)
+        self.assertEqual(runtime.context.sent_messages, [])
+        self.assertEqual(len(event.sent_messages), 2)
         self.assertEqual(
-            runtime.context.sent_messages[0][1].items,
+            event.sent_messages[0].items,
             [{"type": "image", "file": str(image_path)}],
         )
         self.assertEqual(
-            runtime.context.sent_messages[1][1].items,
+            event.sent_messages[1].items,
             ["这段视频没跑出来，我先不硬凑了。"],
         )
         self.assertEqual(len(provider.prompts), 3)
@@ -971,17 +983,18 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(json.loads(result)["status"], "pending")
         await scheduled[0][2]
         self.assertEqual(video_calls, [("画面：雨夜窗边。", b"fallback-frame")])
-        self.assertEqual(len(runtime.context.sent_messages), 2)
+        self.assertEqual(runtime.context.sent_messages, [])
+        self.assertEqual(len(event.sent_messages), 2)
         self.assertIn(
             {
                 "type": "video",
                 "url": "https://example.com/life.mp4",
                 "file": "https://example.com/life.mp4",
             },
-            runtime.context.sent_messages[0][1].items,
+            event.sent_messages[0].items,
         )
         self.assertEqual(
-            runtime.context.sent_messages[1][1].items,
+            event.sent_messages[1].items,
             ["拍好了，雨夜窗边这一段还挺安静的。"],
         )
         self.assertEqual(len(provider.prompts), 3)
@@ -1045,10 +1058,11 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         await scheduled[0][2]
         self.assertEqual(image_calls, [])
         self.assertEqual(video_calls, [])
-        self.assertEqual(len(runtime.context.sent_messages), 1)
+        self.assertEqual(runtime.context.sent_messages, [])
+        self.assertEqual(len(event.sent_messages), 1)
         self.assertEqual(
-            runtime.context.sent_messages[0][1].items,
-            ["刚才没发出去，晚点再试试。"],
+            event.sent_messages[0].items,
+            ["刚才没发出去，这次视频没有拍成。"],
         )
         self.assertEqual(len(provider.prompts), 2)
         self.assertIn("视频未发送", provider.prompts[-1])
@@ -1122,13 +1136,14 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
 
         self.assertEqual(json.loads(result)["response_timing"], "after_delivery")
         await scheduled[0][2]
-        self.assertEqual(len(runtime.context.sent_messages), 2)
+        self.assertEqual(runtime.context.sent_messages, [])
+        self.assertEqual(len(event.sent_messages), 2)
         self.assertIn(
             {"type": "video", "file": str(video_path)},
-            runtime.context.sent_messages[0][1].items,
+            event.sent_messages[0].items,
         )
         self.assertEqual(
-            runtime.context.sent_messages[1][1].items,
+            event.sent_messages[1].items,
             ["拍好啦，这段夜色很贴她现在的状态。"],
         )
         self.assertIn("已发送视频", provider.prompts[-1])
@@ -1168,7 +1183,7 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         )
         self.assertEqual(
             DailyLifeRuntime._life_video_failure_fallback_text(False),
-            "刚才没发出去，晚点再试试。",
+            "刚才没发出去，这次视频没有拍成。",
         )
 
     async def test_voice_switch_before_send_uses_local_structure_for_text_decision(
@@ -2447,9 +2462,9 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
                 ),
             )
 
-        self.assertEqual(len(runtime.context.sent_messages), 1)
-        scope, chain = runtime.context.sent_messages[0]
-        self.assertEqual(scope, event.unified_msg_origin)
+        self.assertEqual(runtime.context.sent_messages, [])
+        self.assertEqual(len(event.sent_messages), 1)
+        chain = event.sent_messages[0]
         self.assertEqual(
             chain.items, [{"type": "image", "url": "https://example.com/bili-note.png"}]
         )
@@ -2649,11 +2664,12 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
                 ),
             )
 
-        self.assertEqual(len(runtime.context.sent_messages), 1)
+        self.assertEqual(runtime.context.sent_messages, [])
+        self.assertEqual(len(event.sent_messages), 1)
         self.assertEqual(provider.prompts, [])
         self.assertIn(
             "B站视频自动总结失败：没有抽取到可用视频画面",
-            str(runtime.context.sent_messages[0][1].items[0]),
+            str(event.sent_messages[0].items[0]),
         )
         messages = list(runtime._structured_scope_messages(event.unified_msg_origin))
         self.assertEqual(len(messages), 1)
@@ -2745,7 +2761,8 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         recent = await runtime._sight_vault_for_runtime().recent(
             event.unified_msg_origin
         )
-        self.assertEqual(len(runtime.context.sent_messages), 1)
+        self.assertEqual(runtime.context.sent_messages, [])
+        self.assertEqual(len(event.sent_messages), 1)
         warning.assert_not_called()
         self.assertEqual(len(recent), 1)
         self.assertEqual(recent[0].summary, "画面里有人沿着河边散步。")
@@ -2848,10 +2865,11 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         recent = await runtime._sight_vault_for_runtime().recent(
             event.unified_msg_origin
         )
-        self.assertEqual(len(runtime.context.sent_messages), 1)
+        self.assertEqual(runtime.context.sent_messages, [])
+        self.assertEqual(len(event.sent_messages), 1)
         self.assertIn(
             "B站视频自动总结失败：没有抽取到可用视频画面",
-            str(runtime.context.sent_messages[0][1].items[0]),
+            str(event.sent_messages[0].items[0]),
         )
         self.assertEqual(html_renderer.calls, [])
         self.assertEqual(provider.prompts, [])
@@ -2979,9 +2997,10 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         recent = await runtime._sight_vault_for_runtime().recent(
             event.unified_msg_origin
         )
-        self.assertEqual(len(runtime.context.sent_messages), 1)
+        self.assertEqual(runtime.context.sent_messages, [])
+        self.assertEqual(len(event.sent_messages), 1)
         self.assertEqual(
-            runtime.context.sent_messages[0][1].items,
+            event.sent_messages[0].items,
             [{"type": "image", "url": "https://example.com/bili-note.png"}],
         )
         self.assertEqual(recent[0].status, "ready")
@@ -3083,9 +3102,10 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             )
 
         self.assertEqual(calls, [False])
-        self.assertEqual(len(runtime.context.sent_messages), 1)
+        self.assertEqual(runtime.context.sent_messages, [])
+        self.assertEqual(len(event.sent_messages), 1)
         self.assertEqual(
-            runtime.context.sent_messages[0][1].items,
+            event.sent_messages[0].items,
             [{"type": "image", "url": "https://example.com/bili-note.png"}],
         )
 
@@ -3171,9 +3191,10 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
 
         self.assertEqual(calls, [False])
         self.assertEqual(provider.prompts, [])
-        self.assertEqual(len(runtime.context.sent_messages), 1)
+        self.assertEqual(runtime.context.sent_messages, [])
+        self.assertEqual(len(event.sent_messages), 1)
         self.assertEqual(
-            runtime.context.sent_messages[0][1].items,
+            event.sent_messages[0].items,
             [{"type": "image", "url": "https://example.com/cached-bili-note.png"}],
         )
         self.assertIn("# 缓存视频", html_renderer.calls[0]["text"])
@@ -3268,7 +3289,8 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
 
         self.assertEqual(calls, [False])
         self.assertEqual(provider.prompts, [])
-        self.assertEqual(len(runtime.context.sent_messages), 1)
+        self.assertEqual(runtime.context.sent_messages, [])
+        self.assertEqual(len(event.sent_messages), 1)
         self.assertIn(
             "# 核准追诉24人！低龄未成年人严重暴力犯罪依法追究刑责！ - 央视频",
             html_renderer.calls[0]["text"],

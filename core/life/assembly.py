@@ -10,7 +10,7 @@ from ..models import (
     TimelineItem,
     WeatherInfo,
 )
-from .appearance import strip_hair_from_outfit
+from .appearance import normalize_appearance_fact, strip_hair_from_outfit
 from .condition import normalize_state, state_log_entry
 from .surroundings import normalize_event_items
 from .wardrobe import (
@@ -193,11 +193,13 @@ class DailyAssemblyMixin:
         pairs = {
             "theme": decision.get("theme") or plan.get("theme"),
             "mood": self._mood_color_text(decision.get("mood")),
-            "style": outfit.get("style"),
-            "hair_style": outfit.get("hair_style"),
-            "hair": outfit.get("hair"),
-            "makeup": outfit.get("makeup"),
-            "nails": outfit.get("nails"),
+            "style": normalize_appearance_fact(outfit.get("style"), 120),
+            "hair_style": normalize_appearance_fact(
+                outfit.get("hair_style"), 80
+            ),
+            "hair": normalize_appearance_fact(outfit.get("hair"), 180),
+            "makeup": normalize_appearance_fact(outfit.get("makeup"), 160),
+            "nails": normalize_appearance_fact(outfit.get("nails"), 160),
             "life_mode": decision.get("life_mode") or plan.get("life_mode"),
             "plan_outfit_decision": outfit_decision,
             "outfit_decision": outfit_decision,

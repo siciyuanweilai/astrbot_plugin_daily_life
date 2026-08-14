@@ -6,10 +6,10 @@ from astrbot.api import logger
 from ..labels import page_status_reason_label
 from ..memos import MemosMixin
 from ..sight import SightMixin
-from .action import RuntimeActionReceiptMixin
 from .addressing import ChatAddressingMixin
 from .background import BackgroundTaskMixin
 from .capture import CaptureMixin
+from .context import InteractionContextMixin
 from .forward import TextForwardMixin
 from .gate import ResponseGateMixin
 from .gateway import ModelCallOptions, ModelGateway
@@ -23,6 +23,7 @@ from .past import RuntimeHistoryMixin
 from .proactive import ProactiveMixin
 from .reaction import ToolReactionMixin
 from .recall import RecallMixin
+from .receipt import RuntimeActionReceiptMixin
 from .refresh import RefreshMixin
 from .remember import RuntimeMemoryMixin
 from .reply import SemanticSegmentRuntimeMixin
@@ -39,6 +40,7 @@ class DailyLifeRuntime(
     MemosMixin,
     StatusMixin,
     CaptureMixin,
+    InteractionContextMixin,
     StructuredContextMixin,
     RecallMixin,
     ToolReactionMixin,
@@ -80,6 +82,8 @@ class DailyLifeRuntime(
         *,
         empty_retries: int = 1,
         primary_provider_id: str = "",
+        propagate_non_retryable: bool = False,
+        timeout_seconds: float | None = None,
     ) -> str:
         gateway = getattr(self, "model_gateway", None) or ModelGateway(self.composer)
         return await gateway.call(
@@ -89,6 +93,8 @@ class DailyLifeRuntime(
             ModelCallOptions(
                 empty_retries=empty_retries,
                 primary_provider_id=primary_provider_id,
+                propagate_non_retryable=propagate_non_retryable,
+                timeout_seconds=timeout_seconds,
             ),
         )
 

@@ -74,7 +74,8 @@ JSON 输出要求：
 记录视角：当前角色第一人称
 消息发送者：{sender_name}
 目标人物：{target_name}
-聊天场景：{"群聊" if meta.get("is_group") == "true" else "私聊"}
+消息传输范围：{"群聊" if meta.get("is_group") == "true" else "私聊"}（只表示平台通道，不代表现实距离）
+现实互动方式：{meta.get("interaction_mode_label") or "未知"}
 目标人物在人设中的线索：{self._str_payload(persona_hint)}
 原始目标记忆 JSON：
 {json.dumps(target, ensure_ascii=False, indent=2)}"""

@@ -258,8 +258,15 @@ class HistoryWriteMixin:
         text: str,
         *,
         sender_name: str = "bot",
+        media: str = "",
     ) -> None:
         await self._append_assistant_history(scope, text)
         await self._append_platform_assistant_history(
             scope, text, sender_name=sender_name
         )
+        capture = getattr(self, "capture_proactive_chat_memory_reply", None)
+        if callable(capture):
+            try:
+                await capture(scope, text, media=media)
+            except Exception as exc:
+                logger.warning(f"{LOG_PREFIX} 主动消息写入聊天记忆失败：{exc}")

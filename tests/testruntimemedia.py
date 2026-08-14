@@ -579,6 +579,87 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(result, "原消息已撤回，已取消图片发送。")
         self.assertEqual(runtime.context.sent_messages, [])
 
+    async def test_send_with_source_event_uses_own_platform_adapter(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.context = Context(Provider([]))
+        event = Event(
+            platform_name="weixin_oc",
+            unified_msg_origin=(
+                "shared-platform:FriendMessage:"
+                "test-user@im.wechat"
+            ),
+        )
+        chain = types.SimpleNamespace(items=[{"type": "image", "file": "life.png"}])
+
+        sent = await runtime.send_message_if_not_recalled(
+            event.unified_msg_origin,
+            chain,
+            source_event=event,
+        )
+
+        self.assertTrue(sent)
+        self.assertEqual(event.sent_messages, [chain])
+        self.assertEqual(runtime.context.sent_messages, [])
+
+    async def test_send_without_source_event_uses_unified_session(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.context = Context(Provider([]))
+        scope = "weixin-platform:FriendMessage:test-user@im.wechat"
+        chain = types.SimpleNamespace(items=[{"type": "image", "file": "life.png"}])
+
+        sent = await runtime.send_message_if_not_recalled(scope, chain)
+
+        self.assertTrue(sent)
+        self.assertEqual(runtime.context.sent_messages, [(scope, chain)])
+
+    async def test_send_without_source_event_routes_duplicate_id_to_weixin(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.context = Context(Provider([]))
+        sent_by_weixin = []
+
+        def metadata(platform_type):
+            return types.SimpleNamespace(id="测试角色", name=platform_type)
+
+        qq = types.SimpleNamespace(meta=lambda: metadata("aiocqhttp"))
+
+        async def send_by_session(session, chain):
+            sent_by_weixin.append((session, chain))
+
+        weixin = types.SimpleNamespace(
+            meta=lambda: metadata("weixin_oc"),
+            send_by_session=send_by_session,
+        )
+        runtime.context.platform_manager = types.SimpleNamespace(
+            get_insts=lambda: [qq, weixin]
+        )
+        scope = "测试角色:FriendMessage:test-user@im.wechat"
+        chain = types.SimpleNamespace(items=[{"type": "image", "file": "life.png"}])
+
+        sent = await runtime.send_message_if_not_recalled(scope, chain)
+
+        self.assertTrue(sent)
+        self.assertEqual(runtime.context.sent_messages, [])
+        self.assertEqual(len(sent_by_weixin), 1)
+        self.assertEqual(sent_by_weixin[0][0].platform_name, "测试角色")
+        self.assertEqual(sent_by_weixin[0][0].session_id, "test-user@im.wechat")
+        self.assertIs(sent_by_weixin[0][1], chain)
+
+    async def test_send_without_source_event_waits_for_weixin_adapter(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.context = Context(Provider([]))
+        qq_meta = types.SimpleNamespace(id="测试角色", name="aiocqhttp")
+        runtime.context.platform_manager = types.SimpleNamespace(
+            get_insts=lambda: [types.SimpleNamespace(meta=lambda: qq_meta)]
+        )
+
+        sent = await runtime.send_message_if_not_recalled(
+            "测试角色:FriendMessage:test-user@im.wechat",
+            types.SimpleNamespace(items=[{"type": "text", "text": "稍后联系"}]),
+        )
+
+        self.assertFalse(sent)
+        self.assertEqual(runtime.context.sent_messages, [])
+
     async def test_recall_notice_clears_pending_result_and_runtime_context(self):
         runtime, _ = self._make_proactive_runtime([])
         event = Event(
@@ -902,10 +983,11 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
                 )
             ],
         )
-        self.assertEqual(runtime.context.sent_messages[0][0], event.unified_msg_origin)
+        self.assertEqual(runtime.context.sent_messages, [])
+        self.assertEqual(len(event.sent_messages), 1)
         self.assertIn(
             {"type": "image", "file": "edited.png"},
-            runtime.context.sent_messages[0][1].items,
+            event.sent_messages[0].items,
         )
 
     async def test_edit_life_image_uses_current_message_image_when_reference_empty(
@@ -1300,9 +1382,11 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(json.loads(result)["status"], "sent")
         self.assertEqual(generate_calls, [("窗边生活照", {})])
         self.assertEqual(edit_calls, [])
+        self.assertEqual(runtime.context.sent_messages, [])
+        self.assertEqual(len(event.sent_messages), 1)
         self.assertIn(
             {"type": "image", "file": "life.png"},
-            runtime.context.sent_messages[0][1].items,
+            event.sent_messages[0].items,
         )
 
     async def test_life_group_video_generates_two_person_first_frame_in_background(
@@ -1746,13 +1830,14 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         await scheduled[0][2]
 
         self.assertEqual([item["emoji_id"] for item in reaction_calls], [125, 106])
-        self.assertEqual(len(runtime.context.sent_messages), 2)
+        self.assertEqual(runtime.context.sent_messages, [])
+        self.assertEqual(len(event.sent_messages), 2)
         self.assertIn(
             {"type": "image", "file": str(group_frame)},
-            runtime.context.sent_messages[0][1].items,
+            event.sent_messages[0].items,
         )
         self.assertEqual(
-            runtime.context.sent_messages[1][1].items,
+            event.sent_messages[1].items,
             ["视频没拍成，先把这张照片发你看。"],
         )
 
@@ -1797,11 +1882,12 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
 
         self.assertIsNone(result)
         self.assertEqual(voice_calls, [("我困啦", "困倦", "neutral")])
-        self.assertEqual(runtime.context.sent_messages[0][0], event.unified_msg_origin)
+        self.assertEqual(runtime.context.sent_messages, [])
+        self.assertEqual(len(event.sent_messages), 1)
         self.assertTrue(
             any(
                 getattr(item, "file", "") == "voice.mp3"
-                for item in runtime.context.sent_messages[0][1].items
+                for item in event.sent_messages[0].items
             )
         )
         history = runtime.context.conversation_manager.conversations[
@@ -2086,7 +2172,8 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
 
         self.assertIsNone(result)
         self.assertEqual(voice_calls, ["我困啦"])
-        self.assertEqual(len(runtime.context.sent_messages), 1)
+        self.assertEqual(runtime.context.sent_messages, [])
+        self.assertEqual(len(event.sent_messages), 1)
         self.assertEqual(await runtime.archive.get_recent_action_decisions(3), [])
 
     async def test_life_voice_generate_logs_disabled_reason(self):
@@ -2197,7 +2284,8 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
 
         self.assertIsNone(result)
         self.assertEqual(voice_calls, [("我困啦", "困倦", "")])
-        self.assertEqual(runtime.context.sent_messages[0][0], event.unified_msg_origin)
+        self.assertEqual(runtime.context.sent_messages, [])
+        self.assertEqual(len(event.sent_messages), 1)
         self._assert_last_assistant_history(runtime, event.unified_msg_origin, "我困啦")
         self.assertEqual(await runtime.archive.get_recent_action_decisions(3), [])
 
@@ -2306,7 +2394,8 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
 
         self.assertIsNone(result)
         self.assertEqual(voice_calls, ["我困啦"])
-        self.assertEqual(runtime.context.sent_messages[0][0], event.unified_msg_origin)
+        self.assertEqual(runtime.context.sent_messages, [])
+        self.assertEqual(len(event.sent_messages), 1)
         self._assert_last_assistant_history(runtime, event.unified_msg_origin, "我困啦")
 
     async def test_proactive_voice_probability_can_skip_voice(self):

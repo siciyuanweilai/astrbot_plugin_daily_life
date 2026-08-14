@@ -370,6 +370,8 @@ class LayerChainMixin:
         sections: list[str] = []
         fact_lines = []
         for item in list(snapshot.get("temporal_facts") or [])[:12]:
+            if str(getattr(item, "predicate", "") or "").strip() == "interaction_mode":
+                continue
             value = json.dumps(
                 getattr(item, "object_value", None),
                 ensure_ascii=False,
@@ -496,6 +498,11 @@ class LayerChainMixin:
         )
         world_context, experience_context = memory_contexts
         cognition_context = self._format_cognition_context(snapshot)
+        interaction_context = await self.resolve_interaction_context(
+            event=event,
+            snapshot=snapshot,
+            now=now,
+        )
         return (
             self.build_hidden_life_context(
                 data,
@@ -517,6 +524,7 @@ class LayerChainMixin:
             + heuristic_memory
             + person_facts
             + cognition_context
+            + interaction_context.format_for_generation()
             + (f"\n\n[HiddenLifeDomains]\n{domain_context}" if domain_context else "")
         )
 
@@ -554,6 +562,10 @@ class LayerChainMixin:
                 event, self._event_message_text(event)
             )
             person_facts = await self._build_person_fact_injection_context(event)
+            interaction_context = await self.resolve_interaction_context(
+                event=event,
+                now=now,
+            )
             missing_context = (
                 self.build_missing_life_context(
                     now,
@@ -566,6 +578,7 @@ class LayerChainMixin:
                 + heuristic_memory
                 + style_context
                 + person_facts
+                + interaction_context.format_for_generation()
                 + self.friend_reference_injection_context(event)
             )
             if self._voice_expression_channel_enabled(event):

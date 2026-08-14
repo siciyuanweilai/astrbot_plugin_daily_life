@@ -5,7 +5,7 @@ from .scenarios import (
     ScenarioRunner,
     default_virtual_life_scenarios,
 )
-from .runtime import ProductionScenarioEvaluator
+from .replay import ProductionScenarioEvaluator
 
 __all__ = [
     "ScenarioCase",

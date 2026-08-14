@@ -360,6 +360,10 @@ JSON 输出要求：
                             raw_edits = self._legacy_timeline_edits(
                                 future_timeline, raw_future
                             )
+                    if isinstance(raw_edits, list) and raw_edits:
+                        # 后续的日程合并、行前联系与重启恢复应共用同一份
+                        # 结构化编辑，不因模型返回兼容字段而丢失执行依据。
+                        result["timeline_edits"] = raw_edits
                     merged_future, protected_future, edit_issue = (
                         self._apply_timeline_edits(future_timeline, raw_edits)
                     )

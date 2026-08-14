@@ -187,6 +187,19 @@ class ProactiveFlowMixin:
         if not self._proactive_allowed_for_event(event):
             return self._proactive_skip("未启用或不适合闲时回复")
         now = now or life_now()
+        if not self._event_is_group_message(event):
+            interaction_context = await self.resolve_interaction_context(
+                event=event,
+                now=now,
+            )
+            if interaction_context.mode == "co_present":
+                return {
+                    "should_reply": False,
+                    "handled": True,
+                    "decision": "observe",
+                    "reason": "双方当前同处现场，不额外发起线上闲时回复",
+                    "reason_code": "co_present_interaction",
+                }
         remaining = self._proactive_cooldown_remaining(event, now)
         if remaining > 0:
             return {
@@ -387,6 +400,23 @@ class ProactiveFlowMixin:
             )
             self._proactive_idle_candidates.pop(key, None)
             return
+        if decision.get("should_reply") and not self._event_is_group_message(event):
+            latest_interaction = await self.resolve_interaction_context(
+                event=event,
+                now=life_now(),
+            )
+            if latest_interaction.mode == "co_present":
+                decision.update(
+                    {
+                        "should_reply": False,
+                        "decision": "observe",
+                        "reason": "发送前确认双方已同处现场，不再发送线上闲时回复",
+                        "reason_code": "co_present_before_send",
+                        "reply_text": "",
+                    }
+                )
+                reply_text = ""
+                decision_name = "observe"
         if decision_name in {"cooldown", "air_delay", "wait"}:
             retry_after = max(60, int(decision.get("retry_after") or 60))
             candidate["next_evaluation_at"] = now + datetime.timedelta(
@@ -432,7 +462,7 @@ class ProactiveFlowMixin:
                 str(candidate.get("target_scope") or ""),
                 reply_text,
                 "闲时回复发送失败",
-                send_payload=decision,
+                send_payload={**decision, "source": "proactive_reply"},
                 source_event=event,
             )
             if sent:

@@ -49,6 +49,7 @@ class PacketMixin:
         "life_terms",
         "memory_boundary_hint",
         "memory_boundaries",
+        "temporal_facts",
     }
 
     def _memory_payload_has_saveable_context(self, payload: dict) -> bool:
@@ -91,6 +92,7 @@ JSON 输出要求：
 只输出 JSON 对象，不要 Markdown，不要解释：
 {{
   "needs_revision": true/false,
+  "interaction_checked": true/false,
   "reason": "如果需要修正，简短说明冲突点；不需要则写空字符串",
   "revised": {{
     "brief": "可选，修正后的一句话摘要",
@@ -118,7 +120,8 @@ JSON 输出要求：
     "memory_corrections": [{{"可选": "修正后的记忆纠错完整列表"}}],
     "expression_intent": {{"可选": "修正后的表达意图"}},
     "life_terms": [{{"可选": "修正后的语言完整列表"}}],
-    "memory_boundary_hint": {{"可选": "修正后的记忆边界"}}
+    "memory_boundary_hint": {{"可选": "修正后的记忆边界"}},
+    "temporal_facts": [{{"可选": "修正后的时间事实完整列表"}}]
   }}
 }}
 
@@ -126,12 +129,20 @@ JSON 输出要求：
 - 如果没有冲突，needs_revision=false，revised 为空对象。
 - 如果有冲突，只修正冲突相关字段，不要改变消息事实、关系事实、profile_id、session_id、日期或 worth_saving。
 - revised 只放需要修正的字段；列表字段一旦修正，必须返回该字段修正后的完整列表。
+- interaction_checked 必须表示是否已根据下方有序消息证据独立审阅 interaction_mode；没有 interaction_mode 候选时也返回 true。
+- interaction_mode 只能由消息完整语义证明。按消息发生顺序审阅，较晚且更明确的当前陈述优先；私聊、群聊、role、平台、收到消息和历史回复形式都不是远程交流证据。
+- interaction_mode 候选与最新明确证据冲突时，needs_revision=true，并在 revised.temporal_facts 返回修正后的完整列表；新的事实必须引用真正支持结论的 source_message_id。没有可靠证据时删除该候选，不保留猜测。
 - 输出内容必须站在我的第一人称体验写，不要写成工具或平台视角。"""
         dynamic = f"""当前角色：{current_role_label}
 记录视角：当前角色第一人称
 消息发送者：{sender_name}
 发送者 profile_id：{meta.get("sender_profile_id") or "未知"}
-聊天场景：{"群聊" if meta.get("is_group") == "true" else "私聊"}
+消息传输范围：{"群聊" if meta.get("is_group") == "true" else "私聊"}（只表示平台通道，不代表现实距离）
+现实互动方式：{meta.get("interaction_mode_label") or "未知"}
+本批次有序消息证据：
+{meta.get("interaction_messages_json") or "[]"}
+本轮开始前互动事实：
+{meta.get("current_interaction_facts_json") or "[]"}
 人物边界：
 {speaker_boundary}
 原始提炼结果 JSON：
@@ -211,6 +222,28 @@ JSON 输出要求：
             if not isinstance(revision, dict):
                 return payload
             calibrated = self._merge_memory_payload_revision(payload, revision)
+            has_interaction_candidate = any(
+                isinstance(item, dict)
+                and str(item.get("predicate") or "").strip() == "interaction_mode"
+                for item in list(payload.get("temporal_facts") or [])
+            )
+            if (
+                has_interaction_candidate
+                and revision.get("interaction_checked") is not True
+            ):
+                calibrated = copy.deepcopy(calibrated)
+                calibrated["temporal_facts"] = [
+                    item
+                    for item in list(calibrated.get("temporal_facts") or [])
+                    if not (
+                        isinstance(item, dict)
+                        and str(item.get("predicate") or "").strip()
+                        == "interaction_mode"
+                    )
+                ]
+                calibrated["_interaction_audited"] = False
+            else:
+                calibrated["_interaction_audited"] = True
             if calibrated != payload and bool(revision.get("needs_revision")):
                 logger.debug(
                     f"{LOG_PREFIX} 已语义校准聊天记忆：{meta.get('sender_name') or meta.get('sender_profile_id') or '未知'}"

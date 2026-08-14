@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from typing import Any
 
@@ -89,6 +90,11 @@ class LifecycleArchiveMixin:
                 (date_str,),
             ).fetchall()
         ]
+        payload_points = self._get_review_points_unlocked(date_str, "payload")
+        try:
+            payload = json.loads(payload_points[0]) if payload_points else {}
+        except (TypeError, ValueError, json.JSONDecodeError):
+            payload = {}
         return DailyReviewRecord(
             date=row["date"],
             summary=row["summary"],
@@ -97,6 +103,7 @@ class LifecycleArchiveMixin:
             sleep_debt_delta=float(row["sleep_debt_delta"] or 0.0),
             energy_carryover=float(row["energy_carryover"] or 0.0),
             life_events=events,
+            payload=payload if isinstance(payload, dict) else {},
             created_at=row["created_at"],
         )
 
@@ -127,6 +134,19 @@ class LifecycleArchiveMixin:
             )
             self._replace_review_points_unlocked(
                 item.date, "memory", item.memory_points
+            )
+            self._replace_review_points_unlocked(
+                item.date,
+                "payload",
+                [
+                    json.dumps(
+                        item.payload,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                ]
+                if item.payload
+                else [],
             )
             saved_prefs = self._upsert_preferences_unlocked(
                 item.preference_points, item.date

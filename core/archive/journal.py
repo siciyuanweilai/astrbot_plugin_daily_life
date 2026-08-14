@@ -11,7 +11,7 @@ from ..models import (
     TimelineItem,
     WeatherInfo,
 )
-from .day_revision import merge_day_records
+from .revision import merge_day_records
 
 
 class DayArchiveMixin:

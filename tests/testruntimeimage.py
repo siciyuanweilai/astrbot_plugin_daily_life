@@ -30,6 +30,19 @@ from runtimehelpers import (
 
 
 class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTestCase):
+    def test_image_failure_text_hides_internal_provider_error(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+
+        hidden = runtime._image_tool_failure_text(
+            "图片生成", "HTTP 502 /v1/images/generations internal gateway error"
+        )
+        allowed = runtime._image_tool_failure_text(
+            "图片生成", "没有收到可用图片结果"
+        )
+
+        self.assertEqual(hidden, "图片生成失败，已记录失败原因。")
+        self.assertEqual(allowed, "图片生成失败：没有收到可用图片结果")
+
     def test_reverse_prompt_visual_profiles_have_distinct_focus(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
 
@@ -266,10 +279,11 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(json.loads(result)["status"], "sent")
         self.assertEqual(json.loads(result)["media"], "image")
         self.assertNotIn("图片已发送", result)
-        self.assertEqual(runtime.context.sent_messages[0][0], event.unified_msg_origin)
+        self.assertEqual(runtime.context.sent_messages, [])
+        self.assertEqual(len(event.sent_messages), 1)
         self.assertIn(
             {"type": "image", "file": str(image_path)},
-            runtime.context.sent_messages[0][1].items,
+            event.sent_messages[0].items,
         )
         self.assertFalse(
             any(
@@ -333,10 +347,17 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         )
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
         event.message_str = "换甜妹穿搭"
+        scene_prompts = []
+
+        async def isolate_scene(prompt, route):
+            scene_prompts.append((prompt, route))
+            return "站在门口手拿小风扇，柔和自然光，半身生活照"
+
+        runtime._isolate_outfit_change_scene_prompt = isolate_scene
 
         result = await runtime.life_image_generate(
             event,
-            "站在门口展示重新换好的清爽甜妹穿搭",
+            "站在门口展示浅黄色夏日连衣裙，手拿小风扇，柔和自然光",
             subject_route="current_character",
             current_outfit_change=True,
             current_outfit_instruction="换甜妹穿搭",
@@ -354,13 +375,72 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertIn("当前角色造型（来自当前生活状态）", rendered_prompt)
         self.assertIn("本轮真实换装已经保存后的唯一最终造型", rendered_prompt)
         self.assertIn("原始换装要求已经完成解析", rendered_prompt)
+        self.assertNotIn("浅黄色夏日连衣裙", rendered_prompt)
         self.assertNotIn("用户当前原始请求：换甜妹穿搭", rendered_prompt)
         self.assertNotIn("只有用户当前原始请求明确要求", rendered_prompt)
         self.assertLess(
-            rendered_prompt.index("展示重新换好的清爽甜妹穿搭"),
+            rendered_prompt.index("站在门口手拿小风扇"),
             rendered_prompt.index("当前生活状态权威造型快照"),
         )
+        self.assertEqual(
+            scene_prompts,
+            [
+                (
+                    "站在门口展示浅黄色夏日连衣裙，手拿小风扇，柔和自然光",
+                    "current_character",
+                )
+            ],
+        )
         self.assertEqual(status_changes, ["outfit_update"])
+
+    async def test_outfit_change_scene_prompt_removes_conflicting_appearance(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.config = LifeSettings.from_dict({})
+        prompts = []
+
+        async def rewrite(prompt, *, provider_id=""):
+            prompts.append((prompt, provider_id))
+            return json.dumps(
+                {
+                    "prompt": "站在房间门口手拿小风扇，柔和自然光，半身构图"
+                },
+                ensure_ascii=False,
+            )
+
+        runtime._media_director_text_call = rewrite
+
+        result = await runtime._isolate_outfit_change_scene_prompt(
+            "身穿浅黄色连衣裙，站在房间门口手拿小风扇，柔和自然光，半身构图",
+            "current_character",
+        )
+
+        self.assertEqual(
+            result,
+            "站在房间门口手拿小风扇，柔和自然光，半身构图",
+        )
+        self.assertEqual(len(prompts), 1)
+        self.assertIn("移除当前角色的服装", prompts[0][0])
+        self.assertIn("浅黄色连衣裙", prompts[0][0])
+
+    async def test_outfit_change_scene_prompt_uses_safe_fallback_on_failure(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.config = LifeSettings.from_dict({})
+
+        async def rewrite(*args, **kwargs):
+            raise RuntimeError("provider unavailable")
+
+        runtime._media_director_text_call = rewrite
+
+        result = await runtime._isolate_outfit_change_scene_prompt(
+            "身穿浅黄色连衣裙和红色高跟鞋",
+            "current_character",
+        )
+
+        self.assertEqual(
+            result,
+            "当前角色完成换装后的自然生活照，真实日常抓拍感。",
+        )
+        self.assertNotIn("浅黄色连衣裙", result)
 
     async def test_life_image_generate_cancels_when_outfit_persistence_fails(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
@@ -1071,8 +1151,8 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             image_channel.logger.warning = old_warning
 
         self.assertIn("图片生成失败：图片轻量润色后重试仍失败", result)
-        self.assertIn("HTTP 400", result)
-        self.assertIn("content_policy_violation", result)
+        self.assertNotIn("HTTP 400", result)
+        self.assertNotIn("content_policy_violation", result)
         self.assertEqual(runtime.context.sent_messages, [])
         self.assertEqual(len(messages), 1)
         self.assertIn("图片生成或发送失败", messages[0])
@@ -1942,6 +2022,13 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             "当前穿搭：浅杏色吊带搭配白色高腰短裤和米白厚底凉鞋\n"
             "当前发型细节：黑色长发自然披肩"
         )
+        align_calls = []
+
+        async def align_scene(prompt, source_request, route, *, final_snapshot=False):
+            align_calls.append((prompt, source_request, route, final_snapshot))
+            return "公园长椅上的自然生活照"
+
+        runtime._align_current_appearance_scene_prompt = align_scene
 
         class ImageService:
             def can_edit_image(self):
@@ -1968,8 +2055,20 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         generated_prompt = generate_calls[0][0]
         self.assertIn("当前生活状态权威造型快照", generated_prompt)
         self.assertIn("浅杏色吊带搭配白色高腰短裤", generated_prompt)
+        self.assertNotIn("浅蓝色衬衫和帆布鞋", generated_prompt)
         self.assertIn("用户当前原始请求：拍张现在的照片", generated_prompt)
         self.assertIn("工具整理后的画面提示词本身不能作为换装证据", generated_prompt)
+        self.assertEqual(
+            align_calls,
+            [
+                (
+                    "公园长椅上的生活照，穿浅蓝色衬衫和帆布鞋",
+                    "拍张现在的照片",
+                    "current_character",
+                    False,
+                )
+            ],
+        )
 
     async def test_final_appearance_snapshot_also_locks_group_character(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
@@ -1986,6 +2085,49 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertIn("本轮真实换装已经保存后的唯一最终造型", prompt)
         self.assertNotIn("重新换一套再合影", prompt)
         self.assertNotIn("只有用户当前原始请求明确要求", prompt)
+
+    async def test_current_appearance_alignment_keeps_only_user_requested_changes(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.config = LifeSettings.from_dict({})
+        prompts = []
+
+        async def rewrite(prompt, *, provider_id=""):
+            prompts.append((prompt, provider_id))
+            return json.dumps(
+                {"prompt": "公园长椅上的自然生活照，傍晚逆光，半身构图"},
+                ensure_ascii=False,
+            )
+
+        runtime._media_director_text_call = rewrite
+
+        result = await runtime._align_current_appearance_scene_prompt(
+            "公园长椅上的生活照，身穿另一套浅蓝色衬衫",
+            "拍张现在的照片",
+            "current_character",
+        )
+
+        self.assertEqual(result, "公园长椅上的自然生活照，傍晚逆光，半身构图")
+        self.assertEqual(len(prompts), 1)
+        self.assertIn("用户原始请求：拍张现在的照片", prompts[0][0])
+        self.assertIn("工具生成的画面提示", prompts[0][0])
+
+    async def test_current_appearance_alignment_falls_back_to_user_request(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.config = LifeSettings.from_dict({})
+
+        async def rewrite(*args, **kwargs):
+            raise RuntimeError("provider unavailable")
+
+        runtime._media_director_text_call = rewrite
+
+        result = await runtime._align_current_appearance_scene_prompt(
+            "窗边自拍，身穿工具自行补写的另一套衣服",
+            "拍张窗边的照片",
+            "current_character",
+        )
+
+        self.assertEqual(result, "拍张窗边的照片")
+        self.assertNotIn("另一套衣服", result)
 
     async def test_life_image_generate_group_uses_structured_friend_profile(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
@@ -2385,7 +2527,9 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         )
         self.assertIn(prompt, provider.prompts[0])
 
-    async def test_life_image_generate_fails_when_director_returns_empty_payload(self):
+    async def test_life_image_generate_falls_back_when_director_returns_empty_payload(
+        self,
+    ):
         provider = Provider(["{}"])
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.context = Context(provider)
@@ -2423,9 +2567,72 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
 
         result = await runtime.life_image_generate(event, "雨夜沙发上随手拍")
 
-        self.assertIn("图片生成失败：图片智能提取失败", result)
-        self.assertEqual(image_prompts, [])
-        self.assertEqual(runtime.context.sent_messages, [])
+        self.assertEqual(json.loads(result)["status"], "sent")
+        self.assertEqual(image_prompts, ["雨夜沙发上随手拍"])
+
+    async def test_life_image_director_preserves_original_request_and_provider(self):
+        provider = Provider(
+            [
+                '{"identity_route":"独立主体","contains_character":false,"needs_character_reference":false,'
+                '"subject":"窗边人物","subject_kind":"person","scene":"测试市的窗边","composition":"竖版全身构图",'
+                '"frame_logic":"完整展示人物和环境","continuity_constraints":"保持人物与场景关系"}'
+            ],
+            provider_id="image-director-model",
+        )
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        default_provider = Provider([])
+        runtime.context = Context(
+            default_provider, providers={"image-director-model": provider}
+        )
+        runtime.config = LifeSettings.from_dict(
+            {
+                "image_generation_config": {
+                    "image_director_provider": "image-director-model"
+                }
+            }
+        )
+        runtime.archive = DataManager()
+
+        class Composer:
+            async def _get_provider(self, provider_id=""):
+                return provider
+
+            async def _call_llm_text(
+                self,
+                provider,
+                prompt,
+                session_id,
+                empty_retries=0,
+                primary_provider_id="",
+            ):
+                response = await provider.text_chat(
+                    prompt, session_id, system_prompt=CORE_INTERNAL_SYSTEM_PROMPT
+                )
+                return getattr(response, "completion_text", "")
+
+        runtime.composer = Composer()
+        image_prompts = []
+        runtime.media = types.SimpleNamespace(
+            image=types.SimpleNamespace(
+                generate_image=lambda prompt, **kwargs: (
+                    image_prompts.append(prompt)
+                    or async_return(types.SimpleNamespace(path=Path("life.png")))
+                )
+            )
+        )
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
+
+        result = await runtime.life_image_generate(
+            event, "测试市窗边，红色外套，9:16竖版全身，保留手里的书"
+        )
+
+        self.assertEqual(json.loads(result)["status"], "sent")
+        self.assertEqual(default_provider.prompts, [])
+        self.assertEqual(len(provider.prompts), 1)
+        self.assertIn("用户明确要求（最高优先级）", image_prompts[0])
+        self.assertIn("红色外套", image_prompts[0])
+        self.assertIn("continuity_constraints", provider.prompts[0])
+        self.assertEqual(provider.provider_id, "image-director-model")
 
     async def test_life_image_reverse_prompt_uses_current_message_image(self):
         vision_provider = Provider(
@@ -2975,13 +3182,21 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
     async def test_photo_suite_planner_uses_configured_timeout_and_logs_model(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.config = LifeSettings.from_dict(
-            {"image_generation_config": {"photo_suite_planning_timeout_seconds": 45}}
+            {
+                "image_generation_config": {
+                    "image_director_provider": "image-director-model",
+                    "photo_suite_planning_timeout_seconds": 45,
+                }
+            }
         )
         provider = types.SimpleNamespace(
             model_name="grok-4.5",
             provider_config={"id": "default-chat", "model": "grok-4.5"},
         )
-        runtime.get_text_provider = lambda provider_id="": async_return(provider)
+        requested_providers = []
+        runtime.get_text_provider = lambda provider_id="": (
+            requested_providers.append(provider_id) or async_return(provider)
+        )
 
         async def call_text_model(*args, **kwargs):
             return '{"shots":[]}'
@@ -3010,6 +3225,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             )
 
         self.assertEqual(waits, [45])
+        self.assertEqual(requested_providers, ["image-director-model"])
         self.assertEqual(
             planned,
             runtime._photo_suite_fallback_plan(
@@ -3151,6 +3367,13 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         runtime._current_life_appearance_snapshot = lambda route: async_return(
             "当前穿搭：白色短袖搭配深蓝色长裤\n当前发型名称：低马尾"
         )
+        align_calls = []
+
+        async def align_scene(prompt, source_request, route, *, final_snapshot=False):
+            align_calls.append((prompt, source_request, route, final_snapshot))
+            return "公园里不同角度的生活套图"
+
+        runtime._align_current_appearance_scene_prompt = align_scene
         scheduled = []
         runtime._schedule_background_task = lambda coro, label="", key="": (
             scheduled.append(coro) or True
@@ -3160,7 +3383,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
 
         result = await runtime.life_photo_suite_generate(
             event,
-            "公园里不同角度的生活套图",
+            "公园里不同角度的生活套图，换成工具自行补写的红色连衣裙",
             count=3,
             subject_route="current_character",
         )
@@ -3172,6 +3395,8 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
         self.assertIn("白色短袖搭配深蓝色长裤", manifest["current_appearance"])
         self.assertEqual(manifest["source_request"], "拍三张现在的生活照")
+        self.assertNotIn("红色连衣裙", manifest["prompt"])
+        self.assertEqual(len(align_calls), 1)
         for coro in scheduled:
             coro.close()
 
@@ -3299,7 +3524,8 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             ["sent", "failed", "sent", "sent"],
         )
         self.assertFalse(manifests[0].with_suffix(".json.tmp").exists())
-        first_chain = runtime.context.sent_messages[0][1]
+        self.assertEqual(runtime.context.sent_messages, [])
+        first_chain = event.sent_messages[0]
         self.assertEqual(
             [Path(item["file"]).name for item in first_chain.items],
             ["01.png", "03.png", "04.png"],
@@ -3325,7 +3551,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(
             [
                 Path(item["file"]).name
-                for item in runtime.context.sent_messages[1][1].items
+                for item in event.sent_messages[1].items
             ],
             ["02.png"],
         )
@@ -3389,7 +3615,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
                 "这张重新拍好了。",
                 "这组都拍好了。",
                 "先把拍好的这几张发给你。",
-                "这次没拍出来，晚点我再试试。",
+                "这次没拍出来，整组都没有生成成功。",
             ],
         )
         self.assertTrue(all("挑" not in text for text in expressed))

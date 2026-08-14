@@ -30,6 +30,10 @@
             <span class="bento-ribbon-label">前台</span>
             <span class="ribbon-status-dot" aria-hidden="true"></span>
           </button>
+          <button class="view-button bento-ribbon-button bento-ribbon-toggle closet-toggle" type="button" data-view="closet">
+            <span class="bento-ribbon-label">衣橱</span>
+            <span class="ribbon-status-dot" aria-hidden="true"></span>
+          </button>
           <button class="view-button bento-ribbon-button bento-ribbon-toggle emoji-toggle" type="button" data-view="emoji">
             <span class="bento-ribbon-label">表情</span>
             <span class="ribbon-status-dot" aria-hidden="true"></span>
@@ -285,6 +289,94 @@
           <div class="emoji-import-body">
             <input id="emojiImportFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp" multiple hidden>
             <button id="emojiImportFileButton" class="primary-button" type="button">选择图片</button>
+          </div>
+        </article>
+      </section>
+
+      <section id="closetView" class="screen closet-screen" hidden>
+        <section class="closet-layout">
+          <article class="panel closet-panel">
+            <div class="panel-head closet-head">
+              <div>
+                <h2>衣橱管理</h2>
+                <p id="closetSummary" class="section-hint">正在读取视觉衣橱</p>
+              </div>
+              <div class="emoji-tools closet-tools">
+                <div class="emoji-action-tools closet-action-tools">
+                  <button id="closetImportButton" type="button">导入</button>
+                  <button id="closetBrowseButton" type="button">联网学习</button>
+                  <button id="closetBackupButton" type="button">备份</button>
+                  <button id="closetRestoreButton" type="button">还原</button>
+                  <input id="closetImportFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp" multiple hidden>
+                  <input id="closetRestoreFile" type="file" accept=".zip,application/zip,application/x-zip-compressed" hidden>
+                  <button id="closetManageButton" class="emoji-manage-button closet-manage-button" type="button">管理</button>
+                  <span id="closetSelectedSummary" class="emoji-selected-summary closet-selected-summary" hidden>已选 0 条</span>
+                  <button id="closetBulkEnableButton" type="button" hidden>启用选中</button>
+                  <button id="closetBulkArchiveButton" type="button" hidden>归档选中</button>
+                  <button id="closetBulkDeleteButton" class="danger" type="button" hidden>删除选中</button>
+                  <button id="closetCancelManageButton" type="button" hidden>取消</button>
+                </div>
+                <div class="emoji-filter-tools closet-filter-tools">
+                  <select id="closetFilter" aria-label="衣橱筛选">
+                    <option value="all">全部</option>
+                    <option value="active">已启用</option>
+                    <option value="pending">待确认</option>
+                    <option value="outfit">套装</option>
+                    <option value="top">上装</option>
+                    <option value="bottom">下装</option>
+                    <option value="footwear">鞋袜</option>
+                    <option value="accessory">配饰</option>
+                    <option value="hair">发型</option>
+                    <option value="makeup">妆容</option>
+                    <option value="nails">美甲</option>
+                    <option value="liked">偏好较高</option>
+                    <option value="archived">已归档</option>
+                    <option value="rejected">不采用</option>
+                  </select>
+                  <div id="closetPager" class="emoji-pager closet-pager" hidden>
+                    <button id="closetPrevPage" type="button">上一页</button>
+                    <span id="closetPageInfo" class="emoji-page-info closet-page-info">第 1 / 1 页</span>
+                    <button id="closetNextPage" type="button">下一页</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div id="closetStats" class="closet-stats"></div>
+            <div id="closetList" class="closet-list"></div>
+          </article>
+        </section>
+      </section>
+
+      <section id="closetDetailDialog" class="closet-dialog" hidden aria-hidden="true">
+        <article class="closet-dialog-card closet-detail-card" role="dialog" aria-modal="true" aria-labelledby="closetDetailTitle">
+          <header class="closet-dialog-head">
+            <div>
+              <p class="eyebrow">衣橱素材</p>
+              <h2 id="closetDetailTitle">衣橱详情</h2>
+            </div>
+            <button id="closetDetailClose" class="icon-button" type="button" aria-label="关闭衣橱详情">×</button>
+          </header>
+          <div id="closetDetailBody" class="closet-detail-body"></div>
+        </article>
+      </section>
+
+      <section id="closetBrowseDialog" class="closet-dialog" hidden aria-hidden="true">
+        <article class="closet-dialog-card closet-browse-card" role="dialog" aria-modal="true" aria-labelledby="closetBrowseTitle">
+          <header class="closet-dialog-head">
+            <div>
+              <p class="eyebrow">视觉灵感</p>
+              <h2 id="closetBrowseTitle">联网学习</h2>
+            </div>
+            <button id="closetBrowseClose" class="icon-button" type="button" aria-label="关闭联网学习">×</button>
+          </header>
+          <div class="closet-form">
+            <label>学习需求<input id="closetBrowseQuery" type="text" maxlength="500" placeholder="例如：适合夏天的清爽通勤穿搭"></label>
+            <div class="closet-form-row">
+              <label>类型<select id="closetBrowseKind"><option value="auto">自动拆分</option><option value="outfit">套装</option><option value="top">上装</option><option value="bottom">下装</option><option value="footwear">鞋袜</option><option value="accessory">配饰</option><option value="hair">发型</option><option value="makeup">妆容</option><option value="nails">美甲</option></select></label>
+              <label>数量<input id="closetBrowseCount" type="number" min="1" max="12" value="3"></label>
+            </div>
+            <label>补充要求<textarea id="closetBrowseNote" rows="3" maxlength="500" placeholder="可留空"></textarea></label>
+            <button id="closetBrowseSubmit" class="primary-button" type="button">开始学习</button>
           </div>
         </article>
       </section>

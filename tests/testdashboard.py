@@ -11,7 +11,12 @@ import zipfile
 from io import BytesIO
 from pathlib import Path
 
-from core.models import ActionDecisionRecord, EmojiAssetRecord, MessageVisibilityRecord
+from core.models import (
+    ActionDecisionRecord,
+    EmojiAssetRecord,
+    MessageVisibilityRecord,
+    StyleCatalogItemRecord,
+)
 from core.runtime.generation import DailyGenerationMixin
 from support import (
     BehaviorFeedbackRecord,
@@ -620,6 +625,21 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/astrbot_plugin_daily_life/page/emoji/sendable", paths)
         self.assertIn("/astrbot_plugin_daily_life/page/emoji/backup", paths)
         self.assertIn("/astrbot_plugin_daily_life/page/emoji/restore", paths)
+        for route in (
+            "list",
+            "import",
+            "browse",
+            "preview",
+            "status",
+            "feedback",
+            "review",
+            "delete",
+            "backup",
+            "restore",
+        ):
+            self.assertIn(
+                f"/astrbot_plugin_daily_life/page/closet/{route}", paths
+            )
         self.assertNotIn("/astrbot_plugin_daily_life/page/storage/cleanup", paths)
         self.assertNotIn("/astrbot_plugin_daily_life/page/storage/clear", paths)
         self.assertIn(
@@ -1006,6 +1026,98 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(deleted["data"]["deleted_files"], 1)
         self.assertFalse(emoji_path.exists())
         self.assertEqual(deleted["data"]["stats"]["total"], 0)
+
+    async def test_closet_management_lists_previews_feedback_and_deletes_assets(self):
+        closet_dir = self.plugin.runtime.data_path.parent / "style_catalog"
+        closet_dir.mkdir(parents=True, exist_ok=True)
+        image_path = closet_dir / "style_test.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\ncloset")
+        item = await self.plugin.runtime.archive.upsert_style_catalog_item(
+            StyleCatalogItemRecord(
+                kind="outfit",
+                title="测试清爽造型",
+                description="浅色短袖搭直筒短裤",
+                image_path=str(image_path),
+                source_scope="dashboard",
+                source_kind="manual",
+                source_image_hash="closet-test".ljust(64, "0"),
+                attributes={
+                    "colors": ["浅色"],
+                    "makeup": ["清透底妆"],
+                    "nails": ["透明短甲"],
+                },
+                confidence=0.9,
+                status="pending",
+            )
+        )
+
+        listed = await self.plugin.page_closet_list()
+        self.assertTrue(listed["ok"])
+        self.assertEqual(listed["data"]["stats"]["total"], 1)
+        self.assertEqual(listed["data"]["stats"]["pending"], 1)
+        self.assertTrue(listed["data"]["items"][0]["has_makeup"])
+        self.assertTrue(listed["data"]["items"][0]["has_nails"])
+
+        self.plugin.body = {"id": item.id}
+        preview = await self.plugin.page_closet_preview()
+        self.assertTrue(preview["ok"])
+        self.assertTrue(preview["data"]["data_url"].startswith("data:image/png;base64,"))
+
+        self.plugin.body = {"ids": [item.id], "status": "active"}
+        enabled = await self.plugin.page_closet_status()
+        self.assertTrue(enabled["ok"])
+        self.assertEqual(enabled["data"]["stats"]["active"], 1)
+
+        self.plugin.body = {"ids": [item.id], "sentiment": "prefer"}
+        liked = await self.plugin.page_closet_feedback()
+        self.assertTrue(liked["ok"])
+        self.assertEqual(liked["data"]["stats"]["liked"], 1)
+
+        self.plugin.body = {"ids": [item.id]}
+        deleted = await self.plugin.page_closet_delete()
+        self.assertTrue(deleted["ok"])
+        self.assertEqual(deleted["data"]["deleted_records"], 1)
+        self.assertEqual(deleted["data"]["deleted_files"], 1)
+        self.assertFalse(image_path.exists())
+
+    async def test_closet_backup_and_restore_preserve_visual_candidates(self):
+        closet_dir = self.plugin.runtime.data_path.parent / "style_catalog"
+        closet_dir.mkdir(parents=True, exist_ok=True)
+        image_bytes = b"\x89PNG\r\n\x1a\ncloset-backup"
+        digest = hashlib.sha256(image_bytes).hexdigest()
+        image_path = closet_dir / f"style_{digest[:24]}.png"
+        image_path.write_bytes(image_bytes)
+        await self.plugin.runtime.archive.upsert_style_catalog_item(
+            StyleCatalogItemRecord(
+                kind="hair",
+                title="测试发型候选",
+                description="中长发低位束起",
+                image_path=str(image_path),
+                source_scope="dashboard",
+                source_kind="manual",
+                source_image_hash=digest,
+                attributes={"styles": ["清爽"]},
+                confidence=0.88,
+                status="active",
+            )
+        )
+
+        backup = await self.plugin.page_closet_backup()
+        self.assertTrue(backup["ok"])
+        archive_path = Path(backup["data"]["path"])
+        with zipfile.ZipFile(archive_path) as package:
+            manifest = json.loads(package.read("manifest.json").decode("utf-8"))
+            self.assertEqual(manifest["format"], "daily_life_closet_backup")
+            self.assertEqual(package.read(manifest["items"][0]["backup_asset"]), image_bytes)
+
+        restored_plugin = PagePlugin()
+        restored_plugin.upload_path = archive_path
+        restored = await restored_plugin.page_closet_restore()
+        self.assertTrue(restored["ok"])
+        self.assertEqual(restored["data"]["restored"], 1)
+        restored_item = restored["data"]["items"][0]
+        self.assertEqual(restored_item["title"], "测试发型候选")
+        self.assertEqual(Path(restored_item["image_path"]).read_bytes(), image_bytes)
 
     async def test_emoji_import_upload_caches_asset_and_lists_manual_source(self):
         image_bytes = b"\x89PNG\r\n\x1a\nmanual-emoji"
@@ -2834,6 +2946,100 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertNotIn(".maintenance-field", style)
         self.assertIn(".danger.is-confirming", style)
 
+    def test_dashboard_has_closet_management_view(self):
+        root = Path(__file__).resolve().parents[1] / "pages" / "dashboard"
+        html = (root / "index.html").read_text(encoding="utf-8")
+        app = (root / "app.js").read_text(encoding="utf-8")
+        style = self._dashboard_style(root)
+        closet_style = (root / "styles" / "closet.css").read_text(encoding="utf-8")
+
+        self.assertIn('data-view="closet"', html)
+        self.assertIn('id="closetView"', html)
+        self.assertIn('id="closetImportFile"', html)
+        self.assertIn('id="closetBrowseDialog"', html)
+        self.assertIn('id="closetDetailDialog"', html)
+        self.assertIn('id="closetBulkEnableButton"', html)
+        self.assertIn('id="closetBulkArchiveButton"', html)
+        self.assertIn('id="closetBulkDeleteButton"', html)
+        self.assertIn("衣橱管理", html)
+        self.assertIn('class="emoji-tools closet-tools"', html)
+        self.assertIn('class="emoji-action-tools closet-action-tools"', html)
+        self.assertIn('class="emoji-filter-tools closet-filter-tools"', html)
+        self.assertIn('class="emoji-pager closet-pager"', html)
+        self.assertIn('id="closetPrevPage" type="button">上一页</button>', html)
+        self.assertIn('id="closetNextPage" type="button">下一页</button>', html)
+        self.assertIn("联网学习", html)
+        self.assertIn('<option value="outfit">套装</option>', html)
+        self.assertIn('<option value="top">上装</option>', html)
+        self.assertIn('<option value="bottom">下装</option>', html)
+        self.assertIn('<option value="footwear">鞋袜</option>', html)
+        self.assertIn('<option value="accessory">配饰</option>', html)
+        self.assertIn('<option value="makeup">妆容</option>', html)
+        self.assertIn('<option value="nails">美甲</option>', html)
+        self.assertIn("closetItems: []", app)
+        self.assertIn('apiGet("page/closet/list"', app)
+        self.assertIn('apiUpload("page/closet/import"', app)
+        self.assertIn('apiPost("page/closet/browse"', app)
+        self.assertIn('apiPost("page/closet/preview"', app)
+        self.assertIn('apiPost("page/closet/status"', app)
+        self.assertIn('apiPost("page/closet/feedback"', app)
+        self.assertIn('apiPost("page/closet/review"', app)
+        self.assertIn('apiPost("page/closet/delete"', app)
+        self.assertIn('apiDownload("page/closet/backup"', app)
+        self.assertIn('apiUpload("page/closet/restore"', app)
+        self.assertIn("function closetPageWindow", app)
+        self.assertIn("function confirmClosetDelete", app)
+        self.assertNotIn("window.confirm", app)
+        self.assertIn('@import url("./styles/closet.css")', (root / "style.css").read_text(encoding="utf-8"))
+        self.assertIn(".closet-list", closet_style)
+        self.assertIn("grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));", closet_style)
+        self.assertIn("aspect-ratio: 4 / 5;", closet_style)
+        self.assertNotIn("border-block-start: 1px solid", closet_style)
+        self.assertNotIn(".closet-stat:nth-child(even)", closet_style)
+        self.assertIn("@media (max-width: 680px)", closet_style)
+        self.assertIn(".bento-ribbon .closet-toggle", style)
+        dashboard_view = html.index('data-view="dashboard"')
+        closet_view = html.index('data-view="closet"')
+        emoji_view = html.index('data-view="emoji"')
+        settings_view = html.index('data-view="settings"')
+        self.assertLess(dashboard_view, closet_view)
+        self.assertLess(closet_view, emoji_view)
+        self.assertLess(emoji_view, settings_view)
+        self.assertIn(
+            ".view-switch.bento-ribbon {\n  position: relative;\n  z-index: 1;\n"
+            "  display: grid;\n  grid-template-columns: repeat(2, minmax(0, 1fr));",
+            style,
+        )
+        self.assertIn(
+            ".bento-ribbon .dashboard-toggle {\n  grid-column: 1;\n  grid-row: 1;",
+            style,
+        )
+        self.assertIn(
+            ".bento-ribbon .closet-toggle {\n  grid-column: 2;\n  grid-row: 1;",
+            style,
+        )
+        self.assertIn(
+            ".bento-ribbon .emoji-toggle {\n  grid-column: 1;\n  grid-row: 2;",
+            style,
+        )
+        self.assertIn(
+            ".bento-ribbon .settings-toggle {\n  grid-column: 2;\n  grid-row: 2;",
+            style,
+        )
+        self.assertIn(
+            'select.closest?.(".emoji-filter-tools, .closet-filter-tools")',
+            (root / "ui" / "selects.js").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            ".closet-filter-tools .life-select-menu",
+            (root / "styles" / "selects.css").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            ".emoji-stats,\n.closet-stats",
+            (root / "styles" / "emoji.css").read_text(encoding="utf-8"),
+        )
+        self.assertIn("closet-stat-label", app)
+
     def test_dashboard_reset_today_button_stays_with_timeline_tools(self):
         from pathlib import Path
 
@@ -3333,6 +3539,7 @@ if (number.value !== "60" || state.config.test_config.level !== 60) {
         )[0]
         for field in (
             "image_generation_config.enabled",
+            "image_generation_config.image_director_provider",
             "image_generation_config.prompt_rewrite_provider",
             "image_generation_config.character_reference_policy",
             "image_generation_config.character_reference_images",
@@ -4440,7 +4647,9 @@ if (number.value !== "60" || state.config.test_config.level !== 60) {
             'function renderFactPair(target, value, emptyText = "暂无内容")', app
         )
         self.assertIn('node("div", "today-week-appearance-hair", "")', app)
-        self.assertIn('const hairStyle = clean(meta.hair_style, "")', display)
+        self.assertIn("const hairStyle = appearanceFact(meta.hair_style)", display)
+        self.assertIn("const makeup = appearanceFact(meta.makeup)", display)
+        self.assertIn("const nails = appearanceFact(meta.nails)", display)
         self.assertIn("function stripCoveredAppearanceDetail", display)
         self.assertIn(
             "stripCoveredAppearanceDetail(day.outfit, hairStyle, hair)",
@@ -4596,9 +4805,10 @@ if (number.value !== "60" || state.config.test_config.level !== 60) {
         )
         self.assertIn(".record-lines", style)
         self.assertIn(
-            "function evidenceTargetTitle(item, displayIndex = null)", display
+            "function evidenceTargetTitle(item, displayIndex = null, relationshipNames = null)",
+            display,
         )
-        self.assertIn("clean(item.target_label", display)
+        self.assertIn("clean(resolved || item.target_label", display)
         self.assertIn("function stateLogText(value)", display)
         self.assertIn("PAGE_STATUS_REASON_LABELS", display)
         self.assertIn("export const LIFE_DECISION_KIND_LABELS = {", labels)
@@ -4872,14 +5082,28 @@ if (mod.readableReferenceLabel("251880291", "关注目标") !== "关注目标") 
 if (
   mod.cognitionSubjectText("self") !== "自己"
   || mod.cognitionSubjectText("bot") !== "角色"
-  || mod.cognitionSubjectText("unknown_subject") !== "unknown_subject"
+  || mod.cognitionSubjectText("unknown_subject") !== "未指明对象"
+  || mod.cognitionSubjectText("anonymous") !== "未指明对象"
   || mod.clean("self") !== "自己"
   || mod.cognitionPredicateText("current_place") !== "当前地点"
+  || mod.cognitionPredicateText("makeup_style_request") !== "妆容风格需求"
+  || mod.cognitionPredicateText("outfit_change_request") !== "穿搭更换需求"
+  || mod.cognitionPredicateText("unknown_predicate") !== "未命名事实"
   || mod.cognitionPredicateText("favorite_food") !== "喜欢的食物"
   || mod.cognitionValueText({ dish: "窝蛋牛肉煲仔饭", place: "家里" }) !== "菜品：窝蛋牛肉煲仔饭；地点：家里"
+  || mod.cognitionValueText({ intent: "find_and_add_to_wardrobe", status: "confirmed", style: "summer_sexy" }) !== "意图：查找并加入衣橱；状态：已确认；风格：夏日性感"
+  || mod.cognitionValueText({ disliked_outfit: "测试穿搭", request: "从衣橱选一套换上" }) !== "不喜欢的穿搭：测试穿搭；请求：从衣橱选一套换上"
+  || mod.cognitionValueText({ status: "unmapped_status" }) !== "状态：其他"
   || mod.humanizeToken("meal_preference") !== "饮食偏好"
 ) {
   throw new Error("认知事实主体没有正确中文化");
+}
+const cognitionNames = new Map([["test-profile-1", "测试好友"]]);
+if (
+  mod.cognitionSubjectText("test-profile-1", "时间事实", cognitionNames) !== "测试好友"
+  || mod.evidenceTargetTitle({ target_type: "user", target_id: "test-profile-1" }, null, cognitionNames) !== "用户 测试好友"
+) {
+  throw new Error("认知事实或证据目标没有解析关系昵称");
 }
 if (mod.evidenceText("251880291,929722496,416704502") !== "来自 3 条聊天消息") {
   throw new Error("evidenceText 没有把纯 ID 证据转换为可读来源");
@@ -5542,6 +5766,13 @@ if (
   || !distinct.hair.includes("浅色发圈")
 ) {
   throw new Error(`独立穿搭或发型被错误修改：${JSON.stringify(distinct)}`);
+}
+const missing = mod.currentOutfitDisplayText(
+  { outfit: "浅色居家连衣裙" },
+  { makeup: "未知", nails: "unknown" },
+);
+if (missing.makeup !== "" || missing.nails !== "") {
+  throw new Error(`结构化缺失标记不应展示为外观事实：${JSON.stringify(missing)}`);
 }
 """
         result = subprocess.run(

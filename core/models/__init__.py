@@ -1,4 +1,4 @@
-from .actions import (
+from .deeds import (
     EXTERNAL_RECEIPT_ACTION_TYPES,
     INTERNAL_SIMULATED_ACTION_TYPES,
     LIFE_ACTION_TYPES,
@@ -12,7 +12,7 @@ from .actions import (
     ScheduleAnchor,
 )
 from .agenda import DayRecord, TimelineItem
-from .cognition import (
+from .thought import (
     AffectiveStateRecord,
     DecisionTraceRecord,
     DurableTaskRecord,
@@ -24,7 +24,7 @@ from .cognition import (
     ReflectionRecord,
     TemporalFactRecord,
 )
-from .decisions import LifeDecisionRecord
+from .judgment import LifeDecisionRecord
 from .lasting import (
     LongTermMemoryRecord,
     MemoryConflictRecord,
@@ -70,7 +70,13 @@ from .relations import (
     RelationshipRecord,
 )
 from .reversal import ReversePromptRecord
-from .style_catalog import StyleCatalogItemRecord
+from .catalog import (
+    STYLE_CATALOG_CLOTHING_KINDS,
+    STYLE_CATALOG_KINDS,
+    STYLE_CATALOG_KIND_LABELS,
+    STYLE_CATALOG_KIND_SET,
+    StyleCatalogItemRecord,
+)
 from .vitals import (
     BodyCondition,
     LifeState,
@@ -148,6 +154,10 @@ __all__ = [
     "SessionMidSummaryRecord",
     "SleepState",
     "StyleCatalogItemRecord",
+    "STYLE_CATALOG_CLOTHING_KINDS",
+    "STYLE_CATALOG_KINDS",
+    "STYLE_CATALOG_KIND_LABELS",
+    "STYLE_CATALOG_KIND_SET",
     "TemporaryExpressionStateRecord",
     "TemporalFactRecord",
     "TimelineItem",

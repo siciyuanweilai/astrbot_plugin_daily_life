@@ -6,6 +6,7 @@ import {
   COGNITION_SUBJECT_LABELS,
   COGNITION_PREDICATE_LABELS,
   COGNITION_VALUE_KEY_LABELS,
+  COGNITION_VALUE_LABELS,
   CURRENT_SLEEP_LABELS,
   EMOJI_EMOTION_CATEGORY_LABELS,
   EPISODE_KIND_LABELS,
@@ -435,30 +436,49 @@ function readableReferenceLabel(value, fallback = "") {
   return clean(raw, fallback);
 }
 
-function cognitionSubjectText(value, fallback = "未指明对象") {
+function cognitionSubjectText(value, fallback = "未指明对象", relationshipNames = null) {
   const raw = text(value).trim();
   if (!raw) return fallback;
-  return COGNITION_SUBJECT_LABELS[raw.toLowerCase()] || clean(raw, fallback);
+  const resolved = relationshipNames && typeof relationshipNames.get === "function"
+    ? relationshipNames.get(raw)
+    : "";
+  if (resolved) return clean(resolved, fallback);
+  const known = COGNITION_SUBJECT_LABELS[raw.toLowerCase()];
+  if (known) return known;
+  return [...raw].some((char) => (char.codePointAt(0) || 0) > 127)
+    ? clean(raw, fallback)
+    : fallback;
 }
 
 function cognitionPredicateText(value, fallback = "未命名事实") {
   const raw = text(value).trim();
   if (!raw) return fallback;
-  return COGNITION_PREDICATE_LABELS[raw.toLowerCase()] || clean(raw, fallback);
+  const known = COGNITION_PREDICATE_LABELS[raw.toLowerCase()];
+  if (known) return known;
+  return [...raw].some((char) => (char.codePointAt(0) || 0) > 127)
+    ? clean(raw, fallback)
+    : fallback;
 }
 
 function cognitionValueText(value, depth = 0) {
   if (value === null || value === undefined || value === "") return "";
   if (depth > 3) return clean(value, "");
-  if (typeof value === "string") return clean(value, "");
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (typeof value === "string") {
+    const translated = enumLabelStrict(value, COGNITION_VALUE_LABELS, "");
+    if (translated) return translated;
+    return [...value].some((char) => (char.codePointAt(0) || 0) > 127)
+      ? clean(value, "")
+      : "其他";
+  }
+  if (typeof value === "number") return String(value);
+  if (typeof value === "boolean") return value ? "是" : "否";
   if (Array.isArray(value)) {
     return value.map((item) => cognitionValueText(item, depth + 1)).filter(Boolean).join("、");
   }
   if (typeof value === "object") {
     return Object.entries(value)
       .map(([key, item]) => {
-        const label = COGNITION_VALUE_KEY_LABELS[key.toLowerCase()] || humanizeToken(key);
+        const label = COGNITION_VALUE_KEY_LABELS[key.toLowerCase()] || "其他信息";
         const rendered = cognitionValueText(item, depth + 1);
         return rendered ? `${label}：${rendered}` : "";
       })
@@ -794,17 +814,21 @@ function visibleLifeEpisodes(episodes) {
   ));
 }
 
-function evidenceTargetTitle(item, displayIndex = null) {
+function evidenceTargetTitle(item, displayIndex = null, relationshipNames = null) {
   item = item && typeof item === "object" ? item : {};
   const typeLabel = enumLabel(item.target_type, TARGET_TYPE_LABELS);
-  const label = clean(item.target_label, "");
+  const targetId = text(item.target_id).trim();
+  const resolved = relationshipNames && typeof relationshipNames.get === "function"
+    ? relationshipNames.get(targetId)
+    : "";
+  const label = clean(resolved || item.target_label, "");
   if (label) return `${typeLabel} ${label}`;
   const targetType = text(item.target_type).trim().toLowerCase();
   if (targetType === "life_decision") {
     return typeLabel;
   }
-  const targetId = readableReferenceLabel(item.target_id, "");
-  return targetId ? `${typeLabel} ${targetId}` : typeLabel;
+  const readableTargetId = readableReferenceLabel(targetId, "");
+  return readableTargetId ? `${typeLabel} ${readableTargetId}` : typeLabel;
 }
 
 function lifeEpisodeLines(item) {
@@ -899,12 +923,17 @@ function stripCoveredAppearanceDetail(outfit, hairStyle, hair) {
   return trimAppearanceEnding(clothingClauses.join(""));
 }
 
+function appearanceFact(value) {
+  const result = clean(value, "");
+  return ["未知", "unknown"].includes(result.toLowerCase()) ? "" : result;
+}
+
 function currentOutfitDisplayText(day = {}, meta = {}) {
-  const style = clean(meta.style, "");
-  const hairStyle = clean(meta.hair_style, "");
-  const hair = clean(meta.hair, "");
-  const makeup = clean(meta.makeup, "");
-  const nails = clean(meta.nails, "");
+  const style = appearanceFact(meta.style);
+  const hairStyle = appearanceFact(meta.hair_style);
+  const hair = appearanceFact(meta.hair);
+  const makeup = appearanceFact(meta.makeup);
+  const nails = appearanceFact(meta.nails);
   const outfit = stripCoveredAppearanceDetail(day.outfit, hairStyle, hair);
   return { style, outfit, hairStyle, hair, makeup, nails };
 }

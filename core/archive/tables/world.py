@@ -1,4 +1,4 @@
-WORLD_SQL = """
+WORLD_SQL_BASE = """
 -- 世界记忆与关系
 CREATE TABLE IF NOT EXISTS events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -102,7 +102,10 @@ STYLE_CATALOG_SQL = """
 -- 视觉衣橱候选与语义反馈
 CREATE TABLE IF NOT EXISTS style_catalog_items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            kind TEXT NOT NULL CHECK(kind IN ('outfit', 'hair')),
+            kind TEXT NOT NULL CHECK(kind IN (
+                'outfit', 'top', 'bottom', 'footwear',
+                'accessory', 'hair', 'makeup', 'nails'
+            )),
             title TEXT NOT NULL DEFAULT '',
             description TEXT NOT NULL DEFAULT '',
             image_path TEXT NOT NULL DEFAULT '',
@@ -134,7 +137,7 @@ CREATE TABLE IF NOT EXISTS style_catalog_feedback (
         );
 """
 
-WORLD_SQL += STYLE_CATALOG_SQL
+WORLD_SQL = WORLD_SQL_BASE + STYLE_CATALOG_SQL
 
 
-__all__ = ["STYLE_CATALOG_SQL", "WORLD_SQL"]
+__all__ = ["STYLE_CATALOG_SQL", "WORLD_SQL", "WORLD_SQL_BASE"]

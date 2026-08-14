@@ -326,6 +326,15 @@ class SocialCommandMixin:
                 await self.runtime.archive.link_commitments_to_day(
                     req.target_date_str, [accepted_commitment.id]
                 )
+                schedule_contact = getattr(
+                    self.runtime, "schedule_invite_contact", None
+                )
+                if callable(schedule_contact):
+                    await schedule_contact(
+                        accepted_commitment,
+                        timeline_edits=decision.get("timeline_edits"),
+                        observed_at=req.now,
+                    )
             await self.runtime.archive.save_day(data)
             await self.runtime.archive.add_events(
                 req.target_date_str,

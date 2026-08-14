@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS action_decisions (
             deep_analysis INTEGER NOT NULL DEFAULT 0,
             inner_monologue TEXT NOT NULL DEFAULT '',
             reply_strategy TEXT NOT NULL DEFAULT '',
+            -- 以下四列仅为旧版数据库兼容保留，新裁定流程不再读写。
             decision_category TEXT NOT NULL DEFAULT '',
             decision_source TEXT NOT NULL DEFAULT '',
             decision_stage TEXT NOT NULL DEFAULT '',

@@ -6,6 +6,7 @@ from typing import Any
 
 from astrbot.api import logger
 
+from ..archive import DayRevisionConflict
 from ..clock import now as life_now
 from ..models import DailyReviewRecord, EventRecord, LifeEventRecord, PreferenceRecord
 from ..prompts import (
@@ -30,6 +31,10 @@ def _clamp_float(value: float, min_value: float, max_value: float) -> float:
 
 def _compact(value: object, limit: int = 120) -> str:
     return " ".join(str(value or "").strip().split())[:limit]
+
+
+DAILY_REVIEW_TIMELINE_SETTLED_AT = "daily_review_timeline_settled_at"
+DAILY_REVIEW_COMPLETED_AT = "daily_review_completed_at"
 
 
 class LifecycleMixin:
@@ -518,14 +523,16 @@ class LifecycleMixin:
         else:
             date_str = date.strftime("%Y-%m-%d")
 
+        existing = None
         if not force:
             existing = await self.archive.get_daily_review(date_str)
-            if existing:
-                return existing
-
         day = await self.archive.get_day(date_str)
         if not day:
-            return None
+            return existing
+        if existing and str(
+            (day.meta or {}).get(DAILY_REVIEW_COMPLETED_AT) or ""
+        ).strip():
+            return existing
 
         preferences, events, decisions, feedback, reply_effects = await asyncio.gather(
             self.archive.get_preferences(12),
@@ -543,39 +550,45 @@ class LifecycleMixin:
             if str(getattr(item, "created_at", ""))[:10] == date_str
             and str(getattr(item, "outcome", "")) != "pending"
         ]
-        provider_id = self._task_provider_id(self.config.lifecycle.provider)
-        provider = await self._get_provider(provider_id)
-        review = None
-        review_payload: dict = {}
-        session_id = f"daily_life_review_{uuid.uuid4().hex[:8]}"
-        try:
-            if provider:
-                text = await self._call_llm_text(
-                    provider,
-                    self._build_daily_review_prompt(
-                        day, preferences, events, decisions, feedback, reply_effects
-                    ),
-                    session_id,
-                    primary_provider_id=provider_id,
-                )
-                payload = extract_json_from_text(text)
-                if isinstance(payload, dict):
-                    review_payload = payload
-                    review = DailyReviewRecord.from_value(
-                        {
-                            **payload,
-                            "date": date_str,
-                            "source": "daily_review",
-                        }
+        review = existing
+        review_payload: dict[str, Any] = dict(existing.payload) if existing else {}
+        if review is None or force:
+            provider_id = self._task_provider_id(self.config.lifecycle.provider)
+            provider = await self._get_provider(provider_id)
+            review = None
+            review_payload = {}
+            session_id = f"daily_life_review_{uuid.uuid4().hex[:8]}"
+            try:
+                if provider:
+                    text = await self._call_llm_text(
+                        provider,
+                        self._build_daily_review_prompt(
+                            day, preferences, events, decisions, feedback, reply_effects
+                        ),
+                        session_id,
+                        primary_provider_id=provider_id,
                     )
-        finally:
-            await self._cleanup_conversation(session_id)
+                    payload = extract_json_from_text(text)
+                    if isinstance(payload, dict):
+                        review_payload = payload
+                        review = DailyReviewRecord.from_value(
+                            {
+                                **payload,
+                                "date": date_str,
+                                "source": "daily_review",
+                            }
+                        )
+            finally:
+                await self._cleanup_conversation(session_id)
 
-        fallback_review = self._fallback_daily_review(day)
-        review = review or fallback_review
-        if not review.summary:
-            review.summary = fallback_review.summary
-        saved = await self.archive.save_daily_review(review)
+            fallback_review = self._fallback_daily_review(day)
+            review = review or fallback_review
+            if not review.summary:
+                review.summary = fallback_review.summary
+            review.payload = dict(review_payload)
+            saved = await self.archive.save_daily_review(review)
+        else:
+            saved = review
         await self._apply_life_event_review_updates(
             events, review_payload, date_str=date_str
         )
@@ -621,54 +634,102 @@ class LifecycleMixin:
         if await self.maintain_preference_consistency(force=True):
             refreshed = await self.archive.get_daily_review(date_str)
             if refreshed:
-                return refreshed
+                saved = refreshed
+        await self._mark_daily_review_completed(date_str)
         return saved
+
+    async def _mark_daily_review_completed(self, date_str: str) -> None:
+        completed_at = (
+            datetime.datetime.strptime(date_str, "%Y-%m-%d")
+            + datetime.timedelta(days=1)
+        ).strftime("%Y-%m-%d %H:%M:%S")
+
+        def mark_completed(day) -> bool:
+            if str(
+                (day.meta or {}).get(DAILY_REVIEW_COMPLETED_AT) or ""
+            ).strip() == completed_at:
+                return False
+            day.meta[DAILY_REVIEW_COMPLETED_AT] = completed_at
+            return True
+
+        await self.archive.mutate_day(date_str, mark_completed)
 
     async def _apply_timeline_review_updates(
         self, day, payload: dict[str, Any]
     ) -> None:
         raw_items = payload.get("timeline_updates") if isinstance(payload, dict) else []
         updated_at = f"{day.date} 23:59"
-        if isinstance(raw_items, list):
-            for raw in raw_items[: len(day.timeline)]:
-                if not isinstance(raw, dict):
-                    continue
-                try:
-                    item_index = int(raw.get("item_index"))
-                except (TypeError, ValueError):
-                    continue
-                status = str(raw.get("status") or "").strip().lower()
-                reason = _compact(raw.get("reason"), 160)
-                evidence = _compact(raw.get("evidence"), 200)
-                if not (0 <= item_index < len(day.timeline)) or status not in {
-                    "completed",
-                    "skipped",
-                    "cancelled",
-                }:
-                    continue
-                if status in {"skipped", "cancelled"} and not evidence:
-                    continue
-                item = day.timeline[item_index]
-                if item.execution_state in TIMELINE_TERMINAL_STATES:
-                    continue
-                item.execution_state = status
-                item.execution_reason = reason or "夜间复盘收束"
-                item.execution_evidence = evidence or "夜间复盘"
-                item.execution_updated_at = updated_at
-
         review_end = datetime.datetime.strptime(
             day.date, "%Y-%m-%d"
         ) + datetime.timedelta(days=1)
-        reconcile_timeline_execution(
-            day.timeline,
-            review_end,
-            day.date,
-            evidence="夜间复盘：时间轴收束",
-        )
+
+        def settle_timeline(current_day) -> bool:
+            before = [item.as_dict() for item in current_day.timeline]
+            if isinstance(raw_items, list):
+                for raw in raw_items[: len(current_day.timeline)]:
+                    if not isinstance(raw, dict):
+                        continue
+                    try:
+                        item_index = int(raw.get("item_index"))
+                    except (TypeError, ValueError):
+                        continue
+                    status = str(raw.get("status") or "").strip().lower()
+                    reason = _compact(raw.get("reason"), 160)
+                    evidence = _compact(raw.get("evidence"), 200)
+                    if not (
+                        0 <= item_index < len(current_day.timeline)
+                    ) or status not in {
+                        "completed",
+                        "skipped",
+                        "cancelled",
+                    }:
+                        continue
+                    if status in {"skipped", "cancelled"} and not evidence:
+                        continue
+                    item = current_day.timeline[item_index]
+                    if item.execution_state in TIMELINE_TERMINAL_STATES:
+                        continue
+                    item.execution_state = status
+                    item.execution_reason = reason or "夜间复盘收束"
+                    item.execution_evidence = evidence or "夜间复盘"
+                    item.execution_updated_at = updated_at
+
+            reconcile_timeline_execution(
+                current_day.timeline,
+                review_end,
+                current_day.date,
+                evidence="夜间复盘：时间轴收束",
+            )
+            return before != [item.as_dict() for item in current_day.timeline]
+
+        settled_day = await self.archive.mutate_day(day.date, settle_timeline)
+        if settled_day is None:
+            return
+
         settle_actions = getattr(self, "settle_completed_planned_actions", None)
         if callable(settle_actions):
-            await settle_actions(day, now=review_end)
-        await self.archive.save_day(day)
+            for attempt in range(3):
+                try:
+                    await settle_actions(settled_day, now=review_end)
+                    break
+                except DayRevisionConflict:
+                    if attempt >= 2:
+                        raise
+                    latest = await self.archive.get_day(day.date)
+                    if latest is None:
+                        return
+                    settled_day = latest
+
+        def mark_settled(current_day) -> bool:
+            settled_at = review_end.strftime("%Y-%m-%d %H:%M:%S")
+            if str(
+                (current_day.meta or {}).get(DAILY_REVIEW_TIMELINE_SETTLED_AT) or ""
+            ).strip() == settled_at:
+                return False
+            current_day.meta[DAILY_REVIEW_TIMELINE_SETTLED_AT] = settled_at
+            return True
+
+        await self.archive.mutate_day(day.date, mark_settled)
 
     async def _apply_life_decision_review_outcomes(
         self, decisions: list[Any], payload: dict[str, Any]

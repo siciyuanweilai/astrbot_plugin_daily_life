@@ -17,6 +17,19 @@ from ..markers import LOG_PREFIX
 
 
 class ProactiveSendMixin:
+    @staticmethod
+    def _proactive_source_label(payload: dict[str, Any] | None) -> str:
+        source = (
+            str(payload.get("source") or "").strip()
+            if isinstance(payload, dict)
+            else ""
+        )
+        return {
+            "private_revisit": "私聊回访",
+            "proactive_commitment": "主动承诺",
+            "proactive_reply": "闲时回复",
+        }.get(source, "闲时回复")
+
     def _normalize_proactive_reply_text(self, reply_text: str) -> str:
         lines = [" ".join(line.split()) for line in str(reply_text or "").splitlines()]
         return "\n".join(line for line in lines if line)
@@ -59,7 +72,9 @@ class ProactiveSendMixin:
                 source_message_id=source_message_id,
             ):
                 self.note_structured_bot_message(target_scope, reply_text, media="语音")
-                await self._append_proactive_send_history(target_scope, reply_text)
+                await self._append_proactive_send_history(
+                    target_scope, reply_text, media="语音"
+                )
                 return True
             if not await self._send_segmented_proactive_message(
                 target_scope,
@@ -181,6 +196,7 @@ class ProactiveSendMixin:
                 emotion = str(intent.get("emotion") or "").strip()
                 emotion_category = str(intent.get("emotion_category") or "").strip()
                 voice_style = str(intent.get("voice_style") or "").strip().lower()
+        source_label = self._proactive_source_label(payload)
         try:
             voice_kwargs = {
                 "emotion": emotion,
@@ -200,8 +216,8 @@ class ProactiveSendMixin:
             await self._note_voice_expression_decision(
                 scope=target_scope,
                 channel="语音",
-                source="闲时回复",
-                reason="闲时消息设置允许语音且概率命中，本次直接用语音靠近。",
+                source=source_label,
+                reason=f"{source_label}设置允许语音且概率命中，本次直接使用语音。",
                 result="已发送",
                 text=reply_text,
                 emotion=emotion,
@@ -210,12 +226,12 @@ class ProactiveSendMixin:
             )
             return True
         except Exception as exc:
-            logger.debug(f"{LOG_PREFIX} 闲时消息语音发送失败，改用文字：{exc}")
+            logger.debug(f"{LOG_PREFIX} {source_label}语音发送失败，改用文字：{exc}")
             await self._note_voice_expression_decision(
                 scope=target_scope,
                 channel="文字",
-                source="闲时回复",
-                reason=f"闲时消息语音发送失败，改用文字：{exc}",
+                source=source_label,
+                reason=f"{source_label}语音发送失败，改用文字：{exc}",
                 result="改用文字",
                 text=reply_text,
                 emotion=emotion,

@@ -226,14 +226,14 @@ class SemanticSegmentRuntimeMixin:
         plan: SemanticSegmentPlan,
         max_segments: int,
     ) -> SemanticSegmentPlan:
-        """Bundle overflow semantic parts into the final outgoing message.
+        """将超出数量限制的语义分段合并到最后一条待发送消息。
 
         Args:
-            plan: Valid semantic plan before delivery limiting.
-            max_segments: Maximum number of outgoing text messages.
+            plan: 限制发送数量前的有效语义分段方案。
+            max_segments: 允许发送的文本消息数量上限。
 
         Returns:
-            A plan capped to the delivery limit with readable boundaries.
+            已限制发送数量且保持可读边界的语义分段方案。
         """
         limit = max(1, int(max_segments or 1))
         if len(plan.segments) <= limit:
@@ -697,7 +697,7 @@ class SemanticSegmentRuntimeMixin:
         ]
         semantic = plan.valid and len(plan.segments) > 1
         logger.debug(
-            f"{LOG_PREFIX} 表达节奏：场景={'群聊' if is_group else '私聊'}；"
+            f"{LOG_PREFIX} 表达节奏：通道={'群聊' if is_group else '私聊'}；"
             f"模型语义分段={'是' if semantic else '否'}；"
             f"长度={sum(compact_lengths)}"
         )
@@ -905,6 +905,20 @@ class SemanticSegmentRuntimeMixin:
             )
             return False
         if outcome.status == "cancelled":
+            marker = getattr(self, "mark_structured_pending_bot_text", None)
+            if callable(marker) and outcome.sent_count > 0:
+                marker(
+                    event,
+                    "\n".join(
+                        segment.text for segment in pending[: outcome.sent_count]
+                    ),
+                )
+            capture = getattr(self, "capture_chat_memory_bot_reply", None)
+            if callable(capture) and outcome.sent_count > 0:
+                try:
+                    await capture(event)
+                except Exception as exc:
+                    logger.warning(f"{LOG_PREFIX} 已发送分段记忆入队失败：{exc}")
             self._semantic_segment_metrics["cancelled"] += 1
             logger.debug(
                 f"{LOG_PREFIX} 模型语义分段后续分段已取消：已发送 "
@@ -974,12 +988,24 @@ class SemanticSegmentRuntimeMixin:
             )
             return False
         try:
+            marker = getattr(self, "mark_structured_pending_bot_text", None)
+            if callable(marker):
+                marker(event, "\n".join(segment.text for segment in pending))
             reaction = getattr(self, "note_tool_reaction_message_sent", None)
             if callable(reaction):
                 await reaction(event)
             scheduler = getattr(self, "schedule_pending_chat_state_refresh", None)
             if callable(scheduler):
                 scheduler(event)
+            note_structured = getattr(self, "note_structured_sent_result", None)
+            if callable(note_structured):
+                note_structured(event)
+            capture = getattr(self, "capture_chat_memory_bot_reply", None)
+            if callable(capture):
+                try:
+                    await capture(event)
+                except Exception as exc:
+                    logger.warning(f"{LOG_PREFIX} 分段回复记忆入队失败：{exc}")
             self._semantic_segment_metrics["sent"] += 1
             logger.debug(
                 f"{LOG_PREFIX} 语义分段发送：{outcome.sent_count} 段；"

@@ -824,6 +824,13 @@ h2::before {
   margin-top: 3px;
 }
 
+.today-week-appearance-grooming {
+  display: grid;
+  justify-items: start;
+  gap: 4px;
+  margin-top: 4px;
+}
+
 .today-week-label {
   display: inline-flex;
   margin-right: 6px;
@@ -1202,31 +1209,36 @@ h2::before {
   background: rgba(255, 255, 255, 0.48);
 }
 
-.emoji-stats {
+.emoji-stats,
+.closet-stats {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(82px, 1fr));
   gap: 5px;
 }
 
-.emoji-stat {
+.emoji-stat,
+.closet-stat {
   border: 1px solid rgba(239, 200, 218, 0.78);
   border-radius: 8px;
   padding: 6px 8px;
   background: rgba(255, 255, 255, 0.48);
 }
 
-[data-theme="dark"] .emoji-stat {
+[data-theme="dark"] .emoji-stat,
+[data-theme="dark"] .closet-stat {
   background: rgba(255, 255, 255, 0.04);
 }
 
-.emoji-stat-label {
+.emoji-stat-label,
+.closet-stat-label {
   display: block;
   color: var(--muted);
   font-size: 11px;
   font-weight: 750;
 }
 
-.emoji-stat strong {
+.emoji-stat strong,
+.closet-stat strong {
   display: block;
   margin-top: 1px;
   font-size: 17px;
@@ -2165,6 +2177,7 @@ h2::before {
   .view-switch,
   .meters,
   .emoji-stats,
+  .closet-stats,
   .health-check-list,
   .action-form,
   .config-rail,

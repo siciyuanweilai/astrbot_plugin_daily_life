@@ -151,7 +151,7 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
         lines = [
             "\n[HiddenChatDecision]",
             f"- 当前回应重心：{focus}",
-            f"- 场景：{scope_label}。",
+            f"- 消息传输范围：{scope_label}；只用于表达长度和发送节奏，不代表现实距离。",
             "- 普通聊天使用纯文本，不使用 Markdown 加粗、斜体、删除线或标题格式。",
         ]
         if limit > 0:
@@ -1040,6 +1040,15 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
             )
             return False
         if outcome.status == "cancelled":
+            marker = getattr(self, "mark_structured_pending_bot_text", None)
+            if callable(marker) and outcome.sent_count > 0:
+                marker(event, "\n".join(segments[: outcome.sent_count]))
+            capture = getattr(self, "capture_chat_memory_bot_reply", None)
+            if callable(capture) and outcome.sent_count > 0:
+                try:
+                    await capture(event)
+                except Exception as exc:
+                    logger.warning(f"{LOG_PREFIX} 已发送分段记忆入队失败：{exc}")
             logger.debug(
                 f"{LOG_PREFIX} 自然分段后续分段已取消：已发送 "
                 f"{outcome.sent_count}/{len(segments)} 条。"
@@ -1051,6 +1060,9 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
             )
             return False
         try:
+            marker = getattr(self, "mark_structured_pending_bot_text", None)
+            if callable(marker):
+                marker(event, "\n".join(segments))
             reaction = getattr(self, "note_tool_reaction_message_sent", None)
             if callable(reaction):
                 await reaction(event)
@@ -1058,6 +1070,12 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
             if callable(scheduler):
                 scheduler(event)
             self._note_chat_style_segmented_send(event)
+            capture = getattr(self, "capture_chat_memory_bot_reply", None)
+            if callable(capture):
+                try:
+                    await capture(event)
+                except Exception as exc:
+                    logger.warning(f"{LOG_PREFIX} 分段回复记忆入队失败：{exc}")
             logger.debug(
                 f"{LOG_PREFIX} 自然分段发送：{len(segments)} 段；"
                 f"{self._chat_style_pending_trace(pending)}"
@@ -1130,7 +1148,7 @@ class ChatStyleRuntimeMixin(ChatDelayMixin):
             else "private"
         )
         logger.debug(
-            f"{LOG_PREFIX} 表达节奏：场景={'群聊' if scope == 'group' else '私聊'}；"
+            f"{LOG_PREFIX} 表达节奏：通道={'群聊' if scope == 'group' else '私聊'}；"
             f"自然分段={'是' if changed else '否'}；"
             f"长度={len(self._chat_style_compact_text(reply_text))}"
         )

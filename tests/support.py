@@ -3,11 +3,10 @@
 import asyncio
 import copy
 import datetime
-import time
 import sys
+import time
 import types
 from pathlib import Path
-
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 if str(PLUGIN_ROOT) not in sys.path:
@@ -325,11 +324,24 @@ def _install_stubs():
 
 _install_stubs()
 
-from core.interface import DailyLifeCommandCenter, DailyLifeDashboardMixin  # noqa: E402
-from core.sources import ContactNameResolver  # noqa: E402
-from core.clock import today as life_today  # noqa: E402
+from core.archive import LifeArchive  # noqa: E402
+from core.archive.categories import (  # noqa: E402
+    STORAGE_CATEGORIES,
+    normalize_storage_category,
+)
 from core.archive.promises import _COMMITMENT_SOURCE_PRIORITY  # noqa: E402
-from astrbot.core.provider.entities import ProviderRequest  # noqa: E402
+from core.clock import today as life_today  # noqa: E402
+from core.config.options import LifeSettings  # noqa: E402
+from core.interface import DailyLifeCommandCenter, DailyLifeDashboardMixin  # noqa: E402
+from core.life import LifeBackgroundComposer  # noqa: E402
+from core.life.tools import (  # noqa: E402
+    get_current_timeline_status,
+    get_time_period,
+    get_week_id,
+    resolve_business_now,
+    resolve_daily_hint,
+    resolve_daily_suggested,
+)
 from core.models import (  # noqa: E402
     ActionDecisionRecord,
     BehaviorFeedbackRecord,
@@ -337,8 +349,10 @@ from core.models import (  # noqa: E402
     BehaviorSceneRecord,
     ChatSummaryRecord,
     CommitmentRecord,
+    DailyReviewRecord,
     DayRecord,
     EmojiAssetRecord,
+    EmotionArcRecord,
     EventRecord,
     ExpressionIntentRecord,
     ExpressionProfileRecord,
@@ -346,8 +360,6 @@ from core.models import (  # noqa: E402
     FocusSlotRecord,
     FocusTargetRecord,
     GroupEnvironmentRecord,
-    DailyReviewRecord,
-    EmotionArcRecord,
     LifeDecisionRecord,
     LifeEpisodeRecord,
     LifeEventRecord,
@@ -359,42 +371,34 @@ from core.models import (  # noqa: E402
     MemoryCorrectionRecord,
     MemoryDecisionLinkRecord,
     MemoryEntityRecord,
-    MemoryEvidenceRecord,
     MemoryEpisodeClusterRecord,
+    MemoryEvidenceRecord,
     MemoryMaintenanceRecord,
     MessageVisibilityRecord,
     PhysiologicalRhythmLogRecord,
     PlaceRecord,
     PreferenceRecord,
+    RelationshipContactRecord,
     RelationshipNote,
     RelationshipPoint,
     RelationshipRecord,
-    RelationshipContactRecord,
     ReplyEffectRecord,
     SessionMidSummaryRecord,
+    StyleCatalogItemRecord,
     TemporaryExpressionStateRecord,
     TimelineItem,
     WeekPlanRecord,
 )
-from core.life import LifeBackgroundComposer  # noqa: E402
 from core.runtime import DailyLifeRuntime  # noqa: E402
-from core.config.options import LifeSettings  # noqa: E402
-from core.archive import LifeArchive  # noqa: E402
-from core.archive.categories import STORAGE_CATEGORIES, normalize_storage_category  # noqa: E402
-from core.life.tools import (  # noqa: E402
-    get_current_timeline_status,
-    get_time_period,
-    get_week_id,
-    resolve_business_now,
-    resolve_daily_hint,
-    resolve_daily_suggested,
-)
+from core.sources import ContactNameResolver  # noqa: E402
+
+from astrbot.core.provider.entities import ProviderRequest  # noqa: E402
 
 
 class ConversationManager:
     def __init__(self, conversations=None):
         self.conversations = conversations or {}
-        self.current_ids = {session_id: "current" for session_id in self.conversations}
+        self.current_ids = dict.fromkeys(self.conversations, "current")
         self.calls = []
         self.next_id = 1
 
@@ -650,6 +654,8 @@ class DataManager:
         self.next_expression_intent_id = 1
         self.emoji_assets = {}
         self.next_emoji_asset_id = 1
+        self.style_catalog_items = {}
+        self.next_style_catalog_item_id = 1
         self.video_insights = {}
         self.life_terms = {}
         self.next_life_term_id = 1
@@ -2443,6 +2449,89 @@ class DataManager:
         item.used_count += 1
         item.last_used_at = str(used_at or "")
         return True
+
+    async def upsert_style_catalog_item(self, record):
+        item = StyleCatalogItemRecord.from_value(record)
+        if not item:
+            return None
+        existing = next(
+            (
+                current
+                for current in self.style_catalog_items.values()
+                if current.kind == item.kind
+                and current.source_image_hash == item.source_image_hash
+            ),
+            None,
+        )
+        if existing:
+            item.id = existing.id
+            item.preference_score = existing.preference_score
+            item.feedback_count = existing.feedback_count
+            item.seen_count = existing.seen_count + 1
+            item.last_used_at = existing.last_used_at
+        elif not item.id:
+            item.id = self.next_style_catalog_item_id
+            self.next_style_catalog_item_id += 1
+        self.style_catalog_items[item.id] = item
+        return item
+
+    async def get_style_catalog_item(self, item_id):
+        return self.style_catalog_items.get(int(item_id or 0))
+
+    async def get_style_catalog_items(
+        self, *, kind="", status="active", ids=(), source_scope="", limit=12
+    ):
+        values = list(self.style_catalog_items.values())
+        if kind:
+            values = [item for item in values if item.kind == kind]
+        if status:
+            values = [item for item in values if item.status == status]
+        if ids:
+            id_set = {int(item) for item in ids}
+            values = [item for item in values if item.id in id_set]
+        if source_scope:
+            values = [item for item in values if item.source_scope == source_scope]
+        values.sort(key=lambda item: (item.preference_score, item.id), reverse=True)
+        return values[:limit] if limit > 0 else values
+
+    async def set_style_catalog_status(self, item_ids, status):
+        updated = 0
+        for item_id in item_ids:
+            item = self.style_catalog_items.get(int(item_id or 0))
+            if item:
+                item.status = str(status or item.status)
+                updated += 1
+        return updated
+
+    async def add_style_catalog_feedback(
+        self,
+        item_id,
+        *,
+        scope="",
+        feedback="",
+        sentiment="neutral",
+        score_delta=0.0,
+        reason="",
+        status="",
+    ):
+        del scope, feedback, sentiment, reason
+        item = self.style_catalog_items.get(int(item_id or 0))
+        if not item:
+            return None
+        item.preference_score = max(
+            -2.0, min(float(item.preference_score or 0.0) + float(score_delta or 0.0), 2.0)
+        )
+        item.feedback_count += 1
+        if status:
+            item.status = str(status)
+        return item
+
+    async def delete_style_catalog_items(self, item_ids):
+        deleted = 0
+        for item_id in {int(value) for value in item_ids if int(value or 0) > 0}:
+            if self.style_catalog_items.pop(item_id, None) is not None:
+                deleted += 1
+        return deleted
 
     def _prune_video_insights(self, ttl_seconds=7200, max_items=60):
         now = time.time()

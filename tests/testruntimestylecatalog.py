@@ -5,10 +5,10 @@ from io import BytesIO
 from pathlib import Path
 
 import support  # noqa: F401 - 安装轻量级 AstrBot 测试替身
-from PIL import Image
 from core.archive import LifeArchive
-from core.life.style_catalog import StyleCatalogMixin
-from core.runtime.channel.style_catalog import RuntimeStyleCatalogMixin
+from core.life.inspiration import StyleCatalogMixin
+from core.runtime.channel.stylist import RuntimeStyleCatalogMixin
+from PIL import Image
 
 
 class _StyleCatalogRuntime(RuntimeStyleCatalogMixin):
@@ -103,6 +103,26 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
         with Image.open(BytesIO(rendered)) as image:
             self.assertEqual(image.format, "JPEG")
             self.assertEqual(image.mode, "RGB")
+
+    def test_style_perceptual_hash_is_stable_for_resized_copy(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            first = Path(tmpdir) / "first.png"
+            second = Path(tmpdir) / "second.jpg"
+            image = Image.new("RGB", (80, 120), "white")
+            for x in range(20, 60):
+                for y in range(30, 90):
+                    image.putpixel((x, y), (80, 160, 120))
+            image.save(first)
+            image.resize((160, 240), Image.Resampling.LANCZOS).save(second)
+
+            first_hash = RuntimeStyleCatalogMixin._style_perceptual_hash(str(first))
+            second_hash = RuntimeStyleCatalogMixin._style_perceptual_hash(str(second))
+            self.assertLessEqual(
+                RuntimeStyleCatalogMixin._style_hash_distance(
+                    first_hash, second_hash
+                ),
+                5,
+            )
 
     async def test_browse_keeps_trying_until_requested_count_is_saved(self):
         empty = {"outfit": {"present": False}, "hair": {"present": False}}
@@ -240,7 +260,7 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 archive.close()
 
-    async def test_learning_saves_outfit_and_hair_without_touching_current_day(self):
+    async def test_learning_splits_visible_style_categories_without_touching_day(self):
         payload = {
             "outfit": {
                 "present": True,
@@ -249,9 +269,35 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 "colors": ["浅绿色", "米白色"],
                 "footwear": ["白色低帮鞋"],
                 "accessories": ["银色细链项链"],
-                "makeup": ["清透底妆"],
-                "nails": ["透明短甲"],
                 "scenes": ["日常外出"],
+                "confidence": 0.9,
+            },
+            "top": {
+                "present": True,
+                "title": "测试浅绿短袖",
+                "description": "浅绿色短袖上衣",
+                "colors": ["浅绿色"],
+                "confidence": 0.9,
+            },
+            "bottom": {
+                "present": True,
+                "title": "测试米白直筒裤",
+                "description": "米白色直筒长裤",
+                "colors": ["米白色"],
+                "confidence": 0.9,
+            },
+            "footwear": {
+                "present": True,
+                "title": "测试白色低帮鞋",
+                "description": "白色低帮鞋",
+                "items": ["低帮鞋"],
+                "confidence": 0.9,
+            },
+            "accessory": {
+                "present": True,
+                "title": "测试银色细链",
+                "description": "银色细链项链",
+                "items": ["项链"],
                 "confidence": 0.9,
             },
             "hair": {
@@ -260,6 +306,20 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 "description": "中长发低位挽成松散丸子并保留碎发",
                 "scenes": ["日常外出"],
                 "confidence": 0.8,
+            },
+            "makeup": {
+                "present": True,
+                "title": "测试清透妆容",
+                "description": "清透底妆搭自然唇色",
+                "finish": "清透",
+                "confidence": 0.86,
+            },
+            "nails": {
+                "present": True,
+                "title": "测试透明短甲",
+                "description": "透明光泽短圆甲",
+                "shape": "短圆甲",
+                "confidence": 0.84,
             },
         }
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -270,36 +330,74 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
             image_path.write_bytes(b"test-image")
             try:
                 result = await runtime.life_style_learn(
-                    event, str(image_path), kind="both"
+                    event, str(image_path), kind="auto"
                 )
                 items = await archive.get_style_catalog_items(limit=10)
 
                 self.assertIn("已加入视觉衣橱候选", str(result))
-                self.assertIn("美甲：透明短甲", str(result))
-                self.assertEqual({item.kind for item in items}, {"outfit", "hair"})
+                self.assertIn("美甲", str(result))
+                self.assertEqual(
+                    {item.kind for item in items},
+                    {
+                        "outfit",
+                        "top",
+                        "bottom",
+                        "footwear",
+                        "accessory",
+                        "hair",
+                        "makeup",
+                        "nails",
+                    },
+                )
+                self.assertTrue(all(item.status == "active" for item in items))
                 self.assertIsNone(await archive.get_day("2026-08-11"))
                 outfit = next(item for item in items if item.kind == "outfit")
                 self.assertNotIn("丸子", outfit.description)
                 self.assertEqual(outfit.attributes["footwear"], ["白色低帮鞋"])
                 self.assertEqual(outfit.attributes["accessories"], ["银色细链项链"])
-                self.assertEqual(outfit.attributes["makeup"], ["清透底妆"])
-                self.assertEqual(outfit.attributes["nails"], ["透明短甲"])
+                makeup = next(item for item in items if item.kind == "makeup")
+                nails = next(item for item in items if item.kind == "nails")
+                self.assertEqual(makeup.attributes["finish"], "清透")
+                self.assertEqual(nails.attributes["shape"], "短圆甲")
             finally:
                 archive.close()
 
-    async def test_adopted_reference_exposes_makeup_and_nails(self):
+    async def test_low_confidence_learning_waits_for_manual_review(self):
+        payload = {
+            "outfit": {
+                "present": True,
+                "title": "测试模糊造型",
+                "description": "浅色上衣搭短裤",
+                "confidence": 0.55,
+            }
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(f"{tmpdir}/daily_life.db")
+            runtime = _StyleCatalogRuntime(archive, payload)
+            event = types.SimpleNamespace(unified_msg_origin="private:test-user")
+            image_path = Path(tmpdir) / "test-style.jpg"
+            image_path.write_bytes(b"test-image")
+            try:
+                await runtime.life_style_learn(event, str(image_path), kind="outfit")
+                items = await archive.get_style_catalog_items(status="", limit=10)
+                self.assertEqual(items[0].status, "pending")
+                self.assertEqual(await archive.get_style_catalog_items(limit=10), [])
+            finally:
+                archive.close()
+
+    async def test_adopted_references_expose_independent_appearance_components(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             archive = LifeArchive(f"{tmpdir}/daily_life.db")
             item = await archive.upsert_style_catalog_item(
                 {
                     "kind": "outfit",
-                    "title": "测试美甲造型",
+                    "title": "测试浅色造型",
                     "description": "浅色日常造型",
                     "source_scope": "private:test-user",
                     "source_image_hash": "d" * 64,
                     "attributes": {
-                        "makeup": ["清透底妆"],
-                        "nails": ["奶白色短圆甲"],
+                        "makeup": ["测试旧版妆容"],
+                        "nails": ["测试旧版美甲"],
                     },
                     "confidence": 0.9,
                 }
@@ -311,17 +409,44 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
                     "description": "低马尾",
                     "source_scope": "private:test-user",
                     "source_image_hash": "e" * 64,
-                    "attributes": {"nails": ["不应进入当前美甲"]},
+                    "attributes": {},
+                    "confidence": 0.9,
+                }
+            )
+            makeup = await archive.upsert_style_catalog_item(
+                {
+                    "kind": "makeup",
+                    "title": "测试清透妆容",
+                    "description": "清透底妆",
+                    "source_scope": "private:test-user",
+                    "source_image_hash": "f" * 64,
+                    "confidence": 0.9,
+                }
+            )
+            nails = await archive.upsert_style_catalog_item(
+                {
+                    "kind": "nails",
+                    "title": "测试奶白短甲",
+                    "description": "奶白色短圆甲",
+                    "source_scope": "private:test-user",
+                    "source_image_hash": "1" * 64,
                     "confidence": 0.9,
                 }
             )
             runtime = _StyleCatalogComposer(archive)
             try:
                 appearance = await runtime._style_catalog_reference_appearance(
-                    [item.id, hair.id]
+                    [item.id, hair.id, makeup.id, nails.id]
                 )
-                self.assertEqual(appearance["makeup"], "清透底妆")
-                self.assertEqual(appearance["nails"], "奶白色短圆甲")
+                self.assertEqual(appearance["outfit"], "浅色日常造型")
+                self.assertEqual(appearance["hair_style"], "测试发型")
+                self.assertEqual(appearance["hair"], "低马尾")
+                self.assertEqual(
+                    appearance["makeup"], "测试旧版妆容；清透底妆"
+                )
+                self.assertEqual(
+                    appearance["nails"], "测试旧版美甲；奶白色短圆甲"
+                )
             finally:
                 archive.close()
 

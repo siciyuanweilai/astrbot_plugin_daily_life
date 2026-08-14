@@ -347,6 +347,12 @@ class PageViewMixin:
         temporal_facts = await self._page_archive_records(
             "get_temporal_facts", limit=40
         )
+        temporal_facts = [
+            item
+            for item in temporal_facts
+            if str(getattr(item, "predicate", "") or "").strip()
+            != "interaction_mode"
+        ]
         reflections = self._page_records_for_date(
             await self._page_archive_records("get_reflections", limit=20),
             target_date,

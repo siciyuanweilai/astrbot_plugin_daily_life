@@ -5,14 +5,12 @@ import json
 import sqlite3
 from collections.abc import Callable, Mapping
 
-from .tables.cognition import COGNITION_INDEX_SQL, COGNITION_SQL
-from .tables.domains import DOMAIN_INDEX_SQL, DOMAIN_SQL
-from .tables.indexes import INDEX_SQL
-from .tables.world import STYLE_CATALOG_SQL
+from .tables.living import DOMAIN_INDEX_SQL, DOMAIN_SQL
+from .tables.mind import COGNITION_INDEX_SQL, COGNITION_SQL
 
 SCHEMA_VERSION_KEY = "schema_version"
 BASELINE_SCHEMA_VERSION = 1
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 LEGACY_BASELINE_SCHEMA_FINGERPRINT = (
     "9e6243276bf6bd509f6019502e30192310da4197838bd0f7d478f0100f8750a5"
 )
@@ -48,6 +46,67 @@ CURRENT_SCHEMA_FINGERPRINT = (
 )
 
 MigrationStep = Callable[[sqlite3.Connection], None]
+
+# 已发布迁移必须使用当时的固定 DDL，不能引用会随当前版本变化的建表常量。
+STYLE_CATALOG_V12_SQL = """
+CREATE TABLE IF NOT EXISTS style_catalog_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL CHECK(kind IN ('outfit', 'hair')),
+            title TEXT NOT NULL DEFAULT '',
+            description TEXT NOT NULL DEFAULT '',
+            image_path TEXT NOT NULL DEFAULT '',
+            source_url TEXT NOT NULL DEFAULT '',
+            source_scope TEXT NOT NULL DEFAULT '',
+            source_kind TEXT NOT NULL DEFAULT 'user_image',
+            source_image_hash TEXT NOT NULL,
+            attributes_json TEXT NOT NULL DEFAULT '{}',
+            confidence REAL NOT NULL DEFAULT 0,
+            preference_score REAL NOT NULL DEFAULT 0,
+            feedback_count INTEGER NOT NULL DEFAULT 0,
+            seen_count INTEGER NOT NULL DEFAULT 1,
+            status TEXT NOT NULL DEFAULT 'active',
+            last_used_at TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(source_image_hash, kind)
+        );
+CREATE TABLE IF NOT EXISTS style_catalog_feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_id INTEGER NOT NULL,
+            scope TEXT NOT NULL DEFAULT '',
+            feedback TEXT NOT NULL DEFAULT '',
+            sentiment TEXT NOT NULL DEFAULT 'neutral',
+            score_delta REAL NOT NULL DEFAULT 0,
+            reason TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(item_id) REFERENCES style_catalog_items(id) ON DELETE CASCADE
+        );
+"""
+
+STYLE_CATALOG_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_style_catalog_active
+ON style_catalog_items(kind, status, preference_score DESC, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_style_catalog_scope_recent
+ON style_catalog_items(source_scope, updated_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_style_catalog_feedback_item
+ON style_catalog_feedback(item_id, id DESC);
+"""
+
+# 指纹只覆盖表、字段和索引，无法区分仅修改 CHECK 约束的 v12/v13。
+# 因此相同指纹选择最早的安全版本，再执行后续幂等迁移完成校准。
+KNOWN_SCHEMA_VERSIONS: dict[str, int] = {
+    LEGACY_BASELINE_SCHEMA_FINGERPRINT: 1,
+    BASELINE_SCHEMA_FINGERPRINT: 1,
+    PREVIOUS_BASELINE_SCHEMA_FINGERPRINT: 1,
+    PREVIOUS_CURRENT_SCHEMA_FINGERPRINT: 4,
+    PREVIOUS_V5_SCHEMA_FINGERPRINT: 5,
+    PREVIOUS_V6_SCHEMA_FINGERPRINT: 6,
+    PREVIOUS_V8_SCHEMA_FINGERPRINT: 7,
+    PREVIOUS_V9_SCHEMA_FINGERPRINT: 9,
+    PREVIOUS_V10_SCHEMA_FINGERPRINT: 10,
+    PREVIOUS_V11_SCHEMA_FINGERPRINT: 11,
+    CURRENT_SCHEMA_FINGERPRINT: 12,
+}
 
 
 def _migrate_timeline_execution_state(conn: sqlite3.Connection) -> None:
@@ -325,7 +384,7 @@ def _migrate_travel_detail(conn: sqlite3.Connection) -> None:
 def _migrate_style_catalog(conn: sqlite3.Connection) -> None:
     """创建视觉衣橱候选、反馈和检索索引。"""
 
-    for script in (STYLE_CATALOG_SQL, INDEX_SQL):
+    for script in (STYLE_CATALOG_V12_SQL, STYLE_CATALOG_INDEX_SQL):
         buffer = ""
         for line in script.splitlines(keepends=True):
             buffer += line
@@ -336,6 +395,97 @@ def _migrate_style_catalog(conn: sqlite3.Connection) -> None:
                     conn.execute(statement)
         if buffer.strip():
             raise ValueError("视觉衣橱迁移脚本存在不完整语句")
+
+
+def _migrate_style_catalog_categories(conn: sqlite3.Connection) -> None:
+    """扩展视觉衣橱类别，并完整保留候选编号与反馈记录。"""
+
+    conn.execute("DROP TABLE IF EXISTS style_catalog_feedback_v13")
+    conn.execute("DROP TABLE IF EXISTS style_catalog_items_v13")
+    conn.execute(
+        """
+        CREATE TABLE style_catalog_items_v13 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL CHECK(kind IN (
+                'outfit', 'top', 'bottom', 'footwear',
+                'accessory', 'hair', 'makeup', 'nails'
+            )),
+            title TEXT NOT NULL DEFAULT '',
+            description TEXT NOT NULL DEFAULT '',
+            image_path TEXT NOT NULL DEFAULT '',
+            source_url TEXT NOT NULL DEFAULT '',
+            source_scope TEXT NOT NULL DEFAULT '',
+            source_kind TEXT NOT NULL DEFAULT 'user_image',
+            source_image_hash TEXT NOT NULL,
+            attributes_json TEXT NOT NULL DEFAULT '{}',
+            confidence REAL NOT NULL DEFAULT 0,
+            preference_score REAL NOT NULL DEFAULT 0,
+            feedback_count INTEGER NOT NULL DEFAULT 0,
+            seen_count INTEGER NOT NULL DEFAULT 1,
+            status TEXT NOT NULL DEFAULT 'active',
+            last_used_at TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(source_image_hash, kind)
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO style_catalog_items_v13(
+            id, kind, title, description, image_path, source_url, source_scope,
+            source_kind, source_image_hash, attributes_json, confidence,
+            preference_score, feedback_count, seen_count, status, last_used_at,
+            created_at, updated_at
+        )
+        SELECT id, kind, title, description, image_path, source_url, source_scope,
+               source_kind, source_image_hash, attributes_json, confidence,
+               preference_score, feedback_count, seen_count, status, last_used_at,
+               created_at, updated_at
+        FROM style_catalog_items
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE style_catalog_feedback_v13 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_id INTEGER NOT NULL,
+            scope TEXT NOT NULL DEFAULT '',
+            feedback TEXT NOT NULL DEFAULT '',
+            sentiment TEXT NOT NULL DEFAULT 'neutral',
+            score_delta REAL NOT NULL DEFAULT 0,
+            reason TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(item_id) REFERENCES style_catalog_items_v13(id)
+                ON DELETE CASCADE
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO style_catalog_feedback_v13(
+            id, item_id, scope, feedback, sentiment, score_delta, reason, created_at
+        )
+        SELECT id, item_id, scope, feedback, sentiment, score_delta, reason, created_at
+        FROM style_catalog_feedback
+        """
+    )
+    conn.execute("DROP TABLE style_catalog_feedback")
+    conn.execute("DROP TABLE style_catalog_items")
+    conn.execute("ALTER TABLE style_catalog_items_v13 RENAME TO style_catalog_items")
+    conn.execute(
+        "ALTER TABLE style_catalog_feedback_v13 RENAME TO style_catalog_feedback"
+    )
+    buffer = ""
+    for line in STYLE_CATALOG_INDEX_SQL.splitlines(keepends=True):
+        buffer += line
+        if sqlite3.complete_statement(buffer):
+            statement = buffer.strip()
+            buffer = ""
+            if statement:
+                conn.execute(statement)
+    if buffer.strip():
+        raise ValueError("视觉衣橱索引迁移脚本存在不完整语句")
 
 
 # 键是迁移完成后的目标版本；每个步骤只负责从前一版本升级一次。
@@ -351,6 +501,7 @@ MIGRATIONS: dict[int, MigrationStep] = {
     10: _migrate_timeline_location_facts,
     11: _migrate_travel_detail,
     12: _migrate_style_catalog,
+    13: _migrate_style_catalog_categories,
 }
 
 
@@ -387,20 +538,14 @@ def schema_fingerprint(conn: sqlite3.Connection) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def infer_schema_version(conn: sqlite3.Connection) -> int | None:
+    """根据已发布结构指纹推断无版本数据库的最早安全版本。"""
+
+    return KNOWN_SCHEMA_VERSIONS.get(schema_fingerprint(conn))
+
+
 def is_baseline_schema(conn: sqlite3.Connection) -> bool:
-    return schema_fingerprint(conn) in {
-        BASELINE_SCHEMA_FINGERPRINT,
-        PREVIOUS_BASELINE_SCHEMA_FINGERPRINT,
-        PREVIOUS_CURRENT_SCHEMA_FINGERPRINT,
-        PREVIOUS_V5_SCHEMA_FINGERPRINT,
-        PREVIOUS_V6_SCHEMA_FINGERPRINT,
-        PREVIOUS_V8_SCHEMA_FINGERPRINT,
-        PREVIOUS_V9_SCHEMA_FINGERPRINT,
-        PREVIOUS_V10_SCHEMA_FINGERPRINT,
-        PREVIOUS_V11_SCHEMA_FINGERPRINT,
-        LEGACY_BASELINE_SCHEMA_FINGERPRINT,
-        CURRENT_SCHEMA_FINGERPRINT,
-    }
+    return infer_schema_version(conn) is not None
 
 
 def read_schema_version(conn: sqlite3.Connection) -> int | None:
@@ -485,6 +630,7 @@ def apply_migrations(
 __all__ = [
     "BASELINE_SCHEMA_FINGERPRINT",
     "CURRENT_SCHEMA_FINGERPRINT",
+    "KNOWN_SCHEMA_VERSIONS",
     "BASELINE_SCHEMA_VERSION",
     "MIGRATIONS",
     "PREVIOUS_BASELINE_SCHEMA_FINGERPRINT",
@@ -499,6 +645,7 @@ __all__ = [
     "MigrationStep",
     "SchemaMigrationError",
     "apply_migrations",
+    "infer_schema_version",
     "is_baseline_schema",
     "read_schema_version",
     "schema_fingerprint",

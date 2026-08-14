@@ -16,7 +16,7 @@ const referencePreviewCache = new Map();
 const MODEL_SECTION_KEY = "__model_provider_settings";
 const MODEL_SECTION_SPEC = {
   description: "大语言模型",
-  hint: "统一调整生成、状态、穿搭、复盘、邀约、约定、记忆、语义向量、图片轻量润色和视觉等功能使用的模型。每项留空都直接使用当前默认模型。",
+  hint: "统一调整生成、状态、穿搭、复盘、邀约、约定、记忆、语义向量、图片导演、图片轻量润色和视觉等功能使用的模型。每项留空都直接使用当前默认模型。",
 };
 const CONFIG_SECTION_ORDER = [
   "rhythm_config",
@@ -232,6 +232,7 @@ const CONFIG_SECTION_FIELD_GROUPS = new Map([
       hint: "控制图片生成总开关，并管理当前角色和好友的身份参考。",
       fields: [
         "image_generation_config.enabled",
+        "image_generation_config.image_director_provider",
         "image_generation_config.prompt_rewrite_provider",
         "image_generation_config.character_reference_policy",
         "image_generation_config.character_reference_images",

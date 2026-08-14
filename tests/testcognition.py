@@ -228,6 +228,51 @@ class CognitionArchiveTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 archive.close()
 
+    async def test_audited_batch_can_refine_same_turn_interaction_decision(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(Path(tmpdir) / "daily_life.db")
+            try:
+                current = await archive.write_temporal_fact(
+                    "ADD",
+                    {
+                        "scope": "private:synthetic",
+                        "subject": "synthetic-profile",
+                        "predicate": "interaction_mode",
+                        "object_value": {"mode": "remote"},
+                        "valid_from": "2026-08-14T16:57:00",
+                        "source": "chat_turn_semantic",
+                    },
+                )
+                unaudited = await archive.write_temporal_fact(
+                    "UPDATE",
+                    {
+                        "scope": "private:synthetic",
+                        "subject": "synthetic-profile",
+                        "predicate": "interaction_mode",
+                        "object_value": {"mode": "co_present"},
+                        "valid_from": "2026-08-14 16:57:00",
+                        "source": "chat_batch",
+                    },
+                )
+                audited = await archive.write_temporal_fact(
+                    "UPDATE",
+                    {
+                        "scope": "private:synthetic",
+                        "subject": "synthetic-profile",
+                        "predicate": "interaction_mode",
+                        "object_value": {"mode": "co_present"},
+                        "valid_from": "2026-08-14 16:57:00",
+                        "source": "chat_batch_audited",
+                    },
+                )
+
+                self.assertEqual(unaudited.id, current.id)
+                self.assertEqual(unaudited.object_value, {"mode": "remote"})
+                self.assertNotEqual(audited.id, current.id)
+                self.assertEqual(audited.object_value, {"mode": "co_present"})
+            finally:
+                archive.close()
+
     async def test_reflection_promotes_only_with_threshold_and_evidence(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             archive = LifeArchive(Path(tmpdir) / "daily_life.db")

@@ -138,6 +138,7 @@ def _image_channels(value: Any) -> list[ImageApiChannel]:
 class ImageGenerationSettings:
     enabled: bool = False
     prompt_rewrite_provider: str = ""
+    image_director_provider: str = ""
     photo_suite_planning_timeout_seconds: int = 45
     text_channels: list[ImageApiChannel] = field(default_factory=list)
     edit_channels: list[ImageApiChannel] = field(default_factory=list)
@@ -167,6 +168,9 @@ class ImageGenerationSettings:
             enabled=as_bool(data.get("enabled", False), False),
             prompt_rewrite_provider=as_str(
                 data.get("prompt_rewrite_provider", "")
+            ).strip(),
+            image_director_provider=as_str(
+                data.get("image_director_provider", "")
             ).strip(),
             photo_suite_planning_timeout_seconds=as_int(
                 data.get("photo_suite_planning_timeout_seconds", 45), 45, 10, 120

@@ -15,6 +15,7 @@ from astrbot.core.star.context import Context
 from ...archive import LifeArchive
 from ...config.options import LifeSettings
 from ...life import LifeBackgroundComposer, LifeDomainService, WeatherClient
+from ...life.reliability import NonRetryableProviderError
 from ...media import LifeMediaService
 from ...paths import runtime_data_path
 from ...search import SearchService
@@ -33,6 +34,7 @@ _DURABLE_TASK_LABELS = {
     "proactive_idle": "闲时主动检查",
     "media_delivery": "媒体投递恢复",
     "web_research": "网页研究报告",
+    "proactive_commitment": "主动承诺履行",
 }
 
 # 平台管理器会先加载插件，再异步建立 IM 适配器连接。首次日程生成依赖
@@ -415,11 +417,22 @@ class SpineBootMixin:
             try:
                 result = (
                     await handler(task)
-                    if task.kind == "media_delivery"
+                    if task.kind in {"media_delivery", "proactive_commitment"}
                     else await handler()
                 )
             except asyncio.CancelledError:
                 raise
+            except NonRetryableProviderError as exc:
+                await self.archive.fail_durable_task(
+                    task.id,
+                    str(exc),
+                    owner=owner,
+                    permanent=True,
+                )
+                task_label = _DURABLE_TASK_LABELS.get(task.kind, "未知生活任务")
+                logger.warning(
+                    f"{LOG_PREFIX} 持久生活任务不可重试（{task_label}）：{exc}"
+                )
             except Exception as exc:
                 await self.archive.fail_durable_task(
                     task.id,
@@ -429,6 +442,14 @@ class SpineBootMixin:
                 task_label = _DURABLE_TASK_LABELS.get(task.kind, "未知生活任务")
                 logger.warning(f"{LOG_PREFIX} 持久生活任务失败（{task_label}）：{exc}")
             else:
+                if isinstance(result, dict) and result.get("retry_at"):
+                    await self.archive.defer_durable_task(
+                        task.id,
+                        str(result.get("retry_at") or ""),
+                        owner=owner,
+                        reason=str(result.get("reason") or "等待任务条件成立"),
+                    )
+                    continue
                 await self.archive.complete_durable_task(
                     task.id,
                     result
@@ -445,6 +466,9 @@ class SpineBootMixin:
     async def _run_durable_task_worker(self) -> None:
         """启动时收束重启前遗留的任务；任务类型由运行时显式注册。"""
         try:
+            reconcile = getattr(self, "reconcile_scheduled_invite_contacts", None)
+            if callable(reconcile):
+                await reconcile()
             await self._run_durable_tasks_once()
         except asyncio.CancelledError:
             raise
@@ -452,6 +476,11 @@ class SpineBootMixin:
             logger.warning(f"{LOG_PREFIX} 持久生活任务恢复失败：{exc}")
 
     def _build_rhythm(self, config: LifeSettings | None = None) -> LifeRhythmClock:
+        handlers = getattr(self, "_durable_runtime_handlers", None)
+        if not isinstance(handlers, dict):
+            handlers = {}
+            self._durable_runtime_handlers = handlers
+        handlers["proactive_commitment"] = self.run_proactive_commitment_task
         return LifeRhythmClock(
             config=config or self.config,
             daily_task=self._leased_rhythm_callback(
@@ -469,6 +498,7 @@ class SpineBootMixin:
             proactive_idle_task=self._leased_rhythm_callback(
                 self.run_proactive_idle_check, durable_kind="proactive_idle"
             ),
+            durable_task=self._leased_rhythm_callback(self._run_durable_tasks_once),
         )
 
     def _runtime_service_condition(self) -> asyncio.Condition:

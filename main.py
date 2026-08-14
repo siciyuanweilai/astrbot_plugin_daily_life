@@ -27,7 +27,7 @@ from .core.interface import (
 )
 from .core.runtime import PLUGIN_ID, DailyLifeRuntime
 from .core.runtime.markers import LOG_PREFIX
-from .core.runtime.send_message_tool import install_expressive_send_message_tool
+from .core.runtime.sender import install_expressive_send_message_tool
 
 EXTERNAL_LEASE_SHUTDOWN_TIMEOUT_SECONDS = 10.0
 MAP_LLM_TOOL_NAMES = (
@@ -164,6 +164,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         self._external_tasks: dict[asyncio.Task, int] = {}
         self._terminating = False
         self._external_search_turns: dict[str, None] = {}
+        self._runtime_contract_validated = False
 
     @staticmethod
     def _protect_model_request_logs() -> None:
@@ -199,12 +200,14 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
                 self._terminating = False
                 self._validate_runtime_contract(runtime)
                 await runtime.initialize()
+                self._runtime_contract_validated = True
                 commands = DailyLifeCommandCenter(runtime)
                 self.runtime = runtime
                 self.commands = commands
                 self._register_page_web_apis()
             # 初始化取消也必须回滚已安装资源，清理后继续抛出原异常。
             except BaseException:
+                self._runtime_contract_validated = False
                 self.runtime = None
                 self.commands = None
                 if api_snapshot is not None and isinstance(registered_apis, list):
@@ -245,6 +248,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             if runtime is not None:
                 await runtime.terminate()
         finally:
+            self._runtime_contract_validated = False
             self.runtime = None
             self.commands = None
 
@@ -714,6 +718,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             return denial
         return await self.runtime.domains.tool_place_search(
             str(query or "").strip(),
+            scope=str(getattr(event, "unified_msg_origin", "") or ""),
             near=str(near or "").strip(),
             category=str(category or "").strip(),
             radius_meters=self._tool_int(radius_meters, 3000),
@@ -768,7 +773,10 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         )
         if denial:
             return denial
-        return await self.runtime.domains.tool_place_detail(str(poi_id or "").strip())
+        return await self.runtime.domains.tool_place_detail(
+            str(poi_id or "").strip(),
+            scope=str(getattr(event, "unified_msg_origin", "") or ""),
+        )
 
     @filter.llm_tool(name="life_outing_plan")
     @_runtime_guard
@@ -1155,7 +1163,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         如果用户本轮已经给出完整图片提示词且 current_outfit_change=false，除单独填写 provider 外，prompt 必须原样保留画面要求，不要改写、摘要或另想场景；不要把协议选择语句混入画面提示词。
         使用 subject_route 明确图片主体：current_character 当前角色本人入镜；group 当前角色与一位已配置好友合影；scene 环境/氛围/状态；object 物品/食物；free 不限定主体或完整自由提示词。
         current_character 场景中，用户没有另行指定穿搭、发型或造型风格时，应参考系统注入的当前外观状态补足可见细节；用户本轮明确要求始终优先，不能用生活背景覆盖。
-        用户明确要求当前角色实际“换上、穿上、改成”某套穿搭时，设置 current_outfit_change=true，并把用户原始穿搭要求原样放入 current_outfit_instruction；工具会先更新真实生活穿搭状态，再使用更新后的同一套造型生图。
+        用户明确要求当前角色实际换装、改发型、化妆/卸妆或更换美甲时，设置 current_outfit_change=true，并把用户原始外观要求原样放入 current_outfit_instruction；工具会先更新真实生活外观状态，再使用更新后的同一造型生图。
         仅要求生成、查看、试穿效果或创作某种穿搭图片时，不得设置 current_outfit_change；这类画面不会改变当前角色的真实生活穿搭状态。
         current_outfit_change=true 时，subject_route 只能填 current_character 或 group，prompt 只描述场景、动作、构图等画面要求，不要另外编造一套当前角色服装；插件会把已保存造型锁定到画面中。
         合影时 participants 必须填写系统上下文“可用于合影的好友参考档案”中对应的关系档案 ID，只选择一位好友；不要按姓名猜测或编造 ID。
@@ -1175,8 +1183,8 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             friend_outfit(string): 人物 B 本次完整穿搭；首次合影必须与 friend_hair 同时填写，已有当天造型时仅在本轮换装时填写。
             friend_hair(string): 人物 B 本次发型；首次合影必须与 friend_outfit 同时填写，已有当天造型时仅在本轮改变发型时填写。
             friend_scene_category(string): 人物 B 当前画面场景，只能填 home、sleep、outdoor、public 或 mixed；subject_route=group 时每次填写。
-            current_outfit_change(bool): 是否把用户本轮要求作为当前角色真实换装写入生活状态；只有用户明确要求实际换装时设为 true，仅看效果图时必须为 false。
-            current_outfit_instruction(string): 当前角色真实换装要求；current_outfit_change=true 时填写用户原始要求，不得自行扩写成另一套服装，其他情况留空。
+            current_outfit_change(bool): 是否把用户本轮要求作为当前角色真实外观变化写入生活状态；实际换装、改发型、化妆/卸妆或更换美甲时设为 true，仅看效果图时必须为 false。
+            current_outfit_instruction(string): 当前角色真实外观变化要求；current_outfit_change=true 时填写用户原始要求，不得自行扩写成另一套造型，其他情况留空。
             use_last_reverse_prompt(bool): 是否使用本会话上一条图片反推提示词原文。
             resolution(string): 可选输出分辨率，只能填 1K、2K 或 4K；仅当用户明确要求输出分辨率时填写，“高清”等模糊描述不要推断，其他语境里的 1K、2K、4K 也不要误填。
             provider(string): 可选图片接口，只能填 auto、gpt、gemini 或 grok；仅当用户明确要求使用指定图片接口时填写，否则留空。
@@ -1424,8 +1432,8 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         kind: str = "auto",
     ):
         """
-        把用户发送、引用或明确指定的服装商品图、穿搭图、发型图学习为视觉衣橱候选。
-        服装与发型会分别结构化保存；候选只用于以后需要新造型时参考，不会改变当前真实穿搭。
+        把用户发送、引用或明确指定的服装商品图、穿搭图、发型图、妆容图或美甲图学习为视觉衣橱候选。
+        完整套装、上装、下装、鞋袜、配饰、发型、妆容与美甲会按图片可见内容分别保存；候选只用于以后需要新造型时参考，不会改变当前真实穿搭。
         用户只是询问图片内容、要求生成图片或真实换装时不要调用本工具。
         商品页本身不是图片地址时，先用 life_web_fetch(include_images=true) 取得页面图片，再把图片地址传给本工具。
 
@@ -1434,7 +1442,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             reference_images(array[string]): 可选多张图片路径或直链；适合用户明确提供一组商品图时使用。
             source_url(string): 可选商品页或原始网页地址，只用于来源追溯，不会当作图片理解。
             note(string): 用户指定的学习重点或商品说明；只辅助取舍，不能覆盖图片可见事实。
-            kind(string): 学习范围，只能是 auto、outfit、hair 或 both；默认 auto。
+            kind(string): 学习范围，可选 auto、outfit、top、bottom、footwear、accessory、hair、makeup、nails 或 both；默认 auto。
         """
         denial = self._life_permission_denial(
             event, "style:learn", LifeActionScope.PRIVATE
@@ -1469,7 +1477,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
 
         Args:
             query(string): 具体的商品图或发型图片需求，包含场景、季节、风格等用户真正提出的条件。
-            kind(string): 学习范围，只能是 auto、outfit、hair 或 both；默认 auto。
+            kind(string): 学习范围，可选 auto、outfit、top、bottom、footwear、accessory、hair、makeup、nails 或 both；默认 auto。
             count(int): 需要分析的候选图片数量，默认 3，最多 6。
             note(string): 可选补充取舍要求，不得加入用户未提出的限制。
         """
@@ -1496,11 +1504,11 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
     ):
         """
         查看当前已学习且可用的视觉衣橱候选及编号，供用户检查或后续反馈。
-        仅在用户问已经学了哪些服装/发型、要查看候选或需要候选编号时调用。
+        仅在用户问已经学了哪些衣橱候选、要查看候选或需要候选编号时调用。
         用户本轮如果还要求寻找、搜索或学习新的网上穿搭，查看结果不能结束本轮，必须继续调用 life_style_browse_learn；本工具本身不会新增候选。
 
         Args:
-            kind(string): 可选 outfit 或 hair；留空同时查看服装和发型。
+            kind(string): 可选 outfit、top、bottom、footwear、accessory、hair、makeup 或 nails；留空查看全部类别。
             limit(int): 最多返回多少条候选，默认 8。
         """
         denial = self._life_permission_denial(
@@ -1800,6 +1808,10 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             setattr(event, self._AGENT_ERROR_SEEN_ATTR, True)
         else:
             setattr(event, self._LLM_RESPONSE_SEEN_ATTR, True)
+            completion = str(getattr(response, "completion_text", "") or "").strip()
+            marker = getattr(self.runtime, "mark_structured_pending_bot_text", None)
+            if completion and callable(marker):
+                marker(event, completion)
         note_tool_final = getattr(self.runtime, "note_tool_final_response", None)
         if callable(note_tool_final):
             note_tool_final(event, response)
@@ -1860,7 +1872,14 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
 
     def _runtime_hook(self, name: str):
         hook = getattr(self.runtime, name, None)
-        return hook if callable(hook) else None
+        if callable(hook):
+            return hook
+        if (
+            getattr(self, "_runtime_contract_validated", False)
+            and name in self._REQUIRED_RUNTIME_METHODS
+        ):
+            raise RuntimeError(f"日常生活运行时必要方法不可用：{name}")
+        return None
 
     def _runtime_hook_bool(self, name: str, event: AstrMessageEvent) -> bool:
         hook = self._runtime_hook(name)
@@ -1885,12 +1904,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         finally:
             elapsed = time.monotonic() - started_at
             stage_label = self._STAGE_LABELS.get(name, "消息处理")
-            if elapsed >= self._SLOW_STAGE_SECONDS:
-                level = logger.info if name.startswith("send_") else logger.warning
-                level(
-                    f"{LOG_PREFIX} 消息阶段耗时：阶段={stage_label}；耗时={elapsed:.2f} 秒"
-                )
-            elif elapsed >= 0.1:
+            if elapsed >= 0.1:
                 logger.debug(
                     f"{LOG_PREFIX} 消息阶段耗时：阶段={stage_label}；耗时={elapsed:.2f} 秒"
                 )
@@ -1914,9 +1928,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             )
         else:
             message = f"{LOG_PREFIX} 消息入口处理耗时：{total_elapsed:.2f} 秒"
-        if active_elapsed >= self._SLOW_STAGE_SECONDS:
-            logger.warning(message)
-        elif total_elapsed >= 0.1:
+        if total_elapsed >= 0.1:
             logger.debug(message)
 
     async def _capture_chat_memory(self, event: AstrMessageEvent) -> None:

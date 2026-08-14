@@ -2,7 +2,7 @@ import datetime
 import random
 import unittest
 
-from core.life.appearance import strip_hair_from_outfit
+from core.life.appearance import normalize_appearance_fact, strip_hair_from_outfit
 from core.life.future import future_outfit_timing_issue
 from core.life.surroundings import normalize_event_items, normalize_place_names
 from core.life.tools import (
@@ -25,6 +25,11 @@ from support import (
 
 
 class LifeToolsTest(unittest.TestCase):
+    def test_missing_appearance_markers_are_not_facts(self):
+        self.assertEqual(normalize_appearance_fact("未知"), "")
+        self.assertEqual(normalize_appearance_fact("UNKNOWN"), "")
+        self.assertEqual(normalize_appearance_fact("无妆"), "无妆")
+
     def test_outfit_and_hair_are_kept_in_separate_fields(self):
         outfit = strip_hair_from_outfit(
             "浅绿色短袖衬衫搭配白色直筒裤，脚穿帆布鞋；"

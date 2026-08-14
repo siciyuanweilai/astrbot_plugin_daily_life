@@ -299,6 +299,13 @@ class RuntimeVideoMediaMixin:
         current_appearance = ""
         if not initial_reference_image:
             current_appearance = await self._current_life_appearance_snapshot(route)
+        source_request = self._event_current_image_request_text(event)
+        if current_appearance and route in {"current_character", "group"}:
+            prompt = await self._align_current_appearance_scene_prompt(
+                prompt,
+                source_request,
+                route,
+            )
         request_id = self._register_life_video_request(scope, prompt, event)
         request = LifeVideoRequest(
             scope=scope,
@@ -315,7 +322,7 @@ class RuntimeVideoMediaMixin:
                 else ""
             ),
             current_appearance=current_appearance,
-            source_request=self._event_current_image_request_text(event),
+            source_request=source_request,
             friend_look=dict(friend_look),
             friend_look_persist=friend_look_persist,
             continue_last_result=bool(continue_last_result),
@@ -740,7 +747,7 @@ class RuntimeVideoMediaMixin:
     def _life_video_failure_fallback_text(photo_sent: bool) -> str:
         if photo_sent:
             return "视频没拍成，先把这张照片发你看。"
-        return "刚才没发出去，晚点再试试。"
+        return "刚才没发出去，这次视频没有拍成。"
 
     async def _life_video_reply_model(self, event: Any) -> tuple[Any, Any, str] | None:
         get_provider = getattr(self, "get_text_provider", None)
@@ -875,7 +882,8 @@ JSON 只能包含 reply_text；{CORE_MEDIA_REPLY_RULES}
 严格只输出一个 JSON 对象，不要使用 Markdown 代码块，也不要输出解释：
 {"reply_text":"真正发送给用户的一句中文短回复"}
 JSON 只能包含 reply_text；{CORE_MEDIA_REPLY_RULES}
-语气要像当前角色本人顺手说明情况，可以轻轻带一点歉意或吐槽。""".replace(
+语气要像当前角色本人顺手说明情况，可以轻轻带一点歉意或吐槽。
+本次没有登记自动重试任务，不得承诺晚点、稍后或之后会自行重试、补发或再联系。""".replace(
                 "{CORE_MEDIA_REPLY_RULES}", CORE_MEDIA_REPLY_RULES
             )
             dynamic = (

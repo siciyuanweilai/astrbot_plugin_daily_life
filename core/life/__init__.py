@@ -1,4 +1,4 @@
-from .domains import LifeDomainService
+from .domain import LifeDomainService
 from .planner import LifeBackgroundComposer
 from .weather import WeatherClient
 

@@ -10,14 +10,14 @@ from ..config.options import LifeSettings
 from ..prompts import CORE_INTERNAL_SYSTEM_PROMPT
 from ..search import SearchService
 from ..sources import SavedHistoryReader
-from .actions import LifeActionMixin
 from .autonomy import LifeAutonomyMixin
 from .daily import DailyMixin
+from .inspiration import StyleCatalogMixin
 from .invite import InviteMixin
 from .outfit import OutfitMixin
 from .people import PersonFactMixin
-from .reference import ReferenceMixin
 from .reliability import (
+    NonRetryableProviderError,
     ProviderCircuit,
     exception_status,
     is_non_retryable_provider_error,
@@ -25,7 +25,8 @@ from .reliability import (
     retry_delay,
 )
 from .rhythm import LifecycleMixin
-from .style_catalog import StyleCatalogMixin
+from .settlement import LifeActionMixin
+from .sourcebook import ReferenceMixin
 from .tools import extract_json_from_text, get_time_period
 from .weather import WeatherClient
 from .weekly import WeekMixin
@@ -208,11 +209,21 @@ class LifeBackgroundComposer(
         session_id: str,
         empty_retries: int = 1,
         primary_provider_id: str = "",
+        propagate_non_retryable: bool = False,
+        timeout_seconds: float | None = None,
     ) -> str:
         primary_provider_id = str(primary_provider_id or "").strip()
         current_provider = provider
         provider_meta_id = self._provider_meta_id(provider)
         current_provider_id = provider_meta_id or primary_provider_id
+        request_timeout = max(
+            0.01,
+            float(
+                timeout_seconds
+                if timeout_seconds is not None
+                else getattr(self.config, "llm_timeout_seconds", 120)
+            ),
+        )
 
         async def switch_to_temporary_provider(reason: str) -> bool:
             nonlocal current_provider, current_provider_id
@@ -239,10 +250,13 @@ class LifeBackgroundComposer(
             if attempt > 0 and attempt == empty_retries:
                 await switch_to_temporary_provider("达到空响应重试上限")
             try:
-                resp = await current_provider.text_chat(
-                    prompt,
-                    session_id=session_id,
-                    system_prompt=CORE_INTERNAL_SYSTEM_PROMPT,
+                resp = await asyncio.wait_for(
+                    current_provider.text_chat(
+                        prompt,
+                        session_id=session_id,
+                        system_prompt=CORE_INTERNAL_SYSTEM_PROMPT,
+                    ),
+                    timeout=request_timeout,
                 )
             except Exception as exc:
                 err_text = str(exc)
@@ -254,6 +268,12 @@ class LifeBackgroundComposer(
                         f"[日常生活] 大语言模型请求不可重试：状态={status or '未知'}；"
                         f"提供商={current_provider_id or '默认'}；错误={err_text[:300]}"
                     )
+                    if propagate_non_retryable:
+                        raise NonRetryableProviderError(
+                            err_text,
+                            status=status,
+                            provider_id=current_provider_id,
+                        ) from exc
                     return ""
                 transient = is_transient_provider_error(exc)
                 if transient:

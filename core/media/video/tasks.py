@@ -108,16 +108,20 @@ async def poll_video_url(
     last_logged_status = ""
     last_log_at = 0.0
     while True:
-        if time.monotonic() >= deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             raise VideoTaskError(f"Grok 视频任务超时：{request_id}")
-        await sleep(settings.poll_interval_seconds)
+        await sleep(min(float(settings.poll_interval_seconds), remaining))
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise VideoTaskError(f"Grok 视频任务超时：{request_id}")
         try:
             data = await request(
                 session,
                 "GET",
                 status_url,
                 headers,
-                timeout_seconds=settings.request_timeout_seconds,
+                timeout_seconds=min(float(settings.request_timeout_seconds), remaining),
                 operation="查询任务状态",
             )
         except VideoRequestTimeout as exc:

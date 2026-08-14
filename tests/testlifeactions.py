@@ -6,7 +6,7 @@ import unittest
 
 from support import DayRecord, LifeArchive, LifeState, TimelineItem
 
-from core.life.actions import LifeActionMixin
+from core.life.settlement import LifeActionMixin
 from core.life.assembly import DailyAssemblyMixin
 from core.life.record import DailyRecordMixin
 from core.life.rhythm import LifecycleMixin
@@ -398,11 +398,13 @@ class LifeActionTest(unittest.TestCase):
 
 class _ArchiveStub:
     def __init__(self):
+        self.days = {}
         self.saved_days = []
         self.saved_outcomes = []
         self.saved_traces = []
 
     async def save_day(self, day, *, replace=False):
+        self.days[day.date] = day
         self.saved_days.append(day)
 
     async def save_life_action_outcome(self, outcome):
@@ -413,8 +415,17 @@ class _ArchiveStub:
         self.saved_traces.append(trace)
         return trace
 
-    async def get_day(self, _date):
-        return None
+    async def get_day(self, date_str):
+        return self.days.get(date_str)
+
+    async def mutate_day(self, date_str, mutator):
+        day = self.days.get(date_str)
+        if day is None:
+            return None
+        if mutator(day) is False:
+            return day
+        self.days[date_str] = day
+        return day
 
     async def add_life_event(self, event):
         return event
@@ -679,6 +690,7 @@ class LifeActionIntegrationTest(unittest.IsolatedAsyncioTestCase):
                 )
             ],
         )
+        composer.archive.days[day.date] = day
 
         await composer._apply_timeline_review_updates(
             day,

@@ -9,9 +9,9 @@ CORE_STATE_BEHAVIOR_RULES = """- 体力、困意、压力、忙碌度、社交�
 - 状态只影响倾向，不是绝对禁令；低状态可以选择低强度、短时、改约或观察，而不是机械停摆。
 - 状态变化要克制、连续，避免忽高忽低或每天从零开始。"""
 
-LIFE_PREFERENCE_CATEGORY_ENUM = "activity|outfit|hair|social|sleep|place|style|other"
-LIFE_ADJUSTMENT_TARGET_ENUM = (
-    "schedule|outfit|hair|sleep|social|activity|place|style|relationship|memory|other"
+LIFE_PREFERENCE_CATEGORY_ENUM = (
+    "activity|outfit|top|bottom|footwear|accessory|hair|makeup|nails|"
+    "social|sleep|place|style|other"
 )
 
 CORE_APPEARANCE_PREFERENCE_RULES = """- 穿搭、发型和整体风格偏好只是软参考，不是固定模板或必须复刻的素材。
@@ -80,6 +80,7 @@ CORE_PERSONA_AUDIT_POLICY = f"""人物称谓与性别规则：
 {CORE_PERSONA_AUDIT_RULES}"""
 
 CORE_HIDDEN_CONTEXT_RULES = """- 隐藏上下文只用于保持角色处境、生活连续性和长期记忆一致，不是当前聊天话题。
+- 消息中的 user/assistant 只表示说话人，私聊/群聊只表示平台传输范围；不得仅凭这些信息推断双方现实分开、同处现场或正在操作设备，现实互动方式以明确生活事实和当前消息完整语义为准。
 - 不得主动汇报、复述、解释或暗示隐藏的动作、穿搭、天气、日程、内部标签、分数或旁白。
 - 只有用户明确问到状态、日程、穿搭、天气、邀约、记忆或相关细节时，才自然引用对应内容。
 - 已发送的聊天文本不是当前事实凭证；若旧回复与当前结构化状态、真实工具结果或时间线冲突，以后者为准，并在用户追问时直接承认和纠正，不要为旧回复补造经过。

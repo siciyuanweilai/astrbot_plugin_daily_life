@@ -21,7 +21,7 @@ class PreferenceRecord:
     @staticmethod
     def from_value(
         value: Any, *, date: str = "", source: str = "learning"
-    ) -> "PreferenceRecord | None":
+    ) -> PreferenceRecord | None:
         if isinstance(value, PreferenceRecord):
             return value
         raw = value if isinstance(value, dict) else {}
@@ -72,7 +72,7 @@ class LifeEventRecord:
     @staticmethod
     def from_value(
         value: Any, *, date: str = "", source: str = "life_event"
-    ) -> "LifeEventRecord | None":
+    ) -> LifeEventRecord | None:
         if isinstance(value, LifeEventRecord):
             return value
         raw = value if isinstance(value, dict) else {}
@@ -114,10 +114,11 @@ class DailyReviewRecord:
     sleep_debt_delta: float = 0.0
     energy_carryover: float = 60.0
     life_events: list[LifeEventRecord] = field(default_factory=list)
+    payload: dict[str, Any] = field(default_factory=dict)
     created_at: str = ""
 
     @staticmethod
-    def from_value(value: Any, *, date: str = "") -> "DailyReviewRecord | None":
+    def from_value(value: Any, *, date: str = "") -> DailyReviewRecord | None:
         if isinstance(value, DailyReviewRecord):
             return value
         raw = value if isinstance(value, dict) else {}
@@ -159,6 +160,9 @@ class DailyReviewRecord:
                 )
                 if item is not None
             ],
+            payload=dict(raw.get("payload") or {})
+            if isinstance(raw.get("payload"), dict)
+            else {},
             created_at=str(raw.get("created_at") or "").strip(),
         )
 
@@ -171,5 +175,6 @@ class DailyReviewRecord:
             "sleep_debt_delta": self.sleep_debt_delta,
             "energy_carryover": self.energy_carryover,
             "life_events": [item.as_dict() for item in self.life_events],
+            "payload": dict(self.payload),
             "created_at": self.created_at,
         }

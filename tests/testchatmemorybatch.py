@@ -190,6 +190,93 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
             1,
         )
 
+    async def test_complete_private_exchange_flushes_after_idle(self):
+        self.runtime.config.memory.idle_flush_min_messages = 3
+        user = ChatMemoryArchiveTest.snapshot(message_id="user-1", text="到时候你叫我")
+        assistant = ChatMemoryArchiveTest.snapshot(
+            message_id="", text="好，到时候我叫你"
+        )
+        assistant.update(
+            {
+                "event_key": "bot:reply-1",
+                "role": "assistant",
+                "sender_profile_id": "bot",
+                "sender_name": "我",
+            }
+        )
+        await self.runtime.archive.enqueue_chat_memory_message(user)
+        await self.runtime.archive.enqueue_chat_memory_message(assistant)
+
+        states = await self.runtime.archive.list_chat_memory_sessions()
+        self.assertEqual(states[0]["pending_user_count"], 1)
+        self.assertEqual(states[0]["pending_assistant_count"], 1)
+        self.assertEqual(
+            await self.runtime.process_due_chat_memory_batches(
+                datetime.datetime(2026, 7, 10, 12, 2, 0)
+            ),
+            1,
+        )
+
+    async def test_only_user_messages_keep_configured_idle_minimum(self):
+        self.runtime.config.memory.idle_flush_min_messages = 3
+        await self.enqueue(2)
+
+        self.assertEqual(
+            await self.runtime.process_due_chat_memory_batches(
+                datetime.datetime(2026, 7, 10, 12, 2, 0)
+            ),
+            0,
+        )
+
+    async def test_only_assistant_proactive_message_flushes_after_idle(self):
+        self.runtime.config.memory.idle_flush_min_messages = 3
+        assistant = ChatMemoryArchiveTest.snapshot(
+            message_id="", text="我收拾好再告诉你"
+        )
+        assistant.update(
+            {
+                "event_key": "bot:proactive-1",
+                "role": "assistant",
+                "sender_profile_id": "bot",
+                "sender_name": "我",
+            }
+        )
+        await self.runtime.archive.enqueue_chat_memory_message(assistant)
+
+        self.assertEqual(
+            await self.runtime.process_due_chat_memory_batches(
+                datetime.datetime(2026, 7, 10, 12, 2, 0)
+            ),
+            1,
+        )
+
+    async def test_proactive_reply_is_enqueued_as_assistant_memory(self):
+        inserted = await self.runtime.capture_proactive_chat_memory_reply(
+            "test:FriendMessage:10001",
+            "到时候我联系你",
+            now=datetime.datetime(2026, 7, 10, 12, 0, 0),
+        )
+
+        self.assertTrue(inserted)
+        batch = await self.runtime.archive.begin_chat_memory_batch(
+            "test:FriendMessage:10001", max_messages=10, max_chars=1000
+        )
+        self.assertEqual(batch["messages"][0]["role"], "assistant")
+        self.assertEqual(batch["messages"][0]["message_text"], "到时候我联系你")
+
+    async def test_proactive_voice_memory_keeps_media_fact(self):
+        await self.runtime.capture_proactive_chat_memory_reply(
+            "test:FriendMessage:10001",
+            "我晚点再提醒你",
+            media="语音",
+            now=datetime.datetime(2026, 7, 10, 12, 0, 0),
+        )
+
+        batch = await self.runtime.archive.begin_chat_memory_batch(
+            "test:FriendMessage:10001", max_messages=10, max_chars=1000
+        )
+        self.assertEqual(batch["messages"][0]["message_facts"], "已发送语音")
+
     async def test_max_batch_chars_creates_non_overlapping_followup(self):
         await self.enqueue(3)
         self.runtime.config.memory.max_batch_chars = 18
@@ -329,6 +416,8 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("没有内容时字段留空", prompt)
         self.assertIn("不得复制 row_id、message_id、target_id", prompt)
         self.assertIn("不复述输入中的具体日期、钟点或时间轴编号", prompt)
+        self.assertIn("绝不能反向创建我的主动联系任务", prompt)
+        self.assertIn("current_day_timeline", source)
 
     def test_batch_payload_hides_internal_ids_only_from_readable_fields(self):
         batch = {
@@ -629,6 +718,90 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][1]["sender_profile_id"], "synthetic-profile")
+
+    def test_memory_calibration_prompt_audits_ordered_interaction_evidence(self):
+        prompt = self.runtime._build_memory_payload_calibration_prompt(
+            {
+                "worth_saving": False,
+                "temporal_facts": [
+                    {
+                        "operation": "UPDATE",
+                        "subject": "synthetic-profile",
+                        "predicate": "interaction_mode",
+                        "object_value": {"mode": "remote"},
+                        "source_message_id": "m1",
+                    }
+                ],
+            },
+            {
+                "sender_name": "测试对象",
+                "sender_profile_id": "synthetic-profile",
+                "current_role_label": "我",
+                "is_group": "false",
+                "interaction_mode_label": "远程交流",
+                "interaction_messages_json": json.dumps(
+                    [
+                        {
+                            "message_id": "m1",
+                            "occurred_at": "2026-08-14T16:57:00",
+                            "role": "user",
+                            "content": "测试对象明确说明双方已经在同一现场",
+                        }
+                    ],
+                    ensure_ascii=False,
+                ),
+                "current_interaction_facts_json": "[]",
+            },
+            "",
+        )
+
+        self.assertIn("interaction_checked", prompt)
+        self.assertIn("较晚且更明确的当前陈述优先", prompt)
+        self.assertIn("测试对象明确说明双方已经在同一现场", prompt)
+        self.assertIn("temporal_facts", prompt)
+
+    async def test_unaudited_interaction_fact_fails_closed(self):
+        async def calibrate(payload, meta, persona_hint):
+            del meta, persona_hint
+            return payload
+
+        self.runtime._calibrate_chat_memory_payload = calibrate
+        message = ChatMemoryArchiveTest.snapshot(
+            session_id="private:synthetic",
+            message_id="m1",
+            text="测试对象补充了当前场景",
+        )
+        message["sender_profile_id"] = "synthetic-profile"
+        message["sender_name"] = "测试对象"
+        message["id"] = 1
+
+        await self.runtime._save_chat_memory_batch_payload(
+            {
+                "worth_saving": False,
+                "temporal_facts": [
+                    {
+                        "operation": "ADD",
+                        "subject": "synthetic-profile",
+                        "predicate": "interaction_mode",
+                        "object_value": {"mode": "remote"},
+                        "confidence": 0.9,
+                        "source_message_id": "m1",
+                    }
+                ],
+            },
+            {
+                "session_id": "private:synthetic",
+                "messages": [message],
+                "current_temporal_facts": [],
+            },
+        )
+
+        facts = await self.runtime.archive.get_temporal_facts(
+            scope="private:synthetic",
+            predicate="interaction_mode",
+            limit=10,
+        )
+        self.assertEqual(facts, [])
 
 
 if __name__ == "__main__":

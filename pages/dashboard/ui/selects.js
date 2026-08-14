@@ -47,6 +47,7 @@ function openHostsForSelect(select) {
     ".config-field",
     ".template-list-item",
     ".emoji-filter-tools",
+    ".closet-filter-tools",
     ".emoji-tools",
     ".config-cover",
     ".panel",
@@ -241,7 +242,9 @@ export function createLifeSelectControls({ root = document } = {}) {
     const menu = document.createElement("div");
 
     wrapper.className = "life-select";
-    if (select.closest?.(".emoji-filter-tools")) wrapper.classList.add("life-select-filter");
+    if (select.closest?.(".emoji-filter-tools, .closet-filter-tools")) {
+      wrapper.classList.add("life-select-filter");
+    }
     if (select.closest?.(".config-field, .template-list-item")) wrapper.classList.add("life-select-config");
     wrapper.dataset.selectFor = select.id || "";
 

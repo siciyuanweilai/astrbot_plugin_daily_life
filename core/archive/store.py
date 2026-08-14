@@ -1,14 +1,14 @@
 import asyncio
 import contextvars
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import Any, TypeVar
 
 from .categories import STORAGE_CATEGORIES
-from .cognition import CognitionArchiveMixin
+from .knowledge import CognitionArchiveMixin
 from .common import CommonArchiveMixin
-from .domains import DomainArchiveMixin
+from .activity import DomainArchiveMixin
 from .experience import ExperienceArchiveMixin
 from .gallery import MediaArchiveMixin
 from .journal import DayArchiveMixin
@@ -18,7 +18,7 @@ from .queue import ChatMemoryQueueArchiveMixin
 from .reflections import LifecycleArchiveMixin
 from .schema import init_schema
 from .storage import StorageArchiveMixin
-from .style_catalog import StyleCatalogArchiveMixin
+from .inventory import StyleCatalogArchiveMixin
 from .vectors import MemoryVectorArchiveMixin
 from .weeks import WeekArchiveMixin
 
@@ -94,10 +94,17 @@ class LifeArchive(
     def _initialize_sync(self) -> None:
         self._require_not_closed()
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self._path, check_same_thread=False)
+        conn = sqlite3.connect(self._path, check_same_thread=False, timeout=10.0)
         try:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA foreign_keys = ON")
+            # 缓解跨线程/跨进程写入竞争：先尝试 WAL，失败（如只读文件系统）保持默认日志模式。
+            try:
+                conn.execute("PRAGMA journal_mode = WAL")
+            except sqlite3.DatabaseError:
+                pass
+            conn.execute("PRAGMA busy_timeout = 5000")
+            conn.execute("PRAGMA synchronous = NORMAL")
             init_schema(conn)
         except Exception:
             conn.close()
@@ -187,6 +194,19 @@ class LifeArchive(
             self._require_open()
             return await self._run_db_worker(func, *args, **kwargs)
 
+    @staticmethod
+    def _run_db_worker_coroutine(factory: Callable[[], Coroutine[Any, Any, T]]) -> T:
+        """在数据库工作线程的隔离事件循环中运行内部批量读取。"""
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            raise RuntimeError("数据库工作线程已存在事件循环，不能启动隔离读取")
+        with asyncio.Runner() as runner:
+            return runner.run(factory())
+
     async def save(self) -> None:
         def write() -> None:
             self._conn.commit()
@@ -256,15 +276,9 @@ class LifeArchive(
         def collect_in_worker() -> dict[str, Any]:
             lock_token = _DB_LOCK_HELD.set(True)
             worker_token = _DB_WORKER_ACTIVE.set(True)
-            coroutine = collect()
             try:
-                try:
-                    coroutine.send(None)
-                except StopIteration as completed:
-                    return completed.value
-                raise RuntimeError("上下文快照查询不能在数据库工作线程内挂起")
+                return self._run_db_worker_coroutine(collect)
             finally:
-                coroutine.close()
                 _DB_WORKER_ACTIVE.reset(worker_token)
                 _DB_LOCK_HELD.reset(lock_token)
 

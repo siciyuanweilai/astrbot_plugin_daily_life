@@ -46,6 +46,9 @@ class ExternalIntegrationMixin:
             "audio": "语音",
         }.get(str(media_kind or "").strip().lower(), "")
         self.note_structured_bot_message(scope, text, media=media_label)
+        capture = getattr(self, "capture_proactive_chat_memory_reply", None)
+        if callable(capture):
+            await capture(scope, text, media=media_label)
 
         _, real_id = parse_unified_origin(scope)
         is_group = ":GroupMessage:" in scope

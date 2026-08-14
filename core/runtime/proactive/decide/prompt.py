@@ -243,6 +243,10 @@ class ProactivePromptMixin:
             message=message,
             relationships=records["relationships"],
         )
+        interaction_context = await self.resolve_interaction_context(
+            event=event,
+            now=now,
+        )
         style = getattr(self.config, "chat_style", None)
         summary_lines = self._proactive_summary_lines(records["summaries"])
         focus_lines = self._proactive_focus_lines(records["focus_targets"])
@@ -251,6 +255,7 @@ class ProactivePromptMixin:
             "audience_name": "群友" if is_group else "对方",
             "bot_reply_line": bot_reply_line,
             "chat_mode": "群聊" if is_group else "私聊",
+            "interaction_context": interaction_context,
             "conversation_id": group_id or session_id or "未知ID",
             "conversation_name": group_name or group_id or session_id or "未知会话",
             "focus_text": chr(10).join(focus_lines)
@@ -387,7 +392,8 @@ MemOS 外部长期记忆参考：
 - 主题/心情：{meta.get("theme", "")}；{meta.get("mood", "")}
 - 全天日程背景（连续性参考）：{scene["timeline_text"]}
 
-聊天场景：{scene["chat_mode"]}
+消息传输范围：{scene["chat_mode"]}（只表示平台通道，不代表现实距离）
+现实互动方式：{scene["interaction_context"].mode_label}
 此刻日期时间：{now.strftime("%Y-%m-%d %H:%M")}
 会话：{scene["conversation_name"]}（{scene["conversation_id"]}）
 说话人：{scene["sender_name"]}

@@ -5,8 +5,8 @@ from typing import Any
 
 from astrbot.api import logger
 
-from .map_common import non_negative_number
-from .map_http import request_map_json
+from .metric import non_negative_number
+from .network import request_map_json
 from .transit import transit_route_detail
 
 _AMAP_BASE_URL = "https://restapi.amap.com"

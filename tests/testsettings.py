@@ -190,6 +190,7 @@ class LifeSettingsTest(unittest.TestCase):
                 },
                 "image_generation_config": {
                     "enabled": "yes",
+                    "image_director_provider": "image-director-model",
                     "prompt_rewrite_provider": "rewrite-model",
                     "photo_suite_planning_timeout_seconds": "999",
                     "text_channels": [
@@ -383,6 +384,10 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertTrue(config.image_generation.enabled)
         self.assertEqual(
             config.image_generation.prompt_rewrite_provider, "rewrite-model"
+        )
+        self.assertEqual(
+            config.image_generation.image_director_provider,
+            "image-director-model",
         )
         self.assertEqual(
             config.image_generation.photo_suite_planning_timeout_seconds, 120
@@ -920,6 +925,9 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertNotIn("enabled", proactive_items)
         self.assertFalse(proactive_items["group_enabled"]["default"])
         self.assertFalse(proactive_items["private_enabled"]["default"])
+        rhythm_items = schema["rhythm_config"]["items"]
+        self.assertEqual(rhythm_items["llm_timeout_seconds"]["default"], 120)
+        self.assertEqual(rhythm_items["llm_timeout_seconds"]["slider"]["max"], 600)
         self.assertIn("chat_style_config", schema)
         chat_style_items = schema["chat_style_config"]["items"]
         chat_style_keys = list(chat_style_items)
@@ -1039,6 +1047,13 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertNotIn("timeout_seconds", image_items)
         self.assertNotIn("channels", image_items)
         self.assertIn("prompt_rewrite_provider", image_items)
+        self.assertIn("image_director_provider", image_items)
+        self.assertEqual(
+            image_items["image_director_provider"]["description"], "图片导演"
+        )
+        self.assertEqual(
+            image_items["image_director_provider"]["_special"], "select_provider"
+        )
         self.assertEqual(
             image_items["prompt_rewrite_provider"]["description"], "轻量润色"
         )
@@ -1141,6 +1156,10 @@ class LifeSettingsTest(unittest.TestCase):
             "friend_reference_profiles",
         )
         self.assertNotIn("appearance_note", json.dumps(image_items, ensure_ascii=False))
+        self.assertLess(
+            list(image_items).index("image_director_provider"),
+            list(image_items).index("prompt_rewrite_provider"),
+        )
         self.assertLess(
             list(image_items).index("prompt_rewrite_provider"),
             list(image_items).index("character_reference_policy"),
@@ -1484,17 +1503,20 @@ class LifeSettingsTest(unittest.TestCase):
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertIn("version: 1.2.5", metadata)
+        self.assertIn("version: 1.2.6", metadata)
         self.assertIn('astrbot_version: ">=4.26,<5"', metadata)
-        self.assertIn("version-1.2.5", readme)
+        self.assertIn("version-1.2.6", readme)
+        self.assertIn("v1.2.6 · 2026-08-15", changelog)
         self.assertIn("v1.2.5 · 2026-08-13", changelog)
         self.assertIn("v1.2.4 · 2026-08-12", changelog)
         self.assertIn("v1.2.3 · 2026-08-11", changelog)
         self.assertIn("v1.2.2 · 2026-08-09", changelog)
+        self.assertLess(changelog.index("v1.2.6"), changelog.index("v1.2.5"))
         self.assertLess(changelog.index("v1.2.5"), changelog.index("v1.2.4"))
         self.assertLess(changelog.index("v1.2.4"), changelog.index("v1.2.3"))
         self.assertLess(changelog.index("v1.2.3"), changelog.index("v1.2.2"))
         self.assertLess(changelog.index("v1.2.2"), changelog.index("v1.2.1"))
+        release_126 = changelog.split("## 🌸 v1.2.6", 1)[1].split("## 🌸 v1.2.5", 1)[0]
         release_125 = changelog.split("## 🌸 v1.2.5", 1)[1].split("## 🌸 v1.2.4", 1)[0]
         release_124 = changelog.split("## 🌸 v1.2.4", 1)[1].split("## 🌸 v1.2.3", 1)[0]
         release_123 = changelog.split("## 🌸 v1.2.3", 1)[1].split("## 🌸 v1.2.2", 1)[0]
@@ -1502,8 +1524,13 @@ class LifeSettingsTest(unittest.TestCase):
         release_121 = changelog.split("## 🌸 v1.2.1", 1)[1].split("## 🌸 v1.2.0", 1)[0]
         self.assertIn("Grok 图片", release_123)
         self.assertIn("运动、饮食与食谱闭环", release_123)
-        self.assertIn("数据库结构保持 v12", release_125)
+        self.assertIn("数据库结构从 v12 自动升级到 v13", release_126)
+        self.assertIn("夜间复盘改为可恢复的分阶段事务", release_126)
+        self.assertIn("模块统一为唯一的单个小写英文单词", release_126)
+        self.assertIn("消息来自 QQ 或微信", release_126)
         self.assertIn("私聊范围", release_125)
+        self.assertNotIn("模块命名", release_125)
+        self.assertNotIn("受控隔离 Runner", release_125)
         self.assertIn("数据库结构升级为 v12", release_124)
         self.assertIn("火山引擎语音合成", release_122)
         self.assertNotIn("火山引擎", release_121)

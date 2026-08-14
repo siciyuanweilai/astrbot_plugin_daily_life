@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from .amap import AmapWebServiceClient
-from .baidu_map import BaiduMapWebServiceClient
-from .tencent_map import TencentMapWebServiceClient
+from .baidu import BaiduMapWebServiceClient
+from .tencent import TencentMapWebServiceClient
 
 MAP_PROVIDER_LABELS = {
     "amap": "高德地图",
