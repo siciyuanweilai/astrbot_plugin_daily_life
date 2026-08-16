@@ -5,8 +5,10 @@ from typing import Any
 
 import chinese_calendar
 
+from ..clock import TIMEZONE
 from ..clock import now as life_now
 from ..config.vocab import TIME_PERIOD_CN, WEEKDAY_NAMES
+from ..models import TIMELINE_EXECUTION_STATES
 
 
 # ==================== 节假日及调休感知 ====================
@@ -59,6 +61,23 @@ def coerce_date(value: Any) -> datetime.date | None:
         return datetime.datetime.strptime(text, "%Y-%m-%d").date()
     except ValueError:
         return None
+
+
+def parse_life_datetime(value: Any) -> datetime.datetime | None:
+    """解析生活记录中的本地时间，带时区值统一转换为生活时区。"""
+    if isinstance(value, datetime.datetime):
+        parsed = value
+    else:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(TIMEZONE).replace(tzinfo=None)
+    return parsed
 
 
 def timeline_item_datetime(item: Any, timeline_date: Any) -> datetime.datetime | None:
@@ -560,12 +579,6 @@ def get_current_timeline_status(
             break
 
     return current_item, next_item
-
-
-TIMELINE_EXECUTION_STATES = frozenset(
-    {"planned", "active", "completed", "expired", "skipped", "cancelled"}
-)
-TIMELINE_TERMINAL_STATES = frozenset({"completed", "expired", "skipped", "cancelled"})
 
 
 def reconcile_timeline_execution(

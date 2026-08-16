@@ -61,6 +61,53 @@ class EmojiVisionMixin:
             return result
         return None
 
+    async def _call_emoji_vision_payload(
+        self,
+        prompt: str,
+        image: str,
+        *,
+        session_prefix: str,
+        task_label: str,
+    ) -> dict[str, Any]:
+        provider_id = str(
+            getattr(getattr(self.config, "vision", None), "provider", "") or ""
+        ).strip()
+        last_error: Exception = RuntimeError("视觉模型不可用")
+        index = 0
+        async for provider in self.get_text_provider_candidates(provider_id):
+            session_id = f"{session_prefix}_{uuid.uuid4().hex[:8]}"
+            if index:
+                session_id = f"{session_id}_fallback"
+                logger.info(
+                    f"{LOG_PREFIX} {task_label}指定模型识别失败，改用当前默认模型"
+                )
+            try:
+                if not any(
+                    callable(getattr(provider, name, None))
+                    for name in ("text_chat", "image_chat", "vision_chat")
+                ):
+                    raise RuntimeError("视觉模型不支持图片输入")
+                result = await self._call_emoji_vision_provider(
+                    provider, prompt, image, session_id
+                )
+                if result is None:
+                    raise RuntimeError("视觉模型未返回结果")
+                payload = extract_json_from_text(self._completion_text(result))
+                if not isinstance(payload, dict):
+                    raise RuntimeError("视觉模型未返回有效结果")
+                if not any(
+                    key in payload
+                    for key in ("summary", "is_emoji_asset", "label", "description")
+                ):
+                    raise RuntimeError("视觉模型未返回图片识别结构")
+                return payload
+            except Exception as exc:
+                last_error = exc
+            finally:
+                await self.close_text_session(session_id)
+            index += 1
+        raise last_error
+
     async def _describe_emoji_asset_with_vision(
         self,
         asset: EmojiAssetRecord,
@@ -73,16 +120,6 @@ class EmojiVisionMixin:
             return
         update_asset = asset.status in {"pending", "reviewing"}
         if not update_asset and not context_scope:
-            return
-        provider = await self._get_vision_provider()
-        if not provider:
-            logger.debug(f"{LOG_PREFIX} 表情视觉识别跳过：未配置可用视觉模型")
-            return
-        if not any(
-            callable(getattr(provider, name, None))
-            for name in ("text_chat", "image_chat", "vision_chat")
-        ):
-            logger.debug(f"{LOG_PREFIX} 表情视觉识别跳过：视觉模型不支持图片输入")
             return
         path = str(asset.file_path or "").strip()
         readable_path = self._emoji_asset_readable_source(path)
@@ -111,41 +148,31 @@ class EmojiVisionMixin:
             return
         path = readable_path or path
         prompt = cache_friendly_prompt(
-            (
-                "请从聊天语境理解这张表情或贴纸图片，并判断它是否适合进入可复用表情池。\n"
-                "只输出 JSON："
-                '{"summary":"2-40字可见内容摘要","is_emoji_asset":true,'
-                '"asset_type":"emoji|sticker|reaction|meme|other","label":"短标签",'
-                '"description":"一句话用途描述","emotion_category":"neutral|happy|sad|angry",'
-                '"emotions":["具体语气或动作标签"],"sendable":true,"confidence":0.0,'
-                '"standalone_reaction":true,"context_dependent":false,'
-                '"information_dominant":false,'
-                '"rejected_reason":"","status":"ready|rejected"}\n'
-                "summary 只写可见事实和氛围，不写回复建议。"
-                "label 和 emotions 用于后续发送匹配。判断标准是图片本身能否脱离原消息，"
-                "作为明确的聊天反应重复发送，而不是图片是否带有情绪。"
-                "主要传播事实、新闻、文档、商品、事件现场或长文字的信息图片不是表情；"
-                "普通照片只有在人物或动物的表情、动作本身可独立形成聊天反应时才算。"
-                "依赖原事件或配套文字才能理解时 context_dependent=true；"
-                "主要功能是传递信息时 information_dominant=true；"
-                "不确定能否作为表情发送时 sendable=false。"
-            )
+            "请从聊天语境理解这张表情或贴纸图片，并判断它是否适合进入可复用表情池。\n"
+            "只输出 JSON："
+            '{"summary":"2-40字可见内容摘要","is_emoji_asset":true,'
+            '"asset_type":"emoji|sticker|reaction|meme|other","label":"短标签",'
+            '"description":"一句话用途描述","emotion_category":"neutral|happy|sad|angry",'
+            '"emotions":["具体语气或动作标签"],"sendable":true,"confidence":0.0,'
+            '"standalone_reaction":true,"context_dependent":false,'
+            '"information_dominant":false,'
+            '"rejected_reason":"","status":"ready|rejected"}\n'
+            "summary 只写可见事实和氛围，不写回复建议。"
+            "label 和 emotions 用于后续发送匹配。判断标准是图片本身能否脱离原消息，"
+            "作为明确的聊天反应重复发送，而不是图片是否带有情绪。"
+            "主要传播事实、新闻、文档、商品、事件现场或长文字的信息图片不是表情；"
+            "普通照片只有在人物或动物的表情、动作本身可独立形成聊天反应时才算。"
+            "依赖原事件或配套文字才能理解时 context_dependent=true；"
+            "主要功能是传递信息时 information_dominant=true；"
+            "不确定能否作为表情发送时 sendable=false。"
         )
-        session_id = f"daily_life_emoji_vision_{uuid.uuid4().hex[:8]}"
         try:
-            result = await self._call_emoji_vision_provider(
-                provider, prompt, path, session_id
+            payload = await self._call_emoji_vision_payload(
+                prompt,
+                path,
+                session_prefix="daily_life_emoji_vision",
+                task_label="表情视觉",
             )
-            if result is None:
-                logger.debug(f"{LOG_PREFIX} 表情视觉识别跳过：视觉模型未返回结果")
-                return
-            payload = extract_json_from_text(self._completion_text(result))
-            if not isinstance(payload, dict):
-                if not preserve_on_failure:
-                    await self._mark_emoji_asset_failed(
-                        asset, "视觉模型未返回有效结果"
-                    )
-                return
             self._apply_visual_context_summary(
                 context_scope,
                 context_message_key,
@@ -202,8 +229,6 @@ class EmojiVisionMixin:
             logger.debug(f"{LOG_PREFIX} 表情视觉识别跳过：{exc}")
             if not preserve_on_failure:
                 await self._mark_emoji_asset_failed(asset, str(exc)[:120])
-        finally:
-            await self.close_text_session(session_id)
 
     async def _save_plain_image_emoji_candidate(
         self,
@@ -405,7 +430,6 @@ class EmojiVisionMixin:
 
     async def _describe_visual_context_with_vision(
         self,
-        provider: Any,
         path: str,
         context_scope: str,
         context_message_key: str,
@@ -418,57 +442,48 @@ class EmojiVisionMixin:
             return
         path = readable_path or path
         prompt = cache_friendly_prompt(
-            (
-                "请从第一人称生活视角理解这张聊天图片。\n"
-                "只给后续聊天上下文看的图片内容短摘要，写可见事实、可见文字和整体氛围。"
-                "同时判断它是否适合进入可复用表情池。\n"
-                "只输出 JSON："
-                '{"summary":"图片内容短摘要","is_emoji_asset":false,'
-                '"asset_type":"emoji|sticker|reaction|meme|other","label":"短标签",'
-                '"description":"一句话用途描述","emotion_category":"neutral|happy|sad|angry",'
-                '"emotions":["具体语气或动作标签"],"sendable":false,"confidence":0.0,'
-                '"standalone_reaction":false,"context_dependent":false,'
-                '"information_dominant":false,'
-                '"rejected_reason":"","status":"ready|rejected"}\n'
-                "summary 不写回复建议。判断表情时看图片本身能否脱离原消息，作为明确的聊天反应重复发送，"
-                "不能因为图片有情绪就判为表情。主要传播事实、新闻、文档、商品、事件现场或长文字的"
-                "信息图片不是表情；普通照片只有在人物或动物的表情、动作本身可独立形成聊天反应时才算。"
-                "依赖原事件或配套文字才能理解时 context_dependent=true；"
-                "主要功能是传递信息时 information_dominant=true。"
-            )
+            "请从第一人称生活视角理解这张聊天图片。\n"
+            "只给后续聊天上下文看的图片内容短摘要，写可见事实、可见文字和整体氛围。"
+            "同时判断它是否适合进入可复用表情池。\n"
+            "只输出 JSON："
+            '{"summary":"图片内容短摘要","is_emoji_asset":false,'
+            '"asset_type":"emoji|sticker|reaction|meme|other","label":"短标签",'
+            '"description":"一句话用途描述","emotion_category":"neutral|happy|sad|angry",'
+            '"emotions":["具体语气或动作标签"],"sendable":false,"confidence":0.0,'
+            '"standalone_reaction":false,"context_dependent":false,'
+            '"information_dominant":false,'
+            '"rejected_reason":"","status":"ready|rejected"}\n'
+            "summary 不写回复建议。判断表情时看图片本身能否脱离原消息，作为明确的聊天反应重复发送，"
+            "不能因为图片有情绪就判为表情。主要传播事实、新闻、文档、商品、事件现场或长文字的"
+            "信息图片不是表情；普通照片只有在人物或动物的表情、动作本身可独立形成聊天反应时才算。"
+            "依赖原事件或配套文字才能理解时 context_dependent=true；"
+            "主要功能是传递信息时 information_dominant=true。"
         )
-        session_id = f"daily_life_visual_{uuid.uuid4().hex[:8]}"
         try:
-            result = await self._call_emoji_vision_provider(
-                provider, prompt, path, session_id
+            payload = await self._call_emoji_vision_payload(
+                prompt,
+                path,
+                session_prefix="daily_life_visual",
+                task_label="图片上下文",
             )
-            if result is None:
-                logger.debug(f"{LOG_PREFIX} 图片上下文识别跳过：视觉模型未返回结果")
-                return
-            payload = extract_json_from_text(self._completion_text(result))
-            if isinstance(payload, dict):
-                summary = self._visual_context_summary_from_payload(payload)
-                logger.debug(f"{LOG_PREFIX} 图片上下文识别完成：{summary or '已解析'}")
-                self._apply_visual_context_summary(
-                    context_scope,
-                    context_message_key,
-                    payload,
-                    fingerprint,
-                )
-                await self._save_plain_image_emoji_candidate(
-                    payload,
-                    image=path,
-                    fingerprint=fingerprint,
-                    context_scope=context_scope,
-                    context_message_key=context_message_key,
-                    cache_sources=cache_sources,
-                )
-            else:
-                logger.debug(f"{LOG_PREFIX} 图片上下文识别跳过：视觉模型未返回有效结果")
+            summary = self._visual_context_summary_from_payload(payload)
+            logger.debug(f"{LOG_PREFIX} 图片上下文识别完成：{summary or '已解析'}")
+            self._apply_visual_context_summary(
+                context_scope,
+                context_message_key,
+                payload,
+                fingerprint,
+            )
+            await self._save_plain_image_emoji_candidate(
+                payload,
+                image=path,
+                fingerprint=fingerprint,
+                context_scope=context_scope,
+                context_message_key=context_message_key,
+                cache_sources=cache_sources,
+            )
         except Exception as exc:
             logger.debug(f"{LOG_PREFIX} 图片上下文识别跳过：{exc}")
-        finally:
-            await self.close_text_session(session_id)
 
     async def _mark_emoji_asset_failed(
         self, asset: EmojiAssetRecord, reason: str = ""

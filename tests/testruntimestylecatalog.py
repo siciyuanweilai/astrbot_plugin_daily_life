@@ -1,3 +1,4 @@
+import json
 import tempfile
 import types
 import unittest
@@ -61,6 +62,53 @@ class _StyleFeedbackRuntime(_StyleCatalogRuntime):
         }
 
 
+class _VisionProvider:
+    def __init__(self, *, payload=None, error=None):
+        self.payload = payload
+        self.error = error
+        self.calls = []
+
+    async def text_chat(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.error:
+            raise self.error
+        return types.SimpleNamespace(
+            completion_text=json.dumps(self.payload, ensure_ascii=False)
+        )
+
+
+class _VisionFallbackRuntime(RuntimeStyleCatalogMixin):
+    def __init__(self, primary, fallback):
+        self.config = types.SimpleNamespace(
+            vision=types.SimpleNamespace(provider="test-primary")
+        )
+        self.primary = primary
+        self.fallback = fallback
+        self.provider_requests = []
+        self.closed_sessions = []
+
+    async def get_text_provider_candidates(self, provider_id=""):
+        self.provider_requests.append(str(provider_id or ""))
+        yield self.primary
+        self.provider_requests.append("")
+        yield self.fallback
+
+    @staticmethod
+    async def _reverse_prompt_call_provider(provider, prompt, image, session_id):
+        return await provider.text_chat(
+            prompt=prompt,
+            image_urls=[image],
+            session_id=session_id,
+        )
+
+    @staticmethod
+    def _completion_text(result):
+        return str(getattr(result, "completion_text", "") or "")
+
+    async def close_text_session(self, session_id):
+        self.closed_sessions.append(session_id)
+
+
 class _BrowseRuntime(_StyleCatalogRuntime):
     def __init__(self, archive, payloads, assets):
         super().__init__(archive, {})
@@ -92,6 +140,103 @@ class _StyleCatalogComposer(StyleCatalogMixin):
 
 
 class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
+    async def test_legacy_archived_candidate_is_treated_as_disabled(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(f"{tmpdir}/daily_life.db")
+            try:
+                item = await archive.upsert_style_catalog_item(
+                    {
+                        "kind": "outfit",
+                        "title": "测试旧版造型",
+                        "description": "用于验证旧状态兼容的测试造型",
+                        "source_image_hash": "a" * 64,
+                        "confidence": 0.9,
+                    }
+                )
+
+                def write_legacy_status():
+                    archive._conn.execute(
+                        "UPDATE style_catalog_items SET status = 'archived' WHERE id = ?",
+                        (item.id,),
+                    )
+                    archive._conn.commit()
+
+                await archive._run_db(write_legacy_status)
+                restored = await archive.get_style_catalog_item(item.id)
+                disabled = await archive.get_style_catalog_items(
+                    status="disabled", limit=10
+                )
+
+                self.assertEqual(restored.status, "disabled")
+                self.assertEqual([entry.id for entry in disabled], [item.id])
+                self.assertEqual(await archive.get_style_catalog_items(limit=10), [])
+            finally:
+                archive.close()
+
+    async def test_style_image_analysis_falls_back_to_current_default_provider(self):
+        primary = _VisionProvider(error=RuntimeError("测试指定模型不可用"))
+        fallback = _VisionProvider(
+            payload={
+                "outfit": {
+                    "present": True,
+                    "title": "测试默认模型识别造型",
+                    "description": "浅色上衣搭配深色短裙",
+                    "confidence": 0.9,
+                }
+            }
+        )
+        runtime = _VisionFallbackRuntime(primary, fallback)
+
+        payload = await runtime._analyze_style_catalog_image(
+            "/tmp/test-style.jpg",
+            note="测试衣橱识图",
+            kind="outfit",
+        )
+
+        self.assertEqual(payload["outfit"]["title"], "测试默认模型识别造型")
+        self.assertEqual(runtime.provider_requests, ["test-primary", ""])
+        self.assertEqual(len(primary.calls), 1)
+        self.assertEqual(len(fallback.calls), 1)
+        self.assertEqual(len(runtime.closed_sessions), 2)
+        self.assertTrue(runtime.closed_sessions[1].endswith("_fallback"))
+
+    def test_web_asset_key_ignores_tracking_parameters_but_keeps_signed_urls(self):
+        first = RuntimeStyleCatalogMixin._style_asset_key(
+            "https://images.example.test/look.jpg?utm_source=test&ref=search"
+        )
+        second = RuntimeStyleCatalogMixin._style_asset_key(
+            "https://IMAGES.example.test/look.jpg"
+        )
+        self.assertEqual(first, second)
+        signed = RuntimeStyleCatalogMixin._style_asset_key(
+            "https://images.example.test/look.jpg?token=abc"
+        )
+        self.assertNotEqual(first, signed)
+        self.assertEqual(
+            RuntimeStyleCatalogMixin._style_asset_key(
+                "https://images.example.test/look.jpg?b=2&a=1"
+            ),
+            RuntimeStyleCatalogMixin._style_asset_key(
+                "https://images.example.test/look.jpg?a=1&b=2"
+            ),
+        )
+
+    def test_web_asset_candidate_only_rejects_explicitly_tiny_dimensions(self):
+        self.assertFalse(
+            RuntimeStyleCatalogMixin._style_asset_is_candidate(
+                {
+                    "url": "https://images.example.test/tiny.jpg",
+                    "width": 120,
+                    "height": 180,
+                }
+            )
+        )
+        self.assertTrue(
+            RuntimeStyleCatalogMixin._style_asset_is_candidate(
+                {"url": "https://images.example.test/unknown-size.jpg"}
+            )
+        )
+
     def test_webp_style_reference_is_normalized_to_jpeg(self):
         source = BytesIO()
         Image.new("RGBA", (8, 6), (255, 40, 100, 180)).save(source, format="WEBP")
@@ -118,9 +263,7 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
             first_hash = RuntimeStyleCatalogMixin._style_perceptual_hash(str(first))
             second_hash = RuntimeStyleCatalogMixin._style_perceptual_hash(str(second))
             self.assertLessEqual(
-                RuntimeStyleCatalogMixin._style_hash_distance(
-                    first_hash, second_hash
-                ),
+                RuntimeStyleCatalogMixin._style_hash_distance(first_hash, second_hash),
                 5,
             )
 
@@ -266,6 +409,7 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 "present": True,
                 "title": "测试清爽套装",
                 "description": "浅绿色短袖上衣搭米白直筒裤",
+                "visual_prompt": "浅绿色圆领短袖上衣采用微宽松直身版型，搭配米白色高腰直筒长裤，裤腿自然垂落，配白色低帮鞋与银色细链项链。",
                 "colors": ["浅绿色", "米白色"],
                 "footwear": ["白色低帮鞋"],
                 "accessories": ["银色细链项链"],
@@ -353,6 +497,8 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNone(await archive.get_day("2026-08-11"))
                 outfit = next(item for item in items if item.kind == "outfit")
                 self.assertNotIn("丸子", outfit.description)
+                self.assertIn("微宽松直身版型", outfit.description)
+                self.assertNotIn("visual_prompt", outfit.attributes)
                 self.assertEqual(outfit.attributes["footwear"], ["白色低帮鞋"])
                 self.assertEqual(outfit.attributes["accessories"], ["银色细链项链"])
                 makeup = next(item for item in items if item.kind == "makeup")
@@ -441,12 +587,8 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(appearance["outfit"], "浅色日常造型")
                 self.assertEqual(appearance["hair_style"], "测试发型")
                 self.assertEqual(appearance["hair"], "低马尾")
-                self.assertEqual(
-                    appearance["makeup"], "测试旧版妆容；清透底妆"
-                )
-                self.assertEqual(
-                    appearance["nails"], "测试旧版美甲；奶白色短圆甲"
-                )
+                self.assertEqual(appearance["makeup"], "测试旧版妆容；清透底妆")
+                self.assertEqual(appearance["nails"], "测试旧版美甲；奶白色短圆甲")
             finally:
                 archive.close()
 
@@ -456,6 +598,7 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 "present": True,
                 "title": "测试服装",
                 "description": "蓝色衬衫搭白色长裤",
+                "visual_prompt": "蓝色翻领衬衫采用宽松直身剪裁，搭配白色高腰直筒长裤。",
                 "colors": ["蓝色", "白色"],
                 "confidence": 0.7,
             },
@@ -471,7 +614,64 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(outfit["kind"], "outfit")
         self.assertEqual(outfit["attributes"]["colors"], ["蓝色", "白色"])
+        self.assertEqual(
+            outfit["description"],
+            "蓝色翻领衬衫采用宽松直身剪裁，搭配白色高腰直筒长裤。",
+        )
+        self.assertNotIn("visual_prompt", outfit["attributes"])
         self.assertEqual(hair, {})
+
+    def test_legacy_visual_prompt_becomes_detailed_description(self):
+        visual_prompt = "细节" * 180
+        payload = {
+            "top": {
+                "present": True,
+                "title": "测试详细上装",
+                "description": "浅色长袖上装",
+                "visual_prompt": visual_prompt,
+                "confidence": 0.9,
+            }
+        }
+
+        item = _StyleCatalogRuntime._style_analysis_item(payload, "top")
+
+        self.assertEqual(item["description"], visual_prompt)
+        self.assertNotIn("visual_prompt", item["attributes"])
+        self.assertGreater(len(item["description"]), 240)
+
+    def test_contract_uses_one_detailed_description(self):
+        runtime = object.__new__(_StyleCatalogRuntime)
+        contract = runtime._style_catalog_contract("", "auto")
+
+        self.assertIn("description 就是供衣橱展示、检索和后续生图", contract)
+        self.assertNotIn('"visual_prompt"', contract)
+        self.assertNotIn('"image_summary"', contract)
+
+    async def test_adopted_catalog_item_prefers_detailed_visual_prompt(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(f"{tmpdir}/daily_life.db")
+            item = await archive.upsert_style_catalog_item(
+                {
+                    "kind": "outfit",
+                    "title": "测试层次造型",
+                    "description": "浅色上衣搭深色短裙",
+                    "source_scope": "private:test-user",
+                    "source_image_hash": "2" * 64,
+                    "attributes": {
+                        "visual_prompt": "浅蓝色方领长袖上衣采用贴身剪裁，黑色双层荷叶边高腰短裙形成清晰层次。"
+                    },
+                    "confidence": 0.9,
+                }
+            )
+            runtime = _StyleCatalogComposer(archive)
+            try:
+                appearance = await runtime._style_catalog_reference_appearance(
+                    [item.id]
+                )
+                self.assertIn("双层荷叶边", appearance["outfit"])
+                self.assertNotEqual(appearance["outfit"], item.description)
+            finally:
+                archive.close()
 
 
 if __name__ == "__main__":

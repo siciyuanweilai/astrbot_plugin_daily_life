@@ -80,7 +80,7 @@ class StyleCatalogItemRecord:
         if kind not in STYLE_CATALOG_KIND_SET:
             return None
         image_hash = cls._text(value.get("source_image_hash"), 64).lower()
-        description = cls._text(value.get("description"), 600)
+        description = cls._text(value.get("description"), 800)
         if not image_hash or not description:
             return None
         confidence = optional_float(value.get("confidence"))

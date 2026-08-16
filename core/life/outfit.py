@@ -31,6 +31,7 @@ from .tools import (
     format_timeline_travel,
     get_current_timeline_status,
     get_time_period_cn,
+    parse_life_datetime,
     parse_time_minutes,
     timeline_item_datetime,
 )
@@ -199,11 +200,23 @@ class OutfitMixin:
         quote = cls._compact_outfit_evidence(evidence.get("quote"), 360)
         if not quote:
             return ""
+        fact_confirmed_at = parse_life_datetime(
+            context.get("old_meta", {}).get("outfit_fact_confirmed_at")
+        )
         if source == "occurred_schedule":
             timeline_time = str(evidence.get("timeline_time") or "").strip()
             for item in context.get("occurred_timeline_items", []):
                 item_time = str(getattr(item, "time", "") or "").strip()
                 if not timeline_time or item_time != timeline_time:
+                    continue
+                item_datetime = timeline_item_datetime(
+                    item, context.get("timeline_date")
+                )
+                if (
+                    fact_confirmed_at is not None
+                    and item_datetime is not None
+                    and item_datetime <= fact_confirmed_at
+                ):
                     continue
                 item_evidence = "\n".join(
                     cls._compact_outfit_evidence(getattr(item, field, ""), 360)
@@ -213,6 +226,11 @@ class OutfitMixin:
                     return "occurred_schedule"
             return ""
         if source == "live_state" and quote in context.get("state_evidence", ""):
+            state_updated_at = parse_life_datetime(context.get("state_updated_at"))
+            if fact_confirmed_at is not None and (
+                state_updated_at is None or state_updated_at <= fact_confirmed_at
+            ):
+                return ""
             return "live_state"
         return ""
 
@@ -401,6 +419,9 @@ class OutfitMixin:
             "outfit_fact_context": self._outfit_fact_context_text(old_meta),
             "occurred_timeline_items": occurred_timeline_items,
             "state_evidence": self._state_outfit_evidence_text(old_data),
+            "state_updated_at": getattr(
+                getattr(old_data, "state", None), "updated_at", ""
+            ),
             "daily_theme": old_meta.get("theme", "未设定"),
             "mood_color": old_meta.get("mood", "未设定"),
             "instruction": str(instruction or "").strip(),
@@ -447,7 +468,7 @@ class OutfitMixin:
 reason 使用自然中文，不写内部枚举，也不复述具体日期、钟点或时间轴编号。
 9. 用户明确提出穿搭要求时，在不违背当前真实场景和天气的前提下优先执行，不能用 keep 回避。
 10. 只返回穿搭决策，不得改写时间轴、实时状态、主题、地点、事件或睡眠信息。
-11. change_evidence 只描述本轮更换主体服装的事实依据：
+11. change_evidence 只描述本轮更换主体服装的事实依据，证据发生时间必须晚于当前穿搭确认时间：
 - 已发生日程明确记载已经换装时，kind=explicit_outfit_change、source=occurred_schedule，timeline_time 填对应节点时间，quote 必须原样摘录该节点中明确确认换装的短句。
 - 实时生活状态明确记载已经换装时，kind=explicit_outfit_change、source=live_state，quote 必须原样摘录实时状态中的确认短句。
 - 只是基于舒适度自主建议换装时，kind=comfort_adjustment、source=autonomous；场景变化但没有已发生换装事实时使用 scene_transition；没有变化依据时使用 none。不得把未来安排、普通活动或换装建议标成已经换装。

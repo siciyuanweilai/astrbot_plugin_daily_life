@@ -422,7 +422,7 @@ const el = {
   closetManageButton: byId("closetManageButton"),
   closetSelectedSummary: byId("closetSelectedSummary"),
   closetBulkEnableButton: byId("closetBulkEnableButton"),
-  closetBulkArchiveButton: byId("closetBulkArchiveButton"),
+  closetBulkDisableButton: byId("closetBulkDisableButton"),
   closetBulkDeleteButton: byId("closetBulkDeleteButton"),
   closetCancelManageButton: byId("closetCancelManageButton"),
   closetStats: byId("closetStats"),
@@ -2796,7 +2796,7 @@ const CLOSET_KIND_LABELS = {
 const CLOSET_STATUS_LABELS = {
   active: "已启用",
   pending: "待确认",
-  archived: "已归档",
+  disabled: "已停用",
   rejected: "不采用",
 };
 const CLOSET_SOURCE_LABELS = {
@@ -2856,6 +2856,19 @@ function toggleClosetSelected(id) {
   renderClosetManagement();
 }
 
+function toggleClosetGroupSelected(ids) {
+  if (!state.closetManageMode) return;
+  const targets = closetTargetIds(ids);
+  if (!targets.length) return;
+  resetClosetDeleteButton();
+  const allSelected = targets.every((id) => state.closetSelectedIds.has(id));
+  targets.forEach((id) => {
+    if (allSelected) state.closetSelectedIds.delete(id);
+    else state.closetSelectedIds.add(id);
+  });
+  renderClosetManagement();
+}
+
 function pruneClosetSelection() {
   const live = new Set(objectItems(state.closetItems).map((item) => Number(item.id || 0)));
   state.closetSelectedIds = new Set(closetSelectedIds().filter((id) => live.has(id)));
@@ -2864,12 +2877,29 @@ function pruneClosetSelection() {
 function filteredClosetItems() {
   const filter = text(state.closetFilter || "all");
   const items = objectItems(state.closetItems);
-  if (["active", "pending", "archived", "rejected"].includes(filter)) {
-    return items.filter((item) => item.status === filter);
+  if (["active", "pending", "disabled"].includes(filter)) {
+    return items.filter((item) => closetStatus(item) === filter);
   }
   if (Object.hasOwn(CLOSET_KIND_LABELS, filter)) return items.filter((item) => item.kind === filter);
   if (filter === "liked") return items.filter((item) => Number(item.preference_score || 0) > 0);
+  if (filter === "low_confidence") return items.filter((item) => Number(item.confidence || 0) < 0.72);
+  if (filter === "web") return items.filter((item) => ["web_image", "product_image"].includes(item.source_kind));
+  if (filter === "local") return items.filter((item) => !["web_image", "product_image"].includes(item.source_kind));
   return items;
+}
+
+function closetGroups(items = []) {
+  const groups = new Map();
+  objectItems(items).forEach((item) => {
+    const key = clean(item.source_group_key || item.source_image_hash, "") || `item:${Number(item.id || 0)}`;
+    if (!groups.has(key)) groups.set(key, { key, items: [] });
+    groups.get(key).items.push(item);
+  });
+  return Array.from(groups.values()).map((group) => {
+    const outfit = group.items.find((item) => item.kind === "outfit");
+    const preview = group.items.find((item) => item.preview_available);
+    return { ...group, cover: outfit || preview || group.items[0] || {} };
+  });
 }
 
 function closetPageWindow(items = []) {
@@ -2894,7 +2924,7 @@ function renderClosetSelectionTools() {
     el.closetSelectedSummary.hidden = !managing;
     el.closetSelectedSummary.textContent = `已选 ${selected.length} 条`;
   }
-  [el.closetBulkEnableButton, el.closetBulkArchiveButton, el.closetBulkDeleteButton].forEach((button) => {
+  [el.closetBulkEnableButton, el.closetBulkDisableButton, el.closetBulkDeleteButton].forEach((button) => {
     if (!button) return;
     button.hidden = !managing;
     button.dataset.lockDisabled = managing && selected.length ? "false" : "true";
@@ -2908,9 +2938,8 @@ function renderClosetSelectionTools() {
 
 function renderClosetStats() {
   if (!el.closetStats) return;
-  const stats = state.closetStats || {};
+  const stats = closetComputedStats();
   const entries = [
-    ["总数", stats.total],
     ["已启用", stats.active],
     ["待确认", stats.pending],
     ["套装", stats.outfit],
@@ -2932,6 +2961,30 @@ function renderClosetStats() {
   }));
 }
 
+function closetComputedStats() {
+  const items = objectItems(state.closetItems);
+  const stats = {
+    total: items.length,
+    active: 0,
+    pending: 0,
+    disabled: 0,
+    outfit: 0,
+    top: 0,
+    bottom: 0,
+    footwear: 0,
+    accessory: 0,
+    hair: 0,
+    makeup: 0,
+    nails: 0,
+  };
+  items.forEach((item) => {
+    const status = closetStatus(item);
+    if (Object.hasOwn(stats, status)) stats[status] += 1;
+    if (Object.hasOwn(CLOSET_KIND_LABELS, item.kind)) stats[item.kind] += 1;
+  });
+  return stats;
+}
+
 function closetAttributeText(item = {}, key, limit = 4) {
   const value = item.attributes?.[key];
   const values = Array.isArray(value) ? value : value ? [value] : [];
@@ -2939,13 +2992,45 @@ function closetAttributeText(item = {}, key, limit = 4) {
 }
 
 function closetBadges(item = {}) {
-  const status = clean(item.status, "active");
+  const status = closetStatus(item);
   const values = [
     [CLOSET_KIND_LABELS[item.kind] || "造型", ""],
-    [CLOSET_STATUS_LABELS[status] || "其他状态", `is-${status}`],
+    [CLOSET_STATUS_LABELS[status] || "待确认", `is-${status}`],
   ];
   if (Number(item.preference_score || 0) > 0) values.push(["喜欢", ""]);
   return values;
+}
+
+export function closetStatus(item = {}) {
+  const status = text(item.status, "pending").trim().toLowerCase();
+  if (status === "archived") return "disabled";
+  return Object.hasOwn(CLOSET_STATUS_LABELS, status) ? status : "pending";
+}
+
+function closetSourceText(item = {}) {
+  const source = CLOSET_SOURCE_LABELS[item.source_kind] || "未知来源";
+  const host = clean(item.source_host, "");
+  return host ? `${source} · ${host}` : source;
+}
+
+function closetGroupBadges(items = []) {
+  const counts = new Map();
+  objectItems(items).forEach((item) => {
+    const status = closetStatus(item);
+    counts.set(status, (counts.get(status) || 0) + 1);
+  });
+  const badges = [];
+  counts.forEach((count, status) => {
+    const label = CLOSET_STATUS_LABELS[status] || "待确认";
+    badges.push([
+      count === items.length ? label : `${label} ${count}`,
+      `is-${status}`,
+    ]);
+  });
+  if (items.some((item) => Number(item.preference_score || 0) > 0)) {
+    badges.push(["喜欢", ""]);
+  }
+  return badges;
 }
 
 async function loadClosetPreview(img, id) {
@@ -2967,26 +3052,30 @@ async function loadClosetPreview(img, id) {
   }
 }
 
-function closetRecord(item = {}) {
+function closetRecord(group = {}) {
+  const items = objectItems(group.items);
+  const item = group.cover || items[0] || {};
   const itemId = Number(item.id || 0);
+  const itemIds = closetTargetIds(items.map((entry) => entry.id));
   const record = node("article", "closet-record");
-  const selected = state.closetSelectedIds.has(itemId);
-  record.classList.toggle("is-selected", state.closetManageMode && selected);
+  const selectedCount = itemIds.filter((id) => state.closetSelectedIds.has(id)).length;
+  record.classList.toggle("is-selected", state.closetManageMode && selectedCount > 0);
   if (state.closetManageMode) {
     const selector = node("label", "closet-select");
     selector.addEventListener("click", (event) => event.stopPropagation());
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
-    checkbox.checked = selected;
-    checkbox.setAttribute("aria-label", `选择${clean(item.title || item.description, "衣橱素材")}`);
-    checkbox.addEventListener("change", () => toggleClosetSelected(itemId));
+    checkbox.checked = selectedCount > 0 && selectedCount === itemIds.length;
+    checkbox.indeterminate = selectedCount > 0 && selectedCount < itemIds.length;
+    checkbox.setAttribute("aria-label", `选择${clean(item.title || item.description, "衣橱来源图")}的全部候选`);
+    checkbox.addEventListener("change", () => toggleClosetGroupSelected(itemIds));
     selector.append(checkbox);
     record.append(selector);
   }
   const thumb = node("button", "closet-thumb");
   thumb.type = "button";
-  thumb.setAttribute("aria-label", `${state.closetManageMode ? "选择" : "查看"}${clean(item.title, "衣橱素材")}`);
-  thumb.addEventListener("click", () => state.closetManageMode ? toggleClosetSelected(itemId) : openClosetDetail(itemId));
+  thumb.setAttribute("aria-label", `${state.closetManageMode ? "选择" : "查看"}${clean(item.title, "衣橱来源图")}`);
+  thumb.addEventListener("click", () => state.closetManageMode ? toggleClosetGroupSelected(itemIds) : openClosetDetail(itemId));
   if (item.preview_available) {
     const image = document.createElement("img");
     image.alt = clean(item.title, "衣橱预览");
@@ -2999,15 +3088,28 @@ function closetRecord(item = {}) {
   }
   const body = node("div", "closet-record-body");
   const title = node("div", "closet-record-title");
-  title.append(node("strong", "", clean(item.title || item.description, "未命名造型")), node("span", "muted", `#${itemId}`));
-  const badges = node("div", "closet-badges");
-  closetBadges(item).forEach(([label, className]) => badges.append(node("span", `closet-badge ${className}`.trim(), label)));
-  const usage = Number(item.used_count || 0);
-  const meta = [
-    clean(item.description, "暂无描述"),
-    `偏好 ${Number(item.preference_score || 0).toFixed(1)} · 使用 ${usage} 次`,
-  ].join("\n");
-  body.append(title, badges, node("div", "closet-record-meta", meta));
+  const suffix = items.length > 1 ? `${items.length} 项` : `#${itemId}`;
+  title.append(node("strong", "", clean(item.title || item.description, "未命名造型")), node("span", "muted", suffix));
+  const source = node("div", "closet-record-source", closetSourceText(item));
+  const statusBadges = node("div", "closet-badges");
+  closetGroupBadges(items).forEach(([label, className]) => {
+    statusBadges.append(node("span", `closet-badge ${className}`.trim(), label));
+  });
+  const components = node("div", "closet-components");
+  items.forEach((entry) => {
+    const button = node("button", `closet-component is-${closetStatus(entry)}`, CLOSET_KIND_LABELS[entry.kind] || "造型");
+    button.type = "button";
+    button.title = clean(entry.title || entry.description, "查看候选详情");
+    button.setAttribute("aria-label", `查看${CLOSET_KIND_LABELS[entry.kind] || "造型"}：${button.title}`);
+    button.addEventListener("click", () => state.closetManageMode ? toggleClosetSelected(entry.id) : openClosetDetail(entry.id));
+    components.append(button);
+  });
+  const confidence = items.length
+    ? Math.round(Math.min(...items.map((entry) => Number(entry.confidence || 0))) * 100)
+    : 0;
+  const query = clean(item.source_query, "");
+  const meta = query ? `搜索：${query}` : `最低置信度 ${confidence}%`;
+  body.append(title, source, statusBadges, components, node("div", "closet-record-meta", meta));
   record.append(thumb, body);
   return record;
 }
@@ -3027,15 +3129,16 @@ function renderClosetManagement() {
   renderClosetStats();
   renderClosetSelectionTools();
   const items = filteredClosetItems();
-  const pageInfo = closetPageWindow(items);
+  const groups = closetGroups(items);
+  const pageInfo = closetPageWindow(groups);
   renderClosetPager(pageInfo);
-  const total = Number(state.closetStats?.total || 0);
+  const total = closetComputedStats().total;
   if (el.closetSummary) {
     el.closetSummary.textContent = !total
       ? "暂无衣橱素材"
       : !items.length
-        ? `暂无符合条件的素材，共 ${total} 条`
-        : `显示 ${pageInfo.start + 1}-${pageInfo.end} 条，共 ${items.length} 条；总数 ${total} 条`;
+        ? `暂无符合条件的素材，共 ${total} 个候选`
+        : `显示 ${pageInfo.start + 1}-${pageInfo.end} 组，共 ${groups.length} 组；总数 ${total} 个候选`;
   }
   el.closetList.replaceChildren(...(pageInfo.items.length ? pageInfo.items.map(closetRecord) : [empty("暂无符合条件的衣橱素材")]));
   renderClosetDetail();
@@ -3062,12 +3165,32 @@ async function loadClosetAssets({ quiet = false } = {}) {
   }
 }
 
-function closetDetailField(list, label, value) {
+function closetDetailField(list, label, value, className = "") {
   const textValue = clean(value, "");
   if (!textValue) return;
-  const wrapper = node("div", "");
+  const wrapper = node("div", className);
   wrapper.append(node("dt", "", label), node("dd", "", textValue));
   list.append(wrapper);
+}
+
+function closetVisualPrompt(item = {}) {
+  return clean(item.attributes?.visual_prompt || item.description, "暂无视觉提示词");
+}
+
+function closetSourceLink(item = {}) {
+  const value = clean(item.source_url, "");
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    if (!["http:", "https:"].includes(url.protocol)) return null;
+    const link = node("a", "closet-source-link", "查看来源网页");
+    link.href = url.href;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    return link;
+  } catch (_error) {
+    return null;
+  }
 }
 
 function renderClosetDetail() {
@@ -3123,6 +3246,9 @@ function renderClosetDetail() {
     "来源",
     enumLabelStrict(item.source_kind, CLOSET_SOURCE_LABELS, "未知来源")
   );
+  closetDetailField(grid, "来源站点", clean(item.source_host, ""));
+  closetDetailField(grid, "搜索需求", clean(item.source_query, ""));
+  closetDetailField(grid, "识别批次", clean(item.source_batch_id, ""));
   const actions = node("div", "closet-detail-actions");
   const like = node("button", "", "喜欢");
   like.type = "button";
@@ -3133,14 +3259,23 @@ function renderClosetDetail() {
   const review = node("button", "", "重新识别");
   review.type = "button";
   review.addEventListener("click", () => reviewClosetItem(item.id));
-  const status = node("button", "", item.status === "active" ? "归档" : "启用");
-  status.type = "button";
-  status.addEventListener("click", () => setClosetStatus([item.id], item.status === "active" ? "archived" : "active"));
+  const enabled = closetStatus(item) === "active";
+  const toggle = node("button", "", enabled ? "停用" : "启用");
+  toggle.type = "button";
+  toggle.addEventListener("click", () => setClosetStatus(
+    [item.id],
+    enabled ? "disabled" : "active"
+  ));
   const remove = node("button", "danger", "删除");
   remove.type = "button";
   remove.addEventListener("click", () => confirmClosetDelete(remove, [item.id], "删除"));
-  actions.append(like, dislike, review, status, remove);
-  copy.append(badges, node("p", "closet-detail-description", clean(item.description, "暂无描述")), grid, actions);
+  actions.append(like, dislike, review, toggle, remove);
+  const sourceLink = closetSourceLink(item);
+  const prompt = node("section", "closet-detail-prompt");
+  prompt.append(node("p", "closet-detail-description", closetVisualPrompt(item)));
+  copy.append(badges, prompt, grid);
+  if (sourceLink) copy.append(sourceLink);
+  copy.append(actions);
   el.closetDetailBody.replaceChildren(preview, copy);
 }
 
@@ -3188,14 +3323,28 @@ async function importClosetFiles(files) {
   setBusy(true);
   try {
     let result = null;
+    let succeeded = 0;
+    let candidates = 0;
+    const failures = [];
     for (const file of valid) {
-      result = await apiUpload("page/closet/import", file, {
-        timeoutMs: 180000,
-        timeoutMessage: "衣橱图片识别耗时较久，请稍后查看",
-      });
+      try {
+        result = await apiUpload("page/closet/import", file, {
+          timeoutMs: 180000,
+          timeoutMessage: "衣橱图片识别耗时较久，请稍后查看",
+        });
+        succeeded += 1;
+        candidates += objectItems(result.imported).length;
+      } catch (error) {
+        failures.push(userErrorMessage(error, "识别失败"));
+      }
     }
-    if (result) applyClosetPayload(result);
-    setNotice(valid.length === selected.length ? `已学习 ${valid.length} 张衣橱图片` : `已学习 ${valid.length} 张，跳过 ${selected.length - valid.length} 张`, "success");
+    if (!result) throw new Error(failures[0] || "衣橱图片学习失败");
+    applyClosetPayload(result);
+    const skipped = selected.length - valid.length;
+    const details = [`识别 ${succeeded} 张图片`, `形成 ${candidates} 个候选`];
+    if (failures.length) details.push(`${failures.length} 张失败`);
+    if (skipped) details.push(`${skipped} 张格式或大小不符合要求`);
+    setNotice(details.join("，"), failures.length ? "warning" : "success");
   } catch (error) {
     setNotice(userErrorMessage(error, "衣橱图片学习失败"), "error");
   } finally {
@@ -3234,7 +3383,7 @@ async function setClosetStatus(ids, status) {
   setBusy(true);
   try {
     applyClosetPayload(await apiPost("page/closet/status", { ids: targets, status }));
-    setNotice(status === "active" ? "衣橱素材已启用" : "衣橱素材已归档", "success");
+    setNotice(status === "active" ? "衣橱素材已启用" : "衣橱素材已停用", "success");
   } catch (error) {
     setNotice(userErrorMessage(error, "衣橱状态保存失败"), "error");
   } finally {
@@ -3629,7 +3778,7 @@ function bindEvents() {
   el.closetManageButton?.addEventListener("click", beginClosetManage);
   el.closetCancelManageButton?.addEventListener("click", cancelClosetManage);
   el.closetBulkEnableButton?.addEventListener("click", () => setClosetStatus(closetSelectedIds(), "active"));
-  el.closetBulkArchiveButton?.addEventListener("click", () => setClosetStatus(closetSelectedIds(), "archived"));
+  el.closetBulkDisableButton?.addEventListener("click", () => setClosetStatus(closetSelectedIds(), "disabled"));
   el.closetBulkDeleteButton?.addEventListener("click", () => confirmClosetDelete(el.closetBulkDeleteButton, closetSelectedIds(), "删除选中"));
   el.closetDetailClose?.addEventListener("click", closeClosetDetail);
   el.closetDetailDialog?.addEventListener("click", (event) => {

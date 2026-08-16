@@ -312,7 +312,7 @@
                   <button id="closetManageButton" class="emoji-manage-button closet-manage-button" type="button">管理</button>
                   <span id="closetSelectedSummary" class="emoji-selected-summary closet-selected-summary" hidden>已选 0 条</span>
                   <button id="closetBulkEnableButton" type="button" hidden>启用选中</button>
-                  <button id="closetBulkArchiveButton" type="button" hidden>归档选中</button>
+                  <button id="closetBulkDisableButton" type="button" hidden>停用选中</button>
                   <button id="closetBulkDeleteButton" class="danger" type="button" hidden>删除选中</button>
                   <button id="closetCancelManageButton" type="button" hidden>取消</button>
                 </div>
@@ -321,6 +321,9 @@
                     <option value="all">全部</option>
                     <option value="active">已启用</option>
                     <option value="pending">待确认</option>
+                    <option value="low_confidence">低置信度</option>
+                    <option value="web">联网来源</option>
+                    <option value="local">本地与会话</option>
                     <option value="outfit">套装</option>
                     <option value="top">上装</option>
                     <option value="bottom">下装</option>
@@ -330,8 +333,7 @@
                     <option value="makeup">妆容</option>
                     <option value="nails">美甲</option>
                     <option value="liked">偏好较高</option>
-                    <option value="archived">已归档</option>
-                    <option value="rejected">不采用</option>
+                    <option value="disabled">已停用</option>
                   </select>
                   <div id="closetPager" class="emoji-pager closet-pager" hidden>
                     <button id="closetPrevPage" type="button">上一页</button>

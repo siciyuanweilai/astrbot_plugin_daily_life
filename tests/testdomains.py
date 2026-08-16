@@ -1061,6 +1061,9 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(outcomes[0].status, "expired")
         self.assertEqual(day.timeline[0].execution_state, "expired")
+        stored = await self.archive.get_day(day.date)
+        self.assertIsNotNone(stored)
+        self.assertEqual(stored.timeline[0].execution_state, "expired")
         self.assertEqual(await self.archive.get_life_action_receipts(limit=10), [])
 
     async def test_activity_session_and_unified_timeline_are_persisted(self):

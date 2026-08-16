@@ -26,6 +26,10 @@ _TRAVEL_SPEEDS = {
     "driving": 8.5,
     "transit": 6.0,
 }
+_STRUCTURED_PLACE_REFERENCE_FIELDS = frozenset(
+    {"place", "travel_origin", "origin", "destination", "target"}
+)
+_EMBEDDED_PLACE_REFERENCE_FIELDS = frozenset({"activity"})
 
 
 @dataclass(slots=True)
@@ -1125,26 +1129,42 @@ class DailyLocationAuditMixin:
         cls,
         value: Any,
         substitutions: list[dict[str, str]],
+        *,
+        field_name: str = "",
     ) -> Any:
-        """把日程各结构中的临时地点名同步为地图标准名称。"""
+        """同步结构化地点字段，并幂等更新活动中的明确地点名。"""
 
         if isinstance(value, dict):
             for key, item in value.items():
-                value[key] = cls._replace_place_references(item, substitutions)
+                value[key] = cls._replace_place_references(
+                    item,
+                    substitutions,
+                    field_name=str(key),
+                )
             return value
         if isinstance(value, list):
             for index, item in enumerate(value):
-                value[index] = cls._replace_place_references(item, substitutions)
+                value[index] = cls._replace_place_references(
+                    item,
+                    substitutions,
+                    field_name=field_name,
+                )
             return value
         if not isinstance(value, str):
             return value
-        result = value
         for substitution in substitutions:
-            original = substitution["original"]
-            canonical = substitution["canonical"]
-            if original and original != canonical:
-                result = result.replace(original, canonical)
-        return result
+            original = str(substitution.get("original") or "").strip()
+            canonical = str(substitution.get("canonical") or "").strip()
+            if not original or original == canonical:
+                continue
+            if field_name in _STRUCTURED_PLACE_REFERENCE_FIELDS and value == original:
+                return canonical
+            if field_name in _EMBEDDED_PLACE_REFERENCE_FIELDS and original in value:
+                value = canonical.join(
+                    part.replace(original, canonical)
+                    for part in value.split(canonical)
+                )
+        return value
 
     @staticmethod
     def _downgrade_unverified_place(

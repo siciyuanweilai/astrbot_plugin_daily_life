@@ -167,6 +167,71 @@ class LifeActionTest(unittest.TestCase):
         self.assertEqual(day.outfit, "浅绿色短袖和米白色长裤")
         self.assertEqual(day.meta["outfit_fact_source"], "life_action")
 
+    def test_older_planned_outfit_does_not_override_later_user_request(self):
+        day = DayRecord(
+            date="2026-08-15",
+            outfit="黑色宽肩带无袖短连衣裙",
+            state=LifeState(mood_score=55),
+            timeline=[
+                TimelineItem(
+                    time="10:30",
+                    activity="挑了白色短袖方领T恤和浅蓝牛仔短裤",
+                    execution_state="completed",
+                )
+            ],
+            meta={
+                "outfit_fact_source": "user_instruction",
+                "outfit_fact_confirmed_at": "2026-08-15 11:04:00",
+                "outfit_fact_evidence": "用户本轮明确穿搭要求",
+            },
+        )
+
+        outcome = self.engine.settle_life_action(
+            day,
+            {
+                "action_id": "outfit-plan-stale",
+                "action_type": "change_outfit",
+                "target": "白色短袖方领T恤配浅蓝牛仔短裤",
+                "timeline_index": 0,
+                "source": "daily_plan",
+            },
+            now=datetime.datetime(2026, 8, 15, 11, 25),
+        )
+
+        self.assertEqual(outcome.status, "committed")
+        self.assertIn("保留", outcome.reason)
+        self.assertEqual(day.outfit, "黑色宽肩带无袖短连衣裙")
+        self.assertEqual(day.meta["outfit_fact_source"], "user_instruction")
+        self.assertEqual(day.meta["outfit_fact_confirmed_at"], "2026-08-15 11:04:00")
+        self.assertEqual(day.state.mood_score, 55)
+
+    def test_later_planned_outfit_can_replace_user_requested_outfit(self):
+        day = DayRecord(
+            date="2026-08-15",
+            outfit="黑色宽肩带无袖短连衣裙",
+            timeline=[TimelineItem(time="21:10", activity="洗漱后换上睡裙")],
+            meta={
+                "outfit_fact_source": "user_instruction",
+                "outfit_fact_confirmed_at": "2026-08-15 11:04:00",
+            },
+        )
+
+        outcome = self.engine.settle_life_action(
+            day,
+            {
+                "action_id": "outfit-plan-later",
+                "action_type": "change_outfit",
+                "target": "米白色棉质睡裙",
+                "timeline_index": 0,
+                "source": "daily_plan",
+            },
+            now=datetime.datetime(2026, 8, 15, 21, 12),
+        )
+
+        self.assertEqual(outcome.status, "committed")
+        self.assertEqual(day.outfit, "米白色棉质睡裙")
+        self.assertEqual(day.meta["outfit_fact_source"], "life_action")
+
     def test_action_preconditions_cover_life_weather_and_timeline_evidence(self):
         day = DayRecord(
             date="2026-08-01",
@@ -457,6 +522,67 @@ class _RecordStub(DailyRecordMixin):
 
 
 class LifeActionIntegrationTest(unittest.IsolatedAsyncioTestCase):
+    async def test_stale_outfit_receipt_preserves_user_fact_and_world_fact(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(f"{tmpdir}/daily_life.db")
+            try:
+                composer = LifeActionMixin()
+                composer.archive = archive
+                action_id = "outfit-plan-stale-receipt"
+                day = DayRecord(
+                    date="2026-08-15",
+                    outfit="黑色宽肩带无袖短连衣裙",
+                    timeline=[
+                        TimelineItem(
+                            time="10:30",
+                            activity="挑了白色短袖方领T恤和浅蓝牛仔短裤",
+                        )
+                    ],
+                    meta={
+                        "outfit_fact_source": "user_instruction",
+                        "outfit_fact_confirmed_at": "2026-08-15 11:04:00",
+                        "outfit_fact_evidence": "用户本轮明确穿搭要求",
+                        "planned_life_actions": json.dumps(
+                            [
+                                {
+                                    "action_id": action_id,
+                                    "action_type": "change_outfit",
+                                    "target": "白色短袖方领T恤配浅蓝牛仔短裤",
+                                    "timeline_index": 0,
+                                }
+                            ],
+                            ensure_ascii=False,
+                        ),
+                    },
+                )
+
+                outcome = await composer.record_life_action_receipt(
+                    day,
+                    action_id,
+                    {
+                        "receipt_id": f"simulation:{action_id}",
+                        "status": "simulated",
+                        "source": "timeline_simulation",
+                        "evidence": "后台时钟补结算旧日程节点",
+                    },
+                    now=datetime.datetime(2026, 8, 15, 11, 25),
+                )
+
+                self.assertEqual(outcome.status, "committed")
+                stored = await archive.get_day("2026-08-15")
+                self.assertEqual(stored.outfit, "黑色宽肩带无袖短连衣裙")
+                self.assertEqual(stored.meta["outfit_fact_source"], "user_instruction")
+                self.assertEqual(
+                    stored.meta["outfit_fact_confirmed_at"],
+                    "2026-08-15 11:04:00",
+                )
+                facts = await archive.get_temporal_facts(
+                    scope="global", subject="self", predicate="current_outfit"
+                )
+                self.assertEqual(facts, [])
+            finally:
+                archive.close()
+
     async def test_external_receipt_commits_world_fact_and_keeps_receipt(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             archive = LifeArchive(f"{tmpdir}/daily_life.db")

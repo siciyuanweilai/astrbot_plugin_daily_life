@@ -15,7 +15,9 @@ from support import (
     Provider,
     make_composer,
 )
+from core.archive import DayRevisionConflict
 from core.life import LifeBackgroundComposer
+from core.life.audit import DailyLocationAuditMixin
 from core.life.reliability import NonRetryableProviderError
 from core.life.people import DAILY_PERSON_TEXT_PATHS
 from core.facts import PersonFact, PersonFactContext, apply_string_replacements
@@ -2284,6 +2286,54 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
             stored.meta["outfit_fact_evidence"], "已经换上米白色棉质睡裙"
         )
 
+    async def test_update_outfit_rejects_schedule_change_older_than_user_fact(self):
+        composer, _, _, archive = make_composer(
+            [
+                '{"outfit_decision":"change","current_outfit_basis":"occurred_schedule",'
+                '"scene_category":"outdoor","style_pool":"outfit_styles",'
+                '"outfit":"白色短袖方领T恤配浅蓝牛仔短裤",'
+                '"style":"清爽外出风","hair_style":"低丸子头",'
+                '"hair":"黑色长发挽成低丸子头",'
+                '"reason":"日程记载已经换好衣服",'
+                '"change_evidence":{"kind":"explicit_outfit_change",'
+                '"source":"occurred_schedule","timeline_time":"10:30",'
+                '"quote":"挑了白色短袖方领T恤和浅蓝牛仔短裤"}}'
+            ]
+        )
+        confirmed_outfit = "黑色宽肩带无袖短连衣裙"
+        await archive.save_day(
+            DayRecord(
+                date="2026-08-15",
+                outfit=confirmed_outfit,
+                timeline=[
+                    TimelineItem(
+                        time="10:30",
+                        activity="挑了白色短袖方领T恤和浅蓝牛仔短裤",
+                        execution_state="completed",
+                    )
+                ],
+                meta={
+                    "outfit_fact_source": "user_instruction",
+                    "outfit_fact_confirmed_at": "2026-08-15 11:04:00",
+                    "outfit_fact_evidence": "用户本轮明确穿搭要求",
+                },
+            )
+        )
+
+        result = await composer.update_outfit(
+            "2026-08-15",
+            "forenoon",
+            current_time=datetime.datetime(2026, 8, 15, 11, 25),
+        )
+
+        self.assertIsNotNone(result)
+        stored = await archive.get_day("2026-08-15")
+        self.assertEqual(stored.outfit, confirmed_outfit)
+        self.assertEqual(stored.meta["outfit_fact_source"], "user_instruction")
+        self.assertEqual(
+            stored.meta["outfit_fact_confirmed_at"], "2026-08-15 11:04:00"
+        )
+
     async def test_update_outfit_partially_adjusts_outdoor_clothes_at_home(self):
         composer, _, _, archive = make_composer(
             [
@@ -3082,6 +3132,40 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
             "2026-05-25 00:00:00",
         )
 
+    async def test_daily_review_reloads_and_backs_off_on_revision_conflict(self):
+        composer, _, _, archive = make_composer()
+        day = DayRecord(
+            date="2026-05-24",
+            timeline=[
+                TimelineItem(
+                    time="21:00",
+                    activity="整理测试照片",
+                    execution_state="active",
+                )
+            ],
+        )
+        await archive.save_day(day)
+        settle = AsyncMock(
+            side_effect=[
+                DayRevisionConflict("字段 timeline 已被其他任务修改"),
+                DayRevisionConflict("字段 timeline 已被其他任务修改"),
+                DayRevisionConflict("字段 timeline 已被其他任务修改"),
+                [],
+            ]
+        )
+
+        with patch.object(composer, "settle_completed_planned_actions", settle):
+            with patch("core.life.rhythm.asyncio.sleep", new=AsyncMock()) as sleeper:
+                await composer._apply_timeline_review_updates(day, {})
+
+        stored = await archive.get_day(day.date)
+        self.assertEqual(settle.await_count, 4)
+        self.assertEqual(sleeper.await_count, 3)
+        self.assertEqual(
+            stored.meta["daily_review_timeline_settled_at"],
+            "2026-05-25 00:00:00",
+        )
+
     async def test_daily_review_updates_only_supplied_open_life_events(self):
         composer, _, _, archive = make_composer(
             [
@@ -3330,6 +3414,95 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(by_time["21:00"].activity, "洗漱后看一会儿书")
         self.assertEqual(by_time["21:00"].place_city, "测试市")
         self.assertEqual(by_time["21:00"].place_address, "测试住宅")
+
+    async def test_invite_location_shift_does_not_restore_old_protected_time(self):
+        composer, _, _, _ = make_composer(
+            [
+                '{"decision":"accept","accept":true,"reason":"愿意同行",'
+                '"timeline_edits":[{"operation":"replace","target_time":"16:00",'
+                '"item":{"time":"16:00","activity":"和测试对象去测试书店",'
+                '"status":"期待","place":"测试书店","place_kind":"poi",'
+                '"place_scope":"local","place_city":"测试市",'
+                '"place_hint":"测试区","travel_mode":"transit"}}]}'
+            ]
+        )
+
+        async def audit(payload, **kwargs):
+            del kwargs
+            for item in payload["timeline"]:
+                if item["time"] != "20:00":
+                    continue
+                item.update(
+                    {
+                        "time": "20:06",
+                        "activity": "地图审计不应改写活动",
+                        "travel_mode": "transit",
+                        "travel_origin": "测试书店",
+                        "travel_provider": "test_map",
+                        "travel_detail": "测试公交线路",
+                        "travel_minutes": 56,
+                    }
+                )
+            return payload, ""
+
+        composer.domains.audit_daily_locations = AsyncMock(side_effect=audit)
+        _, timeline, result = await composer.handle_invite(
+            "2026-05-24",
+            [
+                TimelineItem(time="15:00", activity="在家整理书桌", status="平静"),
+                TimelineItem(time="16:00", activity="独自散步", status="平静"),
+                TimelineItem(
+                    time="20:00",
+                    activity="回家洗漱并整理照片",
+                    status="安宁",
+                    place="家",
+                    place_kind="home",
+                    place_scope="local",
+                    place_city="测试市",
+                    place_address="测试住宅",
+                    execution_state="planned",
+                ),
+            ],
+            "下午一起去书店吗",
+            datetime.datetime(2026, 5, 24, 15, 0),
+            user_name="测试对象",
+        )
+
+        self.assertTrue(result["accept"])
+        self.assertIsNotNone(timeline)
+        self.assertNotIn("20:00", {item.time for item in timeline})
+        shifted = next(item for item in timeline if item.time == "20:06")
+        self.assertEqual(shifted.activity, "回家洗漱并整理照片")
+        self.assertEqual(shifted.place_address, "测试住宅")
+        self.assertEqual(shifted.travel_minutes, 56)
+        self.assertEqual(shifted.travel_detail, "测试公交线路")
+
+    def test_place_substitution_is_structured_and_idempotent(self):
+        payload = {
+            "timeline": [
+                {
+                    "activity": "傍晚去测试江边散步",
+                    "place": "测试江边",
+                    "travel_origin": "测试江边",
+                }
+            ],
+            "planned_actions": [
+                {"target": "测试江边", "reason": "去测试江边吹风"}
+            ],
+        }
+        substitutions = [
+            {"original": "测试江边", "canonical": "测试滨水公园"}
+        ]
+
+        DailyLocationAuditMixin._replace_place_references(payload, substitutions)
+        DailyLocationAuditMixin._replace_place_references(payload, substitutions)
+
+        item = payload["timeline"][0]
+        self.assertEqual(item["place"], "测试滨水公园")
+        self.assertEqual(item["travel_origin"], "测试滨水公园")
+        self.assertEqual(item["activity"], "傍晚去测试滨水公园散步")
+        self.assertEqual(payload["planned_actions"][0]["target"], "测试滨水公园")
+        self.assertEqual(payload["planned_actions"][0]["reason"], "去测试江边吹风")
 
     async def test_invite_prompt_keeps_static_rules_before_dynamic_context(self):
         composer, provider, _, _ = make_composer(

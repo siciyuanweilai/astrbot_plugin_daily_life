@@ -45,6 +45,18 @@ class StyleCatalogMixin:
                 break
         return result
 
+    @staticmethod
+    def _style_catalog_visual_prompt(item: Any) -> str:
+        """读取衣橱专用视觉提示词，兼容尚未重新识别的旧候选。"""
+
+        attributes = getattr(item, "attributes", {}) or {}
+        if not isinstance(attributes, dict):
+            attributes = {}
+        value = " ".join(str(attributes.get("visual_prompt") or "").split())[:800]
+        if value:
+            return value
+        return " ".join(str(getattr(item, "description", "") or "").split())[:600]
+
     @classmethod
     def _style_catalog_item_line(cls, item: Any) -> str:
         kind = STYLE_CATALOG_KIND_LABELS.get(
@@ -95,14 +107,12 @@ class StyleCatalogMixin:
                 details.append(f"{label}：{'、'.join(values)}")
         score = float(getattr(item, "preference_score", 0.0) or 0.0)
         title = " ".join(str(getattr(item, "title", "") or "").split())[:80]
-        description = " ".join(
-            str(getattr(item, "description", "") or "").split()
-        )[:260]
+        visual_prompt = cls._style_catalog_visual_prompt(item)[:420]
         suffix = f"；{'；'.join(details)}" if details else ""
         heading = title or f"{kind}候选"
         return (
             f"- #{int(getattr(item, 'id', 0) or 0)} [{kind}] "
-            f"{heading}；{description}{suffix}；偏好分 {score:.1f}"
+            f"{heading}；视觉提示词：{visual_prompt}{suffix}；偏好分 {score:.1f}"
         )
 
     async def _style_catalog_context(self, *, limit: int = 10) -> str:
@@ -137,6 +147,7 @@ class StyleCatalogMixin:
             "需要新造型时才可选择适合当前天气、活动和场景的候选；不合适可以完全不用。",
             "可以采用一条完整套装，也可以组合上装、下装、鞋袜和配饰；不要同时选取语义重复的整套与单品。",
             "发型、妆容和美甲必须分别选择，不能把候选图片中的人物身份、体貌、姿势、场景或品牌当作角色事实。",
+            "候选中的“视觉提示词”是该类别的详细外观事实；实际采用后应忠实保留，不得自行简化款式、层次、颜色或装饰细节。",
             "只有实际采用对应类别时才改变该外观组成；局部换衣不能自动改掉发型、妆容或美甲。",
         ]
         lines.extend(self._style_catalog_item_line(item) for item in items)
@@ -170,9 +181,7 @@ class StyleCatalogMixin:
         }
         for item in items or []:
             kind = str(getattr(item, "kind", "")).strip().lower()
-            description = " ".join(
-                str(getattr(item, "description", "") or "").strip().split()
-            )[:260]
+            description = self._style_catalog_visual_prompt(item)
             title = " ".join(
                 str(getattr(item, "title", "") or "").strip().split()
             )[:80]

@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.2.6-ef6f8f" alt="版本 1.2.6"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.2.7-ef6f8f" alt="版本 1.2.7"></a>
   <img src="https://img.shields.io/badge/AstrBot-%3E%3D4.26%2C%3C5-4c78a8" alt="AstrBot >= 4.26,<5">
   <img src="https://img.shields.io/badge/platform-aiocqhttp%20%7C%20weixin__oc-4f8a66" alt="支持 aiocqhttp 和 weixin_oc">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-555555" alt="MIT License"></a>
@@ -34,7 +34,7 @@
 [![Yousa Ling](https://count.getloli.com/get/@DailyLife?theme=yousa-ling)](https://github.com/siciyuanweilai/astrbot_plugin_daily_life)
 
 > [!TIP]
-> **v1.2.6 重点更新**：区分消息平台与真实交流现场，补齐主动承诺回访、妆容和当前穿搭连续性；视觉衣橱扩展为八类，图片导演与媒体去重形成闭环。微信后台投递、持久任务、夜间复盘和模型失败恢复进一步加固，Dashboard 补齐昵称与中文展示。完整说明见 [CHANGELOG.md](./CHANGELOG.md)。
+> **v1.2.7 重点更新**：修复时间轴“已过期”状态在保存后回到“待进行”的问题，夜间复盘遇到并发更新时会退避并基于最新版本继续；微信好友、群聊、后台文字和媒体恢复共用同一投递路由并补齐回归验证。视觉衣橱进一步完善识图降级、素材启停、来源跳转、分组统计和管理布局。完整说明见 [CHANGELOG.md](./CHANGELOG.md)。
 
 ---
 

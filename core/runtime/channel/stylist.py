@@ -6,6 +6,7 @@ import uuid
 from io import BytesIO
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
@@ -15,9 +16,9 @@ from ...clock import today as life_today
 from ...life.tools import extract_json_from_text
 from ...media.base import REFERENCE_IMAGE_MAX_BYTES, image_mime_and_ext
 from ...models import (
-    STYLE_CATALOG_KINDS,
     STYLE_CATALOG_KIND_LABELS,
     STYLE_CATALOG_KIND_SET,
+    STYLE_CATALOG_KINDS,
     PreferenceRecord,
     StyleCatalogItemRecord,
 )
@@ -28,7 +29,7 @@ from ..markers import LOG_PREFIX
 
 _STYLE_KINDS = {"auto", "both", *STYLE_CATALOG_KIND_SET}
 _STYLE_ITEM_KINDS = STYLE_CATALOG_KIND_SET
-_STYLE_FEEDBACK_SENTIMENTS = {"prefer", "dislike", "neutral", "archive"}
+_STYLE_FEEDBACK_SENTIMENTS = {"prefer", "dislike", "neutral", "disable", "archive"}
 _STYLE_IMAGE_MAX_SIDE = 1600
 _STYLE_IMAGE_JPEG_QUALITY = 90
 _STYLE_REVIEW_CONFIDENCE = 0.72
@@ -36,6 +37,68 @@ _STYLE_PERCEPTUAL_DISTANCE = 5
 
 
 class RuntimeStyleCatalogMixin:
+    @staticmethod
+    def _style_asset_key(value: object) -> str:
+        """生成仅用于本轮搜索去重的稳定图片地址键。"""
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        try:
+            parsed = urlsplit(text)
+        except ValueError:
+            return text.casefold()
+        if parsed.scheme.casefold() not in {"http", "https"} or not parsed.netloc:
+            return text.casefold()
+        try:
+            query = [
+                (key, item)
+                for key, item in parse_qsl(parsed.query, keep_blank_values=True)
+                if not key.casefold().startswith("utm_")
+                and key.casefold() not in {"ref", "referer", "source", "spm"}
+            ]
+        except ValueError:
+            query = []
+        query.sort(key=lambda pair: (pair[0].casefold(), pair[1]))
+        host = (parsed.hostname or "").casefold()
+        try:
+            port = parsed.port
+        except ValueError:
+            return text.casefold()
+        default_port = (parsed.scheme.casefold() == "http" and port == 80) or (
+            parsed.scheme.casefold() == "https" and port == 443
+        )
+        host_port = host if not port or default_port else f"{host}:{port}"
+        return urlunsplit(
+            (
+                parsed.scheme.casefold(),
+                host_port,
+                parsed.path.rstrip("/") or "/",
+                urlencode(query, doseq=True),
+                "",
+            )
+        ).casefold()
+
+    @staticmethod
+    def _style_asset_dimensions(asset: dict[str, Any]) -> tuple[int, int]:
+        """读取搜索服务提供的尺寸元数据；缺失时不臆测。"""
+        values = []
+        for key in ("width", "height"):
+            try:
+                value = int(asset.get(key) or 0)
+            except (TypeError, ValueError):
+                value = 0
+            values.append(max(0, value))
+        return values[0], values[1]
+
+    @classmethod
+    def _style_asset_is_candidate(cls, asset: dict[str, Any]) -> bool:
+        """只过滤明确不适合作为视觉参考的尺寸，不用关键词猜测图片内容。"""
+        image = cls._style_text(asset.get("url"), 1500)
+        if not image:
+            return False
+        width, height = cls._style_asset_dimensions(asset)
+        return not (width and height and min(width, height) < 240)
+
     @staticmethod
     def _requested_style_kinds(kind: str) -> set[str]:
         return (
@@ -97,6 +160,7 @@ class RuntimeStyleCatalogMixin:
                 "present",
                 "title",
                 "description",
+                "visual_prompt",
                 "confidence",
             }:
                 continue
@@ -121,7 +185,11 @@ class RuntimeStyleCatalogMixin:
         raw = payload.get(kind)
         if not isinstance(raw, dict) or raw.get("present") is not True:
             return {}
-        description = cls._style_text(raw.get("description"), 600)
+        # visual_prompt 只用于兼容上一个开发版本的模型返回；新数据统一
+        # 将详细视觉提示词保存到 description，避免维护两份重复描述。
+        description = cls._style_text(
+            raw.get("visual_prompt") or raw.get("description"), 800
+        )
         if not description:
             return {}
         try:
@@ -149,8 +217,16 @@ class RuntimeStyleCatalogMixin:
 - 人物姿势、表情、体貌、背景、摄影构图和画面风格不是衣橱候选，不写进 description。
 - 看不清的材质只能写视觉质感，不声称准确面料成分。
 
+衣橱视觉提示词：
+- description 就是供衣橱展示、检索和后续生图准确复现外观的详细中文自然语言提示词，不再另写简短摘要。
+- description 必须能脱离原图直接使用，按由整体到局部的顺序写清颜色、款式、轮廓、层次、图案、可见材质质感、边缘结构、长度、松紧贴合关系和装饰细节。
+- outfit 的 description 要完整写清上装、下装或连体服、叠穿关系、鞋袜、必要配饰及其颜色和位置；hair、makeup、nails 必须各自留在独立类别。
+- 单品类别只描述该单品，不能补齐被遮挡的背面、内层或不可见结构，不能把同图中的其他衣物混入。
+- 不写人物身份、年龄、性别、体貌、身材、姿势、表情、动作、背景、场景陈设、光线、镜头、构图、图片质量词、品牌、价格、负面提示词或模型参数。
+- 使用确定、客观的视觉语言，不写“图片中”“看起来”“可能”“类似”等依赖原图或表达猜测的措辞。
+
 分类要求：
-- outfit：完整服装组合；description 写上装、下装或连体服装、外层、鞋袜和必要配饰的最终搭配，不写头发、脸部妆容或美甲。
+- outfit：完整服装组合；description 详细写上装、下装或连体服装、外层、鞋袜和必要配饰的最终搭配，不写头发、脸部妆容或美甲。
 - top：独立上装与叠穿外层；写 garment_type、layers、neckline、sleeve、length、fit、hem。
 - bottom：独立下装；写 garment_type、waist、length、fit、hem。
 - footwear：鞋子与实际搭配的袜子；写 items、toe、heel、sole、socks。
@@ -165,11 +241,10 @@ class RuntimeStyleCatalogMixin:
 - 只返回严格 JSON 对象，不要 Markdown、代码块或解释。
 - present 只有在图片中确实看得到且信息足够形成候选时才为 true；否则为 false。
 {
-  "image_summary": "只概括与衣橱分类有关的可见信息",
   "outfit": {
     "present": false,
     "title": "简短候选名称",
-    "description": "不含发型、妆容和美甲的完整服装组合",
+    "description": "只复现这套服装、鞋袜和必要配饰的详细衣橱视觉提示词",
     "category": [], "colors": [], "pieces": [], "patterns": [],
     "silhouette": "", "neckline": "", "sleeve": "", "length": "",
     "material_appearance": "", "thickness": "", "exposure_level": "",
@@ -178,7 +253,7 @@ class RuntimeStyleCatalogMixin:
     "confidence": 0.0
   },
   "top": {
-    "present": false, "title": "", "description": "",
+    "present": false, "title": "", "description": "只复现上装与可见叠穿结构的详细衣橱视觉提示词",
     "category": [], "garment_type": [], "layers": [], "colors": [],
     "patterns": [], "neckline": "", "sleeve": "", "length": "",
     "fit": "", "hem": "", "material_appearance": "", "thickness": "",
@@ -186,21 +261,21 @@ class RuntimeStyleCatalogMixin:
     "confidence": 0.0
   },
   "bottom": {
-    "present": false, "title": "", "description": "",
+    "present": false, "title": "", "description": "只复现下装结构的详细衣橱视觉提示词",
     "category": [], "garment_type": [], "colors": [], "patterns": [],
     "waist": "", "length": "", "fit": "", "hem": "",
     "material_appearance": "", "thickness": "", "styles": [],
     "seasons": [], "scenes": [], "weather_fit": [], "confidence": 0.0
   },
   "footwear": {
-    "present": false, "title": "", "description": "",
+    "present": false, "title": "", "description": "只复现鞋子与实际可见袜子的详细衣橱视觉提示词",
     "category": [], "items": [], "colors": [], "patterns": [],
     "toe": "", "heel": "", "sole": "", "socks": [],
     "material_appearance": "", "styles": [], "seasons": [],
     "scenes": [], "weather_fit": [], "activity_fit": [], "confidence": 0.0
   },
   "accessory": {
-    "present": false, "title": "", "description": "",
+    "present": false, "title": "", "description": "只复现配饰及其佩戴位置的详细衣橱视觉提示词",
     "category": [], "items": [], "colors": [], "patterns": [],
     "placement": [], "material_appearance": "", "styles": [],
     "seasons": [], "scenes": [], "weather_fit": [], "confidence": 0.0
@@ -208,20 +283,20 @@ class RuntimeStyleCatalogMixin:
   "hair": {
     "present": false,
     "title": "简短发型名称",
-    "description": "不含服装的完整发型",
+    "description": "只复现发型结构、发色和发饰的详细衣橱视觉提示词",
     "category": [], "colors": [], "length": "", "bangs": "",
     "parting": "", "tie": "", "texture": "", "volume": "",
     "accessories": [], "styles": [], "scenes": [], "weather_fit": [],
     "activity_fit": [], "confidence": 0.0
   },
   "makeup": {
-    "present": false, "title": "", "description": "",
+    "present": false, "title": "", "description": "只复现可见妆容细节的详细衣橱视觉提示词",
     "category": [], "colors": [], "finish": "", "base": "",
     "brows": "", "eyes": "", "cheeks": "", "lips": "",
     "styles": [], "scenes": [], "weather_fit": [], "confidence": 0.0
   },
   "nails": {
-    "present": false, "title": "", "description": "",
+    "present": false, "title": "", "description": "只复现可见美甲细节的详细衣橱视觉提示词",
     "category": [], "colors": [], "patterns": [], "shape": "",
     "length": "", "finish": "", "designs": [], "styles": [],
     "scenes": [], "confidence": 0.0
@@ -337,27 +412,66 @@ class RuntimeStyleCatalogMixin:
     async def _analyze_style_catalog_image(
         self, image: str, *, note: str, kind: str
     ) -> dict[str, Any]:
-        provider = await self._get_vision_provider()
-        if not provider:
-            raise RuntimeError("视觉模型不可用")
-        session_id = f"daily_life_style_catalog_{uuid.uuid4().hex[:8]}"
+        configured_provider_id = self._style_text(
+            getattr(getattr(self.config, "vision", None), "provider", ""),
+            240,
+        )
+        sessions: list[str] = []
+        last_error: Exception = RuntimeError("视觉模型不可用")
         try:
-            result = await self._reverse_prompt_call_provider(
-                provider,
-                self._style_catalog_contract(note, kind),
-                image,
-                session_id,
-            )
-            if result is None:
-                raise RuntimeError("视觉模型未返回结果")
-            payload = extract_json_from_text(self._completion_text(result))
-            if not isinstance(payload, dict):
-                raise RuntimeError("视觉模型未返回有效结构")
-            return payload
+            prompt = self._style_catalog_contract(note, kind)
+            index = 0
+            async for provider in self.get_text_provider_candidates(
+                configured_provider_id
+            ):
+                session_id = f"daily_life_style_catalog_{uuid.uuid4().hex[:8]}"
+                if index:
+                    session_id = f"{session_id}_fallback"
+                    logger.info(
+                        f"{LOG_PREFIX} 视觉衣橱指定模型识别失败，改用当前默认模型"
+                    )
+                sessions.append(session_id)
+                try:
+                    return await self._style_catalog_call_provider(
+                        provider,
+                        prompt,
+                        image,
+                        session_id,
+                    )
+                except Exception as exc:
+                    last_error = exc
+                index += 1
+            raise last_error
         finally:
             cleanup = getattr(self, "close_text_session", None)
             if callable(cleanup):
-                await cleanup(session_id)
+                for active_session_id in sessions:
+                    await cleanup(active_session_id)
+
+    async def _style_catalog_call_provider(
+        self,
+        provider: Any,
+        prompt: str,
+        image: str,
+        session_id: str,
+    ) -> dict[str, Any]:
+        result = await self._reverse_prompt_call_provider(
+            provider,
+            prompt,
+            image,
+            session_id,
+        )
+        if result is None:
+            raise RuntimeError("视觉模型未返回结果")
+        payload = extract_json_from_text(self._completion_text(result))
+        if not isinstance(payload, dict):
+            raise RuntimeError("视觉模型未返回有效结构")
+        if not any(
+            isinstance(payload.get(item_kind), dict)
+            for item_kind in STYLE_CATALOG_KINDS
+        ):
+            raise RuntimeError("视觉模型未返回衣橱分类结构")
+        return payload
 
     async def _learn_style_catalog_image(
         self,
@@ -367,6 +481,8 @@ class RuntimeStyleCatalogMixin:
         source_url: str = "",
         source_kind: str = "user_image",
         source_scope: str = "",
+        source_batch_id: str = "",
+        source_query: str = "",
         note: str = "",
         kind: str = "auto",
     ) -> list[StyleCatalogItemRecord]:
@@ -398,6 +514,17 @@ class RuntimeStyleCatalogMixin:
             attributes = dict(analyzed.get("attributes") or {})
             if perceptual_hash:
                 attributes["perceptual_hash"] = perceptual_hash
+            if source_batch_id:
+                attributes["source_batch_id"] = self._style_text(source_batch_id, 120)
+            if source_query:
+                attributes["source_query"] = self._style_text(source_query, 500)
+            if source_url:
+                try:
+                    source_host = (urlsplit(source_url).hostname or "").casefold()
+                except ValueError:
+                    source_host = ""
+                if source_host:
+                    attributes["source_host"] = source_host
             confidence = float(analyzed.get("confidence") or 0.0)
             incoming = {
                 **analyzed,
@@ -463,9 +590,7 @@ class RuntimeStyleCatalogMixin:
             description=str(analyzed.get("description") or ""),
             attributes=attributes,
             confidence=confidence,
-            status=(
-                "active" if confidence >= _STYLE_REVIEW_CONFIDENCE else "pending"
-            ),
+            status=("active" if confidence >= _STYLE_REVIEW_CONFIDENCE else "pending"),
         )
         if not updated:
             raise RuntimeError("衣橱素材更新失败")
@@ -625,7 +750,9 @@ class RuntimeStyleCatalogMixin:
         failures: list[str] = []
         attempted = 0
         candidate_count = 0
-        attempted_urls: set[str] = set()
+        attempted_asset_keys: set[str] = set()
+        saved_image_keys: set[str] = set()
+        batch_id = f"web_{uuid.uuid4().hex[:12]}"
         for depth in ("quick", "deep"):
             try:
                 result = await search.search(
@@ -664,10 +791,13 @@ class RuntimeStyleCatalogMixin:
                     break
                 if not isinstance(asset, dict):
                     continue
-                image = self._style_text(asset.get("url"), 1500)
-                if not image or image in attempted_urls:
+                if not self._style_asset_is_candidate(asset):
                     continue
-                attempted_urls.add(image)
+                image = self._style_text(asset.get("url"), 1500)
+                asset_key = self._style_asset_key(image)
+                if not asset_key or asset_key in attempted_asset_keys:
+                    continue
+                attempted_asset_keys.add(asset_key)
                 attempted += 1
                 source_url = self._style_text(asset.get("source_url"), 1500)
                 asset_note = self._style_text(asset.get("description"), 300)
@@ -682,6 +812,8 @@ class RuntimeStyleCatalogMixin:
                         source_kind="web_image",
                         note=combined_note,
                         kind=normalized_kind,
+                        source_batch_id=batch_id,
+                        source_query=query,
                     )
                     if not learned:
                         failures.append("图片中没有足够清晰的目标造型")
@@ -691,7 +823,9 @@ class RuntimeStyleCatalogMixin:
                         )
                         continue
                     image_saved = False
+                    image_key = ""
                     for item in learned:
+                        image_key = image_key or str(item.source_image_hash or "")
                         key = (int(item.id or 0), str(item.kind or ""))
                         if key[0] in existing_ids:
                             failures.append("相同图片的造型已在视觉衣橱中")
@@ -701,7 +835,9 @@ class RuntimeStyleCatalogMixin:
                         saved_keys.add(key)
                         saved.append(item)
                         image_saved = True
-                    successful_images += int(image_saved)
+                    if image_saved and image_key and image_key not in saved_image_keys:
+                        saved_image_keys.add(image_key)
+                        successful_images += 1
                 except Exception as exc:
                     failures.append(self._media_error_summary(exc))
                     logger.debug(
@@ -782,18 +918,19 @@ class RuntimeStyleCatalogMixin:
         if not provider:
             raise RuntimeError("文本模型不可用")
         item_text = "\n".join(
-            f"- #{item.id} [{item.kind}] {item.title}：{item.description}"
+            f"- #{item.id} [{item.kind}] {item.title}："
+            f"{self._style_text((item.attributes or {}).get('visual_prompt') or item.description, 800)}"
             for item in items
         )
         fixed = """你负责把用户对视觉衣橱候选的自然语言反馈转换成结构化调整。
 只依据用户反馈与给出的候选，不从词表、固定关键词或人物性别猜测偏好。
-- prefer 表示更喜欢或更适合；dislike 表示不喜欢或不适合；neutral 表示只补充说明；archive 表示明确不要再使用。
+- prefer 表示更喜欢或更适合；dislike 表示不喜欢或不适合；neutral 表示只补充说明；disable 表示明确停用、不再自动采用。
 - score_delta 范围 -1.0 到 1.0，单次反馈按明确程度调整，不要夸大。
 - preference_points 只提炼长期可复用的审美、舒适度或场景偏好；只针对某一张图的意见不要上升为长期偏好。
 - category 只能写 outfit、top、bottom、footwear、accessory、hair、makeup、nails 或 style。
 只返回严格 JSON：
 {
-  "adjustments": [{"item_id": 1, "sentiment": "prefer | dislike | neutral | archive", "score_delta": 0.0, "reason": "简短理由"}],
+  "adjustments": [{"item_id": 1, "sentiment": "prefer | dislike | neutral | disable", "score_delta": 0.0, "reason": "简短理由"}],
   "preference_points": [{"category": "outfit | top | bottom | footwear | accessory | hair | makeup | nails | style", "content": "稳定偏好", "weight": 0.1}]
 }"""
         dynamic = f"候选：\n{item_text}\n\n用户反馈：{self._style_text(feedback, 1000)}"
@@ -859,8 +996,8 @@ class RuntimeStyleCatalogMixin:
             ):
                 continue
             status = (
-                "archived"
-                if sentiment == "archive"
+                "disabled"
+                if sentiment in {"disable", "archive"}
                 else "active"
                 if sentiment == "prefer"
                 else ""

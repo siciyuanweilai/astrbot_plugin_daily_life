@@ -18,6 +18,27 @@ from .tools import extract_json_from_text
 
 
 class InviteMixin:
+    _TIMELINE_AUDIT_ROUTE_FIELDS = (
+        "time",
+        "travel_mode",
+        "travel_origin",
+        "travel_provider",
+        "travel_detail",
+        "travel_minutes",
+        "travel_distance_meters",
+    )
+    _TIMELINE_AUDIT_PLACE_FIELDS = (
+        "place",
+        "place_kind",
+        "place_scope",
+        "place_city",
+        "place_hint",
+        "place_address",
+        "place_latitude",
+        "place_longitude",
+        "place_coordinate_source",
+    )
+
     @staticmethod
     def _serialized_current_places(current_places: list | None) -> list[dict]:
         """序列化当天已有地点，避免地图校正跳过时丢失记录。"""
@@ -223,23 +244,34 @@ class InviteMixin:
         cls,
         timeline: list[TimelineItem],
         protected: list[TimelineItem],
+        baseline: list[TimelineItem] | None = None,
     ) -> list[TimelineItem]:
-        """地图审计后恢复未参与编辑的原节点及其完整结构化字段。"""
+        """合并地图审计结果，同时保留未参与编辑节点的生活事实。"""
 
         protected_by_time = {item.time: item for item in protected}
         restored: list[TimelineItem] = []
-        seen_times: set[str] = set()
-        for value in timeline:
-            item = TimelineItem.from_value(value)
-            if item.time in protected_by_time:
-                item = cls._copy_timeline_item(protected_by_time[item.time])
-            if item.time in seen_times:
+        audited_items = [cls._copy_timeline_item(item) for item in timeline]
+        baseline_items = [
+            cls._copy_timeline_item(item) for item in (baseline or timeline)
+        ]
+        for index, audited in enumerate(audited_items):
+            before = baseline_items[index] if index < len(baseline_items) else None
+            original = protected_by_time.get(before.time) if before else None
+            if original is None:
+                restored.append(audited)
                 continue
-            seen_times.add(item.time)
-            restored.append(item)
-        for time, item in protected_by_time.items():
-            if time not in seen_times:
-                restored.append(cls._copy_timeline_item(item))
+            merged = cls._copy_timeline_item(original)
+            for field_name in cls._TIMELINE_AUDIT_ROUTE_FIELDS:
+                setattr(merged, field_name, getattr(audited, field_name))
+            place_changed = (
+                audited.place != original.place
+                or audited.place_kind != original.place_kind
+            )
+            for field_name in cls._TIMELINE_AUDIT_PLACE_FIELDS:
+                audited_value = getattr(audited, field_name)
+                if place_changed or audited_value not in {"", None}:
+                    setattr(merged, field_name, audited_value)
+            restored.append(merged)
         restored.sort(key=lambda item: cls._timeline_minutes(item.time) or 0)
         return restored
 
@@ -417,6 +449,7 @@ JSON 输出要求：
                                     for item in audited.get("timeline", [])
                                 ],
                                 protected_timeline,
+                                candidate_timeline,
                             )
                             result["_audited_places"] = audited.get("places", [])
                             result["_location_audit"] = audited.get(
@@ -609,6 +642,7 @@ JSON 输出要求：
                         for item in audited.get("timeline", [])
                     ],
                     protected_timeline,
+                    candidate_timeline,
                 )
                 result["_audited_places"] = audited.get("places", [])
                 result["_location_audit"] = audited.get("location_audit", {})

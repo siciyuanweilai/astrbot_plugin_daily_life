@@ -1508,6 +1508,42 @@ class SightFrameCompatibilityTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(assets, [])
         self.assertEqual(len(default_provider.vision_prompts), 1)
 
+    async def test_describe_frames_falls_back_to_current_default_provider(self):
+        from support import Context, DailyLifeRuntime, LifeSettings, Provider
+
+        frame_provider = Provider(
+            [RuntimeError("测试视频视觉模型不可用")], provider_id="frame"
+        )
+        default_provider = Provider(
+            ['{"summary":"默认模型识别到夜间街景","details":["路边有灯光"]}'],
+            provider_id="default",
+        )
+        provider_requests = []
+
+        async def get_provider(provider_id=""):
+            provider_requests.append(provider_id)
+            return frame_provider if provider_id == "frame-model" else default_provider
+
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.context = Context(default_provider)
+        runtime.config = LifeSettings.from_dict(
+            {"sight_config": {"frame_provider": "frame-model"}}
+        )
+        runtime.composer = types.SimpleNamespace(
+            _get_provider=get_provider,
+            _cleanup_conversation=lambda session_id: async_return(None),
+        )
+
+        result = await runtime._describe_sight_frames(
+            SightClip(source="D:/tmp/night.mp4"),
+            [SightFrame(path=Path("frame-1.jpg"), second=6.0, label="00:06")],
+        )
+
+        self.assertEqual(provider_requests, ["frame-model", ""])
+        self.assertEqual(result.notes, ["00:06：默认模型识别到夜间街景（路边有灯光）"])
+        self.assertEqual(len(frame_provider.vision_prompts), 1)
+        self.assertEqual(len(default_provider.vision_prompts), 1)
+
     async def test_sight_brief_uses_summary_provider(self):
         from support import Context, DailyLifeRuntime, LifeSettings, Provider
 

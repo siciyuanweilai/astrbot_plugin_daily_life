@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -20,6 +21,38 @@ class ModelGateway:
 
     async def provider(self, provider_id: str = "") -> Any:
         return await self._composer._get_provider(provider_id)
+
+    @staticmethod
+    def _provider_key(provider: Any) -> str:
+        direct = str(getattr(provider, "provider_id", "") or "").strip()
+        if direct:
+            return direct
+        meta = getattr(provider, "meta", None)
+        if callable(meta):
+            try:
+                return str(getattr(meta(), "id", "") or "").strip()
+            except Exception:
+                return ""
+        return ""
+
+    async def provider_candidates(self, provider_id: str = "") -> AsyncIterator[Any]:
+        """按指定模型、当前默认模型的顺序惰性返回去重候选。"""
+        provider_id = str(provider_id or "").strip()
+        candidates: list[Any] = []
+        lookup_ids = [provider_id, ""] if provider_id else [""]
+        for lookup_id in lookup_ids:
+            try:
+                provider = await self.provider(lookup_id)
+            except Exception:
+                provider = None
+            provider_key = self._provider_key(provider) if provider is not None else ""
+            if provider is not None and not any(
+                provider is existing
+                or (provider_key and provider_key == self._provider_key(existing))
+                for existing in candidates
+            ):
+                candidates.append(provider)
+                yield provider
 
     async def call(
         self,

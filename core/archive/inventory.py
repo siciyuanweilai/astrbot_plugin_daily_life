@@ -9,6 +9,11 @@ from ..models import STYLE_CATALOG_KIND_SET, StyleCatalogItemRecord
 
 class StyleCatalogArchiveMixin:
     @staticmethod
+    def _style_catalog_status(value: object) -> str:
+        status = str(value or "").strip().lower()
+        return "disabled" if status == "archived" else status
+
+    @staticmethod
     def _style_attributes(value: object) -> dict[str, Any]:
         if not isinstance(value, dict):
             return {}
@@ -39,7 +44,7 @@ class StyleCatalogArchiveMixin:
             preference_score=float(row["preference_score"] or 0.0),
             feedback_count=int(row["feedback_count"] or 0),
             seen_count=int(row["seen_count"] or 1),
-            status=str(row["status"] or "active"),
+            status=self._style_catalog_status(row["status"] or "active"),
             last_used_at=str(row["last_used_at"] or ""),
             created_at=str(row["created_at"] or ""),
             updated_at=str(row["updated_at"] or ""),
@@ -94,7 +99,7 @@ class StyleCatalogArchiveMixin:
                     ),
                     max(0.0, min(float(item.confidence or 0.0), 1.0)),
                     max(-2.0, min(float(item.preference_score or 0.0), 2.0)),
-                    self._text(item.status) or "active",
+                    self._style_catalog_status(item.status) or "active",
                     self._text(item.created_at),
                 ),
             )
@@ -120,7 +125,7 @@ class StyleCatalogArchiveMixin:
         limit: int = 12,
     ) -> list[StyleCatalogItemRecord]:
         normalized_kind = self._text(kind).lower()
-        normalized_status = self._text(status).lower()
+        normalized_status = self._style_catalog_status(status)
         normalized_scope = self._text(source_scope)
         normalized_ids = []
         for value in ids or ():
@@ -139,8 +144,11 @@ class StyleCatalogArchiveMixin:
                 clauses.append("kind = ?")
                 values.append(normalized_kind)
             if normalized_status:
-                clauses.append("status = ?")
-                values.append(normalized_status)
+                if normalized_status == "disabled":
+                    clauses.append("status IN ('disabled', 'archived')")
+                else:
+                    clauses.append("status = ?")
+                    values.append(normalized_status)
             if normalized_scope:
                 clauses.append("source_scope = ?")
                 values.append(normalized_scope)
@@ -239,7 +247,9 @@ class StyleCatalogArchiveMixin:
             use_incoming = float(incoming.confidence or 0.0) >= float(
                 existing["confidence"] or 0.0
             )
-            current_status = str(existing["status"] or "active")
+            current_status = self._style_catalog_status(
+                existing["status"] or "active"
+            )
             next_status = (
                 incoming.status
                 if current_status == "pending" and incoming.status == "active"
@@ -300,12 +310,12 @@ class StyleCatalogArchiveMixin:
             normalized_id = int(item_id)
         except (TypeError, ValueError):
             return None
-        normalized_status = self._text(status).lower()
+        normalized_status = self._style_catalog_status(status)
         if normalized_id <= 0 or normalized_status not in {
             "active",
             "pending",
             "rejected",
-            "archived",
+            "disabled",
         }:
             return None
 
@@ -341,8 +351,8 @@ class StyleCatalogArchiveMixin:
         item_ids: list[int] | tuple[int, ...],
         status: str,
     ) -> int:
-        normalized_status = self._text(status).lower()
-        if normalized_status not in {"active", "pending", "rejected", "archived"}:
+        normalized_status = self._style_catalog_status(status)
+        if normalized_status not in {"active", "pending", "rejected", "disabled"}:
             return 0
         normalized = self._style_catalog_ids(item_ids)
         if not normalized:
@@ -433,15 +443,17 @@ class StyleCatalogArchiveMixin:
         if normalized_id <= 0:
             return None
         normalized_sentiment = self._text(sentiment).lower()
-        if normalized_sentiment not in {"prefer", "dislike", "neutral", "archive"}:
+        if normalized_sentiment == "archive":
+            normalized_sentiment = "disable"
+        if normalized_sentiment not in {"prefer", "dislike", "neutral", "disable"}:
             normalized_sentiment = "neutral"
         try:
             delta = float(score_delta or 0.0)
         except (TypeError, ValueError):
             delta = 0.0
         delta = max(-1.0, min(delta, 1.0))
-        normalized_status = self._text(status).lower()
-        if normalized_status not in {"active", "pending", "rejected", "archived"}:
+        normalized_status = self._style_catalog_status(status)
+        if normalized_status not in {"active", "pending", "rejected", "disabled"}:
             normalized_status = ""
 
         def write() -> StyleCatalogItemRecord | None:
@@ -453,7 +465,9 @@ class StyleCatalogArchiveMixin:
             next_score = max(
                 -2.0, min(float(existing["preference_score"] or 0.0) + delta, 2.0)
             )
-            next_status = normalized_status or str(existing["status"] or "active")
+            next_status = normalized_status or self._style_catalog_status(
+                existing["status"] or "active"
+            )
             self._conn.execute(
                 """
                 INSERT INTO style_catalog_feedback(

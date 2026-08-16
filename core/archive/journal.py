@@ -10,6 +10,7 @@ from ..models import (
     PlaceRecord,
     TimelineItem,
     WeatherInfo,
+    deduplicate_timeline_items,
 )
 from .revision import merge_day_records
 
@@ -238,6 +239,7 @@ class DayArchiveMixin:
         )
 
     def _set_day_unlocked(self, day: DayRecord) -> int:
+        day.timeline = deduplicate_timeline_items(day.timeline)
         weather_info = day.weather_info
         meta = day.meta
         self._conn.execute(

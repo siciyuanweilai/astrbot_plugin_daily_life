@@ -11,8 +11,8 @@ from typing import Any
 from astrbot.api import logger
 
 from ...life.tools import extract_json_from_text
-from ...outcome import ToolResultText
 from ...media.base import REFERENCE_IMAGE_MAX_BYTES, image_mime_and_ext
+from ...outcome import ToolResultText
 from ...paths import (
     expand_path,
     path_exists,
@@ -22,7 +22,6 @@ from ...paths import (
 )
 from ...prompts import cache_friendly_prompt
 from ..markers import LOG_PREFIX
-
 
 REVERSE_PROMPT_PROFILES = {
     "通用": "完整但简洁地提取最影响复现效果的主体、场景、构图、镜头、光线、色彩、材质和画面风格。",
@@ -589,37 +588,53 @@ class RuntimeReverseMediaMixin:
         source_prompt: str = "",
         profile: str = "",
     ) -> dict[str, Any]:
-        provider = await self._get_vision_provider()
-        if not provider:
-            raise RuntimeError("视觉模型不可用。")
-        if not any(
-            callable(getattr(provider, name, None))
-            for name in ("text_chat", "image_chat", "vision_chat")
-        ):
-            raise RuntimeError("当前视觉模型不支持图片理解。")
+        configured_provider_id = str(
+            getattr(getattr(self.config, "vision", None), "provider", "") or ""
+        ).strip()
         prompt = self._reverse_prompt_contract(source_prompt, profile)
-        session_id = f"daily_life_reverse_image_{uuid.uuid4().hex[:8]}"
-        try:
-            result = await self._reverse_prompt_call_provider(
-                provider, prompt, image, session_id
-            )
-            if result is None:
-                raise RuntimeError("视觉模型未返回结果。")
-            text = self._completion_text(result)
-            payload = self._reverse_prompt_payload_from_text(text)
-            payload["prompt"] = self._reverse_prompt_text_from_payload(payload, text)
-            payload["title"] = self._reverse_prompt_clean(payload.get("title"), 24)
-            payload["ratio"] = self._reverse_prompt_clean(payload.get("ratio"), 24)
-            payload["usage"] = self._reverse_prompt_clean(payload.get("usage"), 24)
-            payload["keywords"] = self._reverse_prompt_list(payload.get("keywords"), 12)
-            payload["analysis"] = self._reverse_prompt_analysis_payload(
-                payload.get("analysis")
-            )
-            return payload
-        finally:
-            cleanup = getattr(self, "close_text_session", None)
-            if callable(cleanup):
-                await cleanup(session_id)
+        last_error: Exception = RuntimeError("视觉模型不可用。")
+        index = 0
+        async for provider in self.get_text_provider_candidates(configured_provider_id):
+            session_id = f"daily_life_reverse_image_{uuid.uuid4().hex[:8]}"
+            if index:
+                session_id = f"{session_id}_fallback"
+                logger.info(f"{LOG_PREFIX} 图片反推指定模型识别失败，改用当前默认模型")
+            try:
+                if not any(
+                    callable(getattr(provider, name, None))
+                    for name in ("text_chat", "image_chat", "vision_chat")
+                ):
+                    raise RuntimeError("当前视觉模型不支持图片理解。")
+                result = await self._reverse_prompt_call_provider(
+                    provider, prompt, image, session_id
+                )
+                if result is None:
+                    raise RuntimeError("视觉模型未返回结果。")
+                text = self._completion_text(result)
+                payload = self._reverse_prompt_payload_from_text(text)
+                payload["prompt"] = self._reverse_prompt_text_from_payload(
+                    payload, text
+                )
+                payload["title"] = self._reverse_prompt_clean(payload.get("title"), 24)
+                payload["ratio"] = self._reverse_prompt_clean(payload.get("ratio"), 24)
+                payload["usage"] = self._reverse_prompt_clean(payload.get("usage"), 24)
+                payload["keywords"] = self._reverse_prompt_list(
+                    payload.get("keywords"), 12
+                )
+                payload["analysis"] = self._reverse_prompt_analysis_payload(
+                    payload.get("analysis")
+                )
+                if not payload["prompt"]:
+                    raise RuntimeError("视觉模型未返回可用提示词。")
+                return payload
+            except Exception as exc:
+                last_error = exc
+            finally:
+                cleanup = getattr(self, "close_text_session", None)
+                if callable(cleanup):
+                    await cleanup(session_id)
+            index += 1
+        raise last_error
 
     @staticmethod
     async def _reverse_prompt_call_provider(

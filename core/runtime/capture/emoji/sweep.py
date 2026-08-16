@@ -115,13 +115,6 @@ class EmojiSweepMixin:
         ][: self._emoji_review_batch_size()]
         if not candidates:
             return 0
-        provider = await self._get_vision_provider()
-        if not provider or not any(
-            callable(getattr(provider, name, None))
-            for name in ("text_chat", "image_chat", "vision_chat")
-        ):
-            return 0
-
         revalidated = 0
         for asset in candidates:
             review_data = asset.as_dict()

@@ -1,3 +1,17 @@
+from .agenda import (
+    TIMELINE_EXECUTION_STATES,
+    TIMELINE_TERMINAL_STATES,
+    DayRecord,
+    TimelineItem,
+    deduplicate_timeline_items,
+)
+from .catalog import (
+    STYLE_CATALOG_CLOTHING_KINDS,
+    STYLE_CATALOG_KIND_LABELS,
+    STYLE_CATALOG_KIND_SET,
+    STYLE_CATALOG_KINDS,
+    StyleCatalogItemRecord,
+)
 from .deeds import (
     EXTERNAL_RECEIPT_ACTION_TYPES,
     INTERNAL_SIMULATED_ACTION_TYPES,
@@ -10,19 +24,6 @@ from .deeds import (
     ReflectionDecision,
     ReflectionSignal,
     ScheduleAnchor,
-)
-from .agenda import DayRecord, TimelineItem
-from .thought import (
-    AffectiveStateRecord,
-    DecisionTraceRecord,
-    DurableTaskRecord,
-    FactEvidenceSignalRecord,
-    GroundedDiaryEntryRecord,
-    LifeActionOutcomeRecord,
-    LifeActionReceiptRecord,
-    PersonaAssertionRecord,
-    ReflectionRecord,
-    TemporalFactRecord,
 )
 from .judgment import LifeDecisionRecord
 from .lasting import (
@@ -70,12 +71,17 @@ from .relations import (
     RelationshipRecord,
 )
 from .reversal import ReversePromptRecord
-from .catalog import (
-    STYLE_CATALOG_CLOTHING_KINDS,
-    STYLE_CATALOG_KINDS,
-    STYLE_CATALOG_KIND_LABELS,
-    STYLE_CATALOG_KIND_SET,
-    StyleCatalogItemRecord,
+from .thought import (
+    AffectiveStateRecord,
+    DecisionTraceRecord,
+    DurableTaskRecord,
+    FactEvidenceSignalRecord,
+    GroundedDiaryEntryRecord,
+    LifeActionOutcomeRecord,
+    LifeActionReceiptRecord,
+    PersonaAssertionRecord,
+    ReflectionRecord,
+    TemporalFactRecord,
 )
 from .vitals import (
     BodyCondition,
@@ -160,7 +166,10 @@ __all__ = [
     "STYLE_CATALOG_KIND_SET",
     "TemporaryExpressionStateRecord",
     "TemporalFactRecord",
+    "TIMELINE_EXECUTION_STATES",
+    "TIMELINE_TERMINAL_STATES",
     "TimelineItem",
+    "deduplicate_timeline_items",
     "WeatherInfo",
     "WeekPlanRecord",
 ]

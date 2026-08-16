@@ -584,10 +584,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         runtime.context = Context(Provider([]))
         event = Event(
             platform_name="weixin_oc",
-            unified_msg_origin=(
-                "shared-platform:FriendMessage:"
-                "test-user@im.wechat"
-            ),
+            unified_msg_origin=("shared-platform:FriendMessage:test-user@im.wechat"),
         )
         chain = types.SimpleNamespace(items=[{"type": "image", "file": "life.png"}])
 
@@ -3657,6 +3654,49 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             )
             self.assertTrue(cached_path.is_file())
 
+    async def test_visual_context_falls_back_to_current_default_provider(self):
+        primary = Provider(
+            [RuntimeError("测试指定视觉模型不可用")], provider_id="vision-model"
+        )
+        fallback = Provider(
+            ['{"summary":"默认模型识别到挥手动作","is_emoji_asset":false}'],
+            provider_id="default-model",
+        )
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.context = Context(fallback, providers={"vision-model": primary})
+        runtime.config = LifeSettings.from_dict(
+            {"vision_config": {"provider": "vision-model"}}
+        )
+        provider_requests = []
+        closed_sessions = []
+
+        class Composer:
+            async def _get_provider(self, provider_id=""):
+                provider_requests.append(provider_id)
+                return (
+                    runtime.context.providers.get(provider_id)
+                    or runtime.context.get_using_provider()
+                )
+
+            async def _cleanup_conversation(self, session_id):
+                closed_sessions.append(session_id)
+
+        runtime.composer = Composer()
+
+        payload = await runtime._call_emoji_vision_payload(
+            "请识别测试图片",
+            "https://example.test/test.png",
+            session_prefix="daily_life_test_visual",
+            task_label="测试图片",
+        )
+
+        self.assertEqual(payload["summary"], "默认模型识别到挥手动作")
+        self.assertEqual(provider_requests, ["vision-model", ""])
+        self.assertEqual(len(primary.vision_prompts), 1)
+        self.assertEqual(len(fallback.vision_prompts), 1)
+        self.assertEqual(len(closed_sessions), 2)
+        self.assertTrue(closed_sessions[1].endswith("_fallback"))
+
     async def test_gif_visual_bridge_replaces_provider_image_with_text_summary(self):
         vision_provider = Provider(
             ['{"summary":"小猫伸出双爪比心","is_emoji_asset":true,"status":"ready"}'],
@@ -4316,13 +4356,15 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             {"emoji_config": {"review_batch_size": 2}}
         )
 
-        async def get_provider(_self):
-            return provider
+        async def get_provider_candidates(_self, _provider_id=""):
+            yield provider
 
         async def close_session(_self, _session_id):
             return None
 
-        runtime._get_vision_provider = types.MethodType(get_provider, runtime)
+        runtime.get_text_provider_candidates = types.MethodType(
+            get_provider_candidates, runtime
+        )
         runtime.close_text_session = types.MethodType(close_session, runtime)
         with tempfile.TemporaryDirectory() as tmpdir:
             for file_hash in ("old-sticker", "old-news"):

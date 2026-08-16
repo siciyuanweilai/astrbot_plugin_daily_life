@@ -71,6 +71,10 @@ class DailyLifeRuntime(
         gateway = getattr(self, "model_gateway", None) or ModelGateway(self.composer)
         return await gateway.provider(provider_id)
 
+    def get_text_provider_candidates(self, provider_id: str = ""):
+        gateway = getattr(self, "model_gateway", None) or ModelGateway(self.composer)
+        return gateway.provider_candidates(provider_id)
+
     def note_runtime_scope_activity(self, event: Any) -> None:
         self.scope_state.note_event(event)
 

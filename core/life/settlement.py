@@ -21,6 +21,7 @@ from ..models import (
     ScheduleAnchor,
 )
 from .future import outfit_descriptions_match
+from .tools import parse_life_datetime, timeline_item_datetime
 
 ACTION_SETTLEMENT_META_KEY = "life_action_settlements"
 ACTION_EXPIRATION_META_KEY = "life_action_expirations"
@@ -308,11 +309,14 @@ class LifeActionMixin:
         effects: list[LifeActionEffect],
         outcome: LifeActionOutcome,
         committed_at: str,
+        *,
+        preserve_outfit_fact: bool = False,
     ) -> None:
         state = day.state or LifeState()
         day.state = state
         changes: dict[str, dict[str, float | int | None]] = {}
-        for effect in effects:
+        applicable_effects = [] if preserve_outfit_fact else effects
+        for effect in applicable_effects:
             previous = getattr(state, effect.field, None)
             base_value = float(previous) if previous is not None else 50.0
             updated = (
@@ -323,10 +327,11 @@ class LifeActionMixin:
             setattr(state, effect.field, normalized)
             changes[effect.field] = {"before": previous, "after": normalized}
         outcome.state_changes = changes
-        state.updated_at = committed_at
-        state.source = f"life_action:{action.action_type}"
+        if not preserve_outfit_fact:
+            state.updated_at = committed_at
+            state.source = f"life_action:{action.action_type}"
 
-        if action.action_type == "change_outfit":
+        if action.action_type == "change_outfit" and not preserve_outfit_fact:
             current_outfit = str(day.outfit or "").strip()
             resolved_outfit = (
                 current_outfit
@@ -359,6 +364,31 @@ class LifeActionMixin:
             item.execution_reason = f"生活动作已结算：{action.action_type}"
             item.execution_evidence = action.evidence or action.action_id
             item.execution_updated_at = committed_at
+
+    @staticmethod
+    def _planned_outfit_action_is_superseded(
+        day: DayRecord, action: LifeActionIntent
+    ) -> bool:
+        """判断旧日程换装是否已被稍后的用户明确穿搭替代。"""
+        if (
+            action.action_type != "change_outfit"
+            or action.timeline_index is None
+            or not 0 <= action.timeline_index < len(day.timeline)
+            or str(day.meta.get("outfit_fact_source") or "").strip()
+            != "user_instruction"
+        ):
+            return False
+        confirmed_at = parse_life_datetime(
+            day.meta.get("outfit_fact_confirmed_at")
+        )
+        scheduled_at = timeline_item_datetime(
+            day.timeline[action.timeline_index], day.date
+        )
+        return bool(
+            confirmed_at is not None
+            and scheduled_at is not None
+            and scheduled_at <= confirmed_at
+        )
 
     def settle_life_action(
         self,
@@ -395,6 +425,7 @@ class LifeActionMixin:
         effects = self._resolve_action_effects(action, rule)
         if not reason:
             reason = self._validate_action_effects(effects, rule)
+        preserve_outfit_fact = self._planned_outfit_action_is_superseded(day, action)
 
         outcome = LifeActionOutcome(
             action_id=action.action_id,
@@ -406,7 +437,16 @@ class LifeActionMixin:
             evidence=action.evidence,
         )
         if not reason:
-            self._commit_action_effects(day, action, effects, outcome, committed_at)
+            self._commit_action_effects(
+                day,
+                action,
+                effects,
+                outcome,
+                committed_at,
+                preserve_outfit_fact=preserve_outfit_fact,
+            )
+            if preserve_outfit_fact:
+                outcome.reason = "计划换装已结算，但当前穿搭保留稍后确认的用户要求"
 
         if action.action_id:
             settlements[action.action_id] = outcome.as_dict()
@@ -759,6 +799,7 @@ class LifeActionMixin:
             已持久化的幂等动作结果。
         """
         action = LifeActionIntent.from_value(intent)
+        preserve_outfit_fact = self._planned_outfit_action_is_superseded(day, action)
         outcome = self.settle_life_action(day, action, now=now)
         await self.archive.save_day(day)
 
@@ -815,13 +856,14 @@ class LifeActionMixin:
                         "[日常生活] 生活动作已结算，但领域记录暂未写入，"
                         f"后续巡检会自动补写：{action.action_type}；{exc}"
                     )
-            await self.sync_day_world_facts(
-                day,
-                observed_at=outcome.committed_at,
-                source=fact_source,
-                source_id=action.action_id,
-                evidence=fact_evidence or outcome.evidence,
-            )
+            if not preserve_outfit_fact:
+                await self.sync_day_world_facts(
+                    day,
+                    observed_at=outcome.committed_at,
+                    source=fact_source,
+                    source_id=action.action_id,
+                    evidence=fact_evidence or outcome.evidence,
+                )
         return outcome
 
     async def settle_completed_planned_actions(

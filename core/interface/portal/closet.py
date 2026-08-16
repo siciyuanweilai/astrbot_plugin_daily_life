@@ -7,6 +7,7 @@ import secrets
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
+from urllib.parse import urlsplit
 
 from ...models import (
     STYLE_CATALOG_KIND_SET,
@@ -113,7 +114,9 @@ class PortalClosetMixin:
             if not ids:
                 raise ValueError("请选择要更新的衣橱素材")
             status = self._page_closet_text(body.get("status"), 24).lower()
-            if status not in {"active", "pending", "rejected", "archived"}:
+            if status == "archived":
+                status = "disabled"
+            if status not in {"active", "pending", "rejected", "disabled"}:
                 raise ValueError("衣橱素材状态无效")
             updated = await self.runtime.archive.set_style_catalog_status(ids, status)
             if updated <= 0:
@@ -135,7 +138,8 @@ class PortalClosetMixin:
                 "prefer": (0.35, "active", "面板标记喜欢"),
                 "dislike": (-0.45, "rejected", "面板标记不喜欢"),
                 "neutral": (0.0, "", "面板清除倾向"),
-                "archive": (0.0, "archived", "面板归档"),
+                "disable": (0.0, "disabled", "面板停用"),
+                "archive": (0.0, "disabled", "面板停用"),
             }
             if sentiment not in settings:
                 raise ValueError("衣橱反馈类型无效")
@@ -252,13 +256,18 @@ class PortalClosetMixin:
             status="", limit=500
         )
         payload = [self._page_closet_item(item) for item in items]
+        source_groups = {
+            str(item.get("source_group_key") or item.get("id")) for item in payload
+        }
         return {
             "items": payload,
             "stats": {
                 "total": len(payload),
+                "source_groups": len(source_groups),
+                "web": sum(item["source_kind"] in {"web_image", "product_image"} for item in payload),
                 "active": sum(item["status"] == "active" for item in payload),
                 "pending": sum(item["status"] == "pending" for item in payload),
-                "archived": sum(item["status"] == "archived" for item in payload),
+                "disabled": sum(item["status"] == "disabled" for item in payload),
                 "rejected": sum(item["status"] == "rejected" for item in payload),
                 "outfit": sum(item["kind"] == "outfit" for item in payload),
                 "top": sum(item["kind"] == "top" for item in payload),
@@ -276,13 +285,29 @@ class PortalClosetMixin:
     def _page_closet_item(self, item: StyleCatalogItemRecord) -> dict:
         data = item.as_dict()
         attributes = data.get("attributes") if isinstance(data.get("attributes"), dict) else {}
+        status = self._page_closet_text(data.get("status"), 24).lower()
+        if status == "archived":
+            status = "disabled"
+        if status not in {"active", "pending", "disabled", "rejected"}:
+            status = "pending"
+        data["status"] = status
         try:
             used_count = max(0, int(attributes.get("used_count") or 0))
         except (TypeError, ValueError):
             used_count = 0
         path = self._page_closet_path(str(item.image_path or ""))
+        source_host = self._page_closet_text(attributes.get("source_host"), 160)
+        if not source_host and item.source_url:
+            try:
+                source_host = self._page_closet_text(urlsplit(item.source_url).hostname, 160)
+            except ValueError:
+                source_host = ""
         data.update(
             {
+                "source_group_key": str(item.source_image_hash or f"id:{item.id}"),
+                "source_host": source_host,
+                "source_batch_id": self._page_closet_text(attributes.get("source_batch_id"), 120),
+                "source_query": self._page_closet_text(attributes.get("source_query"), 500),
                 "used_count": used_count,
                 "file_name": path.name if path else Path(str(item.image_path or "")).name,
                 "file_size": path.stat().st_size if path and path.is_file() else 0,

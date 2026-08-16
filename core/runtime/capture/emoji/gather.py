@@ -529,17 +529,7 @@ class EmojiGatherMixin:
         if not scope or not message_key:
             return
 
-        provider = await self._get_vision_provider()
-        if not provider:
-            logger.debug(f"{LOG_PREFIX} 图片上下文识别跳过：未配置可用视觉模型")
-            return
         if self.event_was_recalled(event, log_skip=True):
-            return
-        if not any(
-            callable(getattr(provider, name, None))
-            for name in ("text_chat", "image_chat", "vision_chat")
-        ):
-            logger.debug(f"{LOG_PREFIX} 图片上下文识别跳过：视觉模型不支持图片输入")
             return
 
         for entry in await self._prepared_visual_media_from_event(event):
@@ -568,7 +558,6 @@ class EmojiGatherMixin:
                 )
                 continue
             await self._describe_visual_context_with_vision(
-                provider,
                 path,
                 scope,
                 message_key,

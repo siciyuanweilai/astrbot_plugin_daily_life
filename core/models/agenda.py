@@ -7,6 +7,13 @@ from typing import Any, ClassVar
 from .relations import EventRecord, PlaceRecord
 from .vitals import LifeState, WeatherInfo
 
+TIMELINE_EXECUTION_STATES = frozenset(
+    {"planned", "active", "completed", "expired", "skipped", "cancelled"}
+)
+TIMELINE_TERMINAL_STATES = frozenset(
+    {"completed", "expired", "skipped", "cancelled"}
+)
+
 
 @dataclass(slots=True)
 class TimelineItem:
@@ -39,13 +46,7 @@ class TimelineItem:
             return value
         raw = value if isinstance(value, dict) else {}
         execution_state = str(raw.get("execution_state") or "planned").strip().lower()
-        if execution_state not in {
-            "planned",
-            "active",
-            "completed",
-            "skipped",
-            "cancelled",
-        }:
+        if execution_state not in TIMELINE_EXECUTION_STATES:
             execution_state = "planned"
         return TimelineItem(
             time=str(raw.get("time") or "").strip(),
@@ -101,6 +102,59 @@ class TimelineItem:
             "execution_evidence": self.execution_evidence,
             "execution_updated_at": self.execution_updated_at,
         }
+
+
+def _timeline_clock_minutes(value: str) -> int | None:
+    try:
+        hour, minute = map(int, str(value or "").strip().split(":"))
+    except (TypeError, ValueError):
+        return None
+    if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+        return None
+    return hour * 60 + minute
+
+
+def _timeline_duplicate_key(item: TimelineItem) -> tuple[str, ...]:
+    return (
+        item.activity.strip(),
+        item.status.strip(),
+        item.place.strip(),
+        item.place_kind.strip().lower(),
+        item.place_scope.strip().lower(),
+    )
+
+
+def deduplicate_timeline_items(
+    values: list[TimelineItem],
+    *,
+    maximum_gap_minutes: int = 30,
+) -> list[TimelineItem]:
+    """移除地图顺延等流程产生的相邻时间轴副本。
+
+    只有活动、状态和结构化地点完全一致，且两个相邻节点相差不超过
+    ``maximum_gap_minutes`` 时才视为副本。保留时间较晚的节点，因为它通常
+    包含地图审计后的时间、路线和最新执行状态。
+    """
+
+    result: list[TimelineItem] = []
+    maximum_gap = max(0, int(maximum_gap_minutes or 0))
+    for value in values:
+        item = TimelineItem.from_value(value)
+        copied = TimelineItem.from_value(item.as_dict())
+        if result and _timeline_duplicate_key(result[-1]) == _timeline_duplicate_key(
+            copied
+        ):
+            previous_minutes = _timeline_clock_minutes(result[-1].time)
+            current_minutes = _timeline_clock_minutes(copied.time)
+            if (
+                previous_minutes is not None
+                and current_minutes is not None
+                and 0 <= current_minutes - previous_minutes <= maximum_gap
+            ):
+                result[-1] = copied
+                continue
+        result.append(copied)
+    return result
 
 
 def _optional_float(value: Any) -> float | None:

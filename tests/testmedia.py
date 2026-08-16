@@ -853,6 +853,7 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
             "稳定体貌以角色人设和身份参考资料为准",
             calls[0][2]["prompt"],
         )
+        self.assertIn("本轮画面要求明确指定的当天造型优先", calls[0][2]["prompt"])
         self.assertIn("剪裁、材质、支撑、张力和重力", calls[0][2]["prompt"])
         self.assertNotIn("用户本轮明确指定的体貌变化优先", calls[0][2]["prompt"])
         self.assertIn(f"画面要求：{original_prompt}", calls[0][2]["prompt"])

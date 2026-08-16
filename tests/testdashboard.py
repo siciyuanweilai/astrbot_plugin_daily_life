@@ -1043,6 +1043,7 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
                 source_image_hash="closet-test".ljust(64, "0"),
                 attributes={
                     "colors": ["浅色"],
+                    "visual_prompt": "浅色短袖上衣采用宽松直身剪裁，搭配高腰直筒短裤。",
                     "makeup": ["清透底妆"],
                     "nails": ["透明短甲"],
                 },
@@ -1057,6 +1058,10 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(listed["data"]["stats"]["pending"], 1)
         self.assertTrue(listed["data"]["items"][0]["has_makeup"])
         self.assertTrue(listed["data"]["items"][0]["has_nails"])
+        self.assertIn(
+            "宽松直身剪裁",
+            listed["data"]["items"][0]["attributes"]["visual_prompt"],
+        )
 
         self.plugin.body = {"id": item.id}
         preview = await self.plugin.page_closet_preview()
@@ -1072,6 +1077,19 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
         liked = await self.plugin.page_closet_feedback()
         self.assertTrue(liked["ok"])
         self.assertEqual(liked["data"]["stats"]["liked"], 1)
+
+        self.plugin.body = {"ids": [item.id], "status": "disabled"}
+        disabled = await self.plugin.page_closet_status()
+        self.assertTrue(disabled["ok"])
+        self.assertEqual(disabled["data"]["stats"]["disabled"], 1)
+        self.assertEqual(
+            await self.plugin.runtime.archive.get_style_catalog_items(limit=10), []
+        )
+
+        self.plugin.body = {"ids": [item.id], "status": "active"}
+        reenabled = await self.plugin.page_closet_status()
+        self.assertTrue(reenabled["ok"])
+        self.assertEqual(reenabled["data"]["stats"]["active"], 1)
 
         self.plugin.body = {"ids": [item.id]}
         deleted = await self.plugin.page_closet_delete()
@@ -2959,7 +2977,10 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertIn('id="closetBrowseDialog"', html)
         self.assertIn('id="closetDetailDialog"', html)
         self.assertIn('id="closetBulkEnableButton"', html)
-        self.assertIn('id="closetBulkArchiveButton"', html)
+        self.assertIn('id="closetBulkDisableButton"', html)
+        self.assertIn('<option value="disabled">已停用</option>', html)
+        self.assertNotIn('<option value="rejected">不采用</option>', html)
+        self.assertNotIn("归档选中", html)
         self.assertIn('id="closetBulkDeleteButton"', html)
         self.assertIn("衣橱管理", html)
         self.assertIn('class="emoji-tools closet-tools"', html)
@@ -2988,12 +3009,28 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertIn('apiDownload("page/closet/backup"', app)
         self.assertIn('apiUpload("page/closet/restore"', app)
         self.assertIn("function closetPageWindow", app)
+        self.assertNotIn('node("strong", "", "视觉提示词")', app)
+        self.assertIn("function closetVisualPrompt", app)
+        self.assertIn("item.attributes?.visual_prompt || item.description", app)
+        self.assertIn('enabled ? "停用" : "启用"', app)
+        self.assertIn('link.target = "_blank";', app)
+        self.assertIn('link.rel = "noopener noreferrer";', app)
+        self.assertNotIn("window.location.assign(url.href)", app)
+        self.assertIn(".closet-detail-prompt", closet_style)
+        self.assertNotIn('.closet-detail-grid .is-wide', closet_style)
         self.assertIn("function confirmClosetDelete", app)
         self.assertNotIn("window.confirm", app)
         self.assertIn('@import url("./styles/closet.css")', (root / "style.css").read_text(encoding="utf-8"))
         self.assertIn(".closet-list", closet_style)
         self.assertIn("grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));", closet_style)
         self.assertIn("aspect-ratio: 4 / 5;", closet_style)
+        self.assertIn(
+            ".closet-record-title .muted {\n"
+            "  flex: 0 0 auto;\n"
+            "  white-space: nowrap;\n"
+            "}",
+            closet_style,
+        )
         self.assertNotIn("border-block-start: 1px solid", closet_style)
         self.assertNotIn(".closet-stat:nth-child(even)", closet_style)
         self.assertIn("@media (max-width: 680px)", closet_style)
@@ -3039,6 +3076,15 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
             (root / "styles" / "emoji.css").read_text(encoding="utf-8"),
         )
         self.assertIn("closet-stat-label", app)
+        self.assertNotIn('["来源图", stats.source_groups]', app)
+        self.assertNotIn('["候选", stats.total]', app)
+        self.assertNotIn("source_groups:", app)
+        self.assertNotIn('["active", "pending", "disabled", "rejected"]', app)
+        self.assertIn(
+            "`显示 ${pageInfo.start + 1}-${pageInfo.end} 组，共 ${groups.length} 组；总数 ${total} 个候选`",
+            app,
+        )
+        self.assertNotIn("组、${items.length} 个候选；总数", app)
 
     def test_dashboard_reset_today_button_stays_with_timeline_tools(self):
         from pathlib import Path
@@ -5350,6 +5396,39 @@ globalThis.window = {
             self._dashboard_dom_mock_script()
             + """
 await import("./pages/dashboard/app.js");
+"""
+        )
+        result = subprocess.run(
+            ["node", "--input-type=module"],
+            cwd=root,
+            input=script,
+            text=True,
+            encoding="utf-8",
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+
+    def test_dashboard_closet_status_keeps_machine_enum(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        script = (
+            self._dashboard_dom_mock_script()
+            + """
+const mod = await import("./pages/dashboard/app.js");
+for (const status of ["active", "pending", "disabled", "rejected"]) {
+  const value = mod.closetStatus({ status });
+  if (value !== status) {
+    throw new Error(`衣橱状态枚举不应被展示翻译改写：${status} -> ${value}`);
+  }
+}
+if (mod.closetStatus({ status: "archived" }) !== "disabled") {
+  throw new Error("旧版 archived 状态应兼容显示为 disabled");
+}
+if (mod.closetStatus({ status: "unknown" }) !== "pending") {
+  throw new Error("未知衣橱状态应回退为 pending");
+}
 """
         )
         result = subprocess.run(

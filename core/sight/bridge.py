@@ -58,7 +58,7 @@ from .probe import (
     payload_from_item,
     source_from_value,
 )
-from .provider import get_sight_provider
+from .provider import sight_provider_id
 from .prune import SightCleanupMixin
 from .reader import (
     AUDIO_TRANSCRIPT_TIMEOUT_SECONDS,
@@ -1440,14 +1440,35 @@ class SightMixin(SightCleanupMixin, SightIdentityMixin):
     async def _describe_sight_frames(
         self, clip: SightClip, frames: list[Path | SightFrame]
     ) -> SightFrameDescriptionResult:
-        provider = await get_sight_provider(self, "frame_provider")
-        if not provider:
-            return SightFrameDescriptionResult()
-        if not any(
-            callable(getattr(provider, name, None))
-            for name in ("text_chat", "image_chat", "vision_chat")
-        ):
-            return SightFrameDescriptionResult()
+        provider_id = sight_provider_id(self, "frame_provider")
+        best_result = SightFrameDescriptionResult()
+        index = 0
+        async for provider in self.get_text_provider_candidates(provider_id):
+            if index:
+                logger.info(
+                    f"{LOG_PREFIX} 视频关键帧指定模型识别失败，改用当前默认模型"
+                )
+            index += 1
+            if not any(
+                callable(getattr(provider, name, None))
+                for name in ("text_chat", "image_chat", "vision_chat")
+            ):
+                continue
+            result = await self._describe_sight_frames_with_provider(
+                clip, frames, provider
+            )
+            if result.notes:
+                return result
+            if result.request_count or result.assets:
+                best_result = result
+        return best_result
+
+    async def _describe_sight_frames_with_provider(
+        self,
+        clip: SightClip,
+        frames: list[Path | SightFrame],
+        provider: Any,
+    ) -> SightFrameDescriptionResult:
 
         total = len(frames)
         parts = [self._sight_frame_parts(frame) for frame in frames]

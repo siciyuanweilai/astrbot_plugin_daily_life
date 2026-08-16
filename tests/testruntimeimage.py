@@ -36,9 +36,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         hidden = runtime._image_tool_failure_text(
             "图片生成", "HTTP 502 /v1/images/generations internal gateway error"
         )
-        allowed = runtime._image_tool_failure_text(
-            "图片生成", "没有收到可用图片结果"
-        )
+        allowed = runtime._image_tool_failure_text("图片生成", "没有收到可用图片结果")
 
         self.assertEqual(hidden, "图片生成失败，已记录失败原因。")
         self.assertEqual(allowed, "图片生成失败：没有收到可用图片结果")
@@ -401,9 +399,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         async def rewrite(prompt, *, provider_id=""):
             prompts.append((prompt, provider_id))
             return json.dumps(
-                {
-                    "prompt": "站在房间门口手拿小风扇，柔和自然光，半身构图"
-                },
+                {"prompt": "站在房间门口手拿小风扇，柔和自然光，半身构图"},
                 ensure_ascii=False,
             )
 
@@ -2727,6 +2723,56 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             "https://example.com/tea.png",
         )
 
+    async def test_reverse_prompt_falls_back_to_current_default_provider(self):
+        primary = Provider(
+            [RuntimeError("测试指定视觉模型不可用")], provider_id="vision-model"
+        )
+        fallback = Provider(
+            [
+                json.dumps(
+                    {
+                        "title": "默认模型结果",
+                        "prompt": "测试市窗边人物，柔和自然光，生活照质感",
+                        "keywords": ["窗边", "自然光"],
+                        "usage": "文生图",
+                    },
+                    ensure_ascii=False,
+                )
+            ],
+            provider_id="default-model",
+        )
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.context = Context(fallback, providers={"vision-model": primary})
+        runtime.config = LifeSettings.from_dict(
+            {"vision_config": {"provider": "vision-model"}}
+        )
+        provider_requests = []
+        closed_sessions = []
+
+        class Composer:
+            async def _get_provider(self, provider_id=""):
+                provider_requests.append(provider_id)
+                return (
+                    runtime.context.providers.get(provider_id)
+                    or runtime.context.get_using_provider()
+                )
+
+            async def _cleanup_conversation(self, session_id):
+                closed_sessions.append(session_id)
+
+        runtime.composer = Composer()
+
+        payload = await runtime._reverse_prompt_call_vision(
+            "https://example.test/reference.png"
+        )
+
+        self.assertEqual(payload["title"], "默认模型结果")
+        self.assertEqual(provider_requests, ["vision-model", ""])
+        self.assertEqual(len(primary.vision_prompts), 1)
+        self.assertEqual(len(fallback.vision_prompts), 1)
+        self.assertEqual(len(closed_sessions), 2)
+        self.assertTrue(closed_sessions[1].endswith("_fallback"))
+
     async def test_life_image_reverse_prompt_reuses_same_image_and_request(self):
         reverse_prompt = "窗边人物生活照，柔和自然光，手机随手拍质感"
         vision_provider = Provider(
@@ -3549,10 +3595,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(prompt_calls["雨后公园镜头3"], 1)
         self.assertEqual(prompt_calls["雨后公园镜头4"], 1)
         self.assertEqual(
-            [
-                Path(item["file"]).name
-                for item in event.sent_messages[1].items
-            ],
+            [Path(item["file"]).name for item in event.sent_messages[1].items],
             ["02.png"],
         )
         self.assertEqual(len(expressed), 2)
@@ -3938,7 +3981,9 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         await service.generate_image("角色坐在窗边看雨")
 
         parts = posted_payloads[-1]["contents"][0]["parts"]
-        self.assertIn("优先保持角色", parts[0]["text"])
+        self.assertIn("优先保持角色的脸部气质、体态和身份辨识度", parts[0]["text"])
+        self.assertIn("参考图不锁定本轮服装、配饰、发型、妆容或美甲", parts[0]["text"])
+        self.assertIn("画面要求明确指定的当天造型优先", parts[0]["text"])
         self.assertEqual(
             parts[1]["text"], "下面 2 张图是角色形象参考图组，用于保持角色外貌一致。"
         )
@@ -4045,7 +4090,8 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         await service.edit_image("保留姿势，换成咖啡店生活照", str(scene))
 
         parts = posted_payloads[-1]["contents"][0]["parts"]
-        self.assertIn("优先保持角色", parts[0]["text"])
+        self.assertIn("优先保持角色的脸部气质、体态和身份辨识度", parts[0]["text"])
+        self.assertIn("参考图不锁定本轮服装、配饰、发型、妆容或美甲", parts[0]["text"])
         self.assertEqual(
             base64.b64decode(parts[1]["inlineData"]["data"]), scene.read_bytes()
         )

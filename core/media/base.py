@@ -18,6 +18,8 @@ def normalize_voice_style(value: Any, fallback: str = "neutral") -> str:
         return style
     default = str(fallback or "neutral").strip().lower()
     return default if default in VOICE_STYLE_KEYS else "neutral"
+
+
 GROUP_IDENTITY_CONTINUITY_RULE = (
     "人物 A 与人物 B 是两位既定且不同的人物；保持双方各自的身份、脸部、体态和整体辨识度。"
     "服装、发型、体态和性别呈现等个体属性必须分别绑定到人物 A 或人物 B，"
@@ -31,6 +33,8 @@ GROUP_IDENTITY_CONTINUITY_RULE = (
 )
 PHYSICAL_IDENTITY_CONTINUITY_RULE = (
     "当前人物是既定角色时，稳定体貌以角色人设和身份参考资料为准；"
+    "身份资料里的服装、配饰、发型、妆容和美甲只在本轮未指定时作为参考，"
+    "本轮画面要求明确指定的当天造型优先。"
     "在本轮实际可见的范围内，服装、姿势、景别、镜头和光线应自然呈现既有整体轮廓与比例，"
     "遮挡、远景或宽松衣物不强行突出。"
     "不得因通用审美压平、夸张、扩大、缩小或重塑身体结构及局部比例。"

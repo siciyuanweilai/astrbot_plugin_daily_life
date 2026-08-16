@@ -8,7 +8,13 @@ from astrbot.api import logger
 
 from ..archive import DayRevisionConflict
 from ..clock import now as life_now
-from ..models import DailyReviewRecord, EventRecord, LifeEventRecord, PreferenceRecord
+from ..models import (
+    TIMELINE_TERMINAL_STATES,
+    DailyReviewRecord,
+    EventRecord,
+    LifeEventRecord,
+    PreferenceRecord,
+)
 from ..prompts import (
     CORE_MEMORY_RULES,
     LIFE_PREFERENCE_CATEGORY_ENUM,
@@ -18,7 +24,6 @@ from ..prompts import (
 from .appearance import format_life_preference_context
 from .evolution import LifeEvolutionService
 from .tools import (
-    TIMELINE_TERMINAL_STATES,
     extract_json_from_text,
     format_timeline_to_text,
     reconcile_timeline_execution,
@@ -35,6 +40,7 @@ def _compact(value: object, limit: int = 120) -> str:
 
 DAILY_REVIEW_TIMELINE_SETTLED_AT = "daily_review_timeline_settled_at"
 DAILY_REVIEW_COMPLETED_AT = "daily_review_completed_at"
+DAILY_REVIEW_REVISION_ATTEMPTS = 6
 
 
 class LifecycleMixin:
@@ -708,15 +714,22 @@ class LifecycleMixin:
 
         settle_actions = getattr(self, "settle_completed_planned_actions", None)
         if callable(settle_actions):
-            for attempt in range(3):
+            settled_at = review_end.strftime("%Y-%m-%d %H:%M:%S")
+            for attempt in range(DAILY_REVIEW_REVISION_ATTEMPTS):
                 try:
                     await settle_actions(settled_day, now=review_end)
                     break
                 except DayRevisionConflict:
-                    if attempt >= 2:
+                    if attempt >= DAILY_REVIEW_REVISION_ATTEMPTS - 1:
                         raise
+                    await asyncio.sleep(min(0.05 * (2**attempt), 0.4))
                     latest = await self.archive.get_day(day.date)
                     if latest is None:
+                        return
+                    if str(
+                        (latest.meta or {}).get(DAILY_REVIEW_TIMELINE_SETTLED_AT)
+                        or ""
+                    ).strip() == settled_at:
                         return
                     settled_day = latest
 

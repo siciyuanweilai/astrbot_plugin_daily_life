@@ -196,12 +196,12 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(merged.title, "测试清晰造型")
                 self.assertEqual(merged.seen_count, 2)
                 self.assertEqual(
-                    await archive.set_style_catalog_status([merged.id], "archived"),
+                    await archive.set_style_catalog_status([merged.id], "disabled"),
                     1,
                 )
                 self.assertEqual(
                     (await archive.get_style_catalog_item(merged.id)).status,
-                    "archived",
+                    "disabled",
                 )
                 self.assertEqual(
                     await archive.delete_style_catalog_items([merged.id]), 1
@@ -370,6 +370,48 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(saved.timeline[0].activity, "新日程")
                 self.assertEqual(saved.revision, 3)
                 self.assertEqual(timeline_writer.revision, 3)
+            finally:
+                await archive.aclose()
+
+    async def test_save_day_removes_adjacent_shifted_timeline_duplicate(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(f"{tmpdir}/daily_life.db")
+            try:
+                day = DayRecord(
+                    date="2026-08-15",
+                    timeline=[
+                        TimelineItem(
+                            time="20:00",
+                            activity="回家洗漱并整理照片",
+                            status="安宁",
+                            place="家",
+                            place_kind="home",
+                            execution_state="completed",
+                            execution_updated_at="2026-08-15T20:10:00",
+                        ),
+                        TimelineItem(
+                            time="20:06",
+                            activity="回家洗漱并整理照片",
+                            status="安宁",
+                            place="家",
+                            place_kind="home",
+                            travel_mode="transit",
+                            travel_detail="测试公交线路",
+                            travel_minutes=56,
+                            execution_state="active",
+                            execution_updated_at="2026-08-15T20:12:00",
+                        ),
+                    ],
+                )
+
+                await archive.save_day(day)
+                saved = await archive.get_day("2026-08-15")
+
+                self.assertEqual(len(saved.timeline), 1)
+                self.assertEqual(saved.timeline[0].time, "20:06")
+                self.assertEqual(saved.timeline[0].travel_minutes, 56)
+                self.assertEqual(saved.timeline[0].execution_state, "active")
+                self.assertEqual(len(day.timeline), 1)
             finally:
                 await archive.aclose()
 

@@ -517,8 +517,14 @@ class GeminiImageService:
             getattr(self.settings, "character_reference_policy", "off") or "off"
         )
         if policy == "always":
-            return "已提供一组角色形象参考图，请综合参考并优先保持角色的脸部气质、发型、体态和整体辨识度。"
-        return "已提供一组角色形象参考图；如果画面包含角色本人，请综合参考它们保持角色形象一致；如果画面不需要出现角色，不要强行加入人物。"
+            return (
+                "已提供一组角色形象参考图，请综合参考并优先保持角色的脸部气质、体态和身份辨识度；"
+                "参考图不锁定本轮服装、配饰、发型、妆容或美甲，画面要求明确指定的当天造型优先。"
+            )
+        return (
+            "已提供一组角色形象参考图；如果画面包含角色本人，请综合参考它们保持脸部、体态和身份一致，"
+            "但不锁定本轮服装、配饰、发型、妆容或美甲；如果画面不需要出现角色，不要强行加入人物。"
+        )
 
     @staticmethod
     def _route_accepts_character_reference(
