@@ -198,7 +198,13 @@ class DailyAssemblyMixin:
                 outfit.get("hair_style"), 80
             ),
             "hair": normalize_appearance_fact(outfit.get("hair"), 180),
+            "makeup_style": normalize_appearance_fact(
+                outfit.get("makeup_style"), 80
+            ),
             "makeup": normalize_appearance_fact(outfit.get("makeup"), 160),
+            "nails_style": normalize_appearance_fact(
+                outfit.get("nails_style"), 80
+            ),
             "nails": normalize_appearance_fact(outfit.get("nails"), 160),
             "life_mode": decision.get("life_mode") or plan.get("life_mode"),
             "plan_outfit_decision": outfit_decision,

@@ -177,6 +177,37 @@ class StyleCatalogArchiveMixin:
 
         return await self._run_db(read)
 
+    async def get_style_catalog_counts(
+        self, *, status: str = "active"
+    ) -> dict[str, int]:
+        """按类别统计衣橱条目，不受候选展示数量限制。"""
+
+        normalized_status = self._style_catalog_status(status)
+
+        def read() -> dict[str, int]:
+            clauses = ""
+            values: tuple[str, ...] = ()
+            if normalized_status == "disabled":
+                clauses = " WHERE status IN ('disabled', 'archived')"
+            elif normalized_status:
+                clauses = " WHERE status = ?"
+                values = (normalized_status,)
+            rows = self._conn.execute(
+                f"""
+                SELECT kind, COUNT(*) AS item_count
+                FROM style_catalog_items{clauses}
+                GROUP BY kind
+                """,
+                values,
+            ).fetchall()
+            return {
+                str(row["kind"] or ""): max(0, int(row["item_count"] or 0))
+                for row in rows
+                if str(row["kind"] or "") in STYLE_CATALOG_KIND_SET
+            }
+
+        return await self._run_db(read)
+
     async def get_style_catalog_item(
         self, item_id: int
     ) -> StyleCatalogItemRecord | None:

@@ -5,6 +5,7 @@ from ....facts import person_fact_context_from_relationships
 from ....life.condition import format_state_prompt, normalize_state
 from ....life.tools import format_timeline_to_text
 from ....prompts import (
+    CORE_EMOJI_DELIVERY_RULES,
     CORE_HIDDEN_CONTEXT_RULES,
     CORE_JSON_OUTPUT_RULES,
     CORE_PERSONA_PRONOUN_RULES,
@@ -302,6 +303,8 @@ class ProactivePromptMixin:
 
 JSON 输出要求：
 {CORE_JSON_OUTPUT_RULES}
+
+{CORE_EMOJI_DELIVERY_RULES}
 
 只输出 JSON 对象：
 {{

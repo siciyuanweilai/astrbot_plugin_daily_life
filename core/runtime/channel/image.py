@@ -1408,9 +1408,10 @@ JSON 字段：
                 return (
                     "真实换装生图请将 subject_route 设为 current_character 或 group。"
                 )
+            source_instruction = self._event_current_image_request_text(event)
             instruction = str(current_outfit_instruction or "").strip()
             if not instruction:
-                instruction = self._event_current_image_request_text(event)
+                instruction = source_instruction
             if not instruction:
                 return "没有收到当前角色的换装要求。"
 
@@ -1429,6 +1430,7 @@ JSON 字段：
                     target_period,
                     current_time=current_time,
                     instruction=instruction,
+                    source_instruction=source_instruction,
                 )
             if updated_day is None:
                 logger.warning(f"{LOG_PREFIX} 当前角色穿搭更新失败，已取消图片生成。")

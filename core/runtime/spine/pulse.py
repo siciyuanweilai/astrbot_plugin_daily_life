@@ -7,6 +7,7 @@ from astrbot.api import logger
 
 from ...clock import now as life_now
 from ...models import BehaviorSceneRecord, MemoryMaintenanceRecord
+from ..generation import DAILY_REFRESH_GENERATED_DATE
 from ..locks import operation_lock
 from ..markers import LOG_PREFIX
 
@@ -18,23 +19,34 @@ class SpinePulseMixin:
         target_date, _ = await self.resolve_injection_target(now)
         target_dt = self._target_datetime_for_command(target_date, now)
         yesterday = (now - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-        # 先登记当日生成任务，避免复盘期间的手动重生再启动第二个写入任务。
-        generation_task = asyncio.create_task(
-            self.run_daily_generation(
-                date=target_dt,
-                source="daily_refresh",
-                force=True,
-            )
+        existing = await self.archive.get_day(target_date)
+        existing_meta = getattr(existing, "meta", {}) if existing is not None else {}
+        already_generated = bool(
+            isinstance(existing_meta, dict)
+            and str(existing_meta.get(DAILY_REFRESH_GENERATED_DATE) or "")
+            == target_date
         )
+        generation_task = None
+        if not already_generated:
+            # 先登记当日生成任务，避免复盘期间的手动重生再启动第二个写入任务。
+            generation_task = asyncio.create_task(
+                self.run_daily_generation(
+                    date=target_dt,
+                    source="daily_refresh",
+                    force=True,
+                )
+            )
         try:
             async with operation_lock(self, f"review:{yesterday}"):
                 await self.composer.compose_daily_review(yesterday)
-            await generation_task
+            if generation_task is not None:
+                await generation_task
         # 复盘流程取消时同步收束配套生成任务，避免后台遗留写入。
         except BaseException:
-            if not generation_task.done():
+            if generation_task is not None and not generation_task.done():
                 generation_task.cancel()
-            await asyncio.gather(generation_task, return_exceptions=True)
+            if generation_task is not None:
+                await asyncio.gather(generation_task, return_exceptions=True)
             raise
         await self.archive.cleanup_by_storage_policy(self.config.storage)
         await self.maintain_sight_cache()

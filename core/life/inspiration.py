@@ -115,6 +115,51 @@ class StyleCatalogMixin:
             f"{heading}；视觉提示词：{visual_prompt}{suffix}；偏好分 {score:.1f}"
         )
 
+    async def _style_catalog_has_clothing_candidates(self) -> bool:
+        getter = getattr(self.archive, "get_style_catalog_items", None)
+        if not callable(getter):
+            return False
+        try:
+            if await getter(kind="outfit", status="active", limit=1):
+                return True
+            tops = await getter(kind="top", status="active", limit=1)
+            bottoms = await getter(kind="bottom", status="active", limit=1)
+            return bool(tops and bottoms)
+        except Exception:
+            return False
+
+    async def _style_catalog_new_outfit_selection(
+        self, value: object
+    ) -> tuple[dict[str, str], str]:
+        """校验新穿搭是否真正采用了启用中的衣橱服装。"""
+
+        item_ids = self._style_catalog_reference_ids(value)
+        getter = getattr(self.archive, "get_style_catalog_items", None)
+        items = []
+        if callable(getter) and item_ids:
+            try:
+                items = await getter(
+                    status="active", ids=item_ids, limit=len(item_ids)
+                )
+            except Exception:
+                items = []
+        kinds = {str(getattr(item, "kind", "") or "") for item in items}
+        complete_selection = "outfit" in kinds or {"top", "bottom"}.issubset(kinds)
+        appearance = (
+            await self._style_catalog_reference_appearance(item_ids)
+            if complete_selection
+            else {}
+        )
+        if complete_selection and appearance.get("outfit"):
+            return appearance, ""
+        if not await self._style_catalog_has_clothing_candidates():
+            return {}, ""
+        return (
+            {},
+            "视觉衣橱已有启用的服装候选；自主生成新穿搭时必须选择一条完整套装，"
+            "或同时选择上装与下装，并把采用编号写入 catalog_reference_ids",
+        )
+
     async def _style_catalog_context(self, *, limit: int = 10) -> str:
         getter = getattr(self.archive, "get_style_catalog_items", None)
         if not callable(getter):
@@ -128,8 +173,17 @@ class StyleCatalogMixin:
             for kind in STYLE_CATALOG_KINDS
         }
         items = []
-        for kind in STYLE_CATALOG_KINDS:
-            if grouped[kind]:
+        other_kinds = [kind for kind in STYLE_CATALOG_KINDS if kind != "outfit"]
+        reserved_other = sum(bool(grouped[kind]) for kind in other_kinds)
+        outfit_quota = min(
+            6,
+            len(grouped["outfit"]),
+            max(1, safe_limit - reserved_other),
+        )
+        for _ in range(outfit_quota):
+            items.append(grouped["outfit"].pop(0))
+        for kind in other_kinds:
+            if grouped[kind] and len(items) < safe_limit:
                 items.append(grouped[kind].pop(0))
         while len(items) < safe_limit:
             added = False
@@ -144,8 +198,9 @@ class StyleCatalogMixin:
         lines = [
             "## 👗 视觉衣橱候选",
             "以下来自用户明确学习的商品图或造型图，只是新造型灵感，不是当前已经穿上的事实。",
-            "需要新造型时才可选择适合当前天气、活动和场景的候选；不合适可以完全不用。",
-            "可以采用一条完整套装，也可以组合上装、下装、鞋袜和配饰；不要同时选取语义重复的整套与单品。",
+            "保持当前穿搭时不采用候选；自主产生新穿搭且存在合适服装候选时，具体服装必须从本轮候选中选择，长期偏好只用于排序，不能直接变成衣服。",
+            "新穿搭可以采用一条完整套装，也可以同时组合上装与下装，再按需选择鞋袜和配饰；不要只选半套，也不要同时选取语义重复的整套与单品。",
+            "近期使用过的候选已由系统降权；场景与天气适配和近期轮换优先于偏好分，避免把高偏好候选穿成固定制服。",
             "发型、妆容和美甲必须分别选择，不能把候选图片中的人物身份、体貌、姿势、场景或品牌当作角色事实。",
             "候选中的“视觉提示词”是该类别的详细外观事实；实际采用后应忠实保留，不得自行简化款式、层次、颜色或装饰细节。",
             "只有实际采用对应类别时才改变该外观组成；局部换衣不能自动改掉发型、妆容或美甲。",
@@ -176,7 +231,9 @@ class StyleCatalogMixin:
             "outfit": [],
             "hair_style": [],
             "hair": [],
+            "makeup_style": [],
             "makeup": [],
+            "nails_style": [],
             "nails": [],
         }
         for item in items or []:
@@ -201,6 +258,8 @@ class StyleCatalogMixin:
                     result["hair_style"].append(title)
                 result["hair"].append(description)
             elif kind in {"makeup", "nails"} and description:
+                if title:
+                    result[f"{kind}_style"].append(title)
                 result[kind].append(description)
         return {
             key: "；".join(dict.fromkeys(values))

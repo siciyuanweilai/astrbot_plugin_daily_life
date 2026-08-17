@@ -8,6 +8,7 @@ from ...clock import now as life_now
 from ...life.condition import format_state_prompt, normalize_state
 from ...life.people import PROACTIVE_PERSON_TEXT_PATHS
 from ...prompts import (
+    CORE_EMOJI_DELIVERY_RULES,
     CORE_HIDDEN_CONTEXT_RULES,
     CORE_JSON_OUTPUT_RULES,
     CORE_PERSONA_PRONOUN_RULES,
@@ -264,6 +265,8 @@ class ProactiveRevisitMixin:
 JSON 输出要求：
 {CORE_JSON_OUTPUT_RULES}
 
+{CORE_EMOJI_DELIVERY_RULES}
+
 只输出 JSON：
 {{"valid": true, "reason": "简短结论", "conflicts": ["不一致事实"]}}
 
@@ -421,7 +424,7 @@ JSON 输出要求：
 - reason 只写相对场景和判断依据，不复述具体日期、钟点或时间轴编号；具体时间只保留在内部证据中。
 - 近期消息必须按其明确时间理解；旧照片、旧回复或未来约定不能表述成刚发生或已经完成。
 - 只有“当前生活事实”明确支持时，才能断言当前地点、当前动作、动作完成或状态变化。
-- 本轮只能发送 reply_text 文字；不得声称本轮已经附带、补发或重新发送任何媒体。
+- 本轮可见文字只写 reply_text；如果 expression_intent.send_emoji=true，执行层会在文字成功投递后独立尝试发送一张已有表情，但不保证一定有合适素材。reply_text 不得声称本轮已经附带、补发或重新发送任何媒体。
 - 只输出上面列出的字段，不添加内部过程或发送控制字段。
 """
         dynamic = f"""角色人设摘要：
@@ -446,7 +449,7 @@ JSON 输出要求：
 当前生活事实：
 {life_context}
 
-本轮发送能力：仅发送 reply_text 文字，不会自动附带媒体。
+本轮发送能力：先发送 reply_text 文字；若表达裁定明确需要表情，执行层再从现有素材中独立选择一张，找不到合适素材时保持文字结果。
 
 外部长期记忆参考：
 {memory_context["memos_context"] or "暂无外部长期记忆参考。"}
@@ -984,6 +987,8 @@ JSON 输出要求：
                 relationship=relationship,
                 contact_type="friend",
                 send_payload={**payload, "source": "private_revisit"},
+                source_event=event,
+                source_message_id=self._event_message_id(event),
             ):
                 await self._commit_proactive_decision(
                     event,

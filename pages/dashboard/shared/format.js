@@ -121,6 +121,12 @@ const FIELD_TOKEN_LABELS = {
   hair_style: "发型名称",
   hairstyle: "发型名称",
   hair: "发型细节",
+  makeup_style: "妆容名称",
+  makeupstyle: "妆容名称",
+  makeup: "妆容细节",
+  nails_style: "美甲名称",
+  nailsstyle: "美甲名称",
+  nails: "美甲细节",
   scene_category: "场景",
   scenecategory: "场景",
   watch_state: "观看状态",
@@ -932,10 +938,21 @@ function currentOutfitDisplayText(day = {}, meta = {}) {
   const style = appearanceFact(meta.style);
   const hairStyle = appearanceFact(meta.hair_style);
   const hair = appearanceFact(meta.hair);
+  const makeupStyle = appearanceFact(meta.makeup_style);
   const makeup = appearanceFact(meta.makeup);
+  const nailsStyle = appearanceFact(meta.nails_style);
   const nails = appearanceFact(meta.nails);
   const outfit = stripCoveredAppearanceDetail(day.outfit, hairStyle, hair);
-  return { style, outfit, hairStyle, hair, makeup, nails };
+  return {
+    style,
+    outfit,
+    hairStyle,
+    hair,
+    makeupStyle,
+    makeup,
+    nailsStyle,
+    nails,
+  };
 }
 
 function outfitDecisionText(meta = {}) {

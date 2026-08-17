@@ -133,6 +133,7 @@ class LifeActionTest(unittest.TestCase):
                 "action_id": "outfit-1",
                 "action_type": "change_outfit",
                 "target": "浅黄色短袖和米白长裤",
+                "payload": {"catalog_reference_ids": [17, "18", 17]},
             },
             now=datetime.datetime(2026, 8, 1, 16, 5),
         )
@@ -145,6 +146,7 @@ class LifeActionTest(unittest.TestCase):
         self.assertEqual(day.meta["outfit_fact_source"], "life_action")
         self.assertEqual(day.meta["outfit_fact_confirmed_at"], "2026-08-01 16:05:00")
         self.assertEqual(day.meta["outfit_fact_evidence"], "outfit-1")
+        self.assertEqual(day.meta["style_catalog_reference_ids"], "17,18")
 
     def test_daily_plan_change_outfit_uses_action_target_as_current_fact(self):
         day = DayRecord(

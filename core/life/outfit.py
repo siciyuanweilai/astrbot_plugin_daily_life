@@ -364,8 +364,10 @@ class OutfitMixin:
             f"当前穿搭：{old_data.outfit or '未知'}",
             f"当前发型名称：{old_meta.get('hair_style') or '未知'}",
             f"当前发型细节：{old_meta.get('hair') or '未知'}",
-            f"当前妆容：{old_meta.get('makeup') or '未知'}",
-            f"当前美甲：{old_meta.get('nails') or '未知'}",
+            f"当前妆容名称：{old_meta.get('makeup_style') or '未知'}",
+            f"当前妆容细节：{old_meta.get('makeup') or '未知'}",
+            f"当前美甲名称：{old_meta.get('nails_style') or '未知'}",
+            f"当前美甲细节：{old_meta.get('nails') or '未知'}",
             f"当前穿着场景：{outfit_scene_category_label(old_meta.get('outfit_scene_category')) if old_meta.get('outfit_scene_category') else '未知'}",
             f"当前穿着风格池：{outfit_style_pool_label(old_meta.get('outfit_style_pool')) if old_meta.get('outfit_style_pool') else '未知'}",
             f"今日日程基调：{old_meta.get('life_mode', '未知')}",
@@ -389,6 +391,7 @@ class OutfitMixin:
         target_period: str,
         current_time: datetime.datetime,
         instruction: str = "",
+        source_instruction: str | None = None,
     ) -> dict:
         timeline_date = old_data.date or date_str
         current_item, next_item = get_current_timeline_status(
@@ -405,6 +408,9 @@ class OutfitMixin:
             if item_time is not None and item_time <= current_time:
                 occurred_timeline_items.append(item)
         old_meta = old_data.meta
+        persona = await self._get_persona()
+        style_catalog_context = await self._style_catalog_context(limit=14)
+        catalog_has_clothing = await self._style_catalog_has_clothing_candidates()
         return {
             "old_data": old_data,
             "timeline_date": timeline_date,
@@ -425,11 +431,17 @@ class OutfitMixin:
             "daily_theme": old_meta.get("theme", "未设定"),
             "mood_color": old_meta.get("mood", "未设定"),
             "instruction": str(instruction or "").strip(),
-            "appearance_context": await self._outfit_appearance_context(),
-            "style_catalog_context": await self._style_catalog_context(limit=10),
+            "source_instruction": str(
+                instruction if source_instruction is None else source_instruction
+            ).strip(),
+            "persona": str(persona or "").strip(),
+            "appearance_context": await self._outfit_appearance_context(
+                catalog_backed=catalog_has_clothing
+            ),
+            "style_catalog_context": style_catalog_context,
         }
 
-    async def _outfit_appearance_context(self) -> str:
+    async def _outfit_appearance_context(self, *, catalog_backed: bool = False) -> str:
         preference_limit = max(0, self.config.lifecycle.max_preferences)
         preferences = []
         if preference_limit:
@@ -442,6 +454,7 @@ class OutfitMixin:
             self.config,
             limit=preference_limit,
             appearance_only=True,
+            catalog_backed=catalog_backed,
         )
 
     def _build_outfit_update_prompt(
@@ -460,18 +473,19 @@ class OutfitMixin:
 2. 未发生的未来安排只能作为预告，不能提前覆盖当前穿搭；等对应时间/场景实际到达后再换装。
 3. 当前或下一项安排需要外出时，先判断现有穿搭是否适合场景和天气；明显不合适时不能直接 keep。
 4. current_outfit_basis 用于说明最终穿搭依据：stored 表示数据库中的当前穿搭仍有效；occurred_schedule 表示当前或已发生日程明确完成了换装；live_state 表示实时状态明确确认已经换装。未发生日程不能作为依据。
-5. keep 只能与 stored 搭配，并原样返回当前 outfit、style、hair_style、hair、makeup、nails；已经换装则选择 change、partial_change、sleepwear 或 outdoor，不能用 keep 表示“换装后继续穿着”。
+5. keep 只能与 stored 搭配，并原样返回当前 outfit、style、hair_style、hair、makeup_style、makeup、nails_style、nails；已经换装则选择 change、partial_change、sleepwear 或 outdoor，不能用 keep 表示“换装后继续穿着”。
 6. component_review 必须分别审视主体服装、鞋履、外层、随身配饰、发型、妆容和美甲；不存在的组成写 not_present，无法确认写 unknown。任一组成需要调整时，不能返回 keep。
 7. partial_change 只写局部调整后的最终状态；component_review 标记 adjust 时，outfit 必须写调整后实际可见的完整穿搭。
-8. outfit/style/hair_style/hair/makeup/nails 只写最终视觉状态；新换装或局部调整时遵循以下描述要求，keep 仍须原样返回已有状态：
+8. outfit/style/hair_style/hair/makeup_style/makeup/nails_style/nails 只写最终视觉状态；新换装或局部调整时遵循以下描述要求，keep 仍须原样返回已有状态：
 {CURRENT_APPEARANCE_GENERATION_RULES}
-reason 使用自然中文，不写内部枚举，也不复述具体日期、钟点或时间轴编号。
-9. 用户明确提出穿搭要求时，在不违背当前真实场景和天气的前提下优先执行，不能用 keep 回避。
-10. 只返回穿搭决策，不得改写时间轴、实时状态、主题、地点、事件或睡眠信息。
-11. change_evidence 只描述本轮更换主体服装的事实依据，证据发生时间必须晚于当前穿搭确认时间：
+9. reason 使用自然中文，不写内部枚举，也不复述具体日期、钟点或时间轴编号。
+10. 用户明确提出穿搭要求时，在不违背当前真实场景和天气的前提下优先执行，不能用 keep 回避。
+11. 只返回穿搭决策，不得改写时间轴、实时状态、主题、地点、事件或睡眠信息。
+12. change_evidence 只描述本轮更换主体服装的事实依据，证据发生时间必须晚于当前穿搭确认时间：
 - 已发生日程明确记载已经换装时，kind=explicit_outfit_change、source=occurred_schedule，timeline_time 填对应节点时间，quote 必须原样摘录该节点中明确确认换装的短句。
 - 实时生活状态明确记载已经换装时，kind=explicit_outfit_change、source=live_state，quote 必须原样摘录实时状态中的确认短句。
 - 只是基于舒适度自主建议换装时，kind=comfort_adjustment、source=autonomous；场景变化但没有已发生换装事实时使用 scene_transition；没有变化依据时使用 none。不得把未来安排、普通活动或换装建议标成已经换装。
+13. 本轮提供视觉衣橱候选且自主决定产生新主体服装时，必须选择一条完整套装，或同时选择上装与下装；采用编号写入 catalog_reference_ids。长期偏好只能帮助比较候选，不能直接改写成具体衣服。用户本轮明确指定衣服时不受此限制。
 
 返回JSON格式：
 {{
@@ -484,8 +498,10 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
   "style": "简短的最终风格",
   "hair_style": "简短发型名称",
   "hair": "当前可见的详细发型",
-  "makeup": "当前实际妆容或空字符串",
-  "nails": "当前实际美甲或空字符串",
+  "makeup_style": "简短妆容名称",
+  "makeup": "当前实际妆容细节或空字符串",
+  "nails_style": "简短美甲名称",
+  "nails": "当前实际美甲细节或空字符串",
   "catalog_reference_ids": ["实际采用的视觉衣橱候选编号"],
   "reason": "一句很短的内部原因",
   "change_evidence": {{"kind": "none | explicit_outfit_change | comfort_adjustment | scene_transition", "source": "stored | occurred_schedule | live_state | autonomous", "timeline_time": "已发生节点时间或空字符串", "quote": "原样证据短句或空字符串"}}
@@ -513,12 +529,15 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
 {context["state_context"]}
 长期审美偏好：
 {context["appearance_context"] or "无"}
+角色人设（只提取其中明确的稳定外观事实）：
+{context["persona"] or "无"}
 视觉衣橱候选：
 {context["style_catalog_context"] or "无"}
 候选仅在本轮确实生成新造型时使用；keep 时必须返回空数组。可以采用完整套装，也可以组合上装、下装、鞋袜和配饰；发型、妆容、美甲分别选择。实际采用的编号写入 catalog_reference_ids，未采用写空数组。
 当前实际时间：{current_time.strftime("%Y-%m-%d %H:%M")}
 当前时间范围：{PERIOD_TIME_RANGES.get(target_period, "未知")}
-用户本次明确穿搭要求：{context["instruction"] or "无"}"""
+用户本次展开后的穿搭要求：{context["instruction"] or "无"}
+用户原始穿搭请求（判断是否允许覆盖稳定人设外观，以此为准）：{context["source_instruction"] or "无"}"""
         return cache_friendly_prompt(fixed, dynamic, dynamic_title="穿搭现场")
 
     async def _apply_outfit_update_result(
@@ -529,6 +548,8 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
         target_period: str,
         current_time: datetime.datetime,
         context: dict,
+        provider=None,
+        provider_id: str = "",
         should_abort: Callable[[], bool] | None = None,
     ):
         old_data = context["old_data"]
@@ -546,7 +567,13 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
             result.get("hair_style"), 80
         )
         generated_hair = normalize_appearance_fact(result.get("hair"), 180)
+        generated_makeup_style = normalize_appearance_fact(
+            result.get("makeup_style"), 80
+        )
         generated_makeup = normalize_appearance_fact(result.get("makeup"), 160)
+        generated_nails_style = normalize_appearance_fact(
+            result.get("nails_style"), 80
+        )
         generated_nails = normalize_appearance_fact(result.get("nails"), 160)
         component_review = (
             result.get("component_review")
@@ -562,7 +589,13 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
         old_style = normalize_appearance_fact(old_meta.get("style"), 120)
         old_hair_style = normalize_appearance_fact(old_meta.get("hair_style"), 80)
         old_hair = normalize_appearance_fact(old_meta.get("hair"), 180)
+        old_makeup_style = normalize_appearance_fact(
+            old_meta.get("makeup_style"), 80
+        )
         old_makeup = normalize_appearance_fact(old_meta.get("makeup"), 160)
+        old_nails_style = normalize_appearance_fact(
+            old_meta.get("nails_style"), 80
+        )
         old_nails = normalize_appearance_fact(old_meta.get("nails"), 160)
         occurred_outfit_change = (
             decision == "keep"
@@ -603,7 +636,11 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
                 bool(generated_hair_style)
                 and generated_hair_style != old_hair_style,
                 bool(generated_hair) and generated_hair != old_hair,
+                bool(generated_makeup_style)
+                and generated_makeup_style != old_makeup_style,
                 bool(generated_makeup) and generated_makeup != old_makeup,
+                bool(generated_nails_style)
+                and generated_nails_style != old_nails_style,
                 bool(generated_nails) and generated_nails != old_nails,
             )
         )
@@ -617,11 +654,13 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
                 and (generated_hair_style, generated_hair)
                 != (old_hair_style, old_hair),
                 component_states.get("makeup") == "adjust"
-                and bool(generated_makeup)
-                and generated_makeup != old_makeup,
+                and bool(generated_makeup_style or generated_makeup)
+                and (generated_makeup_style, generated_makeup)
+                != (old_makeup_style, old_makeup),
                 component_states.get("nails") == "adjust"
-                and bool(generated_nails)
-                and generated_nails != old_nails,
+                and bool(generated_nails_style or generated_nails)
+                and (generated_nails_style, generated_nails)
+                != (old_nails_style, old_nails),
                 bool(context.get("instruction")) and generated_appearance_differs,
             )
         )
@@ -633,21 +672,51 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
             if decision != "keep"
             else []
         )
-        if reference_ids:
+        requires_catalog_clothing = bool(
+            decision in {"change", "sleepwear", "outdoor"}
+            or (
+                decision == "partial_change"
+                and (
+                    clothing_component_adjusted
+                    or (generated_outfit and generated_outfit != old_outfit)
+                )
+            )
+        )
+        if requires_catalog_clothing and not context.get("instruction"):
+            (
+                catalog_appearance,
+                catalog_issue,
+            ) = await self._style_catalog_new_outfit_selection(reference_ids)
+            if catalog_issue:
+                logger.warning(f"[穿搭更新] 已忽略脱离衣橱的新穿搭：{catalog_issue}")
+                return None
+        else:
             catalog_appearance = await self._style_catalog_reference_appearance(
                 reference_ids
             )
-            generated_outfit = generated_outfit or catalog_appearance.get(
-                "outfit", ""
-            )
+        if reference_ids:
+            catalog_outfit = catalog_appearance.get("outfit", "")
+            if catalog_outfit:
+                generated_outfit = catalog_outfit
             generated_hair_style = generated_hair_style or catalog_appearance.get(
                 "hair_style", ""
             )
             generated_hair = generated_hair or catalog_appearance.get("hair", "")
+            generated_makeup_style = (
+                generated_makeup_style
+                or catalog_appearance.get("makeup_style", "")
+            )
             generated_makeup = generated_makeup or catalog_appearance.get(
                 "makeup", ""
             )
+            generated_nails_style = (
+                generated_nails_style or catalog_appearance.get("nails_style", "")
+            )
             generated_nails = generated_nails or catalog_appearance.get("nails", "")
+            logger.debug(
+                "[穿搭更新] 已采用视觉衣橱候选："
+                + ",".join(str(item) for item in reference_ids)
+            )
         if decision == "keep":
             new_outfit = old_outfit
             model_kept_outfit = not generated_outfit or generated_outfit == new_outfit
@@ -656,8 +725,14 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
                 generated_hair_style if model_kept_outfit else ""
             )
             final_hair = old_hair or (generated_hair if model_kept_outfit else "")
+            final_makeup_style = old_makeup_style or (
+                generated_makeup_style if model_kept_outfit else ""
+            )
             final_makeup = old_makeup or (
                 generated_makeup if model_kept_outfit else ""
+            )
+            final_nails_style = old_nails_style or (
+                generated_nails_style if model_kept_outfit else ""
             )
             final_nails = old_nails or (generated_nails if model_kept_outfit else "")
         elif decision == "partial_change":
@@ -665,15 +740,67 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
             final_style = generated_style or old_style
             final_hair_style = generated_hair_style or old_hair_style
             final_hair = generated_hair or old_hair
+            final_makeup_style = generated_makeup_style or (
+                "" if generated_makeup else old_makeup_style
+            )
             final_makeup = generated_makeup or old_makeup
+            final_nails_style = generated_nails_style or (
+                "" if generated_nails else old_nails_style
+            )
             final_nails = generated_nails or old_nails
         else:
             new_outfit = generated_outfit
             final_style = generated_style
             final_hair_style = generated_hair_style
             final_hair = generated_hair
+            final_makeup_style = generated_makeup_style or (
+                "" if generated_makeup else old_makeup_style
+            )
             final_makeup = generated_makeup or old_makeup
+            final_nails_style = generated_nails_style or (
+                "" if generated_nails else old_nails_style
+            )
             final_nails = generated_nails or old_nails
+        expanded_group_appearance = bool(
+            str(context.get("source_instruction") or "").strip()
+            != str(context.get("instruction") or "").strip()
+        )
+        catalog_has_persona_appearance = any(
+            str(catalog_appearance.get(key) or "").strip()
+            for key in (
+                "hair_style",
+                "hair",
+                "makeup_style",
+                "makeup",
+                "nails_style",
+                "nails",
+            )
+        )
+        if expanded_group_appearance or catalog_has_persona_appearance:
+            audited = await self._audit_persona_appearance(
+                {
+                    "current": {
+                        "hair_style": final_hair_style,
+                        "hair": final_hair,
+                        "makeup_style": final_makeup_style,
+                        "makeup": final_makeup,
+                        "nails_style": final_nails_style,
+                        "nails": final_nails,
+                    }
+                },
+                persona=context.get("persona", ""),
+                original_instruction=context.get("source_instruction", ""),
+                provider=provider,
+                provider_id=provider_id,
+                subject="即时换装与衣橱候选合并",
+            )
+            corrected = audited.get("current", {})
+            final_hair_style = corrected.get("hair_style", final_hair_style)
+            final_hair = corrected.get("hair", final_hair)
+            final_makeup_style = corrected.get("makeup_style", final_makeup_style)
+            final_makeup = corrected.get("makeup", final_makeup)
+            final_nails_style = corrected.get("nails_style", final_nails_style)
+            final_nails = corrected.get("nails", final_nails)
         new_outfit = strip_hair_from_outfit(
             new_outfit,
             final_hair_style,
@@ -687,7 +814,9 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
                 final_style != old_style,
                 final_hair_style != old_hair_style,
                 final_hair != old_hair,
+                final_makeup_style != old_makeup_style,
                 final_makeup != old_makeup,
+                final_nails_style != old_nails_style,
                 final_nails != old_nails,
             )
         )
@@ -737,7 +866,9 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
             "style",
             "hair_style",
             "hair",
+            "makeup_style",
             "makeup",
+            "nails_style",
             "nails",
             "outfit_reason",
         }
@@ -748,7 +879,9 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
             "style": final_style,
             "hair_style": final_hair_style,
             "hair": final_hair,
+            "makeup_style": final_makeup_style,
             "makeup": final_makeup,
+            "nails_style": final_nails_style,
             "nails": final_nails,
             "outfit_reason": self._localize_outfit_reason(result.get("reason")),
         }.items():
@@ -796,10 +929,14 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
             outcome_parts.append(f"发型名称：{final_hair_style}")
         if final_hair:
             outcome_parts.append(f"发型细节：{final_hair}")
+        if final_makeup_style:
+            outcome_parts.append(f"妆容名称：{final_makeup_style}")
         if final_makeup:
-            outcome_parts.append(f"妆容：{final_makeup}")
+            outcome_parts.append(f"妆容细节：{final_makeup}")
+        if final_nails_style:
+            outcome_parts.append(f"美甲名称：{final_nails_style}")
         if final_nails:
-            outcome_parts.append(f"美甲：{final_nails}")
+            outcome_parts.append(f"美甲细节：{final_nails}")
         outcome_parts.extend(
             (
                 f"场景：{outfit_scene_category_label(scene_category)}",
@@ -829,6 +966,7 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
         current_time: datetime.datetime | None = None,
         instruction: str = "",
         should_abort: Callable[[], bool] | None = None,
+        source_instruction: str | None = None,
     ):
         current_time = current_time or life_now()
         instruction = str(instruction or "").strip()
@@ -845,11 +983,17 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
             target_hour = PERIOD_HOURS.get(target_period)
             if should_abort and should_abort():
                 return None
+            generation_instruction = instruction
+            if source_instruction and source_instruction != instruction:
+                generation_instruction = (
+                    f"用户原始穿搭请求：{source_instruction}\n"
+                    f"同图整组造型展开：{instruction}"
+                )
             return await self.generate_daily(
                 target_date,
                 force=True,
                 target_hour=target_hour,
-                extra=instruction,
+                extra=generation_instruction,
             )
 
         logger.info(
@@ -869,6 +1013,7 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
                 target_period=target_period,
                 current_time=current_time,
                 instruction=instruction,
+                source_instruction=source_instruction,
             )
 
             logger.debug(
@@ -905,6 +1050,8 @@ reason 使用自然中文，不写内部枚举，也不复述具体日期、钟�
                         target_period=target_period,
                         current_time=current_time,
                         context=context,
+                        provider=provider,
+                        provider_id=provider_id,
                         should_abort=should_abort,
                     )
                     if updated is not None:

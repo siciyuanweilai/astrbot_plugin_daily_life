@@ -11,6 +11,8 @@ from astrbot.api import logger
 
 from .markers import LOG_PREFIX
 
+DAILY_REFRESH_GENERATED_DATE = "daily_refresh_generated_date"
+
 
 class DailyGenerationBusy(RuntimeError):
     pass
@@ -91,6 +93,32 @@ class DailyGenerationMixin:
     ) -> None:
         operation.phase = phase
         await self._notify_daily_generation_status(f"daily_generation_{phase}")
+
+    async def _mark_daily_refresh_generated(
+        self,
+        day: Any,
+        operation: DailyGenerationOperation,
+    ) -> Any:
+        if operation.source != "daily_refresh":
+            return day
+
+        def mark(current_day: Any) -> bool:
+            meta = getattr(current_day, "meta", None)
+            if not isinstance(meta, dict):
+                meta = {}
+                current_day.meta = meta
+            if str(meta.get(DAILY_REFRESH_GENERATED_DATE) or "") == operation.date:
+                return False
+            meta[DAILY_REFRESH_GENERATED_DATE] = operation.date
+            return True
+
+        mutate_day = getattr(self.archive, "mutate_day", None)
+        if callable(mutate_day):
+            persisted = await mutate_day(operation.date, mark)
+            if persisted is not None:
+                return persisted
+        mark(day)
+        return day
 
     @staticmethod
     def _consume_daily_generation_task(task: asyncio.Task) -> None:
@@ -246,6 +274,7 @@ class DailyGenerationMixin:
 
             if day is None:
                 raise RuntimeError("日程模型未生成有效生活安排")
+            day = await self._mark_daily_refresh_generated(day, operation)
             failed_dates = getattr(self, "failed_dates", None)
             if isinstance(failed_dates, dict):
                 failed_dates.pop(operation.date, None)
@@ -304,6 +333,7 @@ class DailyGenerationMixin:
 
 
 __all__ = [
+    "DAILY_REFRESH_GENERATED_DATE",
     "DailyGenerationBusy",
     "DailyGenerationMixin",
     "DailyGenerationOperation",

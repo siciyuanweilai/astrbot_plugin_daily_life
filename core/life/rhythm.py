@@ -21,7 +21,10 @@ from ..prompts import (
     cache_friendly_prompt,
     json_output_section,
 )
-from .appearance import format_life_preference_context
+from .appearance import (
+    format_life_preference_context,
+    is_autonomous_appearance_preference,
+)
 from .evolution import LifeEvolutionService
 from .tools import (
     extract_json_from_text,
@@ -283,10 +286,17 @@ class LifecycleMixin:
             if preference_limit
             else []
         )
+        catalog_checker = getattr(
+            self, "_style_catalog_has_clothing_candidates", None
+        )
+        catalog_backed = bool(
+            callable(catalog_checker) and await catalog_checker()
+        )
         preference_context = format_life_preference_context(
             preferences,
             self.config,
             limit=preference_limit,
+            catalog_backed=catalog_backed,
         )
         if preference_context:
             sections.append("## 🧭 长期审美与生活偏好\n" + preference_context)
@@ -591,6 +601,13 @@ class LifecycleMixin:
             review = review or fallback_review
             if not review.summary:
                 review.summary = fallback_review.summary
+            for preference in review.preference_points:
+                preference.source = "daily_review"
+            review.preference_points = [
+                preference
+                for preference in review.preference_points
+                if not is_autonomous_appearance_preference(preference)
+            ]
             review.payload = dict(review_payload)
             saved = await self.archive.save_daily_review(review)
         else:
@@ -813,7 +830,7 @@ class LifecycleMixin:
                 PreferenceRecord.from_value(pref, date=date_str, source=source)
                 for pref in raw
             )
-            if item is not None
+            if item is not None and not is_autonomous_appearance_preference(item)
         ]
         if not preferences:
             return []

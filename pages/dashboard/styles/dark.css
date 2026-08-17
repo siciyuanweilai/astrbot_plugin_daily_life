@@ -131,11 +131,13 @@
   opacity: 0.72;
 }
 
-[data-theme="dark"] .timeline {
+[data-theme="dark"] .timeline,
+[data-theme="dark"] .current-outfit-scroll {
   scrollbar-color: rgba(255, 143, 188, 0.5) transparent;
 }
 
-[data-theme="dark"] .timeline::-webkit-scrollbar-thumb {
+[data-theme="dark"] .timeline::-webkit-scrollbar-thumb,
+[data-theme="dark"] .current-outfit-scroll::-webkit-scrollbar-thumb {
   background: rgba(255, 143, 188, 0.44);
 }
 

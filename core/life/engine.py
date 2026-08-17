@@ -4,6 +4,7 @@ import uuid
 from astrbot.api import logger
 
 from ..clock import now as life_now
+from .appearance import persona_appearance_values
 from .people import DAILY_PERSON_TEXT_PATHS
 from .tools import (
     analyze_weather,
@@ -14,6 +15,7 @@ from .tools import (
     resolve_daily_suggested,
     timeline_item_datetime,
 )
+from .wardrobe import normalize_outfit_decision
 
 _CURRENT_APPEARANCE_META_KEYS = (
     "outfit_decision",
@@ -22,7 +24,9 @@ _CURRENT_APPEARANCE_META_KEYS = (
     "style",
     "hair_style",
     "hair",
+    "makeup_style",
     "makeup",
+    "nails_style",
     "nails",
     "outfit_reason",
 )
@@ -33,7 +37,9 @@ _PLANNED_APPEARANCE_META_KEYS = {
     "style": "plan_outfit_style",
     "hair_style": "plan_hair_style",
     "hair": "plan_hair",
+    "makeup_style": "plan_makeup_style",
     "makeup": "plan_makeup",
+    "nails_style": "plan_nails_style",
     "nails": "plan_nails",
     "outfit_reason": "plan_outfit_reason",
 }
@@ -126,7 +132,7 @@ class DailyEngineMixin:
             domain_context = await domain_context_builder()
             if domain_context:
                 world_context = f"{world_context}\n\n{domain_context}".strip()
-        style_catalog_context = await self._style_catalog_context(limit=10)
+        style_catalog_context = await self._style_catalog_context(limit=14)
         if style_catalog_context:
             world_context = f"{world_context}\n\n{style_catalog_context}".strip()
         prompt = self._build_timeline_prompt(
@@ -171,6 +177,7 @@ class DailyEngineMixin:
             "memo_str": memo_str,
             "recent_chats": recent_chats,
             "world_context": world_context,
+            "style_catalog_context": style_catalog_context,
             "due_commitments": due_commitments,
             "prompt": prompt,
             "manual_extra": self._normalize_extra(extra),
@@ -179,6 +186,7 @@ class DailyEngineMixin:
             if target_hour is not None
             else "full_day",
             "person_facts": person_facts,
+            "persona": str(persona or "").strip(),
             "replaced_day": replaced_day,
         }
 
@@ -224,7 +232,69 @@ class DailyEngineMixin:
         *,
         date: datetime.datetime,
         context: dict,
+        provider=None,
+        provider_id: str = "",
     ):
+        decision = (
+            result.get("life_decision")
+            if isinstance(result.get("life_decision"), dict)
+            else {}
+        )
+        outfit_decision = (
+            decision.get("outfit")
+            if isinstance(decision.get("outfit"), dict)
+            else {}
+        )
+        outfit_choice = normalize_outfit_decision(outfit_decision.get("decision"))
+        current_reference_ids = self._style_catalog_reference_ids(
+            outfit_decision.get("catalog_reference_ids")
+        )
+        if outfit_choice != "keep" and not context["manual_extra"]:
+            (
+                catalog_appearance,
+                catalog_issue,
+            ) = await self._style_catalog_new_outfit_selection(current_reference_ids)
+            if catalog_issue:
+                self._set_validation_issue("style_catalog_required")
+                return None, catalog_issue
+        else:
+            catalog_appearance = await self._style_catalog_reference_appearance(
+                current_reference_ids
+            )
+
+        for raw_action in result.get("planned_actions") or []:
+            if not isinstance(raw_action, dict):
+                continue
+            if str(raw_action.get("action_type") or "").strip() != "change_outfit":
+                continue
+            payload = (
+                raw_action.get("payload")
+                if isinstance(raw_action.get("payload"), dict)
+                else {}
+            )
+            action_reference_ids = self._style_catalog_reference_ids(
+                payload.get("catalog_reference_ids")
+            )
+            if context["manual_extra"]:
+                action_appearance = await self._style_catalog_reference_appearance(
+                    action_reference_ids
+                )
+                action_issue = ""
+            else:
+                (
+                    action_appearance,
+                    action_issue,
+                ) = await self._style_catalog_new_outfit_selection(
+                    action_reference_ids
+                )
+            if action_issue:
+                self._set_validation_issue("style_catalog_required")
+                return None, f"计划换装未采用衣橱候选：{action_issue}"
+            if action_appearance.get("outfit"):
+                raw_action["target"] = action_appearance["outfit"]
+                payload["catalog_reference_ids"] = action_reference_ids
+                raw_action["payload"] = payload
+
         day = self._day_from_generation(
             result,
             date_str=context["date_str"],
@@ -234,6 +304,12 @@ class DailyEngineMixin:
             meta=self._meta_from_generation(result),
             memo="",
         )
+        catalog_outfit = catalog_appearance.pop("outfit", "")
+        if catalog_outfit and outfit_choice != "keep":
+            day.outfit = catalog_outfit
+        for key, value in catalog_appearance.items():
+            if not str(day.meta.get(key) or "").strip():
+                day.meta[key] = value
         repeat_issue = await self._repeat_generation_issue(
             day,
             date,
@@ -245,33 +321,67 @@ class DailyEngineMixin:
             return None, repeat_issue
 
         logger.debug("[日程生成] 成功解析结构化数据")
-        decision = (
-            result.get("life_decision")
-            if isinstance(result.get("life_decision"), dict)
-            else {}
-        )
-        outfit_decision = (
-            decision.get("outfit")
-            if isinstance(decision.get("outfit"), dict)
-            else {}
-        )
-        catalog_appearance = await self._style_catalog_reference_appearance(
-            outfit_decision.get("catalog_reference_ids")
-        )
-        catalog_outfit = catalog_appearance.pop("outfit", "")
-        if catalog_outfit and not str(day.outfit or "").strip():
-            day.outfit = catalog_outfit
-        for key, value in catalog_appearance.items():
-            if not str(day.meta.get(key) or "").strip():
-                day.meta[key] = value
         day = await self._ground_generated_current_appearance(day, context=context)
+        # 只在旧记录被标为用户确认、且本轮会续接它时做二次审计。
+        # 普通首轮生成仍由主日程提示词完成，避免为每次生成增加模型调用。
+        appearance_audit_required = bool(
+            context.get("replaced_day") is not None
+            and str(day.meta.get("outfit_fact_source") or "").strip()
+            == "user_instruction"
+        )
+        if appearance_audit_required:
+            slots = {
+                "current": persona_appearance_values(day.meta),
+            }
+            planned = persona_appearance_values(
+                {
+                    "hair_style": day.meta.get("plan_hair_style"),
+                    "hair": day.meta.get("plan_hair"),
+                    "makeup_style": day.meta.get("plan_makeup_style"),
+                    "makeup": day.meta.get("plan_makeup"),
+                    "nails_style": day.meta.get("plan_nails_style"),
+                    "nails": day.meta.get("plan_nails"),
+                }
+            )
+            if any(planned.values()):
+                slots["planned"] = planned
+            audited = await self._audit_persona_appearance(
+                slots,
+                persona=context.get("persona", ""),
+                original_instruction=context.get("manual_extra", ""),
+                provider=provider,
+                provider_id=provider_id,
+                subject="日程重生与当前外观续接",
+            )
+            for key, value in audited.get("current", {}).items():
+                if value:
+                    day.meta[key] = value
+                else:
+                    day.meta.pop(key, None)
+            planned_keys = {
+                "hair_style": "plan_hair_style",
+                "hair": "plan_hair",
+                "makeup_style": "plan_makeup_style",
+                "makeup": "plan_makeup",
+                "nails_style": "plan_nails_style",
+                "nails": "plan_nails",
+            }
+            for key, value in audited.get("planned", {}).items():
+                plan_key = planned_keys[key]
+                if value:
+                    day.meta[plan_key] = value
+                else:
+                    day.meta.pop(plan_key, None)
         day = await self._apply_lifecycle_to_day(day, date, result)
         await self._persist_generated_day(
             context["date_str"], day, context["due_commitments"]
         )
-        await self._mark_style_catalog_references(
-            outfit_decision.get("catalog_reference_ids")
-        )
+        await self._mark_style_catalog_references(current_reference_ids)
+        if current_reference_ids:
+            logger.debug(
+                "[日程生成] 当前穿搭已采用视觉衣橱候选："
+                + ",".join(str(item) for item in current_reference_ids)
+            )
         decision_text, decision_reason, decision_evidence = self._daily_decision_text(
             result, day
         )
@@ -490,6 +600,8 @@ class DailyEngineMixin:
                             result,
                             date=date,
                             context=context,
+                            provider=provider,
+                            provider_id=provider_id,
                         )
                         if repeat_issue:
                             ok = False
@@ -514,6 +626,9 @@ class DailyEngineMixin:
                                 "person_facts"
                             ].format_for_generation(include_persona=True),
                             location_context=location_context,
+                            style_catalog_context=context[
+                                "style_catalog_context"
+                            ],
                         )
 
                 logger.error("[日程生成] 最终生成失败，重试次数耗尽")

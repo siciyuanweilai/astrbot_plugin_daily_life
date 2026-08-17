@@ -257,14 +257,6 @@
     gap: 8px;
   }
 
-  .facts-column-fill {
-    align-self: start;
-    block-size: auto;
-    grid-auto-rows: max-content;
-    grid-template-rows: none;
-    align-content: start;
-  }
-
   .facts-column > div {
     padding: 8px;
   }
@@ -272,6 +264,10 @@
   .timeline {
     max-height: 640px;
     max-height: min(72vh, 640px);
+    padding-inline-end: 5px;
+  }
+
+  .current-outfit-scroll {
     padding-inline-end: 5px;
   }
 

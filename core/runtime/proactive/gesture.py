@@ -17,6 +17,8 @@ from ..markers import LOG_PREFIX
 
 class ProactiveGestureMixin:
     _EMOJI_MODEL_CANDIDATE_LIMIT = 8
+    _EMOJI_RECENT_SENT_EXCLUSION_LIMIT = 5
+    _SEMANTIC_EMOJI_ATTEMPTED_ATTR = "_daily_life_semantic_emoji_attempted"
 
     def _emoji_sent_store(self) -> dict[str, dict[str, Any]]:
         store = getattr(self, "_emoji_sent_state", None)
@@ -56,6 +58,15 @@ class ProactiveGestureMixin:
             return "同一轮已发送过这个表情"
         return ""
 
+    def _emoji_already_sent_for_source(
+        self, scope: str, *, source_message_id: str = ""
+    ) -> bool:
+        source_message_id = str(source_message_id or "").strip()
+        if not source_message_id:
+            return False
+        item = self._emoji_sent_store().get(str(scope or "").strip())
+        return bool(item and item.get("last_source_message_id") == source_message_id)
+
     @staticmethod
     def _emoji_asset_key(emoji: Any) -> str:
         for attr in ("id", "file_hash", "file_path"):
@@ -82,6 +93,12 @@ class ProactiveGestureMixin:
         if not scope:
             mark_outcome("fallback")
             return "当前会话不可发送表情。"
+        message_id = self._event_message_id(event)
+        if self._emoji_already_sent_for_source(
+            scope, source_message_id=message_id
+        ):
+            mark_outcome("fallback")
+            return "同一轮已发送过这个表情"
         intent_payload = {
             "send_emoji": True,
             "emotion": str(emotion or "").strip(),
@@ -105,7 +122,6 @@ class ProactiveGestureMixin:
             mark_outcome("fallback")
             return "表情素材暂时不可发送。"
 
-        message_id = self._event_message_id(event)
         skip_reason = self._emoji_duplicate_skip_reason(
             scope, emoji, source_message_id=message_id
         )
@@ -190,6 +206,81 @@ class ProactiveGestureMixin:
             )
         )
 
+    async def send_semantic_emoji_if_needed(self, event: Any) -> bool:
+        """在普通聊天文字成功投递后，按语义裁定附加一张表情。"""
+        if event is None or getattr(event, self._SEMANTIC_EMOJI_ATTEMPTED_ATTR, False):
+            return False
+        plan_getter = getattr(self, "_semantic_expression_plan_from_event", None)
+        plan = plan_getter(event) if callable(plan_getter) else None
+        if plan is None or not bool(getattr(plan, "send_emoji", False)):
+            return False
+        setattr(event, self._SEMANTIC_EMOJI_ATTEMPTED_ATTR, True)
+
+        scope = self._emoji_scope(event)
+        if not scope:
+            logger.debug(f"{LOG_PREFIX} 普通回复表情跳过：当前会话不可发送表情。")
+            return False
+        source_message_id = self._event_message_id(event)
+        previous = self._emoji_sent_store().get(scope)
+        if source_message_id and isinstance(previous, dict):
+            if previous.get("last_source_message_id") == source_message_id:
+                logger.debug(f"{LOG_PREFIX} 普通回复表情跳过：同一轮已经发送过表情。")
+                return False
+        intent = {
+            "send_emoji": True,
+            "emotion": str(getattr(plan, "emotion", "") or "").strip(),
+            "emotion_category": str(
+                getattr(plan, "emotion_category", "") or ""
+            ).strip(),
+            "emoji_intent": str(getattr(plan, "emoji_intent", "") or "").strip(),
+            "action_intent": str(getattr(plan, "emoji_intent", "") or "").strip(),
+            "reason": str(getattr(plan, "reason", "") or "").strip(),
+        }
+        try:
+            emoji = await self._select_emoji_asset_for_intent(intent, scope=scope)
+        except Exception as exc:
+            logger.debug(f"{LOG_PREFIX} 普通回复表情选择失败，保留文字回复：{exc}")
+            return False
+        if emoji is None:
+            logger.debug(f"{LOG_PREFIX} 普通回复表情裁定通过，但没有合适的可发送素材。")
+            return False
+        chain = self._emoji_message_chain(emoji)
+        if not chain:
+            logger.debug(f"{LOG_PREFIX} 普通回复表情跳过：候选素材不可发送。")
+            return False
+        if not await self.send_message_if_not_recalled(
+            scope,
+            chain,
+            source_event=event,
+            source_message_id=source_message_id,
+        ):
+            logger.debug(f"{LOG_PREFIX} 普通回复表情发送取消：原消息已撤回或会话不可达。")
+            return False
+
+        try:
+            await self._mark_emoji_used(
+                event,
+                emoji,
+                intent,
+                scope=scope,
+                reply_text=str(getattr(plan, "text", "") or "").strip(),
+                message_id=source_message_id,
+                source="regular_reply",
+            )
+        except Exception as exc:
+            logger.debug(f"{LOG_PREFIX} 普通回复表情已发送，但记录使用结果失败：{exc}")
+        note = getattr(self, "note_structured_bot_message", None)
+        if callable(note):
+            note(
+                scope,
+                f"[表情：{getattr(emoji, 'label', '') or '已发送'}]",
+                source_event=event,
+                media="表情",
+            )
+        label = str(getattr(emoji, "label", "") or "").strip()
+        logger.debug(f"{LOG_PREFIX} 普通回复已附加表情：{label or getattr(emoji, 'file_hash', '')}")
+        return True
+
     async def _send_proactive_emoji_if_needed(
         self,
         target_scope: str,
@@ -200,13 +291,30 @@ class ProactiveGestureMixin:
     ) -> None:
         if not isinstance(payload, dict):
             return
+        if source_event is None:
+            source_event = payload.get("_source_event")
+        if not source_message_id:
+            source_message_id = str(payload.get("_source_message_id") or "").strip()
+        if not source_message_id and source_event is not None:
+            source_message_id = self._event_message_id(source_event)
+        source = str(payload.get("source") or "proactive_reply").strip()
+        if self._emoji_already_sent_for_source(
+            target_scope, source_message_id=source_message_id
+        ):
+            logger.debug(f"{LOG_PREFIX} {source}表情跳过：同一轮已经发送过表情。")
+            return
         intent = payload.get("expression_intent")
         if not isinstance(intent, dict) or not self._proactive_bool(
             intent.get("send_emoji")
         ):
             return
-        emoji = await self._select_emoji_asset_for_intent(intent, scope=target_scope)
+        try:
+            emoji = await self._select_emoji_asset_for_intent(intent, scope=target_scope)
+        except Exception as exc:
+            logger.debug(f"{LOG_PREFIX} {source}表情选择失败，保留文字结果：{exc}")
+            return
         if not emoji:
+            logger.debug(f"{LOG_PREFIX} {source}表情裁定通过，但没有合适的可发送素材。")
             return
         skip_reason = self._emoji_duplicate_skip_reason(
             target_scope, emoji, source_message_id=source_message_id
@@ -216,6 +324,7 @@ class ProactiveGestureMixin:
             return
         chain = self._emoji_message_chain(emoji)
         if not chain:
+            logger.debug(f"{LOG_PREFIX} {source}表情跳过：候选素材不可发送。")
             return
         try:
             if not await self.send_message_if_not_recalled(
@@ -225,17 +334,19 @@ class ProactiveGestureMixin:
                 source_message_id=source_message_id,
             ):
                 return
-            marker = getattr(self.archive, "mark_emoji_used", None)
-            if callable(marker):
-                await marker(emoji.id, life_now().strftime("%Y-%m-%d %H:%M"))
-            self._note_emoji_sent(
-                target_scope,
+            await self._mark_emoji_used(
+                source_event,
                 emoji,
-                source="proactive_reply",
-                source_message_id=source_message_id,
+                intent,
+                scope=target_scope,
+                reply_text=str(payload.get("reply_text") or "").strip(),
+                message_id=source_message_id,
+                source=source,
             )
+            label = str(getattr(emoji, "label", "") or "").strip()
+            logger.debug(f"{LOG_PREFIX} {source}已附加表情：{label or getattr(emoji, 'file_hash', '')}")
         except Exception as exc:
-            logger.debug(f"{LOG_PREFIX} 闲时回复附加表情发送失败：{exc}")
+            logger.debug(f"{LOG_PREFIX} {source}附加表情发送失败：{exc}")
 
     def _emoji_message_chain(self, emoji: Any) -> Any | None:
         path = str(getattr(emoji, "file_path", "") or "").strip()
@@ -378,6 +489,35 @@ class ProactiveGestureMixin:
         )
         return pool[: self._EMOJI_MODEL_CANDIDATE_LIMIT]
 
+    async def _recent_sent_emoji_ids(self, scope: str) -> set[int]:
+        """读取当前会话最近成功投递的表情，用于避免短期反复复用。"""
+
+        scope = str(scope or "").strip()
+        getter = getattr(self.archive, "get_expression_intents", None)
+        if not scope or not callable(getter):
+            return set()
+        try:
+            records = await getter(
+                limit=self._EMOJI_RECENT_SENT_EXCLUSION_LIMIT * 4,
+                scope=scope,
+            )
+        except Exception:
+            return set()
+
+        recent_ids: set[int] = set()
+        sent_count = 0
+        for record in records:
+            if not bool(getattr(record, "send_emoji", False)):
+                continue
+            emoji_id = int(getattr(record, "emoji_id", 0) or 0)
+            if emoji_id <= 0:
+                continue
+            recent_ids.add(emoji_id)
+            sent_count += 1
+            if sent_count >= self._EMOJI_RECENT_SENT_EXCLUSION_LIMIT:
+                break
+        return recent_ids
+
     async def _select_emoji_asset_for_intent(
         self, intent: dict[str, Any], *, scope: str = ""
     ) -> Any | None:
@@ -397,6 +537,19 @@ class ProactiveGestureMixin:
         candidate_assets = await self._semantic_emoji_candidates(assets, intent)
         if not candidate_assets:
             return None
+        recent_sent_ids = await self._recent_sent_emoji_ids(scope)
+        if recent_sent_ids:
+            candidate_assets = [
+                item
+                for item in candidate_assets
+                if int(getattr(item, "id", 0) or 0) not in recent_sent_ids
+            ]
+            if not candidate_assets:
+                logger.debug(
+                    f"{LOG_PREFIX} 表情选择跳过：当前会话最近"
+                    f"{self._EMOJI_RECENT_SENT_EXCLUSION_LIMIT}次已发送过所有匹配候选。"
+                )
+                return None
         candidates = [
             {
                 "id": item.id,

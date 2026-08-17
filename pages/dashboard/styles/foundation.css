@@ -819,16 +819,9 @@ h2::before {
   display: block;
 }
 
-.today-week-appearance-hair {
+.today-week-appearance-detail {
   display: block;
   margin-top: 3px;
-}
-
-.today-week-appearance-grooming {
-  display: grid;
-  justify-items: start;
-  gap: 4px;
-  margin-top: 4px;
 }
 
 .today-week-label {

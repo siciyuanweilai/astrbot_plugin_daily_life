@@ -23,6 +23,12 @@ class GenerationArchive:
         if self.day is not None and self.day.date == date_str:
             self.day = None
 
+    async def mutate_day(self, date_str, mutator):
+        if self.day is None or self.day.date != date_str:
+            return None
+        mutator(self.day)
+        return self.day
+
     async def cleanup_by_storage_policy(self, _storage):
         return []
 
@@ -50,6 +56,7 @@ class GenerationComposer:
         self.archive.day = types.SimpleNamespace(
             date=date.strftime("%Y-%m-%d"),
             timeline=[types.SimpleNamespace(time="10:00")],
+            meta={},
         )
         return self.archive.day
 
@@ -232,6 +239,20 @@ class DailyGenerationTest(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(refresh, timeout=1)
         self.assertEqual(len(runtime.composer.review_calls), 1)
         self.assertEqual(len(runtime.composer.generate_calls), 1)
+
+    async def test_scheduled_refresh_retry_reuses_persisted_generation(self):
+        runtime = GenerationRuntime()
+        runtime.composer.allow_review.set()
+
+        await runtime.run_daily_refresh()
+        await runtime.run_daily_refresh()
+
+        self.assertEqual(len(runtime.composer.generate_calls), 1)
+        self.assertEqual(len(runtime.composer.review_calls), 2)
+        self.assertEqual(
+            runtime.archive.day.meta["daily_refresh_generated_date"],
+            "2026-07-14",
+        )
 
 
 if __name__ == "__main__":

@@ -25,7 +25,7 @@ class _Event:
 
 
 class ReplyDeliveryServiceTest(unittest.IsolatedAsyncioTestCase):
-    async def test_event_delivery_caps_total_artificial_delay(self):
+    async def test_event_delivery_keeps_each_artificial_delay(self):
         event = _Event()
         sleeps = []
 
@@ -44,14 +44,13 @@ class ReplyDeliveryServiceTest(unittest.IsolatedAsyncioTestCase):
                 delay_seconds=lambda index: 3.5,
                 sleep=record_sleep,
                 is_current=lambda: True,
-                max_total_delay_seconds=8.0,
             )
         )
 
         self.assertEqual(outcome.status, "sent")
         self.assertEqual(event.sent, ["一", "二", "三", "四"])
-        self.assertEqual(sleeps, [3.5, 3.5, 1.0])
-        self.assertEqual(sum(sleeps), 8.0)
+        self.assertEqual(sleeps, [3.5, 3.5, 3.5])
+        self.assertEqual(sum(sleeps), 10.5)
 
 
 if __name__ == "__main__":

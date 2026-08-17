@@ -17,16 +17,16 @@ class StageFigureMixin:
 
     @staticmethod
     def _character_appearance_prompt(persona: str) -> str:
-        fixed = f"""你是角色稳定体貌资料提取器。只提取人设明确写出的、跨场景长期稳定的身体外观事实。
+        fixed = f"""你是角色稳定外观资料提取器。只提取人设明确写出的、跨场景长期稳定的身份外观事实。
 提取边界：
-- 可以保留明确的成年身份或年龄、整体体型、身体比例、肩腰胯关系、上半身曲线、腿部线条和稳定体态。
-- 不得根据性别、年龄、性格或审美推断人设没有写出的身体特征，也不得美化、强化或改写原意。
-- 排除脸部五官、发型、妆容、服装、配饰、动作、姿势、场景、镜头、光线、临时状态、隐私回应策略和交流规则。
+- 可以保留明确的成年身份或年龄、脸部轮廓和明确五官、瞳色、肤色、自然发色、整体体型、身体比例、肩腰胯关系、上半身曲线、腿部线条和稳定体态。
+- 只有人设明确写出的事实才能进入 profile；不得根据性别、年龄、性格或审美推断，也不得根据参考图补充人设没有写出的事实；不得美化、强化或改写原意。
+- 排除临时发型（扎法、分缝、刘海、发尾整理）、妆容、服装、配饰、动作、姿势、场景、镜头、光线、临时状态、隐私回应策略和交流规则。
 - appearance_profile 使用紧凑、客观的自然中文；没有明确体貌事实时 supported=false 且留空。
 {CORE_JSON_OUTPUT_RULES}
 JSON 字段：
 {{"supported":false,"appearance_profile":""}}"""
-        return cache_friendly_prompt(fixed, persona, dynamic_title="当前角色人设")
+        return cache_friendly_prompt(fixed, persona, dynamic_title="当前角色稳定外观人设")
 
     def _character_appearance_cache(self) -> dict[str, str]:
         cache = getattr(self, "_life_character_appearance_cache", None)

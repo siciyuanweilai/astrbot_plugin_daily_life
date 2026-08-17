@@ -125,6 +125,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             "apply_response_gate_for_event",
             "note_proactive_bot_reply",
             "note_voice_switch_text_result",
+            "send_semantic_emoji_if_needed",
             "schedule_pending_chat_state_refresh",
             "_event_has_command_handler",
         )
@@ -1163,7 +1164,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         如果用户本轮已经给出完整图片提示词且 current_outfit_change=false，除单独填写 provider 外，prompt 必须原样保留画面要求，不要改写、摘要或另想场景；不要把协议选择语句混入画面提示词。
         使用 subject_route 明确图片主体：current_character 当前角色本人入镜；group 当前角色与一位已配置好友合影；scene 环境/氛围/状态；object 物品/食物；free 不限定主体或完整自由提示词。
         current_character 场景中，用户没有另行指定穿搭、发型或造型风格时，应参考系统注入的当前外观状态补足可见细节；用户本轮明确要求始终优先，不能用生活背景覆盖。
-        用户明确要求当前角色实际换装、改发型、化妆/卸妆或更换美甲时，设置 current_outfit_change=true，并把用户原始外观要求原样放入 current_outfit_instruction；工具会先更新真实生活外观状态，再使用更新后的同一造型生图。
+        用户明确要求当前角色实际换装、改发型、化妆/卸妆或更换美甲时，设置 current_outfit_change=true，并把用户原始外观要求放入 current_outfit_instruction；如果用户选择视觉衣橱中的整组造型，允许把同图识别出的服装、发型、妆容、美甲和配饰一起展开为本轮要求，工具会先更新真实生活外观状态，再使用更新后的同一造型生图。展开候选属于可变造型，角色人设中明确的稳定外观事实（例如自然发色）优先；只有用户原始话语明确要求改变，或已有可靠生活事实确认变化时，才允许覆盖人设。
         仅要求生成、查看、试穿效果或创作某种穿搭图片时，不得设置 current_outfit_change；这类画面不会改变当前角色的真实生活穿搭状态。
         current_outfit_change=true 时，subject_route 只能填 current_character 或 group，prompt 只描述场景、动作、构图等画面要求，不要另外编造一套当前角色服装；插件会把已保存造型锁定到画面中。
         合影时 participants 必须填写系统上下文“可用于合影的好友参考档案”中对应的关系档案 ID，只选择一位好友；不要按姓名猜测或编造 ID。
@@ -1184,7 +1185,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             friend_hair(string): 人物 B 本次发型；首次合影必须与 friend_outfit 同时填写，已有当天造型时仅在本轮改变发型时填写。
             friend_scene_category(string): 人物 B 当前画面场景，只能填 home、sleep、outdoor、public 或 mixed；subject_route=group 时每次填写。
             current_outfit_change(bool): 是否把用户本轮要求作为当前角色真实外观变化写入生活状态；实际换装、改发型、化妆/卸妆或更换美甲时设为 true，仅看效果图时必须为 false。
-            current_outfit_instruction(string): 当前角色真实外观变化要求；current_outfit_change=true 时填写用户原始要求，不得自行扩写成另一套造型，其他情况留空。
+            current_outfit_instruction(string): 当前角色真实外观变化要求；current_outfit_change=true 时填写用户原始要求，选择视觉衣橱整组造型时可以附带同图识别出的相关妆发、美甲和配饰，但不得覆盖人设明确的稳定外观事实；其他情况留空。
             use_last_reverse_prompt(bool): 是否使用本会话上一条图片反推提示词原文。
             resolution(string): 可选输出分辨率，只能填 1K、2K 或 4K；仅当用户明确要求输出分辨率时填写，“高清”等模糊描述不要推断，其他语境里的 1K、2K、4K 也不要误填。
             provider(string): 可选图片接口，只能填 auto、gpt、gemini 或 grok；仅当用户明确要求使用指定图片接口时填写，否则留空。
@@ -1500,16 +1501,17 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         self,
         event: AstrMessageEvent,
         kind: str = "",
-        limit: int = 8,
+        limit: int = 20,
     ):
         """
         查看当前已学习且可用的视觉衣橱候选及编号，供用户检查或后续反馈。
-        仅在用户问已经学了哪些衣橱候选、要查看候选或需要候选编号时调用。
+        用户问已经学了哪些衣橱候选、要查看候选、候选数量或需要候选编号时调用。
+        用户指定或追问套装、上装、下装、鞋袜、配饰、发型、妆容或美甲时，必须重新调用本工具并传入对应 kind；不得从此前留空 kind 的混合展示子集中推断该分类总数。
         用户本轮如果还要求寻找、搜索或学习新的网上穿搭，查看结果不能结束本轮，必须继续调用 life_style_browse_learn；本工具本身不会新增候选。
 
         Args:
             kind(string): 可选 outfit、top、bottom、footwear、accessory、hair、makeup 或 nails；留空查看全部类别。
-            limit(int): 最多返回多少条候选，默认 8。
+            limit(int): 最多返回多少条候选，默认 20，最大 50；总库存数量不受此限制。
         """
         denial = self._life_permission_denial(
             event, "style:catalog", LifeActionScope.PRIVATE
@@ -1519,7 +1521,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         return await self.runtime.life_style_catalog_list(
             event,
             kind=str(kind or "").strip(),
-            limit=self._tool_int(limit, 8),
+            limit=self._tool_int(limit, 20),
         )
 
     @filter.llm_tool(name="life_style_feedback")
@@ -2072,6 +2074,9 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             if self._event_has_agent_error_result(event):
                 logger.debug(f"{LOG_PREFIX} 智能体错误结果已发送，跳过聊天状态记录。")
             return
+        emoji_sender = self._runtime_hook("send_semantic_emoji_if_needed")
+        if emoji_sender:
+            await emoji_sender(event)
         await self._capture_chat_memory_bot_reply(event)
         regular_effect = self._runtime_hook("note_regular_reply_effect")
         if regular_effect:

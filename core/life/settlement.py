@@ -345,6 +345,26 @@ class LifeActionMixin:
             day.meta["outfit_fact_source"] = "life_action"
             day.meta["outfit_fact_confirmed_at"] = committed_at
             day.meta["outfit_fact_evidence"] = action.action_id
+            catalog_ids = []
+            raw_catalog_ids = action.payload.get("catalog_reference_ids")
+            values = (
+                [raw_catalog_ids]
+                if isinstance(raw_catalog_ids, (str, int, float))
+                else raw_catalog_ids
+                if isinstance(raw_catalog_ids, (list, tuple, set))
+                else []
+            )
+            for value in values:
+                try:
+                    item_id = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if item_id > 0 and item_id not in catalog_ids:
+                    catalog_ids.append(item_id)
+            if catalog_ids:
+                day.meta["style_catalog_reference_ids"] = ",".join(
+                    str(item_id) for item_id in catalog_ids
+                )
         if action.action_type in {"move", "travel"} and action.target:
             previous_place = str((day.meta or {}).get("current_place") or "").strip()
             if previous_place:
@@ -695,6 +715,10 @@ class LifeActionMixin:
             receipt_status=status,
         )
         if outcome.status == "committed":
+            if action.action_type == "change_outfit":
+                marker = getattr(self, "_mark_style_catalog_references", None)
+                if callable(marker):
+                    await marker(action.payload.get("catalog_reference_ids"))
             if action.action_type in {"chat", "social"} and action.target:
                 writer = getattr(self.archive, "upsert_current_temporal_fact", None)
                 if callable(writer):

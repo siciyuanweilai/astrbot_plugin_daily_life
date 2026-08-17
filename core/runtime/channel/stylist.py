@@ -626,10 +626,14 @@ class RuntimeStyleCatalogMixin:
         return updated
 
     @staticmethod
-    def _style_catalog_result_text(items: list[StyleCatalogItemRecord]) -> str:
+    def _style_catalog_result_text(
+        items: list[StyleCatalogItemRecord],
+        *,
+        heading: str = "已加入视觉衣橱候选：",
+    ) -> str:
         if not items:
             return "图片中没有足够清晰、可保存的衣橱信息。"
-        lines = ["已加入视觉衣橱候选："]
+        lines = [heading]
         groups: dict[str, list[StyleCatalogItemRecord]] = {}
         for item in items:
             key = str(item.source_image_hash or item.image_path or item.id)
@@ -884,27 +888,64 @@ class RuntimeStyleCatalogMixin:
         )
 
     async def life_style_catalog_list(
-        self, event: Any, *, kind: str = "", limit: int = 8
+        self, event: Any, *, kind: str = "", limit: int = 20
     ) -> str:
         del event
         normalized_kind = self._style_text(kind, 16).lower()
         if normalized_kind not in _STYLE_ITEM_KINDS:
             normalized_kind = ""
         try:
-            safe_limit = max(1, min(int(limit or 8), 20))
+            safe_limit = max(1, min(int(limit or 20), 50))
         except (TypeError, ValueError):
-            safe_limit = 8
+            safe_limit = 20
+        counts = await self.archive.get_style_catalog_counts(status="active")
+        total_count = sum(counts.values())
+        inventory_parts = [
+            f"{STYLE_CATALOG_KIND_LABELS[item_kind]} {counts.get(item_kind, 0)}"
+            for item_kind in STYLE_CATALOG_KINDS
+        ]
+        inventory_summary = (
+            f"视觉衣橱库存：共 {total_count} 个已启用候选；"
+            f"{'、'.join(inventory_parts)}。"
+        )
+        query_total = counts.get(normalized_kind, 0) if normalized_kind else total_count
         items = await self.archive.get_style_catalog_items(
             kind=normalized_kind, status="active", limit=safe_limit
         )
         if not items:
+            if total_count > 0 and normalized_kind:
+                label = STYLE_CATALOG_KIND_LABELS[normalized_kind]
+                return f"{inventory_summary}\n当前没有已启用的{label}候选。"
             return (
-                "视觉衣橱还没有可用候选。"
+                f"{inventory_summary}\n视觉衣橱还没有可用候选。"
                 "如果用户本轮要求找或搜索网上新穿搭，必须继续调用 "
                 "life_style_browse_learn；life_style_catalog 不会新增候选。"
             )
+        shown_count = len(items)
+        if normalized_kind:
+            label = STYLE_CATALOG_KIND_LABELS[normalized_kind]
+            display_summary = (
+                f"当前查询：{label}共 {query_total} 个，已显示 {shown_count} 个。"
+            )
+            heading = f"{label}候选："
+        else:
+            display_summary = (
+                f"当前展示：全部类别按偏好排序的前 {shown_count} 个条目，"
+                f"总计 {query_total} 个；这不是各分类的完整清单。"
+            )
+            heading = "视觉衣橱候选："
+        remaining_hint = ""
+        if shown_count < query_total:
+            remaining_hint = (
+                f"\n还有 {query_total - shown_count} 个未展示；"
+                "不得据此声称衣橱只有当前这些候选。"
+            )
         return (
-            f"{self._style_catalog_result_text(items)}\n"
+            f"{inventory_summary}\n{display_summary}\n"
+            f"{self._style_catalog_result_text(items, heading=heading)}"
+            f"{remaining_hint}\n"
+            "用户追问套装、上装、下装、鞋袜、配饰、发型、妆容或美甲时，"
+            "必须重新调用 life_style_catalog 并传入对应 kind，不能沿用混合查询的展示子集。\n"
             "如果用户本轮还要求找或搜索网上新穿搭，必须继续调用 "
             "life_style_browse_learn，不能只回复稍后再搜。"
         )

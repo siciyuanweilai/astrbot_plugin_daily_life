@@ -160,7 +160,7 @@ const CONFIG_SECTION_FIELD_GROUPS = new Map([
     {
       key: "semantic",
       label: "语义与发送",
-      hint: "控制语义分段模型、分段数量、等待上限和分段发送间隔。",
+      hint: "控制语义分段模型、分段数量和分段发送间隔。",
       fields: [
         "chat_style_config.semantic_provider",
         "chat_style_config.semantic_max_segments",

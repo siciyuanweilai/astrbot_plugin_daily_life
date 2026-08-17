@@ -311,9 +311,24 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
 
         class Composer:
             async def update_outfit(
-                self, date, period, *, current_time=None, instruction=""
+                self,
+                date,
+                period,
+                *,
+                current_time=None,
+                instruction="",
+                source_instruction="",
             ):
-                calls.append(("update", date, period, current_time, instruction))
+                calls.append(
+                    (
+                        "update",
+                        date,
+                        period,
+                        current_time,
+                        instruction,
+                        source_instruction,
+                    )
+                )
                 return updated_day
 
         async def generate_image(prompt, **kwargs):
@@ -364,7 +379,14 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(json.loads(result)["status"], "sent")
         self.assertEqual(
             calls[0],
-            ("update", "2026-07-30", "evening", now, "换甜妹穿搭"),
+            (
+                "update",
+                "2026-07-30",
+                "evening",
+                now,
+                "换甜妹穿搭",
+                "换甜妹穿搭",
+            ),
         )
         self.assertEqual(calls[1][0], "generate")
         rendered_prompt = calls[1][1]
@@ -1450,8 +1472,10 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
                 "style": "清爽柔和的居家风",
                 "hair_style": "松散低马尾",
                 "hair": "黑色中长直发，低马尾，碎发自然垂落",
-                "makeup": "清透自然妆",
-                "nails": "奶白色短圆甲",
+                "makeup_style": "清透自然妆",
+                "makeup": "薄透底妆，淡粉唇色",
+                "nails_style": "奶白色短圆甲",
+                "nails": "短圆甲面保持奶白色，表面干净",
             },
         )
 
@@ -1545,8 +1569,10 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             "当前发型细节：黑色中长直发，低马尾，碎发自然垂落",
             provider.prompts[0],
         )
-        self.assertIn("当前妆容：清透自然妆", provider.prompts[0])
-        self.assertIn("当前美甲：奶白色短圆甲", provider.prompts[0])
+        self.assertIn("当前妆容名称：清透自然妆", provider.prompts[0])
+        self.assertIn("当前妆容细节：薄透底妆，淡粉唇色", provider.prompts[0])
+        self.assertIn("当前美甲名称：奶白色短圆甲", provider.prompts[0])
+        self.assertIn("当前美甲细节：短圆甲面保持奶白色，表面干净", provider.prompts[0])
         self.assertIn("原始画面要求 > 真实参考图 > 当前生活外观", provider.prompts[0])
         self.assertIn("frame_logic", provider.prompts[0])
         self.assertIn("outfit_logic", provider.prompts[0])

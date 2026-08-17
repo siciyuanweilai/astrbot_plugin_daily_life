@@ -2362,6 +2362,38 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertIn("touch-action: pan-y;", style)
         self.assertIn("el.timelineList.scrollTop = el.timelineList.scrollHeight;", app)
 
+    def test_dashboard_current_outfit_uses_internal_vertical_scroll(self):
+        root = Path(__file__).resolve().parents[1] / "pages" / "dashboard"
+        html = (root / "index.html").read_text(encoding="utf-8")
+        style = self._dashboard_style(root)
+
+        self.assertIn('id="currentOutfitText"', html)
+        self.assertIn('class="current-outfit-scroll"', html)
+        self.assertIn('aria-label="当前穿搭详情，可滚动查看"', html)
+        outfit_scroll = style.split(".current-outfit-scroll {", 1)[1].split("}", 1)[0]
+        self.assertIn("min-height: 0;", outfit_scroll)
+        self.assertIn("max-height: min(48vh, 400px);", outfit_scroll)
+        self.assertIn("overflow-y: auto;", outfit_scroll)
+        self.assertIn("scrollbar-gutter: stable;", outfit_scroll)
+        self.assertIn("touch-action: pan-y;", outfit_scroll)
+        self.assertIn(
+            ".facts-column-fill {\n"
+            "  align-self: stretch;\n"
+            "  block-size: 100%;",
+            style,
+        )
+        self.assertIn(
+            "grid-template-rows: max-content max-content minmax(0, 1fr) max-content;",
+            style,
+        )
+        self.assertIn(
+            '.facts-column-fill > [data-fact-card="outfit"] {\n'
+            "  display: grid;\n"
+            "  min-height: 0;\n"
+            "  grid-template-rows: max-content minmax(0, 1fr);",
+            style,
+        )
+
     def test_dashboard_local_assets_do_not_use_version_queries(self):
         from pathlib import Path
 
@@ -3011,6 +3043,11 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertIn("function closetPageWindow", app)
         self.assertNotIn('node("strong", "", "视觉提示词")', app)
         self.assertIn("function closetVisualPrompt", app)
+        self.assertIn("function closetDetailItems", app)
+        self.assertIn("const CLOSET_KIND_ORDER", app)
+        self.assertIn('node("h3", "closet-detail-prompt-title"', app)
+        self.assertIn("closet-detail-prompts", closet_style)
+        self.assertIn("closet-detail-prompt-title", closet_style)
         self.assertIn("item.attributes?.visual_prompt || item.description", app)
         self.assertIn('enabled ? "停用" : "启用"', app)
         self.assertIn('link.target = "_blank";', app)
@@ -3022,7 +3059,12 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertNotIn("window.confirm", app)
         self.assertIn('@import url("./styles/closet.css")', (root / "style.css").read_text(encoding="utf-8"))
         self.assertIn(".closet-list", closet_style)
-        self.assertIn("grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));", closet_style)
+        self.assertIn("grid-template-columns: repeat(5, minmax(0, 1fr));", closet_style)
+        self.assertIn('node("div", "closet-record-source-row")', app)
+        self.assertIn('node("span", "closet-record-confidence", `最低置信度 ${confidence}%`)', app)
+        self.assertIn('items.length > 1 ? `#${itemId} · ${items.length} 项` : `#${itemId}`', app)
+        self.assertIn(".closet-record-confidence", closet_style)
+        self.assertNotIn('const meta = query ? `搜索：${query}` : `最低置信度 ${confidence}%`;', app)
         self.assertIn("aspect-ratio: 4 / 5;", closet_style)
         self.assertIn(
             ".closet-record-title .muted {\n"
@@ -4633,9 +4675,12 @@ if (number.value !== "60" || state.config.test_config.level !== 60) {
         self.assertIn(".facts-column {\n  display: grid;", style)
         self.assertIn("grid-auto-rows: max-content;", style)
         self.assertIn("align-content: start;", style)
-        self.assertIn(".facts-column-fill {\n  align-self: start;", style)
-        self.assertIn("block-size: auto;", style)
-        self.assertIn("grid-template-rows: none;", style)
+        self.assertIn(".facts-column-fill {\n  align-self: stretch;", style)
+        self.assertIn("block-size: 100%;", style)
+        self.assertIn(
+            "grid-template-rows: max-content max-content minmax(0, 1fr) max-content;",
+            style,
+        )
         self.assertIn('.facts-column > [data-fact-card="memo"]', style)
         self.assertIn(".facts-column > div {\n  min-width: 0;", style)
         self.assertIn('.facts-column > [data-fact-card="schedule-tone"]', style)
@@ -4669,7 +4714,7 @@ if (number.value !== "60" || state.config.test_config.level !== 60) {
         self.assertIn(
             ".facts {\n    grid-template-columns: repeat(2, minmax(0, 1fr));", style
         )
-        self.assertIn(".facts-column-fill {\n    align-self: start;", style)
+        self.assertNotIn(".facts-column-fill {\n    align-self: start;", style)
         self.assertNotIn(
             "grid-template-rows: max-content max-content repeat(3, minmax(max-content, 1fr));",
             style,
@@ -4692,7 +4737,10 @@ if (number.value !== "60" || state.config.test_config.level !== 60) {
         self.assertIn(
             'function renderFactPair(target, value, emptyText = "暂无内容")', app
         )
-        self.assertIn('node("div", "today-week-appearance-hair", "")', app)
+        self.assertIn(
+            'appearanceLine("发型", data.hairStyle, data.hair, "today-week-appearance-hair")',
+            app,
+        )
         self.assertIn("const hairStyle = appearanceFact(meta.hair_style)", display)
         self.assertIn("const makeup = appearanceFact(meta.makeup)", display)
         self.assertIn("const nails = appearanceFact(meta.nails)", display)
@@ -4701,16 +4749,26 @@ if (number.value !== "60" || state.config.test_config.level !== 60) {
             "stripCoveredAppearanceDetail(day.outfit, hairStyle, hair)",
             display,
         )
-        self.assertIn(
-            "return { style, outfit, hairStyle, hair, makeup, nails }", display
-        )
+        self.assertIn("const makeupStyle = appearanceFact(meta.makeup_style)", display)
+        self.assertIn("const nailsStyle = appearanceFact(meta.nails_style)", display)
+        self.assertIn("makeupStyle,", display)
+        self.assertIn("nailsStyle,", display)
         self.assertIn('hair_style: "发型名称"', display)
         self.assertIn('hair: "发型细节"', display)
-        self.assertIn('data.hairStyle ? `发型：${data.hairStyle}` : "发型："', app)
-        self.assertIn("document.createTextNode(data.hair)", app)
-        self.assertIn('node("div", "today-week-appearance-grooming", "")', app)
-        self.assertIn("`妆容：${data.makeup}`", app)
-        self.assertIn("`美甲：${data.nails}`", app)
+        self.assertIn('makeup_style: "妆容名称"', display)
+        self.assertIn('makeup: "妆容细节"', display)
+        self.assertIn('nails_style: "美甲名称"', display)
+        self.assertIn('nails: "美甲细节"', display)
+        self.assertIn('title ? `${label}：${title}` : label', app)
+        self.assertIn("if (detail) line.append(document.createTextNode(detail));", app)
+        self.assertIn(
+            'appearanceLine("妆容", data.makeupStyle, data.makeup, "today-week-appearance-makeup")',
+            app,
+        )
+        self.assertIn(
+            'appearanceLine("美甲", data.nailsStyle, data.nails, "today-week-appearance-nails")',
+            app,
+        )
         self.assertNotIn('data.hairStyle ? "，"', app)
         self.assertNotIn("`发型：${data.hair}`", app)
         self.assertNotIn(".today-week-appearance-hair-detail {", style)
@@ -4798,7 +4856,8 @@ if (number.value !== "60" || state.config.test_config.level !== 60) {
         self.assertIn('<dd id="scheduleToneText">暂无日程基调</dd>', html)
         self.assertIn("<dt>🚪 活动状态</dt>", html)
         self.assertIn('<dd id="scheduleIntentText">暂无活动状态</dd>', html)
-        self.assertIn('<dd id="currentOutfitText">暂无穿搭</dd>', html)
+        self.assertIn('id="currentOutfitText"', html)
+        self.assertIn('>暂无穿搭</dd>', html)
         self.assertIn('<dd id="outfitDecisionText">暂无判断</dd>', html)
         self.assertIn("function memoDisplayText(status = {})", app)
         self.assertIn("function memoCarouselItems(status = {})", app)
@@ -5820,7 +5879,9 @@ const repeated = mod.currentOutfitDisplayText(
     style: "清爽日常风",
     hair_style: "蓬松高马尾",
     hair: "蓬松高马尾用浅色发圈固定，额前留有轻薄刘海，发尾自然微卷。",
+    makeup_style: "清透自然妆",
     makeup: "清透自然妆",
+    nails_style: "奶白色短圆甲",
     nails: "奶白色短圆甲",
   },
 );
@@ -5828,7 +5889,9 @@ if (
   repeated.outfit !== "浅绿色短袖衬衫搭配白色直筒裤，脚穿帆布鞋"
   || !repeated.hair.includes("浅色发圈")
   || repeated.hairStyle !== "蓬松高马尾"
+  || repeated.makeupStyle !== "清透自然妆"
   || repeated.makeup !== "清透自然妆"
+  || repeated.nailsStyle !== "奶白色短圆甲"
   || repeated.nails !== "奶白色短圆甲"
 ) {
   throw new Error(`穿搭与发型没有正确分离：${JSON.stringify(repeated)}`);
@@ -5850,7 +5913,12 @@ const missing = mod.currentOutfitDisplayText(
   { outfit: "浅色居家连衣裙" },
   { makeup: "未知", nails: "unknown" },
 );
-if (missing.makeup !== "" || missing.nails !== "") {
+if (
+  missing.makeupStyle !== ""
+  || missing.makeup !== ""
+  || missing.nailsStyle !== ""
+  || missing.nails !== ""
+) {
   throw new Error(`结构化缺失标记不应展示为外观事实：${JSON.stringify(missing)}`);
 }
 """

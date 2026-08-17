@@ -454,6 +454,42 @@ class SemanticSegmentTest(unittest.TestCase):
         self.assertIsNone(event.get_result())
         self.assertEqual(refresh_calls, [event])
 
+    def test_semantic_planning_keeps_natural_segment_delay(self):
+        runtime = self._runtime(
+            json.dumps(
+                {
+                    "segments": [
+                        {"text": "先这样。", "relation": "lead", "pause": "long"},
+                        {
+                            "text": "后面再说。",
+                            "relation": "closing",
+                            "pause": "long",
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        )
+        runtime.config.chat_style.segment_min_delay_seconds = 3.0
+        runtime.config.chat_style.segment_max_delay_seconds = 3.0
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10008")
+        event.set_result(
+            event.chain_result([types.SimpleNamespace(text="先这样。后面再说。")])
+        )
+
+        self.assertTrue(asyncio.run(runtime.apply_semantic_segment_before_send(event)))
+        sleeps = []
+
+        async def record_sleep(delay):
+            sleeps.append(delay)
+
+        with patch("core.runtime.reply.asyncio.sleep", new=record_sleep):
+            sent = asyncio.run(runtime.send_semantic_segments_if_needed(event))
+
+        self.assertTrue(sent)
+        self.assertEqual(sleeps, [3.0])
+        self.assertEqual(len(event.sent_messages), 2)
+
     def test_semantic_send_failure_falls_back_to_natural_segment_delivery(self):
         runtime = self._runtime(
             json.dumps(

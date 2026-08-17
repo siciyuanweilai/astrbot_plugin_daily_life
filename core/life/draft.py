@@ -85,7 +85,7 @@ class DailyDraftMixin:
   "life_decision": {{
     "life_mode": "awake | sleeping | late_night | all_nighter | resting | going_out | mixed",
     "sleep": {{"mode": "normal | late_night | all_nighter | nap | early_sleep", "quality": 0-100, "depth": "awake | light_rest | light_sleep | deep_sleep", "summary": "昨晚或当前睡眠状态"}},
-    "outfit": {{"decision": "keep | change | partial_change | sleepwear | outdoor", "scene_category": "{OUTFIT_SCENE_CATEGORY_ENUM}", "style_pool": "{OUTFIT_STYLE_POOL_ENUM}", "style": "简短的最终穿搭风格", "hair_style": "简短发型名称", "hair": "当前可见的详细发型", "makeup": "当前实际妆容或空字符串", "nails": "当前实际美甲或空字符串", "catalog_reference_ids": ["实际采用的视觉衣橱候选编号"], "reason": "为什么这样决定"}},
+    "outfit": {{"decision": "keep | change | partial_change | sleepwear | outdoor", "scene_category": "{OUTFIT_SCENE_CATEGORY_ENUM}", "style_pool": "{OUTFIT_STYLE_POOL_ENUM}", "style": "简短的最终穿搭风格", "hair_style": "简短发型名称", "hair": "当前可见的详细发型", "makeup_style": "简短妆容名称", "makeup": "当前实际妆容细节或空字符串", "nails_style": "简短美甲名称", "nails": "当前实际美甲细节或空字符串", "catalog_reference_ids": ["实际采用的视觉衣橱候选编号"], "reason": "为什么这样决定"}},
     "day_plan": {{"schedule_type": "概括今天节奏和活动主题的日程类型标签", "schedule_intent": "home | work | study | social | rest | outing | mixed", "energy_bias": "rest | normal | active", "social_bias": "avoid | light | social"}},
     "theme": "今天自然形成的主题",
     "mood": "心情色彩标签，必须是“颜色名·情绪词”格式"
@@ -184,8 +184,9 @@ class DailyDraftMixin:
 {CURRENT_APPEARANCE_GENERATION_RULES}
 - 造型偏好使用原则：
 {CORE_APPEARANCE_PREFERENCE_RULES}
-- 视觉衣橱候选只在当前确实需要新造型时作为灵感；采用后把真实使用的编号写入 catalog_reference_ids，未采用写空数组。编号不能出现在可见穿搭正文中。
+- 视觉衣橱候选只在当前确实需要新造型时使用；采用后必须忠实沿用候选的服装细节，并把真实使用的编号写入 catalog_reference_ids，未采用写空数组。长期偏好只用于比较候选，不能绕过衣橱另编一套衣服；编号不能出现在可见穿搭正文中。
 - 不要把 hair_style 或 hair 重复塞进顶层 outfit；不要写原因解释或日程流水账。
+- 清醒整日计划如果从睡眠穿搭开始，应在首个持续家务、学习、工作、运动、社交、拍摄或外出活动前自然安排晨间换装；恢复日、继续睡眠或明确休养可以保持睡眠穿搭。换装必须同时写入 timeline 与 planned_actions，并从视觉衣橱选择日间造型。
 4. timeline 要求 (关键)：
 {self.config.timeline_prompt}
 - 系统会根据 timeline 自动检查时间覆盖，不需要输出额外时间覆盖说明。
@@ -199,6 +200,7 @@ class DailyDraftMixin:
 - 只为确实需要状态结算的 timeline 节点输出，可为空数组，不要为了填满而制造动作。
 - action_type、timeline_index、前置条件和影响必须显式填写；不得要求系统从 activity 文案猜动作。
 - timeline 只要明确发生了换装，就必须为对应节点输出 action_type=change_outfit，target 写换装后实际穿搭；不能只在 activity 文案中描述换衣。
+- 本轮提供视觉衣橱候选时，change_outfit 的 payload.catalog_reference_ids 必须填写该次换装实际采用的衣橱服装编号；如果组合上装和下装，至少同时填写对应的上装与下装编号。系统会用衣橱详细描述校正 target，不能只把衣橱当作灵感后另写一套衣服。
 - action_id 在不同日期和节点间必须唯一；effects 只写该动作真实会改变的数值状态。
 - payload 只用于明确的领域数据：cook 的 ingredients、purchase 的 items 使用 {{"name":"名称","quantity":1,"unit":"可选单位"}} 数组；meal/cook/order_food 可填 meal_type 和 place；move/travel 可填 origin、destination、travel_mode；chore 的 cadence_days 使用非负整数、effort 使用 1-5 整数；exercise 的 intensity 使用 1-5 整数。
 - meal 表示直接用餐，不校验或扣减家庭库存；cook 表示实际动手烹饪，会按 ingredients 校验并扣减库存，同时由系统自动沉淀食谱；order_food 表示点餐或外卖。不要用 meal 代替 cook，也不要为 meal/order_food 填写 ingredients 或自行编造 recipe_id。

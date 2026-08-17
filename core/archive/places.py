@@ -31,11 +31,15 @@ class PlaceArchiveMixin:
             return
 
         def dbwork():
-            changed = False
-            for event in events:
-                changed = self._insert_event_unlocked(event, date_str) or changed
-            if changed:
+            try:
+                for event in events:
+                    self._insert_event_unlocked(event, date_str)
+                # INSERT OR IGNORE 即使没有新增行也可能开启隐式事务，必须在本次
+                # 数据库调用边界内收束，否则后续 BEGIN IMMEDIATE 会误判为嵌套事务。
                 self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
 
         return await self._run_db(dbwork)
 

@@ -36,6 +36,8 @@ from runtimehelpers import (
     types,
 )
 
+from core.runtime.reply import SegmentPart, SemanticSegmentPlan
+
 
 class RuntimeProactiveTest(ResponseGateRuntimeMixin, unittest.TestCase):
     def test_proactive_lifecycle_accepts_only_declared_transitions(self):
@@ -3194,6 +3196,89 @@ class RuntimeProactiveAsyncTest(
         self.assertEqual(len(provider.prompts), 1)
         self.assertIn("候选表情", provider.prompts[0])
 
+    async def test_emoji_selection_rotates_recently_sent_assets_for_scope(self):
+        runtime, provider = self._make_proactive_runtime(
+            ['{"emoji_id":2,"reason":"避开刚发过的同款，第二张也符合当前语义"}'],
+            provider_id="proactive-model",
+        )
+        scope = "aiocqhttp:FriendMessage:10001"
+        await runtime.archive.upsert_emoji_asset(
+            EmojiAssetRecord(
+                id=1,
+                file_hash="recent-smile",
+                file_path="https://example.com/recent-smile.png",
+                label="卖萌",
+                emotions=["开心", "俏皮"],
+                status="ready",
+            )
+        )
+        await runtime.archive.upsert_emoji_asset(
+            EmojiAssetRecord(
+                id=2,
+                file_hash="fresh-smile",
+                file_path="https://example.com/fresh-smile.png",
+                label="开心挥手",
+                emotions=["开心", "俏皮"],
+                status="ready",
+            )
+        )
+        await runtime.archive.save_expression_intent(
+            {
+                "scope": scope,
+                "emotion": "开心",
+                "emoji_intent": "俏皮回应",
+                "send_emoji": True,
+                "emoji_id": 1,
+                "source": "regular_reply",
+            }
+        )
+
+        emoji = await runtime._select_emoji_asset_for_intent(
+            {"emotion": "开心", "emoji_intent": "俏皮回应", "send_emoji": True},
+            scope=scope,
+        )
+
+        self.assertIsNotNone(emoji)
+        self.assertEqual(emoji.id, 2)
+        self.assertNotIn('"id": 1', provider.prompts[0])
+
+    async def test_emoji_selection_skips_when_all_matching_assets_were_recently_sent(
+        self,
+    ):
+        runtime, provider = self._make_proactive_runtime(
+            ['{"emoji_id":1,"reason":"仍然适合"}'],
+            provider_id="proactive-model",
+        )
+        scope = "aiocqhttp:FriendMessage:10001"
+        await runtime.archive.upsert_emoji_asset(
+            EmojiAssetRecord(
+                id=1,
+                file_hash="only-smile",
+                file_path="https://example.com/only-smile.png",
+                label="卖萌",
+                emotions=["开心", "俏皮"],
+                status="ready",
+            )
+        )
+        await runtime.archive.save_expression_intent(
+            {
+                "scope": scope,
+                "emotion": "开心",
+                "emoji_intent": "俏皮回应",
+                "send_emoji": True,
+                "emoji_id": 1,
+                "source": "regular_reply",
+            }
+        )
+
+        emoji = await runtime._select_emoji_asset_for_intent(
+            {"emotion": "开心", "emoji_intent": "俏皮回应", "send_emoji": True},
+            scope=scope,
+        )
+
+        self.assertIsNone(emoji)
+        self.assertEqual(provider.prompts, [])
+
     async def test_emoji_selection_uses_stable_candidate_order_for_model(self):
         runtime, provider = self._make_proactive_runtime(
             ['{"emoji_id": 8, "reason": "候选内第八张更自然"}'],
@@ -3407,6 +3492,53 @@ class RuntimeProactiveAsyncTest(
             [{"type": "image", "url": "https://example.com/wow.png"}],
         )
         self.assertEqual(len(provider.prompts), 2)
+        sent_intents = await runtime.archive.get_expression_intents(10, scope=scope)
+        self.assertEqual({item.emoji_id for item in sent_intents}, {1, 2})
+
+    async def test_normal_reply_semantic_emoji_is_sent_once_after_text_decision(self):
+        runtime, provider = self._make_proactive_runtime(
+            ['{"emoji_id": 1, "reason": "轻松回应适合"}'],
+            provider_id="proactive-model",
+        )
+        scope = "aiocqhttp:FriendMessage:10001"
+        await runtime.archive.upsert_emoji_asset(
+            EmojiAssetRecord(
+                id=1,
+                file_hash="smile-normal",
+                file_path="https://example.com/smile-normal.png",
+                label="轻松回应",
+                emotions=["轻松", "开心"],
+                status="ready",
+            )
+        )
+        event = Event(
+            unified_msg_origin=scope,
+            message_id="m-normal-emoji",
+        )
+        plan = SemanticSegmentPlan(
+            (SegmentPart("收到啦"),),
+            valid=True,
+            emotion="轻松",
+            emotion_category="happy",
+            emoji_intent="轻松回应",
+            send_emoji=True,
+            reason="文字后补一个轻松表情",
+        )
+        setattr(event, runtime._SEMANTIC_SEGMENT_PLAN_ATTR, plan)
+
+        self.assertTrue(await runtime.send_semantic_emoji_if_needed(event))
+        self.assertFalse(await runtime.send_semantic_emoji_if_needed(event))
+        self.assertEqual(len(event.sent_messages), 1)
+        self.assertEqual(
+            event.sent_messages[0].items,
+            [{"type": "image", "url": "https://example.com/smile-normal.png"}],
+        )
+        assets = await runtime.archive.get_emoji_assets(10, status="ready")
+        self.assertEqual(assets[0].used_count, 1)
+        intents = await runtime.archive.get_expression_intents(10, scope=scope)
+        self.assertEqual(intents[0].source, "regular_reply")
+        self.assertEqual(intents[0].emoji_id, 1)
+        self.assertEqual(len(provider.prompts), 1)
 
     async def test_proactive_emoji_skips_same_asset_for_same_source_message(self):
         runtime, provider = self._make_proactive_runtime(
@@ -3454,7 +3586,7 @@ class RuntimeProactiveAsyncTest(
 
         self.assertEqual(runtime.context.sent_messages, [])
         self.assertEqual(len(event.sent_messages), 1)
-        self.assertEqual(len(provider.prompts), 2)
+        self.assertEqual(len(provider.prompts), 1)
 
     async def test_life_emoji_send_skips_same_asset_for_same_source_message(self):
         runtime, provider = self._make_proactive_runtime(
@@ -3501,7 +3633,7 @@ class RuntimeProactiveAsyncTest(
         self.assertEqual(repeated, "同一轮已发送过这个表情")
         self.assertEqual(runtime.context.sent_messages, [])
         self.assertEqual(len(event.sent_messages), 1)
-        self.assertEqual(len(provider.prompts), 2)
+        self.assertEqual(len(provider.prompts), 1)
 
     async def test_private_candidate_is_removed_after_normal_reply(self):
         runtime, _ = self._make_proactive_runtime([])

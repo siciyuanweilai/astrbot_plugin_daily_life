@@ -9,6 +9,7 @@ from astrbot.api import logger
 
 from ...clock import now as life_now
 from ...models import CommitmentRecord
+from ...prompts import CORE_EMOJI_DELIVERY_RULES
 from ..capture.jsonclean import call_pure_json
 from ..markers import LOG_PREFIX
 
@@ -266,8 +267,10 @@ class ProactiveFollowupMixin:
 5. 传输会话不代表现实分开。若双方正同处现场且承诺仍需履行，应生成一句面对面直接说出的自然招呼或提醒，不能仅因同处现场静默完成；这时不要使用“发消息、你那边、到哪了、上线”等远程措辞。
 6. 只依据提供的证据，不补造地点、进度或对方反应。
 
+{CORE_EMOJI_DELIVERY_RULES}
+
 只返回严格 JSON：
-{{"should_send":true,"reply_text":"","reason":"","settlement":"send|wait|already_done|cancelled|superseded|invalid","retry_after_minutes":0,"expression_intent":{{"emotion":"","emotion_category":"","voice_style":"","send_emoji":false}}}}
+{{"should_send":true,"reply_text":"","reason":"","settlement":"send|wait|already_done|cancelled|superseded|invalid","retry_after_minutes":0,"expression_intent":{{"emotion":"","emotion_category":"","voice_style":"","emoji_intent":"","action_intent":"","send_emoji":false,"reason":""}}}}
 """
         session_id = f"daily_life_proactive_commitment_{uuid.uuid4().hex[:8]}"
         provider_id = self.config.proactive.provider

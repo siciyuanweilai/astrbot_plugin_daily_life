@@ -68,6 +68,28 @@ from support import LifeArchive, LifeSettings
 
 
 class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
+    async def test_duplicate_event_write_closes_implicit_transaction(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(f"{tmpdir}/daily_life.db")
+            try:
+                event = EventRecord(
+                    date="2026-06-12",
+                    summary="测试日程事件",
+                    importance="normal",
+                    source="daily",
+                )
+                await archive.add_events("2026-06-12", [event])
+                await archive.add_events("2026-06-12", [event])
+
+                self.assertFalse(archive._conn.in_transaction)
+                saved = await archive.save_day(
+                    DayRecord(date="2026-06-12", outfit="测试日间穿搭"),
+                    replace=True,
+                )
+                self.assertEqual(saved.outfit, "测试日间穿搭")
+            finally:
+                archive.close()
+
     async def test_style_catalog_separates_items_deduplicates_and_records_feedback(
         self,
     ):

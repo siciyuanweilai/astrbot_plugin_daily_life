@@ -18,6 +18,18 @@ FULL_DAY_MIN_TIMELINE_NODES = 8
 NIGHT_LIFE_MIN_TIMELINE_NODES = 6
 FULL_DAY_TARGET_GAP_MINUTES = 150
 FULL_DAY_MAX_GAP_MINUTES = 210
+_SUSTAINED_DAY_ACTION_TYPES = {
+    "chore",
+    "exercise",
+    "move",
+    "photo",
+    "purchase",
+    "social",
+    "study",
+    "travel",
+    "video",
+    "work",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,7 +92,92 @@ class DailyContractMixin:
             if outfit_issue:
                 self._set_validation_issue("future_outfit_timing")
                 return False, outfit_issue
+        daytime_outfit_issue = self._daytime_outfit_transition_issue(
+            payload,
+            manual_extra=manual_extra,
+            expected_coverage=expected_coverage,
+        )
+        if daytime_outfit_issue:
+            self._set_validation_issue("daytime_outfit_transition")
+            return False, daytime_outfit_issue
         return True, ""
+
+    @staticmethod
+    def _action_timeline_index(action: object) -> int | None:
+        if not isinstance(action, dict):
+            return None
+        try:
+            return int(action.get("timeline_index"))
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _daytime_outfit_transition_issue(
+        cls,
+        payload: dict,
+        *,
+        manual_extra: str = "",
+        expected_coverage: str = "",
+    ) -> str:
+        """保证清醒整日计划会从睡眠穿搭自然过渡到日间穿搭。"""
+
+        if expected_coverage != "full_day" or str(manual_extra or "").strip():
+            return ""
+        decision = (
+            payload.get("life_decision")
+            if isinstance(payload.get("life_decision"), dict)
+            else {}
+        )
+        life_mode = str(decision.get("life_mode") or "").strip()
+        day_plan = (
+            decision.get("day_plan")
+            if isinstance(decision.get("day_plan"), dict)
+            else {}
+        )
+        if life_mode in {"sleeping", "late_night", "all_nighter", "resting"}:
+            return ""
+        if str(day_plan.get("schedule_intent") or "").strip() == "rest":
+            return ""
+        outfit = (
+            decision.get("outfit")
+            if isinstance(decision.get("outfit"), dict)
+            else {}
+        )
+        if not (
+            str(outfit.get("style_pool") or "").strip() == "sleep_styles"
+            or str(outfit.get("scene_category") or "").strip() == "sleep"
+            or str(outfit.get("decision") or "").strip() == "sleepwear"
+        ):
+            return ""
+
+        actions = payload.get("planned_actions")
+        if not isinstance(actions, list):
+            return ""
+        sustained_indexes = [
+            index
+            for action in actions
+            if str(action.get("action_type") or "").strip()
+            in _SUSTAINED_DAY_ACTION_TYPES
+            and (index := cls._action_timeline_index(action)) is not None
+        ]
+        if not sustained_indexes:
+            return ""
+        first_sustained_index = min(sustained_indexes)
+        has_prior_change = any(
+            str(action.get("action_type") or "").strip() == "change_outfit"
+            and (index := cls._action_timeline_index(action)) is not None
+            and index <= first_sustained_index
+            and str(action.get("target") or "").strip()
+            for action in actions
+            if isinstance(action, dict)
+        )
+        if has_prior_change:
+            return ""
+        return (
+            "清醒整日计划仍以睡眠穿搭进入持续日间活动；请在首个家务、学习、"
+            "工作、运动、社交、拍摄或外出动作之前安排明确的 change_outfit，"
+            "并从视觉衣橱候选中选择适合当日场景与天气的日间造型"
+        )
 
     @staticmethod
     def _repeat_text(value: object, limit: int = 600) -> str:
@@ -620,6 +717,7 @@ class DailyContractMixin:
         issue_code: str = "",
         person_fact_context: str = "",
         location_context: str = "",
+        style_catalog_context: str = "",
     ) -> str:
         extra_section = (
             f"用户补充要求（最高优先级）：{extra}"
@@ -641,6 +739,11 @@ class DailyContractMixin:
         location_section = (
             f"\n\n{location_context.strip()}" if location_context.strip() else ""
         )
+        style_catalog_section = (
+            f"\n\n{style_catalog_context.strip()}"
+            if style_catalog_context.strip()
+            else ""
+        )
         fixed = f"""你之前生成的日程未通过校验，请直接修复为可通过的 JSON。
 {contract_section}
 
@@ -648,7 +751,7 @@ class DailyContractMixin:
 - 只输出完整 JSON 对象，不要解释、不要 Markdown、不要补充文字。
 - 修复方式：{repair_strategy}"""
         dynamic = f"""校验原因：{reason}
-{extra_section}{web_section}{person_section}{location_section}
+{extra_section}{web_section}{person_section}{location_section}{style_catalog_section}
 
 原始输出：
 {bad_text}"""
@@ -674,6 +777,20 @@ class DailyContractMixin:
             return (
                 "保留日程、状态、人物和地点事实，只重写 life_decision.outfit、"
                 "顶层 outfit 及对应发型；新穿搭仍要符合天气和当前场景，但不能复用近期相同组合。"
+            )
+        if code == "style_catalog_required":
+            return (
+                "保留日程、状态、人物和地点事实，只修正自主产生的新穿搭。"
+                "从再次提供的视觉衣橱候选中选择完整套装，或同时选择上装与下装；"
+                "顶层穿搭把编号写入 life_decision.outfit.catalog_reference_ids，"
+                "计划换装把编号写入对应 action 的 payload.catalog_reference_ids。"
+            )
+        if code == "daytime_outfit_transition":
+            return (
+                "保留生活主题、状态、人物、地点和睡醒时的真实穿搭；在首个持续日间"
+                "活动之前增加自然的晨间换装节点和 change_outfit 动作，从再次提供的"
+                "视觉衣橱候选中选择完整套装，或同时选择上装与下装，并把采用编号写入"
+                "该动作的 payload.catalog_reference_ids。未来穿搭不要提前写入顶层 outfit。"
             )
         if code == "location_audit_invalid":
             return (

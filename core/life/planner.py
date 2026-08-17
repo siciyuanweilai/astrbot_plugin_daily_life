@@ -10,6 +10,7 @@ from ..config.options import LifeSettings
 from ..prompts import CORE_INTERNAL_SYSTEM_PROMPT
 from ..search import SearchService
 from ..sources import SavedHistoryReader
+from .appearance import AppearanceAuditMixin
 from .autonomy import LifeAutonomyMixin
 from .daily import DailyMixin
 from .inspiration import StyleCatalogMixin
@@ -33,6 +34,7 @@ from .weekly import WeekMixin
 
 
 class LifeBackgroundComposer(
+    AppearanceAuditMixin,
     StyleCatalogMixin,
     ReferenceMixin,
     PersonFactMixin,

@@ -3,13 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from astrbot.api import logger
 from astrbot.api.event import MessageChain
 
 from ..media.base import normalize_voice_style
+from ..prompts import CORE_EMOJI_DELIVERY_RULES
 from .delivery import (
     BackgroundTextMode,
     EventDeliveryRequest,
@@ -570,7 +571,9 @@ class SemanticSegmentRuntimeMixin:
         )
         fallback = (
             SemanticSegmentPlan(
-                (SegmentPart(source_text),), source="fallback", valid=False
+                (SegmentPart(source_text),),
+                source="fallback",
+                valid=False,
             )
             if source_text
             else SemanticSegmentPlan(())
@@ -599,7 +602,8 @@ class SemanticSegmentRuntimeMixin:
                     if int(length_hint or 0) > 0
                     else "当前没有额外长度倾向，按自然表达决定分段边界。\n"
                 )
-                + "channel、情绪、语音风格、表情和姿态必须根据整轮语义判断；voice_style 只能填写枚举值，不要从 emotion 文本推导；列表、代码、链接、参数和需要回看的信息应选择文字。没有明显必要时不选择语音或表情。\n"
+                + "channel、情绪、语音风格、表情和姿态必须根据整轮语义判断；voice_style 只能填写枚举值，不要从 emotion 文本推导；列表、代码、链接、参数和需要回看的信息应选择文字。\n"
+                + f"{CORE_EMOJI_DELIVERY_RULES}\n"
                 + f"当前对方消息：{user_message}\n"
                 + (
                     "原文中的非空换行是已经确定的表达边界，分段不能跨行；"
@@ -610,16 +614,18 @@ class SemanticSegmentRuntimeMixin:
                 )
                 + f"回复原文：{source_text}"
             )
-            timeout = max(
+            configured_timeout = max(
                 1.0,
                 min(
-                    float(getattr(settings, "semantic_timeout_seconds", 8.0) or 8.0),
+                    float(
+                        getattr(settings, "semantic_timeout_seconds", 8.0) or 8.0
+                    ),
                     20.0,
                 ),
             )
             started_at = time.monotonic()
             logger.debug(
-                f"{LOG_PREFIX} 模型语义分段开始：超时={timeout:g}秒；长度={len(source_text)}"
+                f"{LOG_PREFIX} 模型语义分段开始：超时={configured_timeout:g}秒；长度={len(source_text)}"
             )
             raw = await asyncio.wait_for(
                 self.call_text_model(
@@ -629,7 +635,7 @@ class SemanticSegmentRuntimeMixin:
                     empty_retries=0,
                     primary_provider_id=provider_id,
                 ),
-                timeout=timeout,
+                timeout=configured_timeout,
             )
             logger.debug(
                 f"{LOG_PREFIX} 模型语义分段完成：耗时={time.monotonic() - started_at:.2f} 秒"
@@ -1000,6 +1006,9 @@ class SemanticSegmentRuntimeMixin:
             note_structured = getattr(self, "note_structured_sent_result", None)
             if callable(note_structured):
                 note_structured(event)
+            emoji_sender = getattr(self, "send_semantic_emoji_if_needed", None)
+            if callable(emoji_sender):
+                await emoji_sender(event)
             capture = getattr(self, "capture_chat_memory_bot_reply", None)
             if callable(capture):
                 try:
@@ -1173,8 +1182,8 @@ class SemanticSegmentRuntimeMixin:
                     )
                     for segment in natural_segments
                 ),
-                source="natural",
-                valid=True,
+            source="natural",
+            valid=True,
             )
             natural_plan = self._semantic_segment_clean_plan_punctuation(
                 source_event, natural_plan, source_text
@@ -1202,7 +1211,9 @@ class SemanticSegmentRuntimeMixin:
         fallback_plan = self._semantic_segment_clean_plan_punctuation(
             source_event,
             SemanticSegmentPlan(
-                (SegmentPart(source_text),), source="natural", valid=True
+                (SegmentPart(source_text),),
+                source="natural",
+                valid=True,
             ),
             source_text,
         )

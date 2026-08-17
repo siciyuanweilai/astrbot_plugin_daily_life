@@ -7,7 +7,10 @@ from pathlib import Path
 
 import support  # noqa: F401 - 安装轻量级 AstrBot 测试替身
 from core.archive import LifeArchive
+from core.life.appearance import format_life_preference_context
 from core.life.inspiration import StyleCatalogMixin
+from core.life.rhythm import LifecycleMixin
+from core.models import PreferenceRecord
 from core.runtime.channel.stylist import RuntimeStyleCatalogMixin
 from PIL import Image
 
@@ -139,7 +142,232 @@ class _StyleCatalogComposer(StyleCatalogMixin):
         self.archive = archive
 
 
+class _PreferenceRuntime(LifecycleMixin):
+    def __init__(self, archive):
+        self.archive = archive
+
+
 class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
+    async def test_catalog_list_reports_complete_category_count(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(f"{tmpdir}/daily_life.db")
+            runtime = _StyleCatalogRuntime(archive, {})
+            try:
+                for index in range(11):
+                    await archive.upsert_style_catalog_item(
+                        {
+                            "kind": "outfit",
+                            "title": f"测试套装{index + 1}",
+                            "description": f"测试完整穿搭{index + 1}",
+                            "source_image_hash": f"{index + 1:064x}",
+                            "confidence": 0.9,
+                        }
+                    )
+                for index in range(4):
+                    await archive.upsert_style_catalog_item(
+                        {
+                            "kind": "hair",
+                            "title": f"测试发型{index + 1}",
+                            "description": f"测试发型描述{index + 1}",
+                            "source_image_hash": f"{index + 101:064x}",
+                            "confidence": 0.9,
+                        }
+                    )
+
+                result = await runtime.life_style_catalog_list(
+                    None, kind="outfit"
+                )
+
+                self.assertIn("共 15 个已启用候选", result)
+                self.assertIn("套装 11", result)
+                self.assertIn("发型 4", result)
+                self.assertIn("当前查询：套装共 11 个，已显示 11 个", result)
+                self.assertIn("套装 #", result)
+            finally:
+                archive.close()
+
+    async def test_mixed_catalog_list_marks_limited_result_as_partial(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(f"{tmpdir}/daily_life.db")
+            runtime = _StyleCatalogRuntime(archive, {})
+            try:
+                for index in range(5):
+                    await archive.upsert_style_catalog_item(
+                        {
+                            "kind": "outfit" if index < 3 else "hair",
+                            "title": f"测试候选{index + 1}",
+                            "description": f"测试候选描述{index + 1}",
+                            "source_image_hash": f"{index + 1:064x}",
+                            "confidence": 0.9,
+                        }
+                    )
+
+                result = await runtime.life_style_catalog_list(None, limit=3)
+
+                self.assertIn("共 5 个已启用候选", result)
+                self.assertIn("前 3 个条目，总计 5 个", result)
+                self.assertIn("这不是各分类的完整清单", result)
+                self.assertIn("不得据此声称衣橱只有当前这些候选", result)
+                self.assertIn("必须重新调用 life_style_catalog", result)
+            finally:
+                archive.close()
+
+    async def test_autonomous_new_outfit_requires_complete_catalog_selection(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(f"{tmpdir}/daily_life.db")
+            outfit = await archive.upsert_style_catalog_item(
+                {
+                    "kind": "outfit",
+                    "title": "测试完整套装",
+                    "description": "蓝色短上衣搭配白色半身裙",
+                    "source_image_hash": "a" * 64,
+                    "confidence": 0.9,
+                }
+            )
+            top = await archive.upsert_style_catalog_item(
+                {
+                    "kind": "top",
+                    "title": "测试上装",
+                    "description": "浅蓝色短袖上衣",
+                    "source_image_hash": "b" * 64,
+                    "confidence": 0.9,
+                }
+            )
+            bottom = await archive.upsert_style_catalog_item(
+                {
+                    "kind": "bottom",
+                    "title": "测试下装",
+                    "description": "白色高腰半身裙",
+                    "source_image_hash": "c" * 64,
+                    "confidence": 0.9,
+                }
+            )
+            runtime = _StyleCatalogComposer(archive)
+            try:
+                missing, missing_reason = (
+                    await runtime._style_catalog_new_outfit_selection([])
+                )
+                partial, partial_reason = (
+                    await runtime._style_catalog_new_outfit_selection([top.id])
+                )
+                complete, complete_reason = (
+                    await runtime._style_catalog_new_outfit_selection(
+                        [top.id, bottom.id]
+                    )
+                )
+                one_piece, one_piece_reason = (
+                    await runtime._style_catalog_new_outfit_selection([outfit.id])
+                )
+
+                self.assertEqual(missing, {})
+                self.assertIn("必须选择", missing_reason)
+                self.assertEqual(partial, {})
+                self.assertIn("上装与下装", partial_reason)
+                self.assertEqual(complete_reason, "")
+                self.assertIn("浅蓝色短袖上衣", complete["outfit"])
+                self.assertIn("白色高腰半身裙", complete["outfit"])
+                self.assertEqual(one_piece_reason, "")
+                self.assertEqual(
+                    one_piece["outfit"], "蓝色短上衣搭配白色半身裙"
+                )
+            finally:
+                archive.close()
+
+    async def test_catalog_context_reserves_multiple_complete_outfits(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(f"{tmpdir}/daily_life.db")
+            for index in range(7):
+                await archive.upsert_style_catalog_item(
+                    {
+                        "kind": "outfit",
+                        "title": f"测试套装{index}",
+                        "description": f"测试完整穿搭{index}",
+                        "source_image_hash": f"{index + 1:064x}",
+                        "confidence": 0.9,
+                    }
+                )
+            for index, kind in enumerate(
+                ("top", "bottom", "footwear", "accessory", "hair", "makeup", "nails"),
+                start=20,
+            ):
+                await archive.upsert_style_catalog_item(
+                    {
+                        "kind": kind,
+                        "title": f"测试{kind}",
+                        "description": f"测试{kind}细节",
+                        "source_image_hash": f"{index:064x}",
+                        "confidence": 0.9,
+                    }
+                )
+            runtime = _StyleCatalogComposer(archive)
+            try:
+                context = await runtime._style_catalog_context(limit=14)
+
+                self.assertGreaterEqual(context.count("[套装]"), 6)
+                self.assertIn("[上装]", context)
+                self.assertIn("[下装]", context)
+                self.assertIn("[妆容]", context)
+                self.assertIn("[美甲]", context)
+                self.assertIn("避免把高偏好候选穿成固定制服", context)
+            finally:
+                archive.close()
+
+    async def test_daily_review_does_not_relearn_its_own_outfit(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(f"{tmpdir}/daily_life.db")
+            runtime = _PreferenceRuntime(archive)
+            try:
+                saved = await runtime.learn_preferences_from_payload(
+                    {
+                        "preference_points": [
+                            {
+                                "category": "outfit",
+                                "content": "每天穿同一件测试睡裙",
+                                "weight": 1.2,
+                            },
+                            {
+                                "category": "activity",
+                                "content": "晚饭后喜欢短暂散步",
+                                "weight": 0.6,
+                            },
+                        ]
+                    },
+                    date_str="2026-08-16",
+                    source="daily_review",
+                )
+
+                self.assertEqual([item.category for item in saved], ["activity"])
+                stored = await archive.get_preferences(10)
+                self.assertEqual([item.category for item in stored], ["activity"])
+            finally:
+                archive.close()
+
+    def test_existing_autonomous_appearance_preferences_are_not_injected(self):
+        config = types.SimpleNamespace(outfit=None)
+        context = format_life_preference_context(
+            [
+                PreferenceRecord(
+                    category="outfit",
+                    content="每天穿同一件测试睡裙",
+                    weight=1.2,
+                    source="daily_review",
+                ),
+                PreferenceRecord(
+                    category="style",
+                    content="偏好清爽且有层次的造型",
+                    weight=0.8,
+                    source="user_feedback",
+                ),
+            ],
+            config,
+            limit=10,
+            catalog_backed=True,
+        )
+
+        self.assertNotIn("同一件测试睡裙", context)
+        self.assertIn("偏好清爽且有层次的造型", context)
+        self.assertIn("具体服装必须来自本轮提供的衣橱候选", context)
+
     async def test_legacy_archived_candidate_is_treated_as_disabled(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             archive = LifeArchive(f"{tmpdir}/daily_life.db")
@@ -587,7 +815,9 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(appearance["outfit"], "浅色日常造型")
                 self.assertEqual(appearance["hair_style"], "测试发型")
                 self.assertEqual(appearance["hair"], "低马尾")
+                self.assertEqual(appearance["makeup_style"], "测试清透妆容")
                 self.assertEqual(appearance["makeup"], "测试旧版妆容；清透底妆")
+                self.assertEqual(appearance["nails_style"], "测试奶白短甲")
                 self.assertEqual(appearance["nails"], "测试旧版美甲；奶白色短圆甲")
             finally:
                 archive.close()

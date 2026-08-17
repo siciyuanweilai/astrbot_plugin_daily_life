@@ -1503,21 +1503,24 @@ class LifeSettingsTest(unittest.TestCase):
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertIn("version: 1.2.7", metadata)
+        self.assertIn("version: 1.2.8", metadata)
         self.assertIn('astrbot_version: ">=4.26,<5"', metadata)
-        self.assertIn("version-1.2.7", readme)
+        self.assertIn("version-1.2.8", readme)
+        self.assertIn("v1.2.8 · 2026-08-17", changelog)
         self.assertIn("v1.2.7 · 2026-08-16", changelog)
         self.assertIn("v1.2.6 · 2026-08-15", changelog)
         self.assertIn("v1.2.5 · 2026-08-13", changelog)
         self.assertIn("v1.2.4 · 2026-08-12", changelog)
         self.assertIn("v1.2.3 · 2026-08-11", changelog)
         self.assertIn("v1.2.2 · 2026-08-09", changelog)
+        self.assertLess(changelog.index("v1.2.8"), changelog.index("v1.2.7"))
         self.assertLess(changelog.index("v1.2.7"), changelog.index("v1.2.6"))
         self.assertLess(changelog.index("v1.2.6"), changelog.index("v1.2.5"))
         self.assertLess(changelog.index("v1.2.5"), changelog.index("v1.2.4"))
         self.assertLess(changelog.index("v1.2.4"), changelog.index("v1.2.3"))
         self.assertLess(changelog.index("v1.2.3"), changelog.index("v1.2.2"))
         self.assertLess(changelog.index("v1.2.2"), changelog.index("v1.2.1"))
+        release_128 = changelog.split("## 🌸 v1.2.8", 1)[1].split("## 🌸 v1.2.7", 1)[0]
         release_127 = changelog.split("## 🌸 v1.2.7", 1)[1].split("## 🌸 v1.2.6", 1)[0]
         release_126 = changelog.split("## 🌸 v1.2.6", 1)[1].split("## 🌸 v1.2.5", 1)[0]
         release_125 = changelog.split("## 🌸 v1.2.5", 1)[1].split("## 🌸 v1.2.4", 1)[0]
@@ -1527,6 +1530,8 @@ class LifeSettingsTest(unittest.TestCase):
         release_121 = changelog.split("## 🌸 v1.2.1", 1)[1].split("## 🌸 v1.2.0", 1)[0]
         self.assertIn("Grok 图片", release_123)
         self.assertIn("运动、饮食与食谱闭环", release_123)
+        self.assertIn("最近 5 次成功发送", release_128)
+        self.assertIn("数据库结构保持 v13", release_128)
         self.assertIn("时间轴合法执行状态", release_127)
         self.assertIn("微信投递回归", release_127)
         self.assertIn("数据库结构保持 v13", release_127)

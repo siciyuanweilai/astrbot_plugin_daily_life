@@ -84,7 +84,12 @@ class ProactiveSendMixin:
             ):
                 return False
             await self._append_proactive_send_history(target_scope, reply_text)
-            await self._send_proactive_emoji_if_needed(target_scope, send_payload)
+            emoji_payload = dict(send_payload or {})
+            if source_event is not None:
+                emoji_payload["_source_event"] = source_event
+            if source_message_id:
+                emoji_payload["_source_message_id"] = source_message_id
+            await self._send_proactive_emoji_if_needed(target_scope, emoji_payload)
             return True
         except Exception as exc:
             logger.warning(f"{LOG_PREFIX} {failure_label}：{exc}")

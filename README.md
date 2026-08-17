@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.2.7-ef6f8f" alt="版本 1.2.7"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.2.8-ef6f8f" alt="版本 1.2.8"></a>
   <img src="https://img.shields.io/badge/AstrBot-%3E%3D4.26%2C%3C5-4c78a8" alt="AstrBot >= 4.26,<5">
   <img src="https://img.shields.io/badge/platform-aiocqhttp%20%7C%20weixin__oc-4f8a66" alt="支持 aiocqhttp 和 weixin_oc">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-555555" alt="MIT License"></a>
@@ -34,7 +34,7 @@
 [![Yousa Ling](https://count.getloli.com/get/@DailyLife?theme=yousa-ling)](https://github.com/siciyuanweilai/astrbot_plugin_daily_life)
 
 > [!TIP]
-> **v1.2.7 重点更新**：修复时间轴“已过期”状态在保存后回到“待进行”的问题，夜间复盘遇到并发更新时会退避并基于最新版本继续；微信好友、群聊、后台文字和媒体恢复共用同一投递路由并补齐回归验证。视觉衣橱进一步完善识图降级、素材启停、来源跳转、分组统计和管理布局。完整说明见 [CHANGELOG.md](./CHANGELOG.md)。
+> **v1.2.8 重点更新**：视觉衣橱现在会作为自主换装的实际来源，角色人设中明确的稳定外观优先保留；妆容、美甲与发型分开保存和展示，当前穿搭面板可在固定区域内完整滚动查看。聊天分段保留语义分段与自然分段兜底，表情会按会话轮换，最近 5 次已发送的素材不会重复出现。完整说明见 [CHANGELOG.md](./CHANGELOG.md)。
 
 ---
 
@@ -178,6 +178,7 @@
   使用前在火山引擎控制台取得 API Key，并从音色库复制音色 ID；声音上传、训练和重新复刻仍在火山控制台完成，插件不保存训练样本或训练任务。旧版 SiliconFlow 配置不会继续使用，需要重新填写火山引擎凭证和音色。
 * **语音智能切换**：由模型先判断“这句适不适合说出口”，再结合节奏门控和最近发送情况决定是否发语音。
 * **表情与动作意图**：记忆提炼时会记录情绪、动作和表情倾向，让后续表达更像角色自然反应，而不是只会打字。
+* **表情轮换**：普通回复、主动互动和表情工具共用当前会话最近 5 次成功发送记录；刚用过的素材不再重复进入候选，候选不足时宁可不发，也不会强行重复。
 * **工具状态表情**：在 OneBot/NapCat 上，图片、视频、套图、视频理解和联网检索等耗时工具会在用户原消息上标记处理中；同一轮全部工具、后台媒体和最终回复真实完成后，才统一标记成功或失败，其他平台自动跳过。
 
 ---

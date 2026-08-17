@@ -1416,30 +1416,25 @@ function renderFactPair(target, value, emptyText = "暂无内容") {
   if (data.outfit) {
     parts.push(document.createTextNode(`${parts.length ? " " : ""}${data.outfit}`));
   }
-  if (data.hairStyle || data.hair) {
-    const hairLine = node("div", "today-week-appearance-hair", "");
-    hairLine.append(
-      node("span", "today-week-label", data.hairStyle ? `发型：${data.hairStyle}` : "发型："),
+  const appearanceLine = (label, title, detail, className) => {
+    if (!title && !detail) return null;
+    const line = node(
+      "div",
+      `today-week-appearance-detail ${className}`.trim(),
+      "",
     );
-    if (data.hair) {
-      hairLine.append(document.createTextNode(data.hair));
-    }
-    parts.push(hairLine);
-  }
-  if (data.makeup || data.nails) {
-    const groomingLine = node("div", "today-week-appearance-grooming", "");
-    if (data.makeup) {
-      groomingLine.append(
-        node("span", "today-week-label", `妆容：${data.makeup}`),
-      );
-    }
-    if (data.nails) {
-      groomingLine.append(
-        node("span", "today-week-label", `美甲：${data.nails}`),
-      );
-    }
-    parts.push(groomingLine);
-  }
+    line.append(
+      node("span", "today-week-label", title ? `${label}：${title}` : label),
+    );
+    if (detail) line.append(document.createTextNode(detail));
+    return line;
+  };
+  const appearanceLines = [
+    appearanceLine("发型", data.hairStyle, data.hair, "today-week-appearance-hair"),
+    appearanceLine("妆容", data.makeupStyle, data.makeup, "today-week-appearance-makeup"),
+    appearanceLine("美甲", data.nailsStyle, data.nails, "today-week-appearance-nails"),
+  ].filter(Boolean);
+  parts.push(...appearanceLines);
   if (data.decision) {
     parts.push(node("span", "today-week-label", data.decision));
   }
@@ -2793,6 +2788,16 @@ const CLOSET_KIND_LABELS = {
   makeup: "妆容",
   nails: "美甲",
 };
+const CLOSET_KIND_ORDER = [
+  "outfit",
+  "top",
+  "bottom",
+  "footwear",
+  "accessory",
+  "hair",
+  "makeup",
+  "nails",
+];
 const CLOSET_STATUS_LABELS = {
   active: "已启用",
   pending: "待确认",
@@ -3088,9 +3093,16 @@ function closetRecord(group = {}) {
   }
   const body = node("div", "closet-record-body");
   const title = node("div", "closet-record-title");
-  const suffix = items.length > 1 ? `${items.length} 项` : `#${itemId}`;
+  const suffix = items.length > 1 ? `#${itemId} · ${items.length} 项` : `#${itemId}`;
   title.append(node("strong", "", clean(item.title || item.description, "未命名造型")), node("span", "muted", suffix));
-  const source = node("div", "closet-record-source", closetSourceText(item));
+  const confidence = items.length
+    ? Math.round(Math.min(...items.map((entry) => Number(entry.confidence || 0))) * 100)
+    : 0;
+  const sourceRow = node("div", "closet-record-source-row");
+  sourceRow.append(
+    node("span", "closet-record-source", closetSourceText(item)),
+    node("span", "closet-record-confidence", `最低置信度 ${confidence}%`),
+  );
   const statusBadges = node("div", "closet-badges");
   closetGroupBadges(items).forEach(([label, className]) => {
     statusBadges.append(node("span", `closet-badge ${className}`.trim(), label));
@@ -3104,12 +3116,9 @@ function closetRecord(group = {}) {
     button.addEventListener("click", () => state.closetManageMode ? toggleClosetSelected(entry.id) : openClosetDetail(entry.id));
     components.append(button);
   });
-  const confidence = items.length
-    ? Math.round(Math.min(...items.map((entry) => Number(entry.confidence || 0))) * 100)
-    : 0;
   const query = clean(item.source_query, "");
-  const meta = query ? `搜索：${query}` : `最低置信度 ${confidence}%`;
-  body.append(title, source, statusBadges, components, node("div", "closet-record-meta", meta));
+  body.append(title, sourceRow, statusBadges, components);
+  if (query) body.append(node("div", "closet-record-meta", `搜索：${query}`));
   record.append(thumb, body);
   return record;
 }
@@ -3175,6 +3184,26 @@ function closetDetailField(list, label, value, className = "") {
 
 function closetVisualPrompt(item = {}) {
   return clean(item.attributes?.visual_prompt || item.description, "暂无视觉提示词");
+}
+
+function closetGroupKey(item = {}) {
+  return clean(item.source_group_key || item.source_image_hash, "")
+    || `item:${Number(item.id || 0)}`;
+}
+
+function closetDetailItems(item = {}) {
+  const key = closetGroupKey(item);
+  return objectItems(state.closetItems)
+    .filter((entry) => closetGroupKey(entry) === key)
+    .sort((left, right) => {
+      const leftOrder = CLOSET_KIND_ORDER.indexOf(left.kind);
+      const rightOrder = CLOSET_KIND_ORDER.indexOf(right.kind);
+      if (leftOrder !== rightOrder) {
+        return (leftOrder < 0 ? CLOSET_KIND_ORDER.length : leftOrder)
+          - (rightOrder < 0 ? CLOSET_KIND_ORDER.length : rightOrder);
+      }
+      return Number(left.id || 0) - Number(right.id || 0);
+    });
 }
 
 function closetSourceLink(item = {}) {
@@ -3271,9 +3300,16 @@ function renderClosetDetail() {
   remove.addEventListener("click", () => confirmClosetDelete(remove, [item.id], "删除"));
   actions.append(like, dislike, review, toggle, remove);
   const sourceLink = closetSourceLink(item);
-  const prompt = node("section", "closet-detail-prompt");
-  prompt.append(node("p", "closet-detail-description", closetVisualPrompt(item)));
-  copy.append(badges, prompt, grid);
+  const prompts = node("div", "closet-detail-prompts");
+  closetDetailItems(item).forEach((entry) => {
+    const prompt = node("section", "closet-detail-prompt");
+    prompt.append(
+      node("h3", "closet-detail-prompt-title", CLOSET_KIND_LABELS[entry.kind] || "造型"),
+      node("p", "closet-detail-description", closetVisualPrompt(entry)),
+    );
+    prompts.append(prompt);
+  });
+  copy.append(badges, prompts, grid);
   if (sourceLink) copy.append(sourceLink);
   copy.append(actions);
   el.closetDetailBody.replaceChildren(preview, copy);
