@@ -34,6 +34,15 @@ from runtimehelpers import (
 )
 
 
+class FrameworkStopEvent(Event):
+    """Match AstrBot's stop_event behavior when no result exists yet."""
+
+    def stop_event(self):
+        super().stop_event()
+        if self.get_result() is None:
+            self.set_result(self.chain_result([]))
+
+
 class RuntimeMediaTest(unittest.TestCase):
     def test_hidden_context_can_include_expression_channel_when_voice_enabled(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
@@ -710,7 +719,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
 
     async def test_recall_notice_stops_event_before_astrbot_history_save(self):
         runtime, _ = self._make_proactive_runtime([])
-        event = Event(
+        event = FrameworkStopEvent(
             unified_msg_origin="aiocqhttp:FriendMessage:10001", message_id="407090562"
         )
         event.set_result(types.SimpleNamespace(chain=["准备回复"]))

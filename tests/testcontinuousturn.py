@@ -5,6 +5,15 @@ import unittest
 from support import DailyLifeRuntime, Event, LifeSettings, ProviderRequest
 
 
+class FrameworkStopEvent(Event):
+    """Match AstrBot's stop_event behavior when no result exists yet."""
+
+    def stop_event(self):
+        super().stop_event()
+        if self.get_result() is None:
+            self.set_result(self.chain_result([]))
+
+
 class ContinuousTurnTest(unittest.IsolatedAsyncioTestCase):
     @staticmethod
     def _runtime(**overrides):
@@ -22,8 +31,8 @@ class ContinuousTurnTest(unittest.IsolatedAsyncioTestCase):
         return runtime
 
     @staticmethod
-    def _event(text, message_id):
-        event = Event(
+    def _event(text, message_id, event_type=Event):
+        event = event_type(
             unified_msg_origin="aiocqhttp:FriendMessage:10001",
             sender_id="10001",
             message_id=message_id,
@@ -33,7 +42,7 @@ class ContinuousTurnTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_continuous_private_messages_are_merged_into_latest_event(self):
         runtime = self._runtime()
-        first = self._event("明天下雨", "m-first")
+        first = self._event("明天下雨", "m-first", FrameworkStopEvent)
         second = self._event("记得带伞出门", "m-second")
 
         self.assertTrue(runtime.note_continuous_turn_incoming(first))
@@ -43,6 +52,8 @@ class ContinuousTurnTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(await first_settle)
         self.assertTrue(first.is_stopped())
+        self.assertTrue(first.call_llm)
+        self.assertIsNone(first.get_result())
         self.assertTrue(await runtime.settle_continuous_turn(second))
         self.assertEqual(
             runtime.continuous_turn_messages(second),

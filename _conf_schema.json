@@ -1038,6 +1038,75 @@
           "step": 1
         },
         "hint": "缓存文件没有被任何表情记录引用后，至少保留多少小时再清理。"
+      },
+      "auto_send_enabled": {
+        "description": "自动发表情",
+        "type": "bool",
+        "default": true,
+        "hint": "控制普通回复和主动消息是否按语义自动附加表情；关闭后仍可使用表情工具。"
+      },
+      "send_on_regular_reply": {
+        "description": "普通回复附加表情",
+        "type": "bool",
+        "default": true,
+        "hint": "普通聊天文字成功发送后，是否允许再附加一张表情。"
+      },
+      "send_on_proactive_reply": {
+        "description": "闲时回复附加表情",
+        "type": "bool",
+        "default": true,
+        "hint": "闲时续话消息发送后，是否允许附加一张表情。"
+      },
+      "send_on_private_revisit": {
+        "description": "私聊回访附加表情",
+        "type": "bool",
+        "default": true,
+        "hint": "私聊回访消息发送后，是否允许附加一张表情。"
+      },
+      "send_on_commitment": {
+        "description": "承诺提醒附加表情",
+        "type": "bool",
+        "default": true,
+        "hint": "主动承诺提醒发送后，是否允许附加一张表情。"
+      },
+      "tool_send_enabled": {
+        "description": "允许表情工具发送",
+        "type": "bool",
+        "default": true,
+        "hint": "控制 life_emoji_send 工具是否可以主动发送表情；不受自动发表情开关影响。"
+      },
+      "send_cooldown_seconds": {
+        "description": "表情发送冷却（秒）",
+        "type": "int",
+        "default": 0,
+        "slider": {
+          "min": 0,
+          "max": 3600,
+          "step": 10
+        },
+        "hint": "同一会话自动发送表情的最短间隔；设为 0 表示不额外限制。"
+      },
+      "recent_sent_exclusion_limit": {
+        "description": "最近表情排除数量",
+        "type": "int",
+        "default": 5,
+        "slider": {
+          "min": 0,
+          "max": 30,
+          "step": 1
+        },
+        "hint": "匹配时排除当前会话最近成功发送过的表情数量；设为 0 表示允许重复候选。"
+      },
+      "semantic_candidate_limit": {
+        "description": "语义匹配候选数",
+        "type": "int",
+        "default": 8,
+        "slider": {
+          "min": 1,
+          "max": 20,
+          "step": 1
+        },
+        "hint": "交给语义模型判断的表情候选数量；越大匹配范围越广，但会增加提示词长度。"
       }
     }
   },
@@ -1345,7 +1414,7 @@
                   "2K",
                   "4K"
                 ],
-                "hint": "按 Sub2API/Adobe SKU 换算：1K 最长边不超过 1024，2K 不超过 2048；超过 2048 即按 4K，4K 另受总像素限制。"
+                "hint": "gpt-image-2 按 LeoStudio 支持的固定尺寸映射为 1K、2K 或 4K；每个尺寸档位均有独立的宽高组合。"
               },
               "aspect_ratio": {
                 "description": "图片比例",
@@ -1353,21 +1422,17 @@
                 "default": "1:1",
                 "options": [
                   "1:1",
-                  "1:4",
-                  "1:8",
                   "2:3",
                   "3:2",
                   "3:4",
-                  "4:1",
                   "4:3",
                   "4:5",
                   "5:4",
-                  "8:1",
                   "9:16",
                   "16:9",
                   "21:9"
                 ],
-                "hint": "GPT Image 通道会结合图片尺寸换算成对应尺寸参数。"
+                "hint": "gpt-image-2 仅显示上游支持的比例；请求会映射到 LeoStudio 的固定合法尺寸。"
               },
               "timeout_seconds": {
                 "description": "超时（秒）",
@@ -1571,7 +1636,7 @@
                   "2K",
                   "4K"
                 ],
-                "hint": "按 Sub2API/Adobe SKU 换算：1K 最长边不超过 1024，2K 不超过 2048；超过 2048 即按 4K，4K 另受总像素限制。"
+                "hint": "gpt-image-2 按 LeoStudio 支持的固定尺寸映射为 1K、2K 或 4K；每个尺寸档位均有独立的宽高组合。"
               },
               "aspect_ratio": {
                 "description": "图片比例",
@@ -1579,21 +1644,17 @@
                 "default": "1:1",
                 "options": [
                   "1:1",
-                  "1:4",
-                  "1:8",
                   "2:3",
                   "3:2",
                   "3:4",
-                  "4:1",
                   "4:3",
                   "4:5",
                   "5:4",
-                  "8:1",
                   "9:16",
                   "16:9",
                   "21:9"
                 ],
-                "hint": "GPT Image 通道会结合图片尺寸换算成对应尺寸参数。"
+                "hint": "gpt-image-2 仅显示上游支持的比例；请求会映射到 LeoStudio 的固定合法尺寸。"
               },
               "timeout_seconds": {
                 "description": "超时（秒）",

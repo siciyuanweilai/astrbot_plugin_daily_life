@@ -2372,8 +2372,10 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertIn('aria-label="当前穿搭详情，可滚动查看"', html)
         outfit_scroll = style.split(".current-outfit-scroll {", 1)[1].split("}", 1)[0]
         self.assertIn("min-height: 0;", outfit_scroll)
-        self.assertIn("max-height: min(48vh, 400px);", outfit_scroll)
+        self.assertIn("max-height: min(60vh, 32rem);", outfit_scroll)
+        self.assertIn("max-height: min(60dvh, 32rem);", outfit_scroll)
         self.assertIn("overflow-y: auto;", outfit_scroll)
+        self.assertIn("overscroll-behavior: contain;", outfit_scroll)
         self.assertIn("scrollbar-gutter: stable;", outfit_scroll)
         self.assertIn("touch-action: pan-y;", outfit_scroll)
         self.assertIn(

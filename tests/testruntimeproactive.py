@@ -1,5 +1,6 @@
 import unittest
 
+from core.runtime.reply import SegmentPart, SemanticSegmentPlan
 from runtimehelpers import (
     BehaviorPatternRecord,
     BehaviorSceneRecord,
@@ -35,8 +36,6 @@ from runtimehelpers import (
     tempfile,
     types,
 )
-
-from core.runtime.reply import SegmentPart, SemanticSegmentPlan
 
 
 class RuntimeProactiveTest(ResponseGateRuntimeMixin, unittest.TestCase):
@@ -3494,6 +3493,64 @@ class RuntimeProactiveAsyncTest(
         self.assertEqual(len(provider.prompts), 2)
         sent_intents = await runtime.archive.get_expression_intents(10, scope=scope)
         self.assertEqual({item.emoji_id for item in sent_intents}, {1, 2})
+
+    async def test_emoji_send_policy_can_disable_automatic_paths(self):
+        runtime, provider = self._make_proactive_runtime([])
+        runtime.config.emoji.send_on_regular_reply = False
+        scope = "aiocqhttp:FriendMessage:10001"
+        event = Event(unified_msg_origin=scope, message_id="m-policy")
+        plan = SemanticSegmentPlan(
+            (SegmentPart("收到啦"),),
+            valid=True,
+            emotion="轻松",
+            emotion_category="happy",
+            emoji_intent="轻松回应",
+            send_emoji=True,
+            reason="测试普通回复开关",
+        )
+        setattr(event, runtime._SEMANTIC_SEGMENT_PLAN_ATTR, plan)
+
+        self.assertFalse(await runtime.send_semantic_emoji_if_needed(event))
+
+        runtime.config.emoji.send_on_regular_reply = True
+        runtime.config.emoji.send_on_proactive_reply = False
+        await runtime._send_proactive_emoji_if_needed(
+            scope,
+            {"expression_intent": {"send_emoji": True}},
+            source_message_id="m-policy-proactive",
+        )
+
+        self.assertEqual(provider.prompts, [])
+
+    async def test_emoji_tool_can_be_disabled_without_disabling_automatic_policy(self):
+        runtime, _ = self._make_proactive_runtime([])
+        runtime.config.emoji.tool_send_enabled = False
+        event = Event(
+            unified_msg_origin="aiocqhttp:FriendMessage:10001",
+            message_id="m-policy-tool",
+        )
+
+        result = await runtime.life_emoji_send(
+            event,
+            intent="发送表情",
+            emotion="开心",
+            emotion_category="happy",
+        )
+
+        self.assertEqual(result, "表情工具已关闭。")
+
+    async def test_emoji_send_cooldown_reads_in_memory_send_state(self):
+        runtime, _ = self._make_proactive_runtime([])
+        runtime.config.emoji.send_cooldown_seconds = 60
+        scope = "aiocqhttp:FriendMessage:10001"
+        runtime._emoji_sent_store()[scope] = {
+            "sent_at": datetime.datetime.now(datetime.timezone.utc),
+        }
+
+        self.assertTrue(await runtime._emoji_send_cooldown_active(scope))
+
+        runtime.config.emoji.send_cooldown_seconds = 0
+        self.assertFalse(await runtime._emoji_send_cooldown_active(scope))
 
     async def test_normal_reply_semantic_emoji_is_sent_once_after_text_decision(self):
         runtime, provider = self._make_proactive_runtime(

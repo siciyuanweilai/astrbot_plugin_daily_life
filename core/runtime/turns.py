@@ -275,9 +275,6 @@ class ContinuousTurnMixin:
 
     @staticmethod
     def _continuous_turn_stop_event(event: Any) -> None:
-        clearer = getattr(event, "clear_result", None)
-        if callable(clearer):
-            clearer()
         llm_setter = getattr(event, "should_call_llm", None)
         if callable(llm_setter):
             llm_setter(True)
@@ -286,6 +283,11 @@ class ContinuousTurnMixin:
         stopper = getattr(event, "stop_event", None)
         if callable(stopper):
             stopper()
+        # AstrBot creates an empty result when stopping an event with no result.
+        # Clear it afterward so RespondStage has nothing to send or post-process.
+        clearer = getattr(event, "clear_result", None)
+        if callable(clearer):
+            clearer()
 
     def stop_stale_continuous_turn_event(self, event: Any) -> bool:
         if self._continuous_turn_event_identity(event) is None:

@@ -256,11 +256,13 @@ class RecallMixin:
     def stop_recalled_event_before_history(self, event: Any) -> bool:
         if not self._event_message_was_recalled(event):
             return False
-        clearer = getattr(event, "clear_result", None)
-        if callable(clearer):
-            clearer()
         stopper = getattr(event, "stop_event", None)
         if callable(stopper):
             stopper()
+        # AstrBot creates an empty result when stopping an event with no result.
+        # Clear it afterward so RespondStage has nothing to send or post-process.
+        clearer = getattr(event, "clear_result", None)
+        if callable(clearer):
+            clearer()
         self.log_recalled_history_skip(event)
         return True

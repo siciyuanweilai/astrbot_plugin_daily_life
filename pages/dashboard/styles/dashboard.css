@@ -233,10 +233,11 @@
 
 .current-outfit-scroll {
   min-height: 0;
-  max-height: 400px;
-  max-height: min(48vh, 400px);
+  max-height: min(60vh, 32rem);
+  max-height: min(60dvh, 32rem);
   overflow-x: hidden;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding-inline-end: 8px;
   scrollbar-color: rgba(217, 68, 126, 0.46) transparent;
   scrollbar-gutter: stable;

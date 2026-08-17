@@ -1024,6 +1024,10 @@ class GeminiImageService:
         effective_aspect_ratio = (
             aspect_ratio if aspect_ratio in IMAGE_ASPECT_RATIOS else route.aspect_ratio
         )
+        if route.protocol == "openai":
+            effective_aspect_ratio = openai.supported_aspect_ratio(
+                route.model, effective_aspect_ratio
+            )
         effective_resolution = resolution or str(route.resolution or "").strip().upper()
         if effective_resolution not in IMAGE_RESOLUTIONS:
             raise ValueError("图片通道分辨率只能是 1K、2K 或 4K")
@@ -1056,9 +1060,9 @@ class GeminiImageService:
     @staticmethod
     def _request_size_label(route: ImageRoute) -> str:
         if route.protocol in {"openai", "grok"}:
-            return openai.size_for(route.resolution, route.aspect_ratio).replace(
-                "x", "×"
-            )
+            return openai.size_for(
+                route.resolution, route.aspect_ratio, model=route.model
+            ).replace("x", "×")
         return f"{route.resolution}档位"
 
     @staticmethod

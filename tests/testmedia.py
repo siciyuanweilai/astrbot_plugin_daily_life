@@ -780,7 +780,7 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(calls[0][1]["Authorization"], "Bearer relay-key")
         self.assertEqual(calls[0][2]["model"], "gpt-image-2")
-        self.assertEqual(calls[0][2]["size"], "2048x1152")
+        self.assertEqual(calls[0][2]["size"], "2048x1136")
         self.assertIn("雨夜生活照", calls[0][2]["prompt"])
         self.assertIsNone(calls[0][3])
         self.assertEqual(_timeout_total(calls[0][4]), 180)
@@ -1135,28 +1135,70 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-    def test_openai_size_mapping_honors_every_resolution_tier(self):
-        self.assertEqual(openai_image.size_for("1K", "1:1"), "1024x1024")
-        self.assertEqual(openai_image.size_for("1K", "16:9"), "1024x576")
-        self.assertEqual(openai_image.size_for("1K", "9:16"), "576x1024")
-        self.assertEqual(openai_image.size_for("2K", "1:1"), "2048x2048")
-        self.assertEqual(openai_image.size_for("2K", "16:9"), "2048x1152")
-        self.assertEqual(openai_image.size_for("2K", "9:16"), "1152x2048")
-        self.assertEqual(openai_image.size_for("4K", "1:1"), "2880x2880")
-        self.assertEqual(openai_image.size_for("4K", "3:2"), "3504x2336")
-        self.assertEqual(openai_image.size_for("4K", "4:3"), "3296x2472")
-        self.assertEqual(openai_image.size_for("4K", "5:4"), "3200x2560")
-        self.assertEqual(openai_image.size_for("4K", "2:3"), "2336x3504")
-        self.assertEqual(openai_image.size_for("4K", "3:4"), "2472x3296")
-        self.assertEqual(openai_image.size_for("4K", "4:5"), "2560x3200")
-        self.assertEqual(openai_image.size_for("4K", "16:9"), "3840x2160")
-        self.assertEqual(openai_image.size_for("4K", "9:16"), "2160x3840")
+    def test_gpt_image_2_uses_leostudio_fixed_size_catalog(self):
+        expected = {
+            "1K": {
+                "2:3": "848x1264",
+                "1:1": "1024x1024",
+                "16:9": "1376x768",
+                "3:2": "1264x848",
+                "3:4": "896x1200",
+                "5:4": "1152x928",
+                "4:3": "1200x896",
+                "4:5": "928x1152",
+                "9:16": "768x1376",
+                "21:9": "1584x672",
+            },
+            "2K": {
+                "2:3": "1376x2048",
+                "1:1": "2048x2048",
+                "16:9": "2048x1136",
+                "3:2": "2048x1376",
+                "3:4": "1536x2048",
+                "5:4": "2048x1648",
+                "4:3": "2048x1536",
+                "4:5": "1648x2048",
+                "9:16": "1136x2048",
+                "21:9": "2048x864",
+            },
+            "4K": {
+                "2:3": "2336x3504",
+                "1:1": "2880x2880",
+                "16:9": "3584x2016",
+                "3:2": "3504x2336",
+                "3:4": "2448x3264",
+                "5:4": "3200x2560",
+                "4:3": "3264x2448",
+                "4:5": "2560x3200",
+                "9:16": "2016x3584",
+                "21:9": "3808x1632",
+            },
+        }
+        for resolution, ratios in expected.items():
+            for aspect_ratio, size in ratios.items():
+                with self.subTest(resolution=resolution, aspect_ratio=aspect_ratio):
+                    self.assertEqual(
+                        openai_image.size_for(
+                            resolution,
+                            aspect_ratio,
+                            model="gpt-image-2",
+                        ),
+                        size,
+                    )
+        self.assertEqual(
+            openai_image.size_for("1K", "1:4", model="gpt-image-2"),
+            "768x1376",
+        )
+        self.assertEqual(
+            openai_image.size_for("1K", "4:1", model="gpt-image-2"),
+            "1584x672",
+        )
         with self.assertRaisesRegex(ValueError, "只能是 1K、2K 或 4K"):
             openai_image.size_for("", "1:1")
         with self.assertRaisesRegex(ValueError, "只能是 1K、2K 或 4K"):
             openai_image.size_for("8K", "1:1")
 
-    def test_openai_sizes_never_exceed_upstream_pixel_budget(self):
+    def test_gpt_image_2_always_maps_to_supported_aspect_ratios(self):
         ratios = (
             "1:1",
             "1:4",
@@ -1176,17 +1218,35 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         for resolution in ("1K", "2K", "4K"):
             for ratio in ratios:
                 with self.subTest(resolution=resolution, ratio=ratio):
-                    width, height = (
-                        int(value)
-                        for value in openai_image.size_for(resolution, ratio).split("x")
+                    self.assertIn(
+                        openai_image.supported_aspect_ratio("gpt-image-2", ratio),
+                        {"2:3", "1:1", "16:9", "3:2", "3:4", "5:4", "4:3", "4:5", "9:16", "21:9"},
                     )
-                    self.assertLessEqual(width * height, 3840 * 2160)
-                    if resolution == "1K":
-                        self.assertLessEqual(max(width, height), 1024)
-                    elif resolution == "2K":
-                        self.assertLessEqual(max(width, height), 2048)
-                    else:
-                        self.assertGreater(max(width, height), 2048)
+
+    def test_gpt_image_2_normalizes_legacy_unsupported_ratio_before_prompting(self):
+        route = ImageRoute(
+            api_url="https://openai-relay.example/v1",
+            api_key="relay-key",
+            model="gpt-image-2",
+            label="GPT Image",
+            protocol="openai",
+            resolution="1K",
+            aspect_ratio="1:4",
+            timeout_seconds=120,
+            origin="https://openai-relay.example",
+        )
+
+        normalized = GeminiImageService._route_with_options(route, "", "")
+
+        self.assertEqual(normalized.aspect_ratio, "9:16")
+        self.assertEqual(
+            openai_image.size_for(
+                normalized.resolution,
+                normalized.aspect_ratio,
+                model=normalized.model,
+            ),
+            "768x1376",
+        )
 
     async def test_generate_image_rejects_invalid_requested_resolution(self):
         settings = LifeSettings.from_dict(
@@ -1395,7 +1455,7 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(generated.path.exists())
         self.assertEqual(calls[0][0], "https://openai-relay.example/v1/images/edits")
-        self.assertEqual(_form_field(calls[0][3], "size"), "2160x3840")
+        self.assertEqual(_form_field(calls[0][3], "size"), "2016x3584")
         prompt = _form_field(calls[0][3], "prompt")
         self.assertIn("9:16 比例新图片", prompt)
         self.assertNotIn("1:1 比例", prompt)
@@ -1460,7 +1520,7 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertTrue(generated.path.exists())
-        self.assertEqual(_form_field(calls[0][3], "size"), "3840x2160")
+        self.assertEqual(_form_field(calls[0][3], "size"), "3584x2016")
         prompt = _form_field(calls[0][3], "prompt")
         self.assertIn("16:9 比例新图片", prompt)
         self.assertNotIn("9:16 比例", prompt)

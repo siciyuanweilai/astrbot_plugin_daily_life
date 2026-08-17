@@ -1121,6 +1121,12 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertEqual(openai_channel_items["model"]["default"], "gpt-image-2")
         self.assertEqual(openai_channel_items["resolution"]["default"], "4K")
         self.assertEqual(openai_channel_items["aspect_ratio"]["default"], "1:1")
+        self.assertEqual(
+            openai_channel_items["aspect_ratio"]["options"],
+            ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"],
+        )
+        self.assertNotIn("1:4", openai_channel_items["aspect_ratio"]["options"])
+        self.assertIn("固定合法尺寸", openai_channel_items["aspect_ratio"]["hint"])
         self.assertEqual(openai_channel_items["timeout_seconds"]["default"], 120)
         grok_text_items = image_items["text_channels"]["templates"]["grok"]["items"]
         grok_edit_items = image_items["edit_channels"]["templates"]["grok"]["items"]
@@ -1503,9 +1509,10 @@ class LifeSettingsTest(unittest.TestCase):
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertIn("version: 1.2.8", metadata)
+        self.assertIn("version: 1.2.9", metadata)
         self.assertIn('astrbot_version: ">=4.26,<5"', metadata)
-        self.assertIn("version-1.2.8", readme)
+        self.assertIn("version-1.2.9", readme)
+        self.assertIn("v1.2.9 · 2026-08-18", changelog)
         self.assertIn("v1.2.8 · 2026-08-17", changelog)
         self.assertIn("v1.2.7 · 2026-08-16", changelog)
         self.assertIn("v1.2.6 · 2026-08-15", changelog)
@@ -1513,6 +1520,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertIn("v1.2.4 · 2026-08-12", changelog)
         self.assertIn("v1.2.3 · 2026-08-11", changelog)
         self.assertIn("v1.2.2 · 2026-08-09", changelog)
+        self.assertLess(changelog.index("v1.2.9"), changelog.index("v1.2.8"))
         self.assertLess(changelog.index("v1.2.8"), changelog.index("v1.2.7"))
         self.assertLess(changelog.index("v1.2.7"), changelog.index("v1.2.6"))
         self.assertLess(changelog.index("v1.2.6"), changelog.index("v1.2.5"))
@@ -1520,6 +1528,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertLess(changelog.index("v1.2.4"), changelog.index("v1.2.3"))
         self.assertLess(changelog.index("v1.2.3"), changelog.index("v1.2.2"))
         self.assertLess(changelog.index("v1.2.2"), changelog.index("v1.2.1"))
+        release_129 = changelog.split("## 🌸 v1.2.9", 1)[1].split("## 🌸 v1.2.8", 1)[0]
         release_128 = changelog.split("## 🌸 v1.2.8", 1)[1].split("## 🌸 v1.2.7", 1)[0]
         release_127 = changelog.split("## 🌸 v1.2.7", 1)[1].split("## 🌸 v1.2.6", 1)[0]
         release_126 = changelog.split("## 🌸 v1.2.6", 1)[1].split("## 🌸 v1.2.5", 1)[0]
@@ -1528,6 +1537,10 @@ class LifeSettingsTest(unittest.TestCase):
         release_123 = changelog.split("## 🌸 v1.2.3", 1)[1].split("## 🌸 v1.2.2", 1)[0]
         release_122 = changelog.split("## 🌸 v1.2.2", 1)[1].split("## 🌸 v1.2.1", 1)[0]
         release_121 = changelog.split("## 🌸 v1.2.1", 1)[1].split("## 🌸 v1.2.0", 1)[0]
+        self.assertIn("连续消息与回复可靠性", release_129)
+        self.assertIn("合法尺寸", release_129)
+        self.assertIn("表情发送冷却", release_129)
+        self.assertIn("审美影响程度", release_129)
         self.assertIn("Grok 图片", release_123)
         self.assertIn("运动、饮食与食谱闭环", release_123)
         self.assertIn("最近 5 次成功发送", release_128)

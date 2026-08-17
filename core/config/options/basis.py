@@ -322,6 +322,15 @@ class EmojiSettings:
     review_batch_size: int = 3
     inactive_record_keep_days: int = 30
     orphan_cache_grace_hours: int = 24
+    auto_send_enabled: bool = True
+    send_on_regular_reply: bool = True
+    send_on_proactive_reply: bool = True
+    send_on_private_revisit: bool = True
+    send_on_commitment: bool = True
+    tool_send_enabled: bool = True
+    send_cooldown_seconds: int = 0
+    recent_sent_exclusion_limit: int = 5
+    semantic_candidate_limit: int = 8
 
     @staticmethod
     def from_dict(data: Any) -> EmojiSettings:
@@ -341,6 +350,27 @@ class EmojiSettings:
             ),
             orphan_cache_grace_hours=as_int(
                 data.get("orphan_cache_grace_hours", 24), 24, 1, 168
+            ),
+            auto_send_enabled=as_bool(data.get("auto_send_enabled", True), True),
+            send_on_regular_reply=as_bool(
+                data.get("send_on_regular_reply", True), True
+            ),
+            send_on_proactive_reply=as_bool(
+                data.get("send_on_proactive_reply", True), True
+            ),
+            send_on_private_revisit=as_bool(
+                data.get("send_on_private_revisit", True), True
+            ),
+            send_on_commitment=as_bool(data.get("send_on_commitment", True), True),
+            tool_send_enabled=as_bool(data.get("tool_send_enabled", True), True),
+            send_cooldown_seconds=as_int(
+                data.get("send_cooldown_seconds", 0), 0, 0, 86400
+            ),
+            recent_sent_exclusion_limit=as_int(
+                data.get("recent_sent_exclusion_limit", 5), 5, 0, 30
+            ),
+            semantic_candidate_limit=as_int(
+                data.get("semantic_candidate_limit", 8), 8, 1, 20
             ),
         )
 

@@ -13,6 +13,44 @@ from .pipe import ImageRequest, ImageRoute
 _TIER_MAX_EDGES = {"1K": 1024, "2K": 2048, "4K": 3840}
 _MAX_TOTAL_PIXELS = 3840 * 2160
 _SIZE_ALIGNMENT = 8
+_GPT_IMAGE_2_SIZES = {
+    "1K": {
+        "2:3": "848x1264",
+        "1:1": "1024x1024",
+        "16:9": "1376x768",
+        "3:2": "1264x848",
+        "3:4": "896x1200",
+        "5:4": "1152x928",
+        "4:3": "1200x896",
+        "4:5": "928x1152",
+        "9:16": "768x1376",
+        "21:9": "1584x672",
+    },
+    "2K": {
+        "2:3": "1376x2048",
+        "1:1": "2048x2048",
+        "16:9": "2048x1136",
+        "3:2": "2048x1376",
+        "3:4": "1536x2048",
+        "5:4": "2048x1648",
+        "4:3": "2048x1536",
+        "4:5": "1648x2048",
+        "9:16": "1136x2048",
+        "21:9": "2048x864",
+    },
+    "4K": {
+        "2:3": "2336x3504",
+        "1:1": "2880x2880",
+        "16:9": "3584x2016",
+        "3:2": "3504x2336",
+        "3:4": "2448x3264",
+        "5:4": "3200x2560",
+        "4:3": "3264x2448",
+        "4:5": "2560x3200",
+        "9:16": "2016x3584",
+        "21:9": "3808x1632",
+    },
+}
 
 
 class SimpleFormData:
@@ -32,6 +70,7 @@ def build_request(
 ) -> ImageRequest:
     base = normalize_openai_base_url(route.api_url)
     headers = {"Authorization": f"Bearer {route.api_key}"}
+    size = size_for(resolution, aspect_ratio, model=route.model)
     images = inline_images(parts)
     if not images:
         return ImageRequest(
@@ -40,14 +79,14 @@ def build_request(
             payload={
                 "model": route.model,
                 "prompt": prompt_from_parts(parts),
-                "size": size_for(resolution, aspect_ratio),
+                "size": size,
             },
         )
 
     form = form_data()
     form.add_field("model", route.model)
     form.add_field("prompt", prompt_from_parts(parts))
-    form.add_field("size", size_for(resolution, aspect_ratio))
+    form.add_field("size", size)
     for index, (image_bytes, mime_type) in enumerate(images, start=1):
         _, ext = image_mime_and_ext(image_bytes)
         form.add_field(
@@ -103,17 +142,43 @@ def inline_images(parts: list[dict[str, Any]]) -> list[tuple[bytes, str]]:
     return images
 
 
-def size_for(resolution: str, aspect_ratio: str) -> str:
+def size_for(
+    resolution: str,
+    aspect_ratio: str,
+    *,
+    model: str = "gpt-image-2",
+) -> str:
     resolution = str(resolution or "").strip().upper()
     if resolution not in _TIER_MAX_EDGES:
         raise ValueError("图片输出分辨率只能是 1K、2K 或 4K")
-    ratio = str(aspect_ratio or "1:1").strip()
-    try:
-        width_ratio, height_ratio = (int(value) for value in ratio.split(":", 1))
-    except (TypeError, ValueError):
-        width_ratio = height_ratio = 1
-    if width_ratio <= 0 or height_ratio <= 0:
-        width_ratio = height_ratio = 1
+    if str(model or "").strip().lower() == "gpt-image-2":
+        return _GPT_IMAGE_2_SIZES[resolution][
+            supported_aspect_ratio(model, aspect_ratio)
+        ]
+    return _generic_size_for(resolution, aspect_ratio)
+
+
+def supported_aspect_ratio(model: str, aspect_ratio: str) -> str:
+    ratio, width_ratio, height_ratio = _normalized_ratio(aspect_ratio)
+    if str(model or "").strip().lower() != "gpt-image-2":
+        return ratio
+    supported = _GPT_IMAGE_2_SIZES["1K"]
+    if ratio in supported:
+        return ratio
+    target = width_ratio / height_ratio
+    return min(
+        supported,
+        key=lambda candidate: abs(
+            math.log(
+                (int(candidate.split(":", 1)[0]) / int(candidate.split(":", 1)[1]))
+                / target
+            )
+        ),
+    )
+
+
+def _generic_size_for(resolution: str, aspect_ratio: str) -> str:
+    _ratio, width_ratio, height_ratio = _normalized_ratio(aspect_ratio)
     if width_ratio == height_ratio:
         edge = _TIER_MAX_EDGES[resolution]
         width = height = edge
@@ -134,6 +199,20 @@ def size_for(resolution: str, aspect_ratio: str) -> str:
         height_ratio,
     )
     return f"{width}x{height}"
+
+
+def _normalized_ratio(aspect_ratio: str) -> tuple[str, int, int]:
+    ratio = str(aspect_ratio or "1:1").strip()
+    try:
+        width_ratio, height_ratio = (int(value) for value in ratio.split(":", 1))
+    except (TypeError, ValueError):
+        width_ratio = height_ratio = 1
+    if width_ratio <= 0 or height_ratio <= 0:
+        width_ratio = height_ratio = 1
+    divisor = math.gcd(width_ratio, height_ratio)
+    width_ratio //= divisor
+    height_ratio //= divisor
+    return f"{width_ratio}:{height_ratio}", width_ratio, height_ratio
 
 
 def _fit_total_pixel_budget(

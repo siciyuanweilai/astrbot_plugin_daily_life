@@ -20,6 +20,102 @@ class ProactiveGestureMixin:
     _EMOJI_RECENT_SENT_EXCLUSION_LIMIT = 5
     _SEMANTIC_EMOJI_ATTEMPTED_ATTR = "_daily_life_semantic_emoji_attempted"
 
+    def _emoji_config_value(self, name: str, default: Any) -> Any:
+        settings = getattr(getattr(self, "config", None), "emoji", None)
+        return getattr(settings, name, default)
+
+    def _emoji_auto_send_allowed(self, source: str) -> bool:
+        if not bool(self._emoji_config_value("auto_send_enabled", True)):
+            return False
+        source_field = {
+            "regular_reply": "send_on_regular_reply",
+            "proactive_reply": "send_on_proactive_reply",
+            "private_revisit": "send_on_private_revisit",
+            "proactive_commitment": "send_on_commitment",
+        }.get(str(source or "").strip())
+        return source_field is None or bool(self._emoji_config_value(source_field, True))
+
+    def _emoji_tool_send_allowed(self) -> bool:
+        return bool(self._emoji_config_value("tool_send_enabled", True))
+
+    def _emoji_send_cooldown_seconds(self) -> int:
+        try:
+            return max(0, int(self._emoji_config_value("send_cooldown_seconds", 0)))
+        except (TypeError, ValueError):
+            return 0
+
+    def _emoji_recent_sent_exclusion_limit(self) -> int:
+        try:
+            return max(
+                0,
+                int(
+                    self._emoji_config_value(
+                        "recent_sent_exclusion_limit",
+                        self._EMOJI_RECENT_SENT_EXCLUSION_LIMIT,
+                    )
+                ),
+            )
+        except (TypeError, ValueError):
+            return self._EMOJI_RECENT_SENT_EXCLUSION_LIMIT
+
+    def _emoji_model_candidate_limit(self) -> int:
+        try:
+            return max(
+                1,
+                int(
+                    self._emoji_config_value(
+                        "semantic_candidate_limit", self._EMOJI_MODEL_CANDIDATE_LIMIT
+                    )
+                ),
+            )
+        except (TypeError, ValueError):
+            return self._EMOJI_MODEL_CANDIDATE_LIMIT
+
+    @staticmethod
+    def _emoji_timestamp(value: Any) -> datetime.datetime | None:
+        if isinstance(value, datetime.datetime):
+            parsed = value
+        else:
+            raw = str(value or "").strip()
+            if not raw:
+                return None
+            try:
+                parsed = datetime.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except ValueError:
+                try:
+                    parsed = datetime.datetime.strptime(raw, "%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+        return parsed.astimezone(datetime.timezone.utc)
+
+    async def _emoji_send_cooldown_active(self, scope: str) -> bool:
+        cooldown = self._emoji_send_cooldown_seconds()
+        scope = str(scope or "").strip()
+        if cooldown <= 0 or not scope:
+            return False
+        now = datetime.datetime.now(datetime.timezone.utc)
+        state = self._emoji_sent_store().get(scope)
+        if isinstance(state, dict):
+            sent_at = self._emoji_timestamp(state.get("sent_at"))
+            if sent_at and (now - sent_at).total_seconds() < cooldown:
+                return True
+        getter = getattr(getattr(self, "archive", None), "get_expression_intents", None)
+        if not callable(getter):
+            return False
+        try:
+            records = await getter(limit=20, scope=scope)
+        except Exception:
+            return False
+        for record in records:
+            if not bool(getattr(record, "send_emoji", False)):
+                continue
+            created_at = self._emoji_timestamp(getattr(record, "created_at", ""))
+            if created_at and (now - created_at).total_seconds() < cooldown:
+                return True
+        return False
+
     def _emoji_sent_store(self) -> dict[str, dict[str, Any]]:
         store = getattr(self, "_emoji_sent_state", None)
         if not isinstance(store, dict):
@@ -42,6 +138,7 @@ class ProactiveGestureMixin:
             "last_asset_key": self._emoji_asset_key(emoji),
             "last_source_message_id": str(source_message_id or "").strip(),
             "source": str(source or "").strip(),
+            "sent_at": datetime.datetime.now(datetime.timezone.utc),
         }
 
     def _emoji_duplicate_skip_reason(
@@ -89,6 +186,9 @@ class ProactiveGestureMixin:
             if callable(marker):
                 marker(event, "life_emoji_send", outcome)
 
+        if not self._emoji_tool_send_allowed():
+            mark_outcome("fallback")
+            return "表情工具已关闭。"
         scope = self._emoji_scope(event)
         if not scope:
             mark_outcome("fallback")
@@ -208,7 +308,11 @@ class ProactiveGestureMixin:
 
     async def send_semantic_emoji_if_needed(self, event: Any) -> bool:
         """在普通聊天文字成功投递后，按语义裁定附加一张表情。"""
-        if event is None or getattr(event, self._SEMANTIC_EMOJI_ATTEMPTED_ATTR, False):
+        if (
+            event is None
+            or not self._emoji_auto_send_allowed("regular_reply")
+            or getattr(event, self._SEMANTIC_EMOJI_ATTEMPTED_ATTR, False)
+        ):
             return False
         plan_getter = getattr(self, "_semantic_expression_plan_from_event", None)
         plan = plan_getter(event) if callable(plan_getter) else None
@@ -219,6 +323,9 @@ class ProactiveGestureMixin:
         scope = self._emoji_scope(event)
         if not scope:
             logger.debug(f"{LOG_PREFIX} 普通回复表情跳过：当前会话不可发送表情。")
+            return False
+        if await self._emoji_send_cooldown_active(scope):
+            logger.debug(f"{LOG_PREFIX} 普通回复表情跳过：当前会话仍在冷却期。")
             return False
         source_message_id = self._event_message_id(event)
         previous = self._emoji_sent_store().get(scope)
@@ -298,6 +405,11 @@ class ProactiveGestureMixin:
         if not source_message_id and source_event is not None:
             source_message_id = self._event_message_id(source_event)
         source = str(payload.get("source") or "proactive_reply").strip()
+        if not self._emoji_auto_send_allowed(source):
+            return
+        if await self._emoji_send_cooldown_active(target_scope):
+            logger.debug(f"{LOG_PREFIX} {source}表情跳过：当前会话仍在冷却期。")
+            return
         if self._emoji_already_sent_for_source(
             target_scope, source_message_id=source_message_id
         ):
@@ -454,7 +566,8 @@ class ProactiveGestureMixin:
             },
             ensure_ascii=False,
         )
-        limit = min(len(assets), self._EMOJI_MODEL_CANDIDATE_LIMIT * 2)
+        candidate_limit = self._emoji_model_candidate_limit()
+        limit = min(len(assets), candidate_limit * 2)
         ranked = await self.rank_embedding_groups(
             query,
             {
@@ -487,18 +600,19 @@ class ProactiveGestureMixin:
                 int(getattr(asset, "id", 0) or 0),
             )
         )
-        return pool[: self._EMOJI_MODEL_CANDIDATE_LIMIT]
+        return pool[:candidate_limit]
 
     async def _recent_sent_emoji_ids(self, scope: str) -> set[int]:
         """读取当前会话最近成功投递的表情，用于避免短期反复复用。"""
 
         scope = str(scope or "").strip()
+        exclusion_limit = self._emoji_recent_sent_exclusion_limit()
         getter = getattr(self.archive, "get_expression_intents", None)
-        if not scope or not callable(getter):
+        if exclusion_limit <= 0 or not scope or not callable(getter):
             return set()
         try:
             records = await getter(
-                limit=self._EMOJI_RECENT_SENT_EXCLUSION_LIMIT * 4,
+                limit=exclusion_limit * 4,
                 scope=scope,
             )
         except Exception:
@@ -514,7 +628,7 @@ class ProactiveGestureMixin:
                 continue
             recent_ids.add(emoji_id)
             sent_count += 1
-            if sent_count >= self._EMOJI_RECENT_SENT_EXCLUSION_LIMIT:
+            if sent_count >= exclusion_limit:
                 break
         return recent_ids
 

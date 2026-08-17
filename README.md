@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.2.8-ef6f8f" alt="版本 1.2.8"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.2.9-ef6f8f" alt="版本 1.2.9"></a>
   <img src="https://img.shields.io/badge/AstrBot-%3E%3D4.26%2C%3C5-4c78a8" alt="AstrBot >= 4.26,<5">
   <img src="https://img.shields.io/badge/platform-aiocqhttp%20%7C%20weixin__oc-4f8a66" alt="支持 aiocqhttp 和 weixin_oc">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-555555" alt="MIT License"></a>
@@ -34,7 +34,7 @@
 [![Yousa Ling](https://count.getloli.com/get/@DailyLife?theme=yousa-ling)](https://github.com/siciyuanweilai/astrbot_plugin_daily_life)
 
 > [!TIP]
-> **v1.2.8 重点更新**：视觉衣橱现在会作为自主换装的实际来源，角色人设中明确的稳定外观优先保留；妆容、美甲与发型分开保存和展示，当前穿搭面板可在固定区域内完整滚动查看。聊天分段保留语义分段与自然分段兜底，表情会按会话轮换，最近 5 次已发送的素材不会重复出现。完整说明见 [CHANGELOG.md](./CHANGELOG.md)。
+> **v1.2.9 重点更新**：连续消息会在短时间内收束为统一话轮，过期生成结果不再覆盖新回复；日程和生活裁定增加单次模型超时与备用模型降级。表情自动发送、冷却和最近素材排除均可配置，穿搭审美影响范围和妆容、美甲等外观字段保持清晰。完整说明见 [CHANGELOG.md](./CHANGELOG.md)。
 
 ---
 
