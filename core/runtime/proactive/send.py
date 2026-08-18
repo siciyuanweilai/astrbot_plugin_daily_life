@@ -13,6 +13,7 @@ except Exception:
     Video = None
 
 from ...models import ExpressionIntentRecord, ExpressionReviewRecord
+from ...sources.dispatch import ScopeDeliveryError
 from ..markers import LOG_PREFIX
 
 
@@ -45,6 +46,7 @@ class ProactiveSendMixin:
         send_payload: dict[str, Any] | None = None,
         source_event: Any = None,
         source_message_id: str = "",
+        raise_delivery_errors: bool = False,
     ) -> bool:
         target_scope = str(target_scope or "").strip()
         reply_text = self._normalize_proactive_reply_text(reply_text)
@@ -81,6 +83,7 @@ class ProactiveSendMixin:
                 reply_text,
                 source_event=source_event,
                 source_message_id=source_message_id,
+                raise_delivery_errors=raise_delivery_errors,
             ):
                 return False
             await self._append_proactive_send_history(target_scope, reply_text)
@@ -99,6 +102,8 @@ class ProactiveSendMixin:
                 relationship=relationship,
                 contact_type=contact_type,
             )
+            if raise_delivery_errors and isinstance(exc, ScopeDeliveryError):
+                raise
             return False
 
     async def _mark_failed_proactive_contact(

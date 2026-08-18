@@ -156,6 +156,7 @@ def _upgrade_unversioned_baseline(conn: sqlite3.Connection) -> None:
                 target_version=SCHEMA_VERSION,
                 migrations=MIGRATIONS,
             )
+        _ensure_chat_memory_retry_columns(conn)
         validate_schema(conn)
         conn.commit()
     except Exception:
@@ -172,6 +173,7 @@ def _upgrade_schema(conn: sqlite3.Connection, current_version: int) -> None:
             target_version=SCHEMA_VERSION,
             migrations=MIGRATIONS,
         )
+        _ensure_chat_memory_retry_columns(conn)
         validate_schema(conn)
         conn.commit()
     except Exception:
@@ -202,9 +204,31 @@ def init_schema(conn: sqlite3.Connection) -> None:
                 f"数据库结构版本 {version} 高于当前支持版本 {SCHEMA_VERSION}"
             )
         else:
+            _ensure_chat_memory_retry_columns(conn)
             validate_schema(conn)
     except SchemaMigrationError as exc:
         raise ArchiveSchemaError(str(exc)) from exc
+
+
+def _ensure_chat_memory_retry_columns(conn: sqlite3.Connection) -> None:
+    """为 v13 数据库补齐聊天记忆重试字段。
+
+    这是幂等校准而非新版本迁移，避免已发布的 v13 数据库因缺少字段
+    无法启动；新库字段由 conversation DDL 直接创建。
+    """
+
+    columns = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(chat_memory_batches)").fetchall()
+    }
+    for name, definition in {
+        "next_attempt_at": "TEXT NOT NULL DEFAULT ''",
+        "failed_at": "TEXT NOT NULL DEFAULT ''",
+    }.items():
+        if name not in columns:
+            conn.execute(
+                f"ALTER TABLE chat_memory_batches ADD COLUMN {name} {definition}"
+            )
 
 
 def drop_schema(conn: sqlite3.Connection) -> None:

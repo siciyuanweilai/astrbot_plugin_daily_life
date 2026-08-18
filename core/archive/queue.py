@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 from typing import Any
 
 
@@ -170,7 +171,7 @@ class ChatMemoryQueueArchiveMixin:
                 "SELECT * FROM chat_memory_batches WHERE batch_key = ?",
                 (batch_key,),
             ).fetchone()
-            if existing and str(existing["status"]) == "completed":
+            if existing and str(existing["status"]) in {"completed", "dead"}:
                 self._conn.execute(
                     "UPDATE chat_memory_sessions SET last_processed_row_id = MAX(last_processed_row_id, ?), updated_at = CURRENT_TIMESTAMP WHERE session_id = ?",
                     (last_id, self._text(session_id)),
@@ -178,9 +179,19 @@ class ChatMemoryQueueArchiveMixin:
                 self._conn.commit()
                 return None
             if existing:
+                next_attempt_at = str(existing["next_attempt_at"] or "")
+                if next_attempt_at:
+                    try:
+                        due_at = datetime.datetime.fromisoformat(next_attempt_at)
+                        now = datetime.datetime.now(due_at.tzinfo)
+                        if due_at > now:
+                            return None
+                    except ValueError:
+                        pass
                 batch_id = int(existing["id"])
+                attempt_count = int(existing["attempt_count"] or 1) + 1
                 self._conn.execute(
-                    "UPDATE chat_memory_batches SET status = 'processing', attempt_count = attempt_count + 1, error = '' WHERE id = ?",
+                    "UPDATE chat_memory_batches SET status = 'processing', attempt_count = attempt_count + 1, error = '', next_attempt_at = '' WHERE id = ?",
                     (batch_id,),
                 )
             else:
@@ -199,12 +210,14 @@ class ChatMemoryQueueArchiveMixin:
                     ),
                 )
                 batch_id = int(cursor.lastrowid)
+                attempt_count = 1
             self._conn.commit()
             return {
                 "id": batch_id,
                 "batch_key": batch_key,
                 "session_id": session_id,
                 "messages": selected,
+                "attempt_count": attempt_count,
             }
 
         return await self._run_db(write)
@@ -249,15 +262,51 @@ class ChatMemoryQueueArchiveMixin:
 
         await self._run_db(write)
 
-    async def fail_chat_memory_batch(self, batch_id: int, error: str) -> None:
-        def write() -> None:
-            self._conn.execute(
-                "UPDATE chat_memory_batches SET status = 'failed', error = ? WHERE id = ?",
-                (self._text(error)[:1000], int(batch_id)),
-            )
-            self._conn.commit()
+    async def fail_chat_memory_batch(
+        self,
+        batch_id: int,
+        error: str,
+        *,
+        retry_after_seconds: float = 0.0,
+        max_attempts: int = 4,
+        permanent: bool = False,
+    ) -> str:
+        """记录失败并把批次置于退避、或移动到可审计的死信终态。"""
 
-        await self._run_db(write)
+        def write() -> str:
+            batch = self._conn.execute(
+                "SELECT session_id, last_row_id, attempt_count FROM chat_memory_batches WHERE id = ?",
+                (int(batch_id),),
+            ).fetchone()
+            if not batch:
+                return "missing"
+            attempts = int(batch["attempt_count"] or 1)
+            dead = bool(permanent) or attempts >= max(1, int(max_attempts))
+            status = "dead" if dead else "retry_wait"
+            retry_at = ""
+            if not dead and float(retry_after_seconds or 0) > 0:
+                retry_at = (
+                    datetime.datetime.now(datetime.timezone.utc)
+                    + datetime.timedelta(seconds=float(retry_after_seconds))
+                ).replace(tzinfo=None).isoformat(timespec="seconds")
+            self._conn.execute(
+                "UPDATE chat_memory_batches SET status = ?, error = ?, next_attempt_at = ?, failed_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (status, self._text(error)[:1000], retry_at, int(batch_id)),
+            )
+            if dead:
+                self._conn.execute(
+                    "UPDATE chat_memory_sessions SET last_processed_row_id = MAX(last_processed_row_id, ?), pending_since = CASE WHEN EXISTS (SELECT 1 FROM chat_memory_messages m WHERE m.session_id = chat_memory_sessions.session_id AND m.id > ?) THEN (SELECT occurred_at FROM chat_memory_messages m WHERE m.session_id = chat_memory_sessions.session_id AND m.id > ? ORDER BY m.id LIMIT 1) ELSE '' END, updated_at = CURRENT_TIMESTAMP WHERE session_id = ?",
+                    (
+                        int(batch["last_row_id"]),
+                        int(batch["last_row_id"]),
+                        int(batch["last_row_id"]),
+                        str(batch["session_id"]),
+                    ),
+                )
+            self._conn.commit()
+            return status
+
+        return await self._run_db(write)
 
     async def purge_completed_chat_memory_messages(self, keep_recent: int = 200) -> int:
         def write() -> int:

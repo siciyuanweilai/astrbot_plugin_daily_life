@@ -150,6 +150,15 @@ JSON 输出要求：
                 prompt,
                 session_id,
                 primary_provider_id=provider_id,
+                strict=True,
+                validator=lambda value: {
+                    **value,
+                    "has_commitment": value.get("has_commitment") is True,
+                    "commitments": value.get("commitments")
+                    if isinstance(value.get("commitments"), list)
+                    else [],
+                },
+                fallback={"has_commitment": False, "commitments": []},
             )
             if not isinstance(payload, dict) or not payload.get("has_commitment"):
                 return None
@@ -253,6 +262,7 @@ JSON 输出要求：
                             "done": "done",
                             "cancelled": "cancelled",
                             "expired": "expired",
+                            "delivery_failed": "failed",
                         }.get(saved.status, "open"),
                         "source_session": saved.source_session,
                         "source_message": saved.source_message,

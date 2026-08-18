@@ -41,6 +41,8 @@ _DURABLE_TASK_LABELS = {
 # 平台历史和联系人接口，因此不能只把“平台实例已创建”当成已就绪。
 _PLATFORM_READY_TIMEOUT_SECONDS = 120.0
 _PLATFORM_READY_POLL_SECONDS = 0.5
+_RUNTIME_SERVICE_LEASE_TIMEOUT_SECONDS = 30.0
+_RUNTIME_SERVICE_SWAP_DRAIN_TIMEOUT_SECONDS = 30.0
 
 
 @dataclass(slots=True)
@@ -391,6 +393,20 @@ class SpineBootMixin:
             return f"{kind}:{now.strftime('%Y-%m-%d')}"
         return f"{kind}:{now.strftime('%Y-%m-%d-%H-%M')}"
 
+    @staticmethod
+    def _durable_retry_at(task: Any) -> str:
+        """为可重试的持久任务提供有上限的指数退避时间。"""
+
+        attempts = max(1, int(getattr(task, "attempts", 1) or 1))
+        maximum = max(1, int(getattr(task, "max_attempts", 1) or 1))
+        if attempts >= maximum:
+            return ""
+        delay = min(900, 30 * (2 ** max(0, attempts - 1)))
+        return (
+            datetime.datetime.now()
+            + datetime.timedelta(seconds=delay)
+        ).strftime("%Y-%m-%d %H:%M:%S")
+
     async def _run_durable_tasks_once(self) -> int:
         """租用并执行一批白名单生活任务，禁止持久化任意可执行代码。"""
         owner = getattr(self, "_durable_task_owner", f"runtime:{id(self)}")
@@ -412,6 +428,7 @@ class SpineBootMixin:
                     task.id,
                     f"未知持久任务类型：{task.kind}",
                     owner=owner,
+                    retry_at=self._durable_retry_at(task),
                 )
                 continue
             try:
@@ -438,9 +455,17 @@ class SpineBootMixin:
                     task.id,
                     str(exc),
                     owner=owner,
+                    retry_at=self._durable_retry_at(task),
                 )
                 task_label = _DURABLE_TASK_LABELS.get(task.kind, "未知生活任务")
                 logger.warning(f"{LOG_PREFIX} 持久生活任务失败（{task_label}）：{exc}")
+                if int(getattr(task, "attempts", 0) or 0) >= int(
+                    getattr(task, "max_attempts", 0) or 0
+                ):
+                    logger.error(
+                        f"{LOG_PREFIX} 持久生活任务已进入死信终态（{task_label}），"
+                        "请在任务面板检查 last_error。"
+                    )
             else:
                 if isinstance(result, dict) and result.get("retry_at"):
                     await self.archive.defer_durable_task(
@@ -543,9 +568,15 @@ class SpineBootMixin:
 
         condition = self._runtime_service_condition()
         async with condition:
-            await condition.wait_for(
-                lambda: not bool(getattr(self, "_service_swap_pending", False))
-            )
+            try:
+                await asyncio.wait_for(
+                    condition.wait_for(
+                        lambda: not bool(getattr(self, "_service_swap_pending", False))
+                    ),
+                    timeout=_RUNTIME_SERVICE_LEASE_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError as exc:
+                raise RuntimeError("运行时服务正在切换，等待租约超时") from exc
             self._service_users = int(getattr(self, "_service_users", 0)) + 1
         depth_token = depth.set(1)
         owner_token = owner.set(current_task)
@@ -565,9 +596,17 @@ class SpineBootMixin:
         condition = self._runtime_service_condition()
         async with condition:
             self._service_swap_pending = True
-            await condition.wait_for(
-                lambda: int(getattr(self, "_service_users", 0)) == 0
-            )
+            try:
+                await asyncio.wait_for(
+                    condition.wait_for(
+                        lambda: int(getattr(self, "_service_users", 0)) == 0
+                    ),
+                    timeout=_RUNTIME_SERVICE_SWAP_DRAIN_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError as exc:
+                self._service_swap_pending = False
+                condition.notify_all()
+                raise RuntimeError("运行时服务切换排空租约超时，配置未生效") from exc
 
     async def _end_runtime_service_swap(self) -> None:
         condition = self._runtime_service_condition()
@@ -634,6 +673,16 @@ class SpineBootMixin:
         )
         if callable(close_appearance_tasks):
             await close_appearance_tasks()
+        close_snapshot_flight = getattr(
+            self, "_close_injection_snapshot_flight", None
+        )
+        if callable(close_snapshot_flight):
+            await close_snapshot_flight()
+        close_query_vector_flight = getattr(
+            self, "_close_meaning_query_vector_flight", None
+        )
+        if callable(close_query_vector_flight):
+            await close_query_vector_flight()
         await self._shutdown_chat_memory_batcher()
         await self._cancel_background_tasks()
 

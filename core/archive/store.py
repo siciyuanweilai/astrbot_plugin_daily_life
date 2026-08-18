@@ -94,7 +94,14 @@ class LifeArchive(
     def _initialize_sync(self) -> None:
         self._require_not_closed()
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self._path, check_same_thread=False, timeout=10.0)
+        # 归档层的写入方法各自负责显式事务；自动提交避免某个独立写入
+        # 遗留隐式事务后，下一次 BEGIN IMMEDIATE 触发嵌套事务异常。
+        conn = sqlite3.connect(
+            self._path,
+            check_same_thread=False,
+            timeout=10.0,
+            isolation_level=None,
+        )
         try:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA foreign_keys = ON")

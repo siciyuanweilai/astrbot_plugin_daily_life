@@ -31,6 +31,10 @@ STYLE_CATALOG_KIND_LABELS = {
 STYLE_CATALOG_CLOTHING_KINDS = frozenset(
     {"outfit", "top", "bottom", "footwear", "accessory"}
 )
+STYLE_CATALOG_HOME_PRESENCE = frozenset({"home", "outdoor", "both", "unknown"})
+STYLE_CATALOG_CARRY_MODES = frozenset(
+    {"worn", "carried", "staged", "none", "unknown"}
+)
 
 
 @dataclass(slots=True)
@@ -130,7 +134,9 @@ class StyleCatalogItemRecord:
 
 
 __all__ = [
+    "STYLE_CATALOG_CARRY_MODES",
     "STYLE_CATALOG_CLOTHING_KINDS",
+    "STYLE_CATALOG_HOME_PRESENCE",
     "STYLE_CATALOG_KINDS",
     "STYLE_CATALOG_KIND_LABELS",
     "STYLE_CATALOG_KIND_SET",

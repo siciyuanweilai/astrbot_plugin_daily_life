@@ -8,6 +8,7 @@ import tempfile
 import types
 import unittest
 import zipfile
+from contextlib import asynccontextmanager
 from io import BytesIO
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from core.models import (
     StyleCatalogItemRecord,
 )
 from core.runtime.generation import DailyGenerationMixin
+from core.paths import STYLE_CATALOG_DIR_NAME
 from support import (
     BehaviorFeedbackRecord,
     ChatSummaryRecord,
@@ -584,6 +586,44 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    async def test_config_post_uses_plugin_lease_without_service_lease(self):
+        calls = []
+
+        @asynccontextmanager
+        async def plugin_lease():
+            calls.append("plugin:enter")
+            try:
+                yield self.plugin.runtime
+            finally:
+                calls.append("plugin:exit")
+
+        @asynccontextmanager
+        async def runtime_lease():
+            calls.append("runtime:enter")
+            try:
+                yield self.plugin.runtime
+            finally:
+                calls.append("runtime:exit")
+
+        self.plugin._external_plugin_lease = plugin_lease
+        self.plugin._external_runtime_lease = runtime_lease
+        self.plugin._register_page_web_apis()
+        config_handler = next(
+            handler
+            for path, handler, _, _ in self.plugin.context.routes
+            if path == "/astrbot_plugin_daily_life/page/config"
+        )
+
+        self.plugin.method = "POST"
+        self.plugin.body = {"config": dict(self.plugin.runtime.raw_config)}
+        await config_handler()
+        self.assertEqual(calls, ["plugin:enter", "plugin:exit"])
+
+        calls.clear()
+        self.plugin.method = "GET"
+        await config_handler()
+        self.assertEqual(calls, ["runtime:enter", "runtime:exit"])
+
     async def test_registers_page_routes(self):
         self.plugin._register_page_web_apis()
         paths = [item[0] for item in self.plugin.context.routes]
@@ -637,9 +677,7 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
             "backup",
             "restore",
         ):
-            self.assertIn(
-                f"/astrbot_plugin_daily_life/page/closet/{route}", paths
-            )
+            self.assertIn(f"/astrbot_plugin_daily_life/page/closet/{route}", paths)
         self.assertNotIn("/astrbot_plugin_daily_life/page/storage/cleanup", paths)
         self.assertNotIn("/astrbot_plugin_daily_life/page/storage/clear", paths)
         self.assertIn(
@@ -1028,7 +1066,7 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(deleted["data"]["stats"]["total"], 0)
 
     async def test_closet_management_lists_previews_feedback_and_deletes_assets(self):
-        closet_dir = self.plugin.runtime.data_path.parent / "style_catalog"
+        closet_dir = self.plugin.runtime.data_path.parent / STYLE_CATALOG_DIR_NAME
         closet_dir.mkdir(parents=True, exist_ok=True)
         image_path = closet_dir / "style_test.png"
         image_path.write_bytes(b"\x89PNG\r\n\x1a\ncloset")
@@ -1066,7 +1104,9 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
         self.plugin.body = {"id": item.id}
         preview = await self.plugin.page_closet_preview()
         self.assertTrue(preview["ok"])
-        self.assertTrue(preview["data"]["data_url"].startswith("data:image/png;base64,"))
+        self.assertTrue(
+            preview["data"]["data_url"].startswith("data:image/png;base64,")
+        )
 
         self.plugin.body = {"ids": [item.id], "status": "active"}
         enabled = await self.plugin.page_closet_status()
@@ -1099,7 +1139,7 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(image_path.exists())
 
     async def test_closet_backup_and_restore_preserve_visual_candidates(self):
-        closet_dir = self.plugin.runtime.data_path.parent / "style_catalog"
+        closet_dir = self.plugin.runtime.data_path.parent / STYLE_CATALOG_DIR_NAME
         closet_dir.mkdir(parents=True, exist_ok=True)
         image_bytes = b"\x89PNG\r\n\x1a\ncloset-backup"
         digest = hashlib.sha256(image_bytes).hexdigest()
@@ -1126,7 +1166,9 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
         with zipfile.ZipFile(archive_path) as package:
             manifest = json.loads(package.read("manifest.json").decode("utf-8"))
             self.assertEqual(manifest["format"], "daily_life_closet_backup")
-            self.assertEqual(package.read(manifest["items"][0]["backup_asset"]), image_bytes)
+            self.assertEqual(
+                package.read(manifest["items"][0]["backup_asset"]), image_bytes
+            )
 
         restored_plugin = PagePlugin()
         restored_plugin.upload_path = archive_path
@@ -2379,9 +2421,7 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertIn("scrollbar-gutter: stable;", outfit_scroll)
         self.assertIn("touch-action: pan-y;", outfit_scroll)
         self.assertIn(
-            ".facts-column-fill {\n"
-            "  align-self: stretch;\n"
-            "  block-size: 100%;",
+            ".facts-column-fill {\n  align-self: stretch;\n  block-size: 100%;",
             style,
         )
         self.assertIn(
@@ -3056,17 +3096,26 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertIn('link.rel = "noopener noreferrer";', app)
         self.assertNotIn("window.location.assign(url.href)", app)
         self.assertIn(".closet-detail-prompt", closet_style)
-        self.assertNotIn('.closet-detail-grid .is-wide', closet_style)
+        self.assertNotIn(".closet-detail-grid .is-wide", closet_style)
         self.assertIn("function confirmClosetDelete", app)
         self.assertNotIn("window.confirm", app)
-        self.assertIn('@import url("./styles/closet.css")', (root / "style.css").read_text(encoding="utf-8"))
+        self.assertIn(
+            '@import url("./styles/closet.css")',
+            (root / "style.css").read_text(encoding="utf-8"),
+        )
         self.assertIn(".closet-list", closet_style)
         self.assertIn("grid-template-columns: repeat(5, minmax(0, 1fr));", closet_style)
         self.assertIn('node("div", "closet-record-source-row")', app)
-        self.assertIn('node("span", "closet-record-confidence", `最低置信度 ${confidence}%`)', app)
-        self.assertIn('items.length > 1 ? `#${itemId} · ${items.length} 项` : `#${itemId}`', app)
+        self.assertIn(
+            'node("span", "closet-record-confidence", `最低置信度 ${confidence}%`)', app
+        )
+        self.assertIn(
+            "items.length > 1 ? `#${itemId} · ${items.length} 项` : `#${itemId}`", app
+        )
         self.assertIn(".closet-record-confidence", closet_style)
-        self.assertNotIn('const meta = query ? `搜索：${query}` : `最低置信度 ${confidence}%`;', app)
+        self.assertNotIn(
+            "const meta = query ? `搜索：${query}` : `最低置信度 ${confidence}%`;", app
+        )
         self.assertIn("aspect-ratio: 4 / 5;", closet_style)
         self.assertIn(
             ".closet-record-title .muted {\n"
@@ -3950,7 +3999,7 @@ if (number.value !== "60" || state.config.test_config.level !== 60) {
         self.assertNotIn("个分区", app)
         self.assertNotIn("AUTOSAVE_DELAY_MS", config)
         self.assertIn("AUTOSAVE_FAST_DELAY_MS", config)
-        self.assertIn("AUTOSAVE_TEXT_DELAY_MS", config)
+        self.assertNotIn("AUTOSAVE_TEXT_DELAY_MS", config)
         self.assertIn("AUTOSAVE_RETRY_DELAY_MS", config)
         self.assertIn("AUTOSAVE_MAX_WAIT_MS", config)
         self.assertIn("scheduleConfigAutosave", config)
@@ -3958,10 +4007,16 @@ if (number.value !== "60" || state.config.test_config.level !== 60) {
         self.assertIn("state.configChangeSeq", app + config)
         self.assertIn("state.configDirtySince", app + config)
         self.assertIn("flushConfigAutosave", app + config)
+        self.assertIn(
+            'window.addEventListener("pagehide", () => {\n    flushConfigAutosave();',
+            app,
+        )
         self.assertIn("focusout", app)
         self.assertIn("visibilitychange", app)
         self.assertIn("saveConfig({ auto: true, changeSeq", config)
-        self.assertIn("saveDelayMs: AUTOSAVE_TEXT_DELAY_MS", config)
+        self.assertIn("deferSave: true", config)
+        self.assertIn("commitConfigTextAutosave", config)
+        self.assertIn("if (!auto) renderConfig();", config)
         self.assertNotIn("configDirtyBadge", html + app + config)
         self.assertNotIn("settings-toolbar", html + style)
         self.assertNotIn("等待自动保存", html + config)
@@ -3970,6 +4025,122 @@ if (number.value !== "60" || state.config.test_config.level !== 60) {
         self.assertNotIn("已自动保存", html + config)
         self.assertIn("configVersion", app + config)
         self.assertNotIn("toolbar-pill", html + style)
+
+    def test_dashboard_text_config_commits_on_change_without_rebuilding_input(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        script = (
+            self._dashboard_dom_mock_script()
+            + """
+let timerCalls = 0;
+window.setTimeout = () => { timerCalls += 1; return timerCalls; };
+window.requestAnimationFrame = (callback) => { callback(); return 1; };
+const { createConfigPanel } = await import("./pages/dashboard/ui/settings.js");
+const makeNode = (tag, className = "", content = "") => {
+  const item = new MockElement(tag);
+  item.className = className;
+  item.textContent = content === null || content === undefined ? "" : String(content);
+  return item;
+};
+const state = {
+  configSectionKey: "test_config",
+  configSchema: {
+    test_config: {
+      description: "测试设置",
+      type: "object",
+      items: {
+        channels: {
+          description: "测试通道",
+          type: "template_list",
+          templates: {
+            custom: {
+              description: "自定义通道",
+              items: {
+                api_key: { description: "密钥", type: "string", default: "" },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  config: {
+    test_config: {
+      channels: [{ __template_key: "custom", api_key: "" }],
+    },
+  },
+  providers: [],
+  relationships: [],
+  configLoaded: true,
+  configDirty: false,
+  configDirtySince: 0,
+  configVersion: 0,
+  configChangeSeq: 0,
+  configSaveTimer: 0,
+  configSaving: false,
+  configSaveQueued: false,
+  configTextPending: false,
+};
+const el = {
+  configNav: new MockElement("nav"),
+  configSectionTitle: new MockElement("h2"),
+  configSectionHint: new MockElement("p"),
+  configFieldList: new MockElement("div"),
+};
+const panel = createConfigPanel({
+  state,
+  el,
+  node: makeNode,
+  empty: (message) => makeNode("div", "empty", message),
+  setBusy() {},
+  setNotice() {},
+  async loadStatus() {},
+  syncSelectControls() {},
+});
+panel.renderConfig();
+
+const descendants = () => {
+  const result = [];
+  const visit = (item) => {
+    result.push(item);
+    for (const child of item.children || []) visit(child);
+  };
+  visit(el.configFieldList);
+  return result;
+};
+const input = descendants().find((item) => item.id === "test_config__channels__0__api_key");
+if (!input) throw new Error("模板文本输入框没有渲染");
+
+input.value = "a";
+input.dispatch("input");
+if (state.config.test_config.channels[0].api_key !== "a") {
+  throw new Error("文本草稿没有同步到本地配置");
+}
+if (!state.configTextPending || timerCalls !== 0) {
+  throw new Error("文本输入期间不应启动自动保存");
+}
+const currentInput = descendants().find((item) => item.id === input.id);
+if (currentInput !== input) {
+  throw new Error("文本输入期间重建了输入框");
+}
+
+input.dispatch("change");
+if (state.configTextPending || timerCalls !== 1) {
+  throw new Error("离开文本输入框后没有安排自动保存");
+}
+"""
+        )
+        result = subprocess.run(
+            ["node", "--input-type=module"],
+            cwd=root,
+            input=script,
+            text=True,
+            encoding="utf-8",
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
 
     def test_dashboard_stops_visual_timers_when_hidden_or_unloaded(self):
         root = Path(__file__).resolve().parents[1] / "pages" / "dashboard"
@@ -4761,7 +4932,7 @@ if (number.value !== "60" || state.config.test_config.level !== 60) {
         self.assertIn('makeup: "妆容细节"', display)
         self.assertIn('nails_style: "美甲名称"', display)
         self.assertIn('nails: "美甲细节"', display)
-        self.assertIn('title ? `${label}：${title}` : label', app)
+        self.assertIn("title ? `${label}：${title}` : label", app)
         self.assertIn("if (detail) line.append(document.createTextNode(detail));", app)
         self.assertIn(
             'appearanceLine("妆容", data.makeupStyle, data.makeup, "today-week-appearance-makeup")',
@@ -4859,7 +5030,7 @@ if (number.value !== "60" || state.config.test_config.level !== 60) {
         self.assertIn("<dt>🚪 活动状态</dt>", html)
         self.assertIn('<dd id="scheduleIntentText">暂无活动状态</dd>', html)
         self.assertIn('id="currentOutfitText"', html)
-        self.assertIn('>暂无穿搭</dd>', html)
+        self.assertIn(">暂无穿搭</dd>", html)
         self.assertIn('<dd id="outfitDecisionText">暂无判断</dd>', html)
         self.assertIn("function memoDisplayText(status = {})", app)
         self.assertIn("function memoCarouselItems(status = {})", app)
@@ -5868,6 +6039,7 @@ if (!intentPair.current || intentPair.current.time !== "20:50") {
         self.assertNotIn('`负责人：${clean(item.owner, "未定")}`', app)
         self.assertIn("Array.isArray(domains.recipes)", app)
         self.assertIn('ingredients.length ? `食材：${ingredients.join("、")}`', app)
+        self.assertIn('"现有食材库存"', app)
 
     def test_current_outfit_display_separates_clothing_and_hair(self):
         root = Path(__file__).resolve().parents[1]

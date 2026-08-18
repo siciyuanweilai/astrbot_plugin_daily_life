@@ -3,7 +3,6 @@ import { clean, humanizeToken, text } from "../shared/format.js";
 import { clone, parseList } from "../shared/utils.js";
 
 const AUTOSAVE_FAST_DELAY_MS = 900;
-const AUTOSAVE_TEXT_DELAY_MS = 4000;
 const AUTOSAVE_RETRY_DELAY_MS = 1200;
 const AUTOSAVE_MAX_WAIT_MS = 15000;
 const MAX_CHARACTER_REFERENCE_IMAGES = 6;
@@ -444,7 +443,10 @@ export function createConfigPanel({
     if (sameConfigValue(target[finalKey], value)) return;
     target[finalKey] = value;
     state.configVersion += 1;
-    markConfigChanged({ delayMs: options.saveDelayMs });
+    markConfigChanged({
+      delayMs: options.saveDelayMs,
+      deferSave: options.deferSave === true,
+    });
   }
 
   function markConfigDirty(value) {
@@ -456,9 +458,15 @@ export function createConfigPanel({
     }
   }
 
-  function markConfigChanged({ delayMs = AUTOSAVE_FAST_DELAY_MS } = {}) {
+  function markConfigChanged({ delayMs = AUTOSAVE_FAST_DELAY_MS, deferSave = false } = {}) {
     state.configChangeSeq += 1;
     markConfigDirty(true);
+    if (deferSave) {
+      state.configTextPending = true;
+      clearConfigAutosaveTimer();
+      return;
+    }
+    state.configTextPending = false;
     scheduleConfigAutosave({ delayMs });
   }
 
@@ -485,7 +493,14 @@ export function createConfigPanel({
   function flushConfigAutosave() {
     if (!state.configDirty || state.configSaving) return;
     clearConfigAutosaveTimer();
+    state.configTextPending = false;
     saveConfig({ auto: true, changeSeq: state.configChangeSeq });
+  }
+
+  function commitConfigTextAutosave() {
+    if (!state.configDirty) return;
+    state.configTextPending = false;
+    scheduleConfigAutosave({ delayMs: AUTOSAVE_FAST_DELAY_MS });
   }
 
   function configFieldPathKey(sectionKey, fieldKey) {
@@ -1002,7 +1017,8 @@ export function createConfigPanel({
     input.id = path.join("__");
     input.rows = 5;
     input.value = Array.isArray(value) ? value.join("\n") : text(value);
-    input.addEventListener("input", () => setConfigPathValue(path, parseList(input.value), { saveDelayMs: AUTOSAVE_TEXT_DELAY_MS }));
+    input.addEventListener("input", () => setConfigPathValue(path, parseList(input.value), { deferSave: true }));
+    input.addEventListener("change", commitConfigTextAutosave);
     return input;
   }
 
@@ -1047,7 +1063,8 @@ export function createConfigPanel({
     if (input.tagName === "INPUT") input.type = "text";
     if (input.tagName === "TEXTAREA") input.rows = promptText ? 8 : 5;
     input.value = body;
-    input.addEventListener("input", () => setConfigPathValue(path, input.value, { saveDelayMs: AUTOSAVE_TEXT_DELAY_MS }));
+    input.addEventListener("input", () => setConfigPathValue(path, input.value, { deferSave: true }));
+    input.addEventListener("change", commitConfigTextAutosave);
     return input;
   }
 
@@ -1116,7 +1133,8 @@ export function createConfigPanel({
       input.id = inputId;
       input.rows = 4;
       input.value = Array.isArray(value) ? value.join("\n") : text(value);
-      input.addEventListener("input", () => onChange(parseList(input.value), { saveDelayMs: AUTOSAVE_TEXT_DELAY_MS }));
+      input.addEventListener("input", () => onChange(parseList(input.value), { deferSave: true, render: false }));
+      input.addEventListener("change", commitConfigTextAutosave);
       return input;
     }
     if (fieldSpec.type === "string" && Array.isArray(fieldSpec.options)) {
@@ -1136,7 +1154,8 @@ export function createConfigPanel({
     if (input.tagName === "INPUT") input.type = "text";
     if (input.tagName === "TEXTAREA") input.rows = fieldSpec.type === "text" ? 6 : 4;
     input.value = body;
-    input.addEventListener("input", () => onChange(input.value, { saveDelayMs: AUTOSAVE_TEXT_DELAY_MS }));
+    input.addEventListener("input", () => onChange(input.value, { deferSave: true, render: false }));
+    input.addEventListener("change", commitConfigTextAutosave);
     return input;
   }
 
@@ -1188,8 +1207,11 @@ export function createConfigPanel({
       items = normalizeTemplateListValue(spec, nextItems);
       itemIds = Array.isArray(options.itemIds) ? options.itemIds.slice(0, items.length) : itemIds;
       syncItemIds();
-      setConfigPathValue(path, items, { saveDelayMs: options.saveDelayMs });
-      renderList();
+      setConfigPathValue(path, items, {
+        saveDelayMs: options.saveDelayMs,
+        deferSave: options.deferSave === true,
+      });
+      if (options.render !== false) renderList();
       animateListFrom(beforeRects);
     };
     const updateItem = (index, fieldKey, fieldValue, options = {}) => {
@@ -1884,6 +1906,7 @@ export function createConfigPanel({
     if (busy) setBusy(true);
     clearConfigAutosaveTimer();
     state.configSaveQueued = false;
+    state.configTextPending = false;
     state.configChangeSeq = 0;
     state.configVersion = 0;
     try {
@@ -1940,7 +1963,7 @@ export function createConfigPanel({
       state.relationships = Array.isArray(data.relationships) ? data.relationships : state.relationships;
       state.configLoaded = true;
       markConfigDirty(hasNewerChanges);
-      if (!hasNewerChanges || !auto) renderConfig();
+      if (!auto) renderConfig();
       if (!auto) setNotice("设置已保存", "success");
       await loadStatus({ quiet: true });
     } catch (error) {
@@ -1951,7 +1974,9 @@ export function createConfigPanel({
       if (!auto) setBusy(false);
       if (state.configDirty || state.configSaveQueued) {
         state.configSaveQueued = false;
-        scheduleConfigAutosave({ delayMs: AUTOSAVE_RETRY_DELAY_MS });
+        if (!state.configTextPending) {
+          scheduleConfigAutosave({ delayMs: AUTOSAVE_RETRY_DELAY_MS });
+        }
       }
     }
   }

@@ -1159,7 +1159,9 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         await tool.call(context, **tool_args)
         self.assertEqual(event.sent_messages, ["行，按这版出。\n等会儿。"])
 
-    async def test_runtime_skips_send_tool_after_other_tool_sent_identical_preface(self):
+    async def test_runtime_skips_send_tool_after_other_tool_sent_identical_preface(
+        self,
+    ):
         class Runtime(VoiceSwitchMixin):
             @staticmethod
             def _event_session_id(event):
@@ -1197,9 +1199,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(event.sent_messages, [source_text])
-        self.assertTrue(
-            runtime.should_skip_duplicate_send_message(event, source_text)
-        )
+        self.assertTrue(runtime.should_skip_duplicate_send_message(event, source_text))
 
     async def test_runtime_does_not_suppress_without_active_tool_runner(
         self,
@@ -2305,6 +2305,9 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("action(string)", review_doc)
         self.assertIn("prompt(string)", image_doc)
         self.assertIn("简短、自然的行动确认", image_doc)
+        self.assertIn("想让对方看看这个瞬间", image_doc)
+        self.assertIn("用户没有先索要也可以主动调用", image_doc)
+        self.assertIn("不要先询问用户是否想看", image_doc)
         self.assertIn("prompt(string)", suite_doc)
         self.assertIn("count(int)", suite_doc)
         self.assertIn("retry_indexes(list[int])", suite_doc)
@@ -2312,6 +2315,8 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("2 到 6 张", suite_doc)
         self.assertIn("不要为了生成套图而自行连续调用多次单图工具", suite_doc)
         self.assertIn("不能提前声称图片已经完成", image_doc)
+        self.assertIn("只适合用户明确要视频", video_doc)
+        self.assertNotIn("用户没有先索要也可以", video_doc)
         self.assertIn("subject_route(string)", image_doc)
         self.assertIn("current_character", image_doc)
         self.assertIn("当前角色作为人物 A、好友作为人物 B", image_doc)

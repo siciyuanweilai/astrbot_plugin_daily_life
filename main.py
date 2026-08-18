@@ -28,6 +28,7 @@ from .core.interface import (
 from .core.runtime import PLUGIN_ID, DailyLifeRuntime
 from .core.runtime.markers import LOG_PREFIX
 from .core.runtime.sender import install_expressive_send_message_tool
+from .core.paths import migrate_style_catalog_storage
 
 EXTERNAL_LEASE_SHUTDOWN_TIMEOUT_SECONDS = 10.0
 MAP_LLM_TOOL_NAMES = (
@@ -222,7 +223,9 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
     def _prepare_database(self) -> Path:
         data_dir = StarTools.get_data_dir(PLUGIN_ID)
         data_dir.mkdir(parents=True, exist_ok=True)
-        return data_dir / "daily_life.db"
+        data_path = data_dir / "daily_life.db"
+        migrate_style_catalog_storage(data_path)
+        return data_path
 
     async def terminate(self):
         runtime = self.runtime
@@ -274,19 +277,16 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             raise RuntimeError("日常生活运行时缺少必要能力：" + "；".join(problems))
 
     @asynccontextmanager
-    async def _external_runtime_lease(self):
+    async def _external_plugin_lease(self):
+        """保护插件生命周期，但不阻止当前请求发起运行时服务切换。"""
+
         condition = getattr(self, "_external_condition", None)
         if not isinstance(condition, asyncio.Condition):
             # 轻量测试替身可能没有完整插件生命周期状态，保留直接单元调用能力。
             yield_runtime = getattr(self, "runtime", None)
             if yield_runtime is None:
                 raise RuntimeError("日常生活插件尚未就绪或正在终止")
-            service_lease = getattr(yield_runtime, "runtime_service_lease", None)
-            if callable(service_lease):
-                async with service_lease():
-                    yield yield_runtime
-            else:
-                yield yield_runtime
+            yield yield_runtime
             return
         async with self._external_condition:
             runtime = self.runtime
@@ -299,12 +299,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
                     self._external_tasks.get(current_task, 0) + 1
                 )
         try:
-            service_lease = getattr(runtime, "runtime_service_lease", None)
-            if callable(service_lease):
-                async with service_lease():
-                    yield runtime
-            else:
-                yield runtime
+            yield runtime
         finally:
             async with self._external_condition:
                 self._external_users = max(0, self._external_users - 1)
@@ -317,6 +312,18 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
                         self._external_tasks.pop(current_task, None)
                 if self._external_users == 0:
                     self._external_condition.notify_all()
+
+    @asynccontextmanager
+    async def _external_runtime_lease(self):
+        """同时保护插件生命周期与本次调用使用的运行时服务。"""
+
+        async with self._external_plugin_lease() as runtime:
+            service_lease = getattr(runtime, "runtime_service_lease", None)
+            if callable(service_lease):
+                async with service_lease():
+                    yield runtime
+            else:
+                yield runtime
 
     async def _cancel_external_calls(self) -> None:
         """超出排空期限后取消仍占用旧 runtime 的外部任务。"""
@@ -1159,6 +1166,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         """
         根据当前角色生活场景生成并发送一张图片。
         适合用户想看当前状态、穿搭、环境、自拍/生活照，或普通聊天里用画面展示此刻更自然的时候。
+        普通聊天里角色自己自然产生“想让对方看看这个瞬间”的分享意愿时，用户没有先索要也可以主动调用；画面应能传达文字之外的状态、气氛、细节或情绪，不能为了展示工具而生成，也不要先询问用户是否想看。
         用户已经明确要图片时，调用前可以先用角色口吻说一句简短、自然的行动确认；不能提前声称图片已经完成，
         也不要提及模型、任务、缓存、图片导演、文生图或图生图等内部过程。图片发送后再根据结果自然补一句，也可以不补。
         如果用户本轮已经给出完整图片提示词且 current_outfit_change=false，除单独填写 provider 外，prompt 必须原样保留画面要求，不要改写、摘要或另想场景；不要把协议选择语句混入画面提示词。

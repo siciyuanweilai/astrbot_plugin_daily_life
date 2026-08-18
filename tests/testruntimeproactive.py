@@ -2580,11 +2580,16 @@ class RuntimeProactiveAsyncTest(
         class EmbeddingProvider:
             def __init__(self):
                 self.batch_calls = 0
+                self.query_calls = 0
 
             def meta(self):
-                return types.SimpleNamespace(id="test-embedding")
+                return types.SimpleNamespace(
+                    id="test-embedding",
+                    model="test-embedding-model",
+                )
 
             async def get_embedding(self, text):
+                self.query_calls += 1
                 return [1.0, 0.0]
 
             async def get_embeddings(self, texts):
@@ -2610,7 +2615,15 @@ class RuntimeProactiveAsyncTest(
         self.assertEqual(first["memories"], ["near", "far"])
         self.assertEqual(second["memories"], ["near", "far"])
         self.assertEqual(embedding.batch_calls, 1)
+        self.assertEqual(embedding.query_calls, 1)
         self.assertEqual(len(runtime.archive.memory_vectors), 2)
+        self.assertTrue(
+            all(
+                item["provider_id"]
+                == "test-embedding:test-embedding-model"
+                for item in runtime.archive.memory_vectors.values()
+            )
+        )
 
     async def test_embedding_provider_selection_prefers_configured_provider(self):
         class EmbeddingProvider:

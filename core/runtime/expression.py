@@ -117,6 +117,12 @@ class ExpressionHintMixin:
                 ]
             )
             if image_enabled:
+                parts.extend(
+                    [
+                        "\n[HiddenImageInitiative] 普通聊天中，每轮都先从角色自身出发判断：此刻是否自然产生了‘我想让对方看看这个瞬间’的图片分享意愿。这个意愿由角色性格、关系、对话意图、当前生活状态、眼前事物和聊天节奏共同形成；不需要等对方先索要，也不要先征询是否想看。",
+                        "\n- 有真实的图片分享意愿，而且画面能传达文字之外的状态、气氛、细节或情绪时，直接调用 life_image_generate；没有这种意愿就正常用文字。用户没有要求不是禁止条件，不按关键词、固定场景清单或随机概率触发。",
+                    ]
+                )
                 image_reference_hint = self._hidden_image_reference_hint(event)
                 parts.append(f"\n- 当前图片参考状态：{image_reference_hint}")
             available = [
@@ -125,5 +131,9 @@ class ExpressionHintMixin:
                 if enabled
             ]
             parts.append(f"\n- 当前可用媒体表达：{'、'.join(available)}。")
+            if image_enabled:
+                parts.append(
+                    "\n- 每轮最多主动分享一张图片，近期刚发过图片时降低意愿，避免连续展示。"
+                )
         parts.append("\n</expression_channel>")
         return "".join(parts)

@@ -43,6 +43,8 @@ CREATE TABLE IF NOT EXISTS chat_memory_batches (
     attempt_count INTEGER NOT NULL DEFAULT 1,
     summary_id INTEGER NOT NULL DEFAULT 0,
     error TEXT NOT NULL DEFAULT '',
+    next_attempt_at TEXT NOT NULL DEFAULT '',
+    failed_at TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     completed_at TEXT NOT NULL DEFAULT ''
 );

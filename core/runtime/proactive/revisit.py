@@ -298,6 +298,16 @@ JSON 输出要求：
                 prompt,
                 session_id,
                 primary_provider_id=provider_id,
+                strict=True,
+                validator=lambda value: {
+                    **value,
+                    "valid": value.get("valid") is True,
+                    "reason": str(value.get("reason") or "").strip(),
+                    "conflicts": value.get("conflicts")
+                    if isinstance(value.get("conflicts"), list)
+                    else [],
+                },
+                fallback={"valid": False, "reason": "模型未给出严格审计结果", "conflicts": []},
             )
             if not isinstance(audit, dict) or not isinstance(audit.get("valid"), bool):
                 return False, "连续性审计未返回有效结果"
@@ -648,6 +658,24 @@ JSON 输出要求：
                 prompt,
                 session_id,
                 primary_provider_id=provider_id,
+                strict=True,
+                validator=lambda value: {
+                    **value,
+                    "should_reply": (
+                        value.get("should_reply") is True
+                        and bool(str(value.get("reply_text") or "").strip())
+                    ),
+                    "reply_text": str(value.get("reply_text") or "").strip(),
+                    "decision": str(value.get("decision") or "observe").strip()
+                    or "observe",
+                    "reason": str(value.get("reason") or "").strip(),
+                },
+                fallback={
+                    "should_reply": False,
+                    "decision": "observe",
+                    "reason": "模型未给出严格回访裁定",
+                    "reply_text": "",
+                },
             )
             if not isinstance(payload, dict):
                 return {

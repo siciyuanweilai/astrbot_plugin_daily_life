@@ -21,7 +21,11 @@ from core.life.audit import DailyLocationAuditMixin
 from core.life.reliability import NonRetryableProviderError
 from core.life.people import DAILY_PERSON_TEXT_PATHS
 from core.facts import PersonFact, PersonFactContext, apply_string_replacements
-from core.life.surroundings import choose_place_candidates
+from core.life.surroundings import (
+    choose_place_candidates,
+    format_world_prompt,
+    select_relevant_world,
+)
 from core.models import (
     ChatSummaryRecord,
     CommitmentRecord,
@@ -297,6 +301,75 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(
             all(item["source"] in {"anchor", "memory"} for item in candidates)
+        )
+
+    def test_place_candidates_soft_rotate_large_memory_pool(self):
+        candidates = choose_place_candidates(
+            [
+                {
+                    "name": "躺岛公园",
+                    "type": "park",
+                    "visits": 8,
+                    "last_seen": "2026-05-24",
+                },
+                {
+                    "name": "河边步道",
+                    "type": "walk",
+                    "visits": 2,
+                    "last_seen": "2026-05-21",
+                },
+                {
+                    "name": "旧书店",
+                    "type": "bookstore",
+                    "visits": 1,
+                    "last_seen": "2026-05-10",
+                },
+            ],
+            datetime.date(2026, 5, 24),
+            limit=8,
+        )
+
+        self.assertEqual(
+            [item["name"] for item in candidates],
+            ["家", "家附近街区", "旧书店", "河边步道", "躺岛公园"],
+        )
+        park = next(item for item in candidates if item["name"] == "躺岛公园")
+        self.assertEqual(park["visits"], 8)
+        self.assertEqual(park["last_seen"], "2026-05-24")
+
+    def test_world_prompt_explains_soft_place_rotation_and_travel_scope(self):
+        prompt = format_world_prompt(
+            [],
+            [{"name": "躺岛公园", "visits": 8, "last_seen": "2026-05-24"}],
+            [],
+            [
+                {
+                    "name": "躺岛公园",
+                    "source": "memory",
+                    "visits": 8,
+                    "last_seen": "2026-05-24",
+                }
+            ],
+        )
+
+        self.assertIn("连续使用时优先换成其他候选", prompt)
+        self.assertIn("可以自然复访", prompt)
+        self.assertIn("上次出现 2026-05-24", prompt)
+
+    def test_relevant_world_does_not_promote_high_visit_place(self):
+        selected = select_relevant_world(
+            [],
+            [
+                {"name": "躺岛公园", "visits": 8},
+                {"name": "旧书店", "visits": 1},
+            ],
+            [],
+            place_limit=2,
+        )
+
+        self.assertEqual(
+            [item["name"] for item in selected["places"]],
+            ["旧书店", "躺岛公园"],
         )
 
     async def test_extract_completion_text_recovers_structured_reasoning_content(self):
@@ -618,9 +691,13 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("清冷书卷气", provider.prompts[0])
         self.assertIn("独立评估今天是否适合有目的的身体活动", provider.prompts[0])
         self.assertIn("不得为了填充生活实况面板机械增加运动", provider.prompts[0])
-        self.assertIn("meal 表示直接用餐", provider.prompts[0])
+        self.assertIn("meal 表示外食、现成餐食", provider.prompts[0])
         self.assertIn("由系统自动沉淀食谱", provider.prompts[0])
-        self.assertIn("不要用 meal 代替 cook", provider.prompts[0])
+        self.assertIn("不要用 meal 代替实际在家烹饪", provider.prompts[0])
+        self.assertIn("现有可用食材库存是会变化的生活事实", provider.prompts[0])
+        self.assertIn("cook 表示实际动手烹饪，必须填写至少一项 ingredients", provider.prompts[0])
+        self.assertIn("purchase.payload.pantry_items", provider.prompts[0])
+        self.assertIn("普通物品、纪念品、家居用品和杂货", provider.prompts[0])
         self.assertIn("通勤、普通出行、购物、逛街", provider.prompts[0])
 
     async def test_daily_prompt_uses_complete_persona_prompt(self):
@@ -793,6 +870,88 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(default_provider.prompts), 1)
         self.assertIs(await composer._get_provider(), default_provider)
         self.assertIs(await composer._get_provider("selected"), selected_provider)
+
+    def test_openai_reasoning_alias_compatibility_preserves_standard_value(self):
+        provider = types.SimpleNamespace(reasoning_key="reasoning_content")
+        provider._extract_reasoning_content = lambda completion: getattr(
+            completion.choices[0].message, "reasoning_content", None
+        )
+
+        LifeBackgroundComposer._enable_reasoning_alias_compat(provider)
+        completion = types.SimpleNamespace(
+            choices=[
+                types.SimpleNamespace(
+                    message=types.SimpleNamespace(
+                        model_fields_set={"reasoning_content", "reasoning"},
+                        reasoning_content='{"source":"standard"}',
+                        reasoning='{"source":"alias"}',
+                    )
+                )
+            ]
+        )
+
+        self.assertEqual(
+            provider._extract_reasoning_content(completion),
+            '{"source":"standard"}',
+        )
+
+    def test_openai_reasoning_alias_compatibility_recovers_reasoning(self):
+        provider = types.SimpleNamespace(reasoning_key="reasoning_content")
+        provider._extract_reasoning_content = lambda completion: None
+
+        LifeBackgroundComposer._enable_reasoning_alias_compat(provider)
+        completion = types.SimpleNamespace(
+            choices=[
+                types.SimpleNamespace(
+                    message=types.SimpleNamespace(
+                        model_fields_set={"reasoning"},
+                        content="",
+                        reasoning='{"valid":true}',
+                    )
+                )
+            ]
+        )
+
+        self.assertEqual(
+            provider._extract_reasoning_content(completion),
+            '{"valid":true}',
+        )
+
+    async def test_llm_call_enables_reasoning_alias_before_provider_parsing(self):
+        composer, _, _, _ = make_composer([])
+        provider = types.SimpleNamespace(reasoning_key="reasoning_content")
+        provider._extract_reasoning_content = lambda completion: None
+
+        async def text_chat(*args, **kwargs):
+            del args, kwargs
+            completion = types.SimpleNamespace(
+                choices=[
+                    types.SimpleNamespace(
+                        message=types.SimpleNamespace(
+                            model_fields_set={"reasoning"},
+                            content="",
+                            reasoning='{"valid":true}',
+                        )
+                    )
+                ]
+            )
+            reasoning = provider._extract_reasoning_content(completion)
+            if not reasoning:
+                raise RuntimeError("OpenAI completion has no usable output")
+            return types.SimpleNamespace(
+                completion_text="",
+                reasoning_content=reasoning,
+            )
+
+        provider.text_chat = text_chat
+        text = await composer._call_llm_text(
+            provider,
+            "测试 reasoning 别名",
+            "daily_life_reasoning_alias",
+            empty_retries=0,
+        )
+
+        self.assertEqual(text, '{"valid":true}')
 
     async def test_configured_provider_401_immediately_falls_back_to_config_default_provider(
         self,
@@ -988,9 +1147,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("换衣不会自动改变美甲", prompt)
         self.assertIn("不得虚构没有依据的组成", prompt)
         self.assertIn("穿搭、发型和整体风格偏好只是软参考", prompt)
-        self.assertIn(
-            "近期重复抑制 > 已学习长期偏好 > 配置审美", prompt
-        )
+        self.assertIn("近期重复抑制 > 已学习长期偏好 > 配置审美", prompt)
         self.assertIn("同义偏好即使存在多条也只能视为一次证据", prompt)
         self.assertNotIn("默认角色审美（来自配置，可清空；只作为软参考）", prompt)
         self.assertNotIn("穿搭审美偏甜美、奶系、少女感", prompt)
@@ -1348,9 +1505,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(provider.prompts), 2)
         self.assertIn("过于相似", provider.prompts[1])
         saved = await archive.get_day("2026-06-12")
-        self.assertEqual(
-            saved.outfit, "浅绿色宽松针织衫配白色棉裙，头发低低扎起"
-        )
+        self.assertEqual(saved.outfit, "浅绿色宽松针织衫配白色棉裙，头发低低扎起")
         self.assertEqual(saved.meta["outfit_fact_source"], "carried_previous_day")
         self.assertEqual(saved.meta["plan_outfit_style"], "柔软居家层次")
 
@@ -1969,9 +2124,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(grounded.outfit, "浅灰色棉质睡裙，光脚")
-        self.assertEqual(
-            grounded.meta["plan_outfit"], "白色薄棉短袖配浅蓝色棉麻短裤"
-        )
+        self.assertEqual(grounded.meta["plan_outfit"], "白色薄棉短袖配浅蓝色棉麻短裤")
         self.assertEqual(grounded.meta["plan_outfit_style"], "清爽白日外出风")
         self.assertEqual(grounded.meta["plan_outfit_decision"], "outdoor")
         self.assertEqual(grounded.meta["outfit_decision"], "sleepwear")
@@ -1986,9 +2139,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(grounded.meta["plan_nails"], "浅粉色短方圆甲")
         self.assertEqual(grounded.meta["outfit_fact_source"], "user_instruction")
         self.assertEqual(grounded.meta["outfit_carried_from"], "2026-05-23")
-        self.assertEqual(
-            grounded.outfit_history, {"dawn": "浅灰色棉质睡裙，光脚"}
-        )
+        self.assertEqual(grounded.outfit_history, {"dawn": "浅灰色棉质睡裙，光脚"})
 
     async def test_daily_generation_uses_generated_appearance_after_node_occurs(self):
         composer, _, _, archive = make_composer([])
@@ -2202,7 +2353,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("已经换装则选择", provider.prompts[0])
         self.assertIn("不复述具体日期、钟点或时间轴编号", provider.prompts[0])
 
-    async def test_autonomous_outfit_change_cannot_bypass_active_catalog(self):
+    async def test_autonomous_outfit_change_falls_back_to_active_catalog(self):
         composer, _, _, archive = make_composer(
             [
                 '{"outfit_decision":"sleepwear","current_outfit_basis":"stored",'
@@ -2235,9 +2386,10 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
             current_time=datetime.datetime(2026, 8, 16, 22, 10),
         )
 
-        self.assertIsNone(result)
+        self.assertIsNotNone(result)
         stored = await archive.get_day("2026-08-16")
-        self.assertEqual(stored.outfit, "测试日间穿搭")
+        self.assertEqual(stored.outfit, "米白色缎面蕾丝吊带睡裙")
+        self.assertEqual(stored.meta["style_catalog_reference_ids"], "1")
 
     async def test_autonomous_outfit_change_uses_catalog_description_as_authority(
         self,
@@ -2279,6 +2431,177 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stored.outfit, "米白色缎面蕾丝吊带睡裙")
         self.assertEqual(stored.meta["style_catalog_reference_ids"], str(item.id))
 
+    async def test_style_catalog_home_scene_separates_outdoor_reserve(self):
+        composer, _, _, archive = make_composer([])
+        item = await archive.upsert_style_catalog_item(
+            {
+                "kind": "outfit",
+                "title": "浅蓝上衣白色蕾丝裙套装",
+                "description": (
+                    "浅蓝色短袖上衣配白色蕾丝层叠半身长裙；"
+                    "白色平底露趾凉鞋；米白色编织网眼单肩包"
+                ),
+                "attributes": {
+                    "pieces": [
+                        "浅蓝色短袖上衣",
+                        "白色蕾丝层叠半身长裙",
+                        "白色平底凉鞋",
+                        "米白色编织网包",
+                    ],
+                    "footwear": ["白色平底凉鞋"],
+                    "accessories": ["米白色编织网包"],
+                    "home_description": "浅蓝色短袖上衣配白色蕾丝层叠半身长裙",
+                    "outing_reserve_description": "白色平底露趾凉鞋；米白色编织网眼单肩包",
+                    "component_roles": [
+                        {
+                            "kind": "footwear",
+                            "name": "白色平底凉鞋",
+                            "home_presence": "outdoor",
+                            "carry_mode": "worn",
+                        },
+                        {
+                            "kind": "accessory",
+                            "name": "米白色编织网包",
+                            "home_presence": "outdoor",
+                            "carry_mode": "carried",
+                        },
+                    ],
+                },
+                "source_image_hash": "home-reserve" * 8,
+                "confidence": 0.9,
+            }
+        )
+
+        home = await composer._style_catalog_reference_appearance(
+            [item.id], scene_category="home"
+        )
+        outdoor = await composer._style_catalog_reference_appearance(
+            [item.id], scene_category="outdoor"
+        )
+
+        self.assertEqual(home["outfit"], "浅蓝色短袖上衣配白色蕾丝层叠半身长裙")
+        self.assertIn("白色平底露趾凉鞋", home["outing_reserve"])
+        self.assertIn("米白色编织网眼单肩包", home["outing_reserve"])
+        self.assertEqual(outdoor["outfit"], item.description)
+        self.assertNotIn("outing_reserve", outdoor)
+
+    async def test_style_catalog_home_scene_uses_structured_roles_without_markers(self):
+        composer, _, _, archive = make_composer([])
+        indoor = await archive.upsert_style_catalog_item(
+            {
+                "kind": "footwear",
+                "title": "候选 H-01",
+                "description": "候选 H-01 的完整可见结构",
+                "attributes": {"home_presence": "home"},
+                "source_image_hash": "structured-home" * 4,
+                "confidence": 0.9,
+            }
+        )
+        outdoor = await archive.upsert_style_catalog_item(
+            {
+                "kind": "accessory",
+                "title": "候选 O-01",
+                "description": "候选 O-01 的完整可见结构",
+                "attributes": {
+                    "home_presence": "outdoor",
+                    "carry_mode": "carried",
+                },
+                "source_image_hash": "structured-outdoor" * 4,
+                "confidence": 0.9,
+            }
+        )
+        legacy = await archive.upsert_style_catalog_item(
+            {
+                "kind": "footwear",
+                "title": "旧候选 U-01",
+                "description": "旧候选 U-01 的完整可见结构",
+                "attributes": {},
+                "source_image_hash": "structured-unknown" * 4,
+                "confidence": 0.9,
+            }
+        )
+
+        appearance = await composer._style_catalog_reference_appearance(
+            [indoor.id, outdoor.id, legacy.id], scene_category="home"
+        )
+
+        self.assertIn(indoor.description, appearance["outfit"])
+        self.assertNotIn(indoor.description, appearance["outing_reserve"])
+        self.assertIn(outdoor.description, appearance["outing_reserve"])
+        self.assertIn(legacy.description, appearance["outing_reserve"])
+
+    async def test_home_outfit_update_removes_outdoor_reserve_from_current_fact(self):
+        full_outfit = (
+            "浅蓝色短袖上衣配白色蕾丝层叠半身长裙；"
+            "白色平底露趾凉鞋；米白色编织网眼单肩包"
+        )
+        composer, _, _, archive = make_composer(
+            [
+                '{"outfit_decision":"keep","current_outfit_basis":"stored",'
+                '"scene_category":"home","style_pool":"outfit_styles",'
+                '"component_review":{"main_clothing":"keep","footwear":"keep",'
+                '"outer_layer":"not_present","carried_accessories":"keep"},'
+                f'"outfit":"{full_outfit}","style":"清爽甜美日常风",'
+                '"reason":"在家休息但下午还要出门"}'
+            ]
+        )
+        item = await archive.upsert_style_catalog_item(
+            {
+                "kind": "outfit",
+                "title": "浅蓝上衣白色蕾丝裙套装",
+                "description": full_outfit,
+                "attributes": {
+                    "pieces": [
+                        "浅蓝色短袖上衣",
+                        "白色蕾丝层叠半身长裙",
+                        "白色平底凉鞋",
+                        "米白色编织网包",
+                    ],
+                    "footwear": ["白色平底凉鞋"],
+                    "accessories": ["米白色编织网包"],
+                    "home_description": "浅蓝色短袖上衣配白色蕾丝层叠半身长裙",
+                    "outing_reserve_description": "白色平底露趾凉鞋；米白色编织网眼单肩包",
+                },
+                "source_image_hash": "home-cleanup" * 8,
+                "confidence": 0.9,
+            }
+        )
+        await archive.save_day(
+            DayRecord(
+                date="2026-08-18",
+                outfit=full_outfit,
+                timeline=[
+                    TimelineItem(
+                        time="13:30",
+                        activity="在家抱着靠枕午休",
+                        place="家",
+                        place_kind="home",
+                    )
+                ],
+                meta={
+                    "outfit_scene_category": "home",
+                    "outfit_style_pool": "outfit_styles",
+                    "outfit_decision": "keep",
+                    "style_catalog_reference_ids": str(item.id),
+                },
+            )
+        )
+
+        updated = await composer.update_outfit(
+            "2026-08-18",
+            "noon",
+            current_time=datetime.datetime(2026, 8, 18, 13, 40),
+        )
+
+        self.assertIsNotNone(updated)
+        self.assertEqual(
+            updated.outfit,
+            "浅蓝色短袖上衣配白色蕾丝层叠半身长裙",
+        )
+        self.assertEqual(updated.meta["outfit_decision"], "partial_change")
+        self.assertIn("白色平底露趾凉鞋", updated.meta["outing_outfit_reserve"])
+        self.assertIn("米白色编织网眼单肩包", updated.meta["outing_outfit_reserve"])
+
     async def test_update_outfit_preserves_user_confirmed_fact_without_change_evidence(
         self,
     ):
@@ -2299,9 +2622,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
             DayRecord(
                 date="2026-08-11",
                 outfit=confirmed_outfit,
-                timeline=[
-                    TimelineItem(time="12:30", activity="吃完午饭后准备午休")
-                ],
+                timeline=[TimelineItem(time="12:30", activity="吃完午饭后准备午休")],
                 meta={
                     "outfit_decision": "outdoor",
                     "style": "清爽夏日少女风",
@@ -2367,9 +2688,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         stored = await archive.get_day("2026-08-11")
         self.assertEqual(stored.outfit, "宽松米白色棉质睡裙，光脚")
         self.assertEqual(stored.meta["outfit_fact_source"], "occurred_schedule")
-        self.assertEqual(
-            stored.meta["outfit_fact_evidence"], "已经换上米白色棉质睡裙"
-        )
+        self.assertEqual(stored.meta["outfit_fact_evidence"], "已经换上米白色棉质睡裙")
 
     async def test_update_outfit_rejects_schedule_change_older_than_user_fact(self):
         composer, _, _, archive = make_composer(
@@ -2415,9 +2734,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         stored = await archive.get_day("2026-08-15")
         self.assertEqual(stored.outfit, confirmed_outfit)
         self.assertEqual(stored.meta["outfit_fact_source"], "user_instruction")
-        self.assertEqual(
-            stored.meta["outfit_fact_confirmed_at"], "2026-08-15 11:04:00"
-        )
+        self.assertEqual(stored.meta["outfit_fact_confirmed_at"], "2026-08-15 11:04:00")
 
     async def test_update_outfit_partially_adjusts_outdoor_clothes_at_home(self):
         composer, _, _, archive = make_composer(
@@ -2674,9 +2991,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stored.memo, before["memo"])
         self.assertEqual(stored.state_log, before["state_log"])
         self.assertEqual(stored.meta["outfit_fact_source"], "user_instruction")
-        self.assertEqual(
-            stored.meta["outfit_fact_confirmed_at"], "2026-05-24 17:07:00"
-        )
+        self.assertEqual(stored.meta["outfit_fact_confirmed_at"], "2026-05-24 17:07:00")
         for key, value in before["meta"].items():
             self.assertEqual(stored.meta[key], value)
         prompt = provider.prompts[0]
@@ -2731,12 +3046,17 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertIn("同图识别出的浅棕微卷中长发", prompt)
-        self.assertIn("用户原始穿搭请求（判断是否允许覆盖稳定人设外观，以此为准）：换上衣橱第50组这套", prompt)
+        self.assertIn(
+            "用户原始穿搭请求（判断是否允许覆盖稳定人设外观，以此为准）：换上衣橱第50组这套",
+            prompt,
+        )
         self.assertIn("测试角色的自然发色明确为黑色", prompt)
         self.assertIn("同图候选仍可补充可变的发型形状", prompt)
         self.assertIn("与明确人设事实冲突的部分必须服从人设", prompt)
 
-    async def test_persona_appearance_audit_corrects_group_hair_not_requested_by_user(self):
+    async def test_persona_appearance_audit_corrects_group_hair_not_requested_by_user(
+        self,
+    ):
         composer, provider, _, _ = make_composer(
             [
                 '{"valid":true,"reason":"原始请求只指定衣服，浅棕发与自然黑人设冲突",'
@@ -3193,9 +3513,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
                 date="2026-05-24",
                 outfit="测试睡裙",
                 timeline=[
-                    TimelineItem(
-                        time="20:30", activity="晚饭后短暂散步", status="放松"
-                    )
+                    TimelineItem(time="20:30", activity="晚饭后短暂散步", status="放松")
                 ],
             )
         )
@@ -3259,7 +3577,9 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(len(provider.prompts), 0)
 
-    async def test_daily_review_retry_reuses_saved_payload_without_second_llm_call(self):
+    async def test_daily_review_retry_reuses_saved_payload_without_second_llm_call(
+        self,
+    ):
         composer, provider, _, archive = make_composer(
             [
                 '{"summary":"复盘完成","timeline_updates":['
@@ -3693,13 +4013,9 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
                     "travel_origin": "测试江边",
                 }
             ],
-            "planned_actions": [
-                {"target": "测试江边", "reason": "去测试江边吹风"}
-            ],
+            "planned_actions": [{"target": "测试江边", "reason": "去测试江边吹风"}],
         }
-        substitutions = [
-            {"original": "测试江边", "canonical": "测试滨水公园"}
-        ]
+        substitutions = [{"original": "测试江边", "canonical": "测试滨水公园"}]
 
         DailyLocationAuditMixin._replace_place_references(payload, substitutions)
         DailyLocationAuditMixin._replace_place_references(payload, substitutions)
@@ -3913,6 +4229,36 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(ok)
         self.assertIn("outfit", reason)
+
+    def test_daily_payload_rejects_cook_without_ingredients(self):
+        composer, *_ = make_composer()
+        ok, reason = composer._validate_daily_payload(
+            {
+                "outfit": "浅色居家裙",
+                "timeline": [
+                    {
+                        "time": "12:20",
+                        "activity": "在家做午饭",
+                        "status": "专注",
+                    }
+                ],
+                "planned_actions": [
+                    {
+                        "action_id": "2026-08-19:cook:empty",
+                        "action_type": "cook",
+                        "timeline_index": 0,
+                        "payload": {},
+                    }
+                ],
+            }
+        )
+
+        self.assertFalse(ok)
+        self.assertIn("cook 必须填写 ingredients", reason)
+        self.assertEqual(
+            composer._last_validation_issue_code,
+            "cook_ingredients_required",
+        )
 
     def test_daily_payload_validation_without_generation_contract_stays_structural_for_late_start(
         self,

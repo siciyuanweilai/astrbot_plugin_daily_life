@@ -767,6 +767,38 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertIn("<daily_life>", req2.system_prompt)
         await asyncio.gather(*list(runtime._background_scheduler.tasks))
 
+    async def test_injection_snapshot_coalesces_concurrent_cache_misses(self):
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        class Repository:
+            def __init__(self):
+                self.calls = 0
+
+            async def read(self, **kwargs):
+                self.calls += 1
+                started.set()
+                await release.wait()
+                return {"relationships": [], "request": kwargs}
+
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.config = LifeSettings.from_dict({"memory_config": {}})
+        runtime.context_snapshot = Repository()
+        runtime._injection_snapshot_cache = {}
+        runtime._page_status_version = 0
+        runtime._settle_stale_reply_effects = lambda: async_return(0)
+
+        first = asyncio.create_task(runtime._gather_life_context_snapshot())
+        await asyncio.wait_for(started.wait(), timeout=1)
+        second = asyncio.create_task(runtime._gather_life_context_snapshot())
+        await asyncio.sleep(0)
+        release.set()
+        first_result, second_result = await asyncio.gather(first, second)
+
+        self.assertEqual(runtime.context_snapshot.calls, 1)
+        self.assertEqual(first_result, second_result)
+        self.assertEqual(len(runtime._injection_snapshot_cache), 1)
+
     async def test_injection_missing_day_generates_in_background_with_anti_fabrication_context(
         self,
     ):

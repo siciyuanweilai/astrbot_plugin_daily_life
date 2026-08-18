@@ -14,6 +14,7 @@ from ...models import ChatSummaryRecord, CommitmentRecord
 from ...models.coerce import compact_explanation_text
 from ...prompts import CORE_PERSONA_PRONOUN_RULES
 from ...sources.platforms import parse_unified_origin
+from ...life.reliability import NonRetryableProviderError
 from ..context import INTERACTION_MODE_PREDICATE, interaction_fact_is_current
 from ..markers import LOG_PREFIX
 from .jsonclean import call_pure_json
@@ -42,6 +43,15 @@ class ChatMemoryBatchMixin:
         "topic",
     }
     _BATCH_REFERENCE_SEPARATORS = {",", "，", ";", "；", "、", "|", "｜", "\n", "\r"}
+
+    @staticmethod
+    def _validate_chat_memory_payload(value: dict[str, Any]) -> dict[str, Any]:
+        result = dict(value)
+        result["worth_saving"] = result.get("worth_saving") is True
+        for key in ("commitments", "temporal_facts", "memory_targets", "experiences"):
+            if not isinstance(result.get(key), list):
+                result[key] = []
+        return result
 
     def _init_chat_memory_batcher(self) -> None:
         self._chat_memory_wakeup = asyncio.Event()
@@ -790,6 +800,7 @@ class ChatMemoryBatchMixin:
                             "done": "done",
                             "cancelled": "cancelled",
                             "expired": "expired",
+                            "delivery_failed": "failed",
                         }.get(stored.status, "open"),
                         "source_session": stored.source_session,
                         "source_message": stored.source_message,
@@ -857,7 +868,10 @@ class ChatMemoryBatchMixin:
                 continue
             if predicate == INTERACTION_MODE_PREDICATE:
                 interaction_audited = payload.get("_interaction_audited")
-                if interaction_audited is False:
+                # Interaction mode is safety-sensitive: a missing or failed
+                # calibration must never turn transport metadata into a
+                # persisted real-world distance claim.
+                if interaction_audited is not True:
                     continue
                 participant_ids = {
                     str(row.get("sender_profile_id") or "").strip()
@@ -1253,6 +1267,15 @@ class ChatMemoryBatchMixin:
                 self._build_chat_memory_batch_prompt(batch),
                 llm_session,
                 primary_provider_id=self.config.memory.provider,
+                strict=True,
+                validator=self._validate_chat_memory_payload,
+                fallback={
+                    "worth_saving": False,
+                    "commitments": [],
+                    "temporal_facts": [],
+                    "memory_targets": [],
+                    "experiences": [],
+                },
             )
             if not isinstance(payload, dict):
                 raise ValueError("模型未返回 JSON 对象")
@@ -1268,10 +1291,29 @@ class ChatMemoryBatchMixin:
                     logger.warning(f"{LOG_PREFIX} 聊天记忆面板刷新通知失败：{exc}")
             return True
         except asyncio.CancelledError:
-            await self.archive.fail_chat_memory_batch(batch["id"], "任务被取消")
+            await self.archive.fail_chat_memory_batch(
+                batch["id"], "任务被取消", permanent=True
+            )
             raise
+        except NonRetryableProviderError as exc:
+            await self.archive.fail_chat_memory_batch(
+                batch["id"],
+                str(exc),
+                permanent=True,
+                max_attempts=self.config.memory.batch_max_attempts,
+            )
+            logger.warning(f"{LOG_PREFIX} 聊天记忆批处理进入死信：{exc}")
+            return False
         except Exception as exc:
-            await self.archive.fail_chat_memory_batch(batch["id"], str(exc))
+            attempts = int(batch.get("attempt_count") or 1)
+            base = max(1, int(self.config.memory.batch_retry_base_seconds))
+            delay = min(3600, base * (2 ** max(0, attempts - 1)))
+            await self.archive.fail_chat_memory_batch(
+                batch["id"],
+                str(exc),
+                retry_after_seconds=delay,
+                max_attempts=self.config.memory.batch_max_attempts,
+            )
             logger.warning(f"{LOG_PREFIX} 聊天记忆批处理失败：{exc}")
             return False
         finally:

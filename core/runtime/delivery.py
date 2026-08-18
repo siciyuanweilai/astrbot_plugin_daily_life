@@ -46,6 +46,7 @@ class ScopeDeliveryRequest:
     source_message_id: str = ""
     source: str = "background"
     decorate_addressing: bool = True
+    raise_delivery_errors: bool = False
 
 
 class ReplyDeliveryService:

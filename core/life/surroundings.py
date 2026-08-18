@@ -64,7 +64,9 @@ def _score_item(item: Any, index: int, kind: str) -> float:
         score += min(int(_field(item, "interactions", 0) or 0), 30) * 0.03
         score += len(_as_list(_field(item, "memory_points", []))) * 0.35
     elif kind == "places":
-        score += min(int(_field(item, "visits", 0) or 0), 20) * 0.04
+        # Frequent visits are useful evidence that a place is real, but they
+        # should not make the same place win every generation context.
+        score -= min(int(_field(item, "visits", 0) or 0), 20) * 0.06
     elif kind == "events" and compact_text(_field(item, "importance")).lower() in {
         "high",
         "important",
@@ -183,8 +185,8 @@ def choose_place_candidates(
     schedule_intent: str = "",
     weather_condition: str = "",
     limit: int = 8,
-) -> list[dict[str, str]]:
-    candidates: list[dict[str, str]] = []
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
     seen: set[str] = set()
 
     def add(place: dict[str, Any], source: str) -> None:
@@ -200,20 +202,37 @@ def choose_place_candidates(
                     _field(place, "hint") or _field(place, "source") or "", 80
                 ),
                 "source": source,
+                "visits": max(0, int(_field(place, "visits", 0) or 0)),
+                "last_seen": compact_text(_field(place, "last_seen"), 10),
             }
         )
 
     for anchor in PLACE_ANCHORS:
         add(anchor, "anchor")
 
-    for place in sorted(
-        list(saved_places or []),
-        key=lambda item: (
-            str(_field(item, "last_seen")),
-            int(_field(item, "visits", 0) or 0),
-        ),
-        reverse=True,
-    ):
+    saved = list(saved_places or [])
+
+    def place_age_days(place: Any) -> int:
+        last_seen = compact_text(_field(place, "last_seen"), 10)
+        try:
+            seen_date = datetime.date.fromisoformat(last_seen)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, (date_value - seen_date).days)
+
+    # Keep a small history list stable for compatibility, but rotate larger
+    # memories so the most recently used POI cannot monopolize every prompt.
+    if len(saved) > 2:
+        saved.sort(
+            key=lambda item: (
+                place_age_days(item),
+                -max(0, int(_field(item, "visits", 0) or 0)),
+                compact_text(_field(item, "name"), 40),
+            ),
+            reverse=True,
+        )
+
+    for place in saved:
         add(place, "memory")
         if len(candidates) >= limit:
             break
@@ -319,7 +338,14 @@ def format_candidates(candidates: Iterable[dict[str, Any]], limit: int = 8) -> s
             continue
         hint = compact_text(_field(place, "hint"), 70)
         source = compact_text(_field(place, "source"), 20)
-        detail = f"；{hint}" if hint else ""
+        details = [hint] if hint else []
+        visits = max(0, int(_field(place, "visits", 0) or 0))
+        last_seen = compact_text(_field(place, "last_seen"), 10)
+        if visits:
+            details.append(f"历史出现 {visits} 次")
+        if last_seen:
+            details.append(f"上次出现 {last_seen}")
+        detail = "；" + "；".join(details) if details else ""
         lines.append(f"- {name} ({source}){detail}")
     return "\n".join(lines)
 
@@ -348,7 +374,7 @@ def format_world_prompt(
     if candidate_text:
         sections.append(
             "## 今日地点候选\n"
-            "优先使用稳定生活锚点和已经沉淀的真实地点；候选不是封闭列表，确有日程需要时可以根据城市、天气、时间和同行人物生成一个合理新地点。\n"
+            "优先使用稳定生活锚点和已经沉淀的真实地点；候选不是封闭列表，确有日程需要时可以根据城市、天气、时间和同行人物生成一个合理新地点。近期反复出现的地点只是记忆参考，连续使用时优先换成其他候选、附近泛化场景或新的活动类型；如果承诺、同行、天气或用户偏好明确支持，可以自然复访，不要把轮换做成硬性禁用。\n"
             + candidate_text
         )
     return "\n\n".join(sections)

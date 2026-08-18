@@ -240,11 +240,12 @@ class CommitmentArchiveMixin:
             "cancelled",
             "expired",
             "pending",
+            "delivery_failed",
         }:
             return False
         field = (
             "completed_at"
-            if status in {"done", "cancelled", "expired"}
+            if status in {"done", "cancelled", "expired", "delivery_failed"}
             else "activated_at"
         )
 
@@ -260,6 +261,7 @@ class CommitmentArchiveMixin:
                 "done": "done",
                 "cancelled": "cancelled",
                 "expired": "expired",
+                "delivery_failed": "failed",
             }.get(status, status)
             self._conn.execute(
                 """

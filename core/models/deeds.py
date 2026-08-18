@@ -212,7 +212,7 @@ class LifeActionIntent:
         payload = (
             dict(raw.get("payload")) if isinstance(raw.get("payload"), dict) else {}
         )
-        for payload_field in ("ingredients", "items"):
+        for payload_field in ("ingredients", "items", "pantry_items"):
             values = payload.get(payload_field)
             if not isinstance(values, list):
                 continue

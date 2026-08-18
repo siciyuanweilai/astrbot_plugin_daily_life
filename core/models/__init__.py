@@ -6,7 +6,9 @@ from .agenda import (
     deduplicate_timeline_items,
 )
 from .catalog import (
+    STYLE_CATALOG_CARRY_MODES,
     STYLE_CATALOG_CLOTHING_KINDS,
+    STYLE_CATALOG_HOME_PRESENCE,
     STYLE_CATALOG_KIND_LABELS,
     STYLE_CATALOG_KIND_SET,
     STYLE_CATALOG_KINDS,
@@ -160,7 +162,9 @@ __all__ = [
     "SessionMidSummaryRecord",
     "SleepState",
     "StyleCatalogItemRecord",
+    "STYLE_CATALOG_CARRY_MODES",
     "STYLE_CATALOG_CLOTHING_KINDS",
+    "STYLE_CATALOG_HOME_PRESENCE",
     "STYLE_CATALOG_KINDS",
     "STYLE_CATALOG_KIND_LABELS",
     "STYLE_CATALOG_KIND_SET",

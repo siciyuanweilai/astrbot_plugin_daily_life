@@ -1,5 +1,6 @@
 import asyncio
 import inspect
+from types import MethodType
 from typing import Any
 
 from astrbot.api import logger
@@ -204,6 +205,56 @@ class LifeBackgroundComposer(
         start = text.find("{")
         return text[start:].strip() if start >= 0 else ""
 
+    @staticmethod
+    def _reasoning_alias_value(completion: object) -> str | None:
+        """读取 OpenAI 兼容服务偶尔使用的非标准推理字段。"""
+
+        choices = getattr(completion, "choices", None)
+        if not choices:
+            return None
+        choice = choices[0]
+        message = getattr(choice, "message", None)
+        if message is None:
+            message = getattr(choice, "delta", None)
+        if message is None:
+            return None
+
+        field_seen = False
+        fields_set = getattr(message, "model_fields_set", None)
+        for key in ("reasoning", "thinking"):
+            if isinstance(fields_set, set) and key not in fields_set:
+                continue
+            if not isinstance(fields_set, set) and not hasattr(message, key):
+                continue
+            field_seen = True
+            value = getattr(message, key, None)
+            if value is not None and str(value).strip():
+                return str(value)
+        return "" if field_seen else None
+
+    @staticmethod
+    def _enable_reasoning_alias_compat(provider: object) -> None:
+        """让插件调用兼容上游把最终 JSON 错放在 reasoning 的响应。"""
+
+        if getattr(provider, "_daily_life_reasoning_alias_compat", False):
+            return
+        if getattr(provider, "reasoning_key", None) != "reasoning_content":
+            return
+        original = getattr(provider, "_extract_reasoning_content", None)
+        if not callable(original):
+            return
+
+        def compatible(_self_provider, completion):
+            primary = original(completion)
+            if primary is not None and str(primary).strip():
+                return primary
+            alias = LifeBackgroundComposer._reasoning_alias_value(completion)
+            return primary if alias is None else alias
+
+        provider._extract_reasoning_content = MethodType(compatible, provider)
+        provider._daily_life_reasoning_alias_compat = True
+        logger.debug("[日常生活] 已为 OpenAI 兼容模型启用 reasoning 字段兼容")
+
     async def _call_llm_text(
         self,
         provider,
@@ -252,6 +303,7 @@ class LifeBackgroundComposer(
             if attempt > 0 and attempt == empty_retries:
                 await switch_to_temporary_provider("达到空响应重试上限")
             try:
+                self._enable_reasoning_alias_compat(current_provider)
                 resp = await asyncio.wait_for(
                     current_provider.text_chat(
                         prompt,

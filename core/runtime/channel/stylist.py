@@ -16,6 +16,8 @@ from ...clock import today as life_today
 from ...life.tools import extract_json_from_text
 from ...media.base import REFERENCE_IMAGE_MAX_BYTES, image_mime_and_ext
 from ...models import (
+    STYLE_CATALOG_CARRY_MODES,
+    STYLE_CATALOG_HOME_PRESENCE,
     STYLE_CATALOG_KIND_LABELS,
     STYLE_CATALOG_KIND_SET,
     STYLE_CATALOG_KINDS,
@@ -23,7 +25,7 @@ from ...models import (
     StyleCatalogItemRecord,
 )
 from ...outcome import ToolResultText
-from ...paths import path_exists, runtime_data_root
+from ...paths import STYLE_CATALOG_DIR_NAME, path_exists, runtime_data_root
 from ...prompts import cache_friendly_prompt
 from ..markers import LOG_PREFIX
 
@@ -165,17 +167,26 @@ class RuntimeStyleCatalogMixin:
             }:
                 continue
             if isinstance(item, (list, tuple, set)):
-                normalized = cls._style_list(item, 12)
+                if all(isinstance(entry, dict) for entry in item):
+                    normalized = []
+                    for entry in item:
+                        nested = cls._style_attributes(entry)
+                        if nested:
+                            normalized.append(nested)
+                else:
+                    normalized = cls._style_list(item, 12)
             elif isinstance(item, dict):
-                normalized = {
-                    cls._style_text(sub_key, 40): cls._style_text(sub_value, 120)
-                    for sub_key, sub_value in item.items()
-                    if cls._style_text(sub_key, 40) and cls._style_text(sub_value, 120)
-                }
+                normalized = cls._style_attributes(item)
             elif isinstance(item, (int, float, bool)):
                 normalized = item
             else:
-                normalized = cls._style_text(item, 240)
+                normalized = cls._style_text(
+                    item,
+                    800
+                    if normalized_key
+                    in {"home_description", "outing_reserve_description"}
+                    else 240,
+                )
             if normalized not in ("", [], {}):
                 result[normalized_key] = normalized
         return result
@@ -196,11 +207,56 @@ class RuntimeStyleCatalogMixin:
             confidence = float(raw.get("confidence") or 0.0)
         except (TypeError, ValueError):
             confidence = 0.0
+        attributes = cls._style_attributes(raw)
+        if kind in {"footwear", "accessory"}:
+            home_presence = cls._style_text(
+                attributes.get("home_presence"), 16
+            ).lower()
+            attributes["home_presence"] = (
+                home_presence
+                if home_presence in STYLE_CATALOG_HOME_PRESENCE
+                else "unknown"
+            )
+        if kind == "accessory":
+            carry_mode = cls._style_text(attributes.get("carry_mode"), 16).lower()
+            attributes["carry_mode"] = (
+                carry_mode if carry_mode in STYLE_CATALOG_CARRY_MODES else "unknown"
+            )
+        if kind == "outfit":
+            profiles = attributes.get("component_roles")
+            normalized_profiles = []
+            for profile in profiles if isinstance(profiles, list) else []:
+                if not isinstance(profile, dict):
+                    continue
+                profile_kind = cls._style_text(profile.get("kind"), 16).lower()
+                name = cls._style_text(
+                    profile.get("name") or profile.get("description"), 120
+                )
+                if profile_kind not in {"footwear", "accessory"} or not name:
+                    continue
+                role = cls._style_text(profile.get("home_presence"), 16).lower()
+                carry_mode = cls._style_text(profile.get("carry_mode"), 16).lower()
+                normalized_profiles.append(
+                    {
+                        "kind": profile_kind,
+                        "name": name,
+                        "home_presence": role
+                        if role in STYLE_CATALOG_HOME_PRESENCE
+                        else "unknown",
+                        "carry_mode": carry_mode
+                        if carry_mode in STYLE_CATALOG_CARRY_MODES
+                        else "unknown",
+                    }
+                )
+            if normalized_profiles:
+                attributes["component_roles"] = normalized_profiles
+            else:
+                attributes.pop("component_roles", None)
         return {
             "kind": kind,
             "title": cls._style_text(raw.get("title"), 100),
             "description": description,
-            "attributes": cls._style_attributes(raw),
+            "attributes": attributes,
             "confidence": max(0.0, min(confidence, 1.0)),
         }
 
@@ -229,8 +285,15 @@ class RuntimeStyleCatalogMixin:
 - outfit：完整服装组合；description 详细写上装、下装或连体服装、外层、鞋袜和必要配饰的最终搭配，不写头发、脸部妆容或美甲。
 - top：独立上装与叠穿外层；写 garment_type、layers、neckline、sleeve、length、fit、hem。
 - bottom：独立下装；写 garment_type、waist、length、fit、hem。
-- footwear：鞋子与实际搭配的袜子；写 items、toe、heel、sole、socks。
-- accessory：包袋、帽子、腰带、围巾、首饰等可拆卸配饰；写 items、placement、material_appearance。
+- footwear：鞋子与实际搭配的袜子；写 items、toe、heel、sole、socks，并判断 home_presence：
+  home（适合仅在家中使用）、outdoor（仅作为离家使用）、both（两种场景都适合）或 unknown（无法确认）。
+- accessory：包袋、帽子、腰带、围巾、首饰等可拆卸配饰；写 items、placement、material_appearance，
+  同时填写 home_presence 和 carry_mode：worn（佩戴）、carried（随身携带）、staged（仅备好待用）、
+  none（不适用）或 unknown（无法确认）。这些是结构化枚举，不要把判断理由塞进 description。
+- outfit：除 footwear/accessories 名称外，补充 component_roles 数组；每个鞋袜或配饰组成项写
+  kind、name、home_presence、carry_mode。另写 home_description（仅包含适合当前居家的实际穿着）和
+  outing_reserve_description（仅包含离家时才使用的组成）；没有对应组成时写空字符串。组件角色缺少
+  可靠证据时使用 unknown，不要猜测。
 - hair：只写发型；写 length、bangs、parting、tie、texture、volume、accessories。
 - makeup：只写可见妆容；写 finish、base、brows、eyes、cheeks、lips。
 - nails：只写可见美甲；写 shape、length、finish、colors、patterns、designs。
@@ -245,10 +308,15 @@ class RuntimeStyleCatalogMixin:
     "present": false,
     "title": "简短候选名称",
     "description": "只复现这套服装、鞋袜和必要配饰的详细衣橱视觉提示词",
+    "home_description": "排除外出专用组成后的详细居家穿着描述",
+    "outing_reserve_description": "仅列出离家时才使用的鞋袜或随身配饰",
     "category": [], "colors": [], "pieces": [], "patterns": [],
     "silhouette": "", "neckline": "", "sleeve": "", "length": "",
     "material_appearance": "", "thickness": "", "exposure_level": "",
     "footwear": [], "accessories": [],
+    "component_roles": [{"kind": "footwear | accessory", "name": "",
+      "home_presence": "home | outdoor | both | unknown",
+      "carry_mode": "worn | carried | staged | none | unknown"}],
     "styles": [], "seasons": [], "scenes": [], "weather_fit": [],
     "confidence": 0.0
   },
@@ -272,13 +340,16 @@ class RuntimeStyleCatalogMixin:
     "category": [], "items": [], "colors": [], "patterns": [],
     "toe": "", "heel": "", "sole": "", "socks": [],
     "material_appearance": "", "styles": [], "seasons": [],
-    "scenes": [], "weather_fit": [], "activity_fit": [], "confidence": 0.0
+    "scenes": [], "weather_fit": [], "activity_fit": [],
+    "home_presence": "home | outdoor | both | unknown", "confidence": 0.0
   },
   "accessory": {
     "present": false, "title": "", "description": "只复现配饰及其佩戴位置的详细衣橱视觉提示词",
     "category": [], "items": [], "colors": [], "patterns": [],
     "placement": [], "material_appearance": "", "styles": [],
-    "seasons": [], "scenes": [], "weather_fit": [], "confidence": 0.0
+    "seasons": [], "scenes": [], "weather_fit": [],
+    "home_presence": "home | outdoor | both | unknown",
+    "carry_mode": "worn | carried | staged | none | unknown", "confidence": 0.0
   },
   "hair": {
     "present": false,
@@ -362,7 +433,7 @@ class RuntimeStyleCatalogMixin:
             raise ValueError("参考图片转换后仍然过大")
         mime, suffix = image_mime_and_ext(data)
         target_dir = (
-            runtime_data_root(getattr(self, "data_path", None)) / "style_catalog"
+            runtime_data_root(getattr(self, "data_path", None)) / STYLE_CATALOG_DIR_NAME
         )
         await asyncio.to_thread(target_dir.mkdir, parents=True, exist_ok=True)
         target = target_dir / f"style_{digest[:24]}{suffix}"
@@ -398,7 +469,10 @@ class RuntimeStyleCatalogMixin:
             return 10_000
 
     async def _remove_unused_style_catalog_image(self, path_text: str) -> None:
-        path = runtime_data_root(getattr(self, "data_path", None)) / "style_catalog"
+        path = (
+            runtime_data_root(getattr(self, "data_path", None))
+            / STYLE_CATALOG_DIR_NAME
+        )
         try:
             candidate = await asyncio.to_thread(Path(path_text).expanduser().resolve)
             candidate.relative_to(await asyncio.to_thread(path.resolve))

@@ -4,6 +4,7 @@ import sys
 import tempfile
 import types
 import unittest
+from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -331,6 +332,36 @@ class TargetLifeContextTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ExternalLeaseTests(unittest.IsolatedAsyncioTestCase):
+    async def test_plugin_lifecycle_lease_does_not_acquire_service_lease(self):
+        plugin = DailyLifePlugin(types.SimpleNamespace(), {})
+
+        class Runtime:
+            def __init__(self):
+                self.service_users = 0
+
+            @asynccontextmanager
+            async def runtime_service_lease(self):
+                self.service_users += 1
+                try:
+                    yield
+                finally:
+                    self.service_users -= 1
+
+        runtime = Runtime()
+        plugin.runtime = runtime
+        plugin.commands = object()
+
+        async with plugin._external_plugin_lease():
+            self.assertEqual(plugin._external_users, 1)
+            self.assertEqual(runtime.service_users, 0)
+
+        async with plugin._external_runtime_lease():
+            self.assertEqual(plugin._external_users, 1)
+            self.assertEqual(runtime.service_users, 1)
+
+        self.assertEqual(plugin._external_users, 0)
+        self.assertEqual(runtime.service_users, 0)
+
     async def test_share_context_contract_delegates_to_runtime(self):
         plugin = DailyLifePlugin(types.SimpleNamespace(), {})
 

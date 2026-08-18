@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import math
+import unicodedata
 import uuid
 from typing import Any
 
@@ -11,11 +12,14 @@ from astrbot.api import logger
 
 from ..life.tools import extract_json_from_text
 from ..prompts import CORE_JSON_OUTPUT_RULES, cache_friendly_prompt
+from ..search.cache import SingleFlight, TimedCache
 from .markers import LOG_PREFIX
 
 
 class MeaningRuntimeMixin:
     _SEMANTIC_RANK_TIMEOUT_SECONDS = 4.0
+    _MEANING_QUERY_VECTOR_CACHE_TTL_SECONDS = 5 * 60
+    _MEANING_QUERY_VECTOR_CACHE_LIMIT = 256
 
     @staticmethod
     def _meaning_hash(text: str) -> str:
@@ -52,6 +56,64 @@ class MeaningRuntimeMixin:
                     return provider
         return providers[0]
 
+    def _meaning_query_vector_cache(self) -> TimedCache[list[float]]:
+        cache = getattr(self, "_meaning_query_vector_cache_store", None)
+        if not isinstance(cache, TimedCache):
+            cache = TimedCache[list[float]](
+                max_items=self._MEANING_QUERY_VECTOR_CACHE_LIMIT,
+                ttl_seconds=self._MEANING_QUERY_VECTOR_CACHE_TTL_SECONDS,
+            )
+            self._meaning_query_vector_cache_store = cache
+        return cache
+
+    def _meaning_query_vector_flight(self) -> SingleFlight[list[float]]:
+        flight = getattr(self, "_meaning_query_vector_singleflight", None)
+        if not isinstance(flight, SingleFlight):
+            flight = SingleFlight[list[float]]()
+            self._meaning_query_vector_singleflight = flight
+        return flight
+
+    @staticmethod
+    def _meaning_query_vector_key(provider_id: str, query: str) -> str:
+        normalized = unicodedata.normalize(
+            "NFKC", " ".join(str(query or "").split())
+        )
+        return hashlib.sha256(
+            f"{str(provider_id or '').strip()}\0{normalized}".encode()
+        ).hexdigest()
+
+    async def _meaning_query_vector(
+        self,
+        provider: Any,
+        provider_id: str,
+        query: str,
+    ) -> list[float]:
+        key = self._meaning_query_vector_key(provider_id, query)
+        cache = self._meaning_query_vector_cache()
+        cached = await cache.get(key)
+        if cached is not None:
+            return list(cached)
+
+        async def load() -> list[float]:
+            recent = await cache.get(key)
+            if recent is not None:
+                return list(recent)
+            raw = await provider.get_embedding(query)
+            vector = [float(value) for value in list(raw or [])]
+            if vector:
+                await cache.set(key, vector)
+            return vector
+
+        vector, shared = await self._meaning_query_vector_flight().run(key, load)
+        if shared:
+            logger.debug(f"{LOG_PREFIX} 查询向量合并了同键并发请求")
+        return list(vector)
+
+    async def _close_meaning_query_vector_flight(self) -> None:
+        flight = getattr(self, "_meaning_query_vector_singleflight", None)
+        if isinstance(flight, SingleFlight):
+            await flight.close()
+
     @staticmethod
     def _meaning_provider_id(provider: Any) -> str:
         try:
@@ -59,6 +121,18 @@ class MeaningRuntimeMixin:
             return str(getattr(meta, "id", "") or getattr(meta, "model", "") or "embedding")
         except Exception:
             return str(getattr(provider, "model_name", "") or "embedding")
+
+    @classmethod
+    def _meaning_provider_cache_id(cls, provider: Any) -> str:
+        provider_id = cls._meaning_provider_id(provider)
+        try:
+            meta = provider.meta()
+            model = str(getattr(meta, "model", "") or "").strip()
+        except Exception:
+            model = str(getattr(provider, "model_name", "") or "").strip()
+        if model and model != provider_id:
+            return f"{provider_id}:{model}"
+        return provider_id
 
     async def _meaning_store_vectors(self, rows: list[dict[str, Any]]) -> None:
         saver = getattr(self.archive, "upsert_memory_vectors", None)
@@ -82,7 +156,7 @@ class MeaningRuntimeMixin:
         ]
         if not flat:
             return {kind: [] for kind in groups}
-        provider_id = self._meaning_provider_id(provider)
+        provider_id = self._meaning_provider_cache_id(provider)
         cached_by_kind: dict[str, dict[str, dict[str, Any]]] = {}
         for kind, values in groups.items():
             getter = getattr(self.archive, "get_memory_vectors", None)
@@ -110,7 +184,11 @@ class MeaningRuntimeMixin:
             missing.append((kind, target_id, text))
 
         async def embed_all() -> tuple[list[float], list[list[float]]]:
-            query_vector = await provider.get_embedding(query)
+            query_vector = await self._meaning_query_vector(
+                provider,
+                provider_id,
+                query,
+            )
             missing_vectors = (
                 await provider.get_embeddings([text for _, _, text in missing])
                 if missing

@@ -273,6 +273,72 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 archive.close()
 
+    async def test_autonomous_new_outfit_reference_falls_back_to_active_catalog(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(f"{tmpdir}/daily_life.db")
+            outfit = await archive.upsert_style_catalog_item(
+                {
+                    "kind": "outfit",
+                    "title": "优先完整套装",
+                    "description": "米白针织上衣搭配浅灰长裙",
+                    "source_image_hash": "d" * 64,
+                    "confidence": 0.9,
+                }
+            )
+            top = await archive.upsert_style_catalog_item(
+                {
+                    "kind": "top",
+                    "title": "备用上装",
+                    "description": "浅蓝色短袖上衣",
+                    "source_image_hash": "e" * 64,
+                    "confidence": 0.9,
+                }
+            )
+            try:
+                runtime = _StyleCatalogComposer(archive)
+                self.assertEqual(
+                    await runtime._style_catalog_resolve_new_outfit_reference_ids([]),
+                    [outfit.id],
+                )
+                self.assertEqual(
+                    await runtime._style_catalog_resolve_new_outfit_reference_ids(
+                        [top.id]
+                    ),
+                    [outfit.id],
+                )
+            finally:
+                archive.close()
+
+    async def test_autonomous_new_outfit_reference_falls_back_to_separate_pieces(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(f"{tmpdir}/daily_life.db")
+            top = await archive.upsert_style_catalog_item(
+                {
+                    "kind": "top",
+                    "title": "备用上装",
+                    "description": "浅蓝色短袖上衣",
+                    "source_image_hash": "f" * 64,
+                    "confidence": 0.9,
+                }
+            )
+            bottom = await archive.upsert_style_catalog_item(
+                {
+                    "kind": "bottom",
+                    "title": "备用下装",
+                    "description": "白色高腰半身裙",
+                    "source_image_hash": "1" * 64,
+                    "confidence": 0.9,
+                }
+            )
+            try:
+                runtime = _StyleCatalogComposer(archive)
+                self.assertEqual(
+                    await runtime._style_catalog_resolve_new_outfit_reference_ids([]),
+                    [top.id, bottom.id],
+                )
+            finally:
+                archive.close()
+
     async def test_catalog_context_reserves_multiple_complete_outfits(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             archive = LifeArchive(f"{tmpdir}/daily_life.db")
@@ -830,6 +896,14 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 "description": "蓝色衬衫搭白色长裤",
                 "visual_prompt": "蓝色翻领衬衫采用宽松直身剪裁，搭配白色高腰直筒长裤。",
                 "colors": ["蓝色", "白色"],
+                "component_roles": [
+                    {
+                        "kind": "accessory",
+                        "name": "候选 A-01",
+                        "home_presence": "outdoor",
+                        "carry_mode": "carried",
+                    }
+                ],
                 "confidence": 0.7,
             },
             "hair": {
@@ -847,6 +921,10 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             outfit["description"],
             "蓝色翻领衬衫采用宽松直身剪裁，搭配白色高腰直筒长裤。",
+        )
+        self.assertEqual(
+            outfit["attributes"]["component_roles"][0]["home_presence"],
+            "outdoor",
         )
         self.assertNotIn("visual_prompt", outfit["attributes"])
         self.assertEqual(hair, {})
@@ -874,6 +952,8 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
         contract = runtime._style_catalog_contract("", "auto")
 
         self.assertIn("description 就是供衣橱展示、检索和后续生图", contract)
+        self.assertIn('"home_presence": "home | outdoor | both | unknown"', contract)
+        self.assertIn('"carry_mode": "worn | carried | staged | none | unknown"', contract)
         self.assertNotIn('"visual_prompt"', contract)
         self.assertNotIn('"image_summary"', contract)
 

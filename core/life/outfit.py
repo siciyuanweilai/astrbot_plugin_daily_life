@@ -25,7 +25,7 @@ from .appearance import (
 )
 from .condition import format_physiological_rhythm_prompt
 from .fashion import outfit_style_contamination_reason
-from .future import future_outfit_timing_issue
+from .future import future_outfit_timing_issue, outfit_descriptions_match
 from .tools import (
     extract_json_from_text,
     format_timeline_travel,
@@ -373,6 +373,7 @@ class OutfitMixin:
             f"今日日程基调：{old_meta.get('life_mode', '未知')}",
             f"今日睡眠倾向：{old_meta.get('sleep_mode', '未知')}",
             f"当前穿搭决定：{outfit_decision_label(old_meta.get('outfit_decision')) or '未知'}",
+            f"外出备选组成（当前未穿/未携带）：{old_meta.get('outing_outfit_reserve') or '无'}",
             f"今日主题：{daily_theme}",
             f"今日心情色彩：{mood_color}（仅供氛围参考）",
             f"当前时间线索：{get_time_period_cn(target_period)}",
@@ -415,6 +416,11 @@ class OutfitMixin:
             "old_data": old_data,
             "timeline_date": timeline_date,
             "current_timeline": current_timeline,
+            "current_place_kind": str(
+                getattr(current_item, "place_kind", "")
+                if current_item is not None and not isinstance(current_item, dict)
+                else (current_item or {}).get("place_kind", "")
+            ).strip(),
             "next_timeline": next_timeline,
             "past_timeline": past_timeline,
             "future_timeline": future_timeline,
@@ -472,6 +478,7 @@ class OutfitMixin:
 1. 只围绕当前实际时间、当前日程位置、实时生活状态和下一项安排判断；全天日程只作为背景。
 2. 未发生的未来安排只能作为预告，不能提前覆盖当前穿搭；等对应时间/场景实际到达后再换装。
 3. 当前或下一项安排需要外出时，先判断现有穿搭是否适合场景和天气；明显不合适时不能直接 keep。
+3.1 scene_category 为 home 或 sleep 时，outfit 只能写当前实际在身上的主体衣物和室内组成；玄关/桌边备好的外出鞋、单肩包、雨伞、相机等只写入“外出备选组成”，不得因为下午要出门就提前写进当前 outfit。实际离家节点再用 outdoor 或 partial_change 加入，回家后及时移除。
 4. current_outfit_basis 用于说明最终穿搭依据：stored 表示数据库中的当前穿搭仍有效；occurred_schedule 表示当前或已发生日程明确完成了换装；live_state 表示实时状态明确确认已经换装。未发生日程不能作为依据。
 5. keep 只能与 stored 搭配，并原样返回当前 outfit、style、hair_style、hair、makeup_style、makeup、nails_style、nails；已经换装则选择 change、partial_change、sleepwear 或 outdoor，不能用 keep 表示“换装后继续穿着”。
 6. component_review 必须分别审视主体服装、鞋履、外层、随身配饰、发型、妆容和美甲；不存在的组成写 not_present，无法确认写 unknown。任一组成需要调整时，不能返回 keep。
@@ -585,6 +592,13 @@ class OutfitMixin:
         ) or normalize_outfit_scene_category(
             old_meta.get("outfit_scene_category"), default="mixed"
         )
+        actual_place_kind = str(context.get("current_place_kind") or "").strip()
+        if actual_place_kind == "home":
+            scene_category = "home"
+        elif actual_place_kind == "transit":
+            scene_category = "outdoor"
+        elif actual_place_kind in {"poi", "generic"}:
+            scene_category = "public"
         old_outfit = str(old_data.outfit or "").strip()
         old_style = normalize_appearance_fact(old_meta.get("style"), 120)
         old_hair_style = normalize_appearance_fact(old_meta.get("hair_style"), 80)
@@ -597,6 +611,36 @@ class OutfitMixin:
             old_meta.get("nails_style"), 80
         )
         old_nails = normalize_appearance_fact(old_meta.get("nails"), 160)
+        scene_component_cleanup = False
+        current_reference_ids = self._style_catalog_reference_ids(
+            old_meta.get("style_catalog_reference_ids")
+        )
+        if scene_category in {"home", "sleep"} and not context.get("instruction"):
+            current_scene_appearance = await self._style_catalog_reference_appearance(
+                current_reference_ids,
+                scene_category=scene_category,
+            )
+            reserve = str(
+                current_scene_appearance.get("outing_reserve") or ""
+            ).strip()
+            scene_outfit = str(
+                current_scene_appearance.get("outfit") or ""
+            ).strip()
+            if (
+                reserve
+                and scene_outfit
+                and outfit_descriptions_match(old_outfit, reserve)
+            ):
+                generated_outfit = scene_outfit
+                component_review = dict(component_review)
+                component_review["footwear"] = "adjust"
+                component_review["carried_accessories"] = "adjust"
+                scene_component_cleanup = True
+                if decision == "keep":
+                    decision = "partial_change"
+                logger.info(
+                    "[穿搭更新] 居家场景已将外出鞋包从当前穿搭移到外出备选"
+                )
         occurred_outfit_change = (
             decision == "keep"
             and current_basis in {"occurred_schedule", "live_state"}
@@ -668,7 +712,9 @@ class OutfitMixin:
             decision = "partial_change"
             logger.debug("[穿搭更新] 已按组成部分审视结果校正穿搭决定：决定=局部调整")
         reference_ids = (
-            self._style_catalog_reference_ids(result.get("catalog_reference_ids"))
+            current_reference_ids
+            if scene_component_cleanup
+            else self._style_catalog_reference_ids(result.get("catalog_reference_ids"))
             if decision != "keep"
             else []
         )
@@ -683,16 +729,32 @@ class OutfitMixin:
             )
         )
         if requires_catalog_clothing and not context.get("instruction"):
+            resolved_reference_ids = (
+                await self._style_catalog_resolve_new_outfit_reference_ids(
+                    reference_ids,
+                    scene_category=scene_category,
+                )
+            )
+            if resolved_reference_ids != reference_ids:
+                logger.info(
+                    "[穿搭更新] 模型未提供完整衣橱编号，已自动采用候选："
+                    + ",".join(str(item) for item in resolved_reference_ids)
+                )
+                reference_ids = resolved_reference_ids
             (
                 catalog_appearance,
                 catalog_issue,
-            ) = await self._style_catalog_new_outfit_selection(reference_ids)
+            ) = await self._style_catalog_new_outfit_selection(
+                reference_ids,
+                scene_category=scene_category,
+            )
             if catalog_issue:
                 logger.warning(f"[穿搭更新] 已忽略脱离衣橱的新穿搭：{catalog_issue}")
                 return None
         else:
             catalog_appearance = await self._style_catalog_reference_appearance(
-                reference_ids
+                reference_ids,
+                scene_category="" if context.get("instruction") else scene_category,
             )
         if reference_ids:
             catalog_outfit = catalog_appearance.get("outfit", "")
@@ -713,6 +775,11 @@ class OutfitMixin:
                 generated_nails_style or catalog_appearance.get("nails_style", "")
             )
             generated_nails = generated_nails or catalog_appearance.get("nails", "")
+            reserve = str(catalog_appearance.get("outing_reserve") or "").strip()
+            if reserve:
+                old_meta["outing_outfit_reserve"] = reserve
+            else:
+                old_meta.pop("outing_outfit_reserve", None)
             logger.debug(
                 "[穿搭更新] 已采用视觉衣橱候选："
                 + ",".join(str(item) for item in reference_ids)

@@ -75,6 +75,10 @@ class DailyContractMixin:
         if not contract_ok:
             self._set_validation_issue("generation_contract_invalid")
             return False, contract_reason
+        cooking_issue = self._cooking_payload_issue(payload)
+        if cooking_issue:
+            self._set_validation_issue("cook_ingredients_required")
+            return False, cooking_issue
         timeline_ok, timeline_reason = self._validate_timeline_rhythm(
             payload,
             expected_coverage=expected_coverage,
@@ -101,6 +105,39 @@ class DailyContractMixin:
             self._set_validation_issue("daytime_outfit_transition")
             return False, daytime_outfit_issue
         return True, ""
+
+    @staticmethod
+    def _cooking_payload_issue(payload: dict) -> str:
+        """确保计划烹饪具备可由库存结算的明确用料。"""
+
+        actions = payload.get("planned_actions")
+        if not isinstance(actions, list):
+            return ""
+        for index, action in enumerate(actions):
+            if not isinstance(action, dict) or str(
+                action.get("action_type") or ""
+            ).strip().lower() != "cook":
+                continue
+            details = action.get("payload")
+            ingredients = details.get("ingredients") if isinstance(details, dict) else None
+            if not isinstance(ingredients, list):
+                return f"planned_actions[{index}] 的 cook 必须填写 ingredients"
+            for item in ingredients:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "").strip()
+                try:
+                    quantity = float(item.get("quantity") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if name and math.isfinite(quantity) and quantity > 0:
+                    break
+            else:
+                return (
+                    f"planned_actions[{index}] 的 cook 至少需要一项名称和正数数量"
+                    "的 ingredients"
+                )
+        return ""
 
     @staticmethod
     def _action_timeline_index(action: object) -> int | None:
@@ -785,6 +822,13 @@ class DailyContractMixin:
                 "顶层穿搭把编号写入 life_decision.outfit.catalog_reference_ids，"
                 "计划换装把编号写入对应 action 的 payload.catalog_reference_ids。"
             )
+        if code == "cook_ingredients_required":
+            return (
+                "保留日程、状态、人物、地点和其他动作；只修正 cook 动作。"
+                "从当前提供的可用食材库存中选择实际会用到的食材，"
+                "在 payload.ingredients 写入名称、正数 quantity 和可选 unit；"
+                "无法确认食材或并非在家烹饪时改用 meal 或 order_food。"
+            )
         if code == "daytime_outfit_transition":
             return (
                 "保留生活主题、状态、人物、地点和睡醒时的真实穿搭；在首个持续日间"
@@ -796,6 +840,6 @@ class DailyContractMixin:
             return (
                 "保留生活决策、状态、穿搭和人物事实，只修正 timeline 的结构化地点、"
                 "目标城市、交通方式、到达时间及对应 move/travel 动作；"
-                "本地日程使用 local，明确跨城旅行才使用 travel。"
+                "本地日程使用 local；明确跨城旅行、出差或返乡使用 travel 并填写目标城市；同城公园、景点和步行路线仍是 local。"
             )
         return "保留原结果的生活连续性，修复未通过校验的结构或内容；系统会根据 timeline 自动检查覆盖范围。"

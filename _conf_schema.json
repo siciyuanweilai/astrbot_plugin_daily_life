@@ -351,6 +351,20 @@
         },
         "hint": "后台任务检查静默会话和待处理队列的间隔。"
       },
+      "batch_max_attempts": {
+        "description": "记忆批次最大重试次数",
+        "type": "int",
+        "default": 4,
+        "slider": {"min": 1, "max": 10, "step": 1},
+        "hint": "模型持续失败达到次数后进入死信并推进队列，避免无限重复调用。"
+      },
+      "batch_retry_base_seconds": {
+        "description": "记忆批次重试退避",
+        "type": "int",
+        "default": 30,
+        "slider": {"min": 5, "max": 3600, "step": 5},
+        "hint": "首次失败后的重试等待秒数，后续按指数退避。"
+      },
       "max_generation_items": {
         "description": "生成参考条数",
         "type": "int",

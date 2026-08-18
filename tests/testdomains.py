@@ -765,7 +765,7 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
                 "target": "补充测试食材",
                 "timeline_index": 0,
                 "duration_minutes": 10,
-                "payload": {"items": ["测试食材"]},
+                "payload": {"pantry_items": ["测试食材"]},
                 "source": "daily_plan",
             }
         )
@@ -779,6 +779,29 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fitness[0]["intensity"], 3)
         self.assertEqual(pantry[0]["name"], "测试食材")
         self.assertEqual(pantry[0]["quantity"], 1)
+
+    async def test_generic_purchase_items_do_not_enter_food_inventory(self):
+        purchase_day = self._day(
+            {
+                "action_id": "2026-08-03:purchase:ordinary-items",
+                "action_type": "purchase",
+                "target": "逛街买些小物件",
+                "timeline_index": 0,
+                "duration_minutes": 30,
+                "payload": {
+                    "items": [
+                        {"name": "复古玻璃杯", "quantity": 1, "unit": "只"},
+                        {"name": "旧铁皮小青蛙", "quantity": 1, "unit": "个"},
+                    ]
+                },
+                "source": "daily_plan",
+            }
+        )
+
+        outcomes = await self.harness.settle_completed_planned_actions(purchase_day)
+
+        self.assertEqual(outcomes[0].status, "committed")
+        self.assertEqual(await self.archive.get_pantry_items(limit=0), [])
 
     async def test_replayed_action_retries_missing_domain_write(self):
         day = self._day(
@@ -863,9 +886,7 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
                 "duration_minutes": 30,
                 "payload": {
                     "meal_type": "晚餐",
-                    "ingredients": [
-                        {"name": "测试食材", "quantity": 1, "unit": "份"}
-                    ],
+                    "ingredients": [{"name": "测试食材", "quantity": 1, "unit": "份"}],
                 },
                 "source": "daily_plan",
             }
@@ -890,9 +911,7 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
                 "name": "测试家常饭",
                 "recipe_id": "",
                 "status": "completed",
-                "ingredients": [
-                    {"name": "测试食材", "quantity": 1, "unit": "份"}
-                ],
+                "ingredients": [{"name": "测试食材", "quantity": 1, "unit": "份"}],
                 "source": "life_action_simulation",
                 "evidence": ["测试时间轴已完成"],
                 "occurred_at": "2026-08-03 18:30:00",
@@ -1020,6 +1039,50 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
         pantry = await self.archive.get_pantry_items()
         self.assertEqual(pantry[0]["quantity"], 1)
 
+    async def test_cook_without_ingredients_is_rejected_before_settlement(self):
+        day = self._day(
+            {
+                "action_id": "2026-08-03:cook:missing-ingredients",
+                "action_type": "cook",
+                "target": "没有食材明细的测试餐食",
+                "timeline_index": 0,
+                "duration_minutes": 20,
+                "source": "daily_plan",
+            }
+        )
+
+        outcomes = await self.harness.settle_completed_planned_actions(day)
+
+        self.assertEqual(outcomes[0].status, "failed")
+        self.assertIn("缺少可扣减的食材明细", outcomes[0].reason)
+        self.assertEqual(await self.archive.get_meal_records(), [])
+        self.assertEqual(await self.archive.get_recipes(), [])
+
+    async def test_pantry_consumption_is_independent_of_meal_records(self):
+        await self.archive.adjust_pantry_item("测试米", 2, unit="份", source="test")
+        self.domains.settings.meals_enabled = False
+        day = self._day(
+            {
+                "action_id": "2026-08-03:cook:pantry-only",
+                "action_type": "cook",
+                "target": "只扣库存的测试米饭",
+                "timeline_index": 0,
+                "duration_minutes": 20,
+                "payload": {
+                    "ingredients": [{"name": "测试米", "quantity": 1, "unit": "份"}]
+                },
+                "source": "daily_plan",
+            }
+        )
+
+        outcomes = await self.harness.settle_completed_planned_actions(day)
+
+        self.assertEqual(outcomes[0].status, "committed")
+        pantry = await self.archive.get_pantry_items()
+        self.assertEqual(pantry[0]["quantity"], 1)
+        self.assertEqual(await self.archive.get_meal_records(), [])
+        self.assertEqual(await self.archive.get_recipes(), [])
+
     async def test_direct_meal_does_not_require_or_consume_pantry(self):
         day = self._day(
             {
@@ -1030,9 +1093,7 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
                 "duration_minutes": 20,
                 "payload": {
                     "meal_type": "午餐",
-                    "ingredients": [
-                        {"name": "测试食材", "quantity": 2, "unit": "份"}
-                    ],
+                    "ingredients": [{"name": "测试食材", "quantity": 2, "unit": "份"}],
                 },
                 "source": "daily_plan",
             }
@@ -1455,6 +1516,17 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("近期运动：尚无已结算记录", context)
         self.assertIn("不要求今天强行安排", context)
+
+    async def test_domain_context_only_exposes_positive_pantry_stock(self):
+        await self.archive.adjust_pantry_item("可用食材", 2, unit="份", source="test")
+        await self.archive.adjust_pantry_item("耗尽食材", 1, unit="份", source="test")
+        await self.archive.adjust_pantry_item("耗尽食材", -1, unit="份", source="test")
+
+        context = await self.domains.format_context()
+
+        self.assertIn("现有可用食材库存", context)
+        self.assertIn("可用食材 2.0份", context)
+        self.assertNotIn("耗尽食材", context)
 
     async def test_route_falls_back_without_coordinates(self):
         route = await self.domains.estimate_route("地点甲", "地点乙")
@@ -1969,12 +2041,8 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
         search = await service.tool_place_search(
             "安静咖啡店", scope="private:test-user", near="测试中心"
         )
-        detail = await service.tool_place_detail(
-            "poi-1", scope="private:test-user"
-        )
-        denied = await service.tool_place_detail(
-            "poi-1", scope="private:other-user"
-        )
+        detail = await service.tool_place_detail("poi-1", scope="private:test-user")
+        denied = await service.tool_place_detail("poi-1", scope="private:other-user")
 
         self.assertTrue(search["ok"])
         self.assertNotIn("coordinate", search["places"][0])

@@ -33,6 +33,8 @@ class MemorySettings:
     max_batch_messages: int = 40
     max_batch_chars: int = 12000
     worker_poll_seconds: int = 15
+    batch_max_attempts: int = 4
+    batch_retry_base_seconds: int = 30
     max_generation_items: int = 8
     max_injection_items: int = 5
     semantic_ranking_model_enabled: bool = False
@@ -60,6 +62,10 @@ class MemorySettings:
                 data.get("max_batch_chars", 12000), 12000, 1000, 100000
             ),
             worker_poll_seconds=as_int(data.get("worker_poll_seconds", 15), 15, 2, 300),
+            batch_max_attempts=as_int(data.get("batch_max_attempts", 4), 4, 1, 10),
+            batch_retry_base_seconds=as_int(
+                data.get("batch_retry_base_seconds", 30), 30, 5, 3600
+            ),
             max_generation_items=as_int(data.get("max_generation_items", 8), 8, 0, 30),
             max_injection_items=as_int(data.get("max_injection_items", 5), 5, 0, 20),
             semantic_ranking_model_enabled=as_bool(

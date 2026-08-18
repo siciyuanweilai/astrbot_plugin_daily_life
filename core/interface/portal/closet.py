@@ -13,7 +13,7 @@ from ...models import (
     STYLE_CATALOG_KIND_SET,
     StyleCatalogItemRecord,
 )
-from ...paths import runtime_data_root
+from ...paths import STYLE_CATALOG_DIR_NAME, runtime_data_root
 from .codec import encode_base64, file_sha256
 
 CLOSET_IMAGE_MAX_MB = 20
@@ -341,7 +341,7 @@ class PortalClosetMixin:
     def _page_safe_closet_path(self, path_text: str) -> Path:
         root = (
             runtime_data_root(getattr(self.runtime, "data_path", None))
-            / "style_catalog"
+            / STYLE_CATALOG_DIR_NAME
         ).resolve()
         path = Path(str(path_text or "")).expanduser().resolve()
         try:
@@ -438,7 +438,10 @@ class PortalClosetMixin:
                 or int(manifest.get("version") or 0) != CLOSET_BACKUP_VERSION
             ):
                 raise ValueError("衣橱备份格式或版本不受支持")
-            root = runtime_data_root(getattr(self.runtime, "data_path", None)) / "style_catalog"
+            root = (
+                runtime_data_root(getattr(self.runtime, "data_path", None))
+                / STYLE_CATALOG_DIR_NAME
+            )
             root.mkdir(parents=True, exist_ok=True)
             records: list[StyleCatalogItemRecord] = []
             restored_files = 0

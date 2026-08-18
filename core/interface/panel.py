@@ -143,6 +143,30 @@ class DailyLifeDashboardMixin(
         for endpoint, handler, methods, desc in (
             dashboard_routes + programmatic_routes
         ):
+            runtime_guard = getattr(self, "_external_runtime_lease", None)
+            plugin_guard = getattr(self, "_external_plugin_lease", None)
+            if callable(runtime_guard):
+                original = handler
+
+                async def guarded(
+                    *args,
+                    _original=original,
+                    _endpoint=endpoint,
+                    _runtime_guard=runtime_guard,
+                    _plugin_guard=plugin_guard,
+                    **kwargs,
+                ):
+                    guard = _runtime_guard
+                    if (
+                        _endpoint == "page/config"
+                        and self._page_request_method() == "POST"
+                        and callable(_plugin_guard)
+                    ):
+                        guard = _plugin_guard
+                    async with guard():
+                        return await _original(*args, **kwargs)
+
+                handler = guarded
             self.context.register_web_api(
                 f"/{PLUGIN_ID}/{endpoint}", handler, methods, desc
             )

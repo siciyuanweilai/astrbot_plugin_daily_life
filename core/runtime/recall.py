@@ -228,6 +228,7 @@ class RecallMixin:
         *,
         source_event: Any = None,
         source_message_id: str = "",
+        raise_delivery_errors: bool = False,
     ) -> bool:
         if not self.can_send_for_source(
             scope, source_event=source_event, source_message_id=source_message_id
@@ -237,7 +238,9 @@ class RecallMixin:
         if callable(event_sender):
             await event_sender(chain)
             return True
-        return await send_message_to_scope(self.context, scope, chain)
+        return await send_message_to_scope(
+            self.context, scope, chain, raise_delivery_errors=raise_delivery_errors
+        )
 
     def suppress_recalled_event_result(self, event: Any) -> bool:
         if not self._event_message_was_recalled(event):

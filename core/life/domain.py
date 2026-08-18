@@ -131,6 +131,12 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
             action = self._planned_action(day, stored.action_id)
             if action is None:
                 continue
+            # Generic purchases are recorded as activity only.  Only an
+            # explicit pantry_items payload has a food-inventory side effect.
+            if stored.action_type == "purchase" and not self._purchase_pantry_items(
+                action
+            ):
+                continue
             stored_evidence = (
                 stored.evidence if isinstance(stored.evidence, list) else []
             )
@@ -193,8 +199,7 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
             for item in await meal_getter(limit=0)
         }
         recipe_ids = {
-            str(item.get("id") or "").strip()
-            for item in await recipe_getter(limit=0)
+            str(item.get("id") or "").strip() for item in await recipe_getter(limit=0)
         }
         repaired = 0
         for stored in await outcome_getter(status="committed", limit=500):
@@ -243,6 +248,7 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
             "done": "done",
             "cancelled": "cancelled",
             "expired": "expired",
+            "delivery_failed": "failed",
         }
         for commitment in await commitment_getter(status="", limit=0):
             if commitment.id in existing_ids:
@@ -505,9 +511,9 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
                     )
         if action.action_type != "cook" or not self.settings.pantry_enabled:
             return True, ""
-        ingredients = action.payload.get("ingredients")
-        if not isinstance(ingredients, list):
-            return True, ""
+        ingredients = self._cook_ingredients(action)
+        if not ingredients:
+            return False, "烹饪动作缺少可扣减的食材明细"
         getter = getattr(self.archive, "get_pantry_items", None)
         if not callable(getter):
             return True, ""
@@ -517,15 +523,9 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
         }
         required: dict[str, float] = {}
         for item in ingredients:
-            if not isinstance(item, dict):
-                continue
             name = str(item.get("name") or "").strip()
-            try:
-                quantity = max(0.0, float(item.get("quantity") or 0))
-            except (TypeError, ValueError):
-                continue
-            if name:
-                required[name] = required.get(name, 0.0) + quantity
+            quantity = float(item.get("quantity") or 0)
+            required[name] = required.get(name, 0.0) + quantity
         missing = [
             name
             for name, quantity in required.items()
@@ -581,15 +581,17 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
         evidence: list[str],
         source: str,
     ) -> None:
-        if not self.settings.meals_enabled:
-            return
-        ingredients = action.payload.get("ingredients")
+        ingredients = (
+            self._cook_ingredients(action)
+            if action.action_type == "cook"
+            else action.payload.get("ingredients")
+        )
         ingredients = ingredients if isinstance(ingredients, list) else []
         saver = getattr(self.archive, "save_meal_record", None)
         recipe_id = str(action.payload.get("recipe_id") or "").strip()
-        if action.action_type == "cook":
+        if self.settings.meals_enabled and action.action_type == "cook":
             recipe_id = await self._save_cook_recipe(action, source=source)
-        if callable(saver):
+        if self.settings.meals_enabled and callable(saver):
             await saver(
                 {
                     "action_id": action.action_id,
@@ -611,23 +613,43 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
         if not callable(adjust):
             return
         for item in ingredients:
+            quantity = float(item["quantity"])
+            await adjust(
+                str(item["name"]),
+                -quantity,
+                unit=str(item.get("unit") or ""),
+                reason=f"完成餐食：{action.target or '用餐'}",
+                action_id=action.action_id,
+                occurred_at=occurred_at,
+                source=source,
+            )
+
+    @staticmethod
+    def _cook_ingredients(action: LifeActionIntent) -> list[dict[str, Any]]:
+        """只保留带有正数用量的烹饪食材，供校验和扣库共用。"""
+
+        values = action.payload.get("ingredients")
+        if not isinstance(values, list):
+            return []
+        ingredients: list[dict[str, Any]] = []
+        for item in values:
             if not isinstance(item, dict):
                 continue
+            name = str(item.get("name") or "").strip()
             try:
-                quantity = max(0.0, float(item.get("quantity") or 0))
+                quantity = float(item.get("quantity") or 0)
             except (TypeError, ValueError):
                 continue
-            name = str(item.get("name") or "").strip()
-            if name and quantity:
-                await adjust(
-                    name,
-                    -quantity,
-                    unit=str(item.get("unit") or ""),
-                    reason=f"完成餐食：{action.target or '用餐'}",
-                    action_id=action.action_id,
-                    occurred_at=occurred_at,
-                    source=source,
-                )
+            if not name or not math.isfinite(quantity) or quantity <= 0:
+                continue
+            ingredients.append(
+                {
+                    "name": name,
+                    "quantity": quantity,
+                    "unit": str(item.get("unit") or "").strip(),
+                }
+            )
+        return ingredients
 
     @staticmethod
     def _automatic_recipe_id(name: str) -> str:
@@ -637,9 +659,7 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
         digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:20]
         return f"recipe:auto:{digest}"
 
-    async def _save_cook_recipe(
-        self, action: LifeActionIntent, *, source: str
-    ) -> str:
+    async def _save_cook_recipe(self, action: LifeActionIntent, *, source: str) -> str:
         """为明确的烹饪动作保存稳定食谱，并返回食谱编号。"""
 
         name = action.target or str(action.payload.get("name") or "").strip()
@@ -648,8 +668,7 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
         save_recipe = getattr(self.archive, "upsert_recipe", None)
         if not recipe_id or not name or not callable(save_recipe):
             return ""
-        ingredients = action.payload.get("ingredients")
-        ingredients = ingredients if isinstance(ingredients, list) else []
+        ingredients = self._cook_ingredients(action)
         await save_recipe(
             {
                 "id": recipe_id,
@@ -669,9 +688,7 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
     ) -> None:
         if not self.settings.pantry_enabled:
             return
-        items = action.payload.get("items")
-        if not isinstance(items, list):
-            return
+        items = self._purchase_pantry_items(action)
         adjust = getattr(self.archive, "adjust_pantry_item", None)
         if not callable(adjust):
             return
@@ -701,6 +718,15 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
                     occurred_at=occurred_at,
                     source=source,
                 )
+
+    @staticmethod
+    def _purchase_pantry_items(action: LifeActionIntent) -> list[dict[str, Any]]:
+        """Return only the explicitly classified food items from a purchase."""
+
+        values = action.payload.get("pantry_items")
+        if not isinstance(values, list):
+            return []
+        return [item for item in values if isinstance(item, dict)]
 
     async def _apply_chore(
         self,
@@ -1479,10 +1505,17 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
                     for item in due_chores[:5]
                 )
             )
-        pantry = snapshot["pantry"]
+        pantry = []
+        for item in snapshot["pantry"]:
+            try:
+                quantity = float(item.get("quantity") or 0)
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if quantity > 0:
+                pantry.append(item)
         if pantry:
             blocks.append(
-                "现有库存："
+                "现有可用食材库存："
                 + "、".join(
                     f"{item.get('name')} {item.get('quantity')}{item.get('unit') or ''}"
                     for item in pantry[:10]

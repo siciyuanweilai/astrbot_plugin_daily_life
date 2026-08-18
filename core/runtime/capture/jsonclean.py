@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any
 
 from ...life.tools import extract_json_from_text
@@ -8,6 +9,10 @@ from ...prompts import cache_friendly_prompt
 
 STRICT_JSON_REPLY_RULE = "最终回复只能是一个 JSON 对象；第一个非空字符必须是 {，最后一个非空字符必须是 }，禁止在 JSON 前后写任何独白、解释、旁白或补充文字。"
 MAX_JSON_REPAIR_CHARS = 20_000
+
+
+class JsonContractError(ValueError):
+    """模型输出无法满足调用方声明的 JSON 契约。"""
 
 
 def parse_json_object(text: str) -> dict[str, Any] | None:
@@ -35,7 +40,25 @@ async def call_pure_json(
     primary_provider_id: str = "",
     repair_session_id: str = "",
     propagate_non_retryable: bool = False,
+    strict: bool = False,
+    validator: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
+    fallback: dict[str, Any] | Callable[[], dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
+    def fallback_value() -> dict[str, Any] | None:
+        value = fallback() if callable(fallback) else fallback
+        return dict(value) if isinstance(value, dict) else None
+
+    def validate(value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        if validator is None:
+            return dict(value)
+        try:
+            normalized = validator(dict(value))
+        except Exception as exc:
+            raise JsonContractError(f"JSON 字段契约校验失败：{exc}") from exc
+        return dict(normalized) if isinstance(normalized, dict) else None
+
     call_options = {
         "empty_retries": 0,
         "primary_provider_id": primary_provider_id,
@@ -49,12 +72,16 @@ async def call_pure_json(
         **call_options,
     )
     if is_pure_json_object_text(text):
-        return parse_json_object(text)
+        payload = validate(json.loads(str(text).strip()))
+        if payload is not None:
+            return payload
+        if strict:
+            return fallback_value()
 
-    payload = parse_json_object(text)
+    payload = None if strict else parse_json_object(text)
     raw = str(text or "").strip()
     if not payload and not raw:
-        return None
+        return fallback_value()
 
     repair_source = (
         json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
@@ -77,7 +104,11 @@ async def call_pure_json(
         repair_session_id or session_id,
         **call_options,
     )
-    repaired_payload = parse_json_object(repaired)
+    repaired_payload = None
+    if is_pure_json_object_text(repaired):
+        repaired_payload = validate(json.loads(str(repaired).strip()))
     if isinstance(repaired_payload, dict):
         return repaired_payload
+    if strict:
+        return fallback_value()
     return payload

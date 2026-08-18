@@ -203,7 +203,7 @@ class RuntimeScopeState:
         cache = getattr(self.runtime, "_injection_snapshot_cache", None)
         if not isinstance(cache, dict):
             return
-        cutoff = time.time() - 60.0
+        cutoff = time.monotonic() - 60.0
         for key, value in list(cache.items()):
             timestamp = value.get("ts") if isinstance(value, dict) else None
             try:

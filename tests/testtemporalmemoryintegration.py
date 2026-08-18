@@ -72,6 +72,7 @@ class TemporalMemoryIntegrationTest(unittest.IsolatedAsyncioTestCase):
         runtime = Runtime()
         saved = await runtime._save_batch_temporal_facts(
             {
+                "_interaction_audited": True,
                 "temporal_facts": [
                     {
                         "operation": "ADD",
@@ -90,7 +91,7 @@ class TemporalMemoryIntegrationTest(unittest.IsolatedAsyncioTestCase):
                         "confidence": 0.99,
                         "source_message_id": "m11",
                     },
-                ]
+                ],
             },
             self.batch(),
         )
@@ -101,6 +102,27 @@ class TemporalMemoryIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fact["subject"], "u1")
         self.assertEqual(fact["object_value"], {"mode": "co_present"})
         self.assertEqual(len(runtime.archive.signals), 1)
+
+    async def test_interaction_mode_without_audit_is_not_saved(self):
+        runtime = Runtime()
+        saved = await runtime._save_batch_temporal_facts(
+            {
+                "temporal_facts": [
+                    {
+                        "operation": "ADD",
+                        "subject": "u1",
+                        "predicate": "interaction_mode",
+                        "object_value": {"mode": "remote"},
+                        "confidence": 0.99,
+                        "source_message_id": "m11",
+                    }
+                ]
+            },
+            self.batch(),
+        )
+
+        self.assertEqual(saved, [])
+        self.assertEqual(runtime.archive.writes, [])
 
     async def test_temporal_fact_save_locks_scope_and_source_message(self):
         runtime = Runtime()

@@ -10,6 +10,8 @@ from ..markers import LOG_PREFIX
 class ProactiveSyntheticEvent:
     is_at_or_wake_command = False
     is_wake = False
+    # The message is a replayed context item for a background decision, not a new turn.
+    is_proactive_synthetic = True
 
     def __init__(
         self,

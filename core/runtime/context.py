@@ -191,6 +191,11 @@ class InteractionContextMixin:
     def _interaction_event_has_current_content(self, event: Any) -> bool:
         if event is None:
             return False
+        # Idle/revisit jobs replay the last platform message through a synthetic
+        # event. That content is already observed and must not invalidate the
+        # latest co-present/remote fact as if it were a new user turn.
+        if bool(getattr(event, "is_proactive_synthetic", False)):
+            return False
         turn_getter = getattr(self, "continuous_turn_messages", None)
         if callable(turn_getter):
             try:

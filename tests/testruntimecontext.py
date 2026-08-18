@@ -103,6 +103,30 @@ class ContextSnapshotRepositoryTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("只描述平台承载方式，不代表双方现实距离", prompt)
         self.assertIn("按面对面交流回应", prompt)
 
+    async def test_proactive_replay_does_not_turn_latest_fact_into_pending(self):
+        fact = SimpleNamespace(
+            predicate="interaction_mode",
+            subject="u1",
+            object_value={"mode": "co_present"},
+            confidence=0.92,
+            observed_at="2026-08-13 12:00:00",
+        )
+        runtime = InteractionRuntime([fact])
+        replay = SimpleNamespace(
+            unified_msg_origin="aiocqhttp:FriendMessage:u1",
+            sender_id="u1",
+            message_str="在忙什么呢",
+            is_proactive_synthetic=True,
+        )
+
+        context = await runtime.resolve_interaction_context(
+            event=replay,
+            now=datetime.datetime(2026, 8, 13, 12, 30),
+        )
+
+        self.assertEqual(context.mode, "co_present")
+        self.assertFalse(context.pending_current)
+
     async def test_stale_interaction_fact_falls_back_to_unknown(self):
         fact = SimpleNamespace(
             predicate="interaction_mode",

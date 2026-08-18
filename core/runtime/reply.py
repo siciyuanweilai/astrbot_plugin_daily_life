@@ -3,14 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any
 
 from astrbot.api import logger
 from astrbot.api.event import MessageChain
 
 from ..media.base import normalize_voice_style
-from ..prompts import CORE_EMOJI_DELIVERY_RULES
+from ..prompts import CORE_EMOJI_DELIVERY_RULES, cache_friendly_prompt
 from .delivery import (
     BackgroundTextMode,
     EventDeliveryRequest,
@@ -588,7 +588,7 @@ class SemanticSegmentRuntimeMixin:
             provider = await self.get_text_provider(provider_id)
             if not provider:
                 return fallback
-            prompt = (
+            fixed = (
                 "你负责按语义划分回复分段。只把给定的最终回复原文划分为可直接发送的完整分段，不能改写、增删、纠正或调换任何字符。\n"
                 "这是通用模型语义分段协议，不要根据关键词套模板，也不要解释理由。\n"
                 '返回 JSON：{"segments":[{"text":"原文连续片段","relation":"standalone|lead|continue|add|turn|question|correction|closing","pause":"none|short|normal|long"}],"channel":"text|voice","emotion":"自然情绪或空","emotion_category":"neutral|happy|sad|angry","voice_style":"neutral|happy|light|sad|angry","emoji_intent":"可选表情语义或空","send_emoji":false,"stance":"respond|comfort|play|reflect|close","confidence":0.0,"reason":"简短表达依据"}。\n'
@@ -596,14 +596,16 @@ class SemanticSegmentRuntimeMixin:
                 "如果一个分段连续堆叠了多个可以分别发送的意思，应在不破坏语义的位置继续拆开；"
                 "不要因为前后相关就合并成长段，也不要把一个不可分的意思拆碎。\n"
                 f"最多返回 {max_segments} 个分段；每个 text 必须按原文顺序拼接后完全等于原文。\n"
-                + (
+                + "channel、情绪、语音风格、表情和姿态必须根据整轮语义判断；voice_style 只能填写枚举值，不要从 emotion 文本推导；列表、代码、链接、参数和需要回看的信息应选择文字。\n"
+                + f"{CORE_EMOJI_DELIVERY_RULES}\n"
+            )
+            dynamic = (
+                (
                     f"当前场景单个分段参考长度约为 {int(length_hint)} 字；这是自然表达倾向，不是硬性截断，"
                     "超过时优先寻找独立表达动作再拆分。\n"
                     if int(length_hint or 0) > 0
                     else "当前没有额外长度倾向，按自然表达决定分段边界。\n"
                 )
-                + "channel、情绪、语音风格、表情和姿态必须根据整轮语义判断；voice_style 只能填写枚举值，不要从 emotion 文本推导；列表、代码、链接、参数和需要回看的信息应选择文字。\n"
-                + f"{CORE_EMOJI_DELIVERY_RULES}\n"
                 + f"当前对方消息：{user_message}\n"
                 + (
                     "原文中的非空换行是已经确定的表达边界，分段不能跨行；"
@@ -613,6 +615,11 @@ class SemanticSegmentRuntimeMixin:
                     else ""
                 )
                 + f"回复原文：{source_text}"
+            )
+            prompt = cache_friendly_prompt(
+                fixed,
+                dynamic,
+                dynamic_title="待分段回复",
             )
             configured_timeout = max(
                 1.0,
@@ -1085,6 +1092,7 @@ class SemanticSegmentRuntimeMixin:
         source_event: Any = None,
         source_message_id: str = "",
         source: str = "background",
+        raise_delivery_errors: bool = False,
         user_message: str = "",
         length_hint: int | None = None,
     ) -> bool:
@@ -1111,6 +1119,7 @@ class SemanticSegmentRuntimeMixin:
                 source_event=source_event,
                 source_message_id=source_message_id,
                 source=source,
+                raise_delivery_errors=raise_delivery_errors,
             )
 
         source_text = (
@@ -1128,6 +1137,7 @@ class SemanticSegmentRuntimeMixin:
                 source_event=source_event,
                 source_message_id=source_message_id,
                 source=source,
+                raise_delivery_errors=raise_delivery_errors,
             )
 
         if length_hint is None:
@@ -1160,6 +1170,7 @@ class SemanticSegmentRuntimeMixin:
                 source_event=source_event,
                 source_message_id=source_message_id,
                 source=source,
+                raise_delivery_errors=raise_delivery_errors,
             )
 
         splitter = getattr(self, "_plan_chat_style_natural_segments", None)
@@ -1203,6 +1214,7 @@ class SemanticSegmentRuntimeMixin:
                 source_event=source_event,
                 source_message_id=source_message_id,
                 source=source,
+                raise_delivery_errors=raise_delivery_errors,
             )
 
         self._semantic_segment_metrics["fallback_single"] = (
@@ -1230,6 +1242,7 @@ class SemanticSegmentRuntimeMixin:
             source_event=source_event,
             source_message_id=source_message_id,
             source=source,
+            raise_delivery_errors=raise_delivery_errors,
         )
 
     async def _send_background_plan(
@@ -1241,6 +1254,7 @@ class SemanticSegmentRuntimeMixin:
         source_event: Any = None,
         source_message_id: str = "",
         source: str = "background",
+        raise_delivery_errors: bool = False,
     ) -> bool:
         segments = list(plan.segments)
         if not segments:
@@ -1292,6 +1306,7 @@ class SemanticSegmentRuntimeMixin:
                     chain,
                     source_event=source_event,
                     source_message_id=source_message_id,
+                    raise_delivery_errors=raise_delivery_errors,
                 ),
                 on_sent=lambda index, text: self.note_structured_bot_message(
                     scope,
@@ -1303,6 +1318,7 @@ class SemanticSegmentRuntimeMixin:
                 source_message_id=source_message_id,
                 source=source,
                 decorate_addressing=expressive,
+                raise_delivery_errors=raise_delivery_errors,
             )
         )
         if outcome.status == "cancelled":

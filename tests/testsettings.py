@@ -1509,9 +1509,10 @@ class LifeSettingsTest(unittest.TestCase):
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertIn("version: 1.2.9", metadata)
+        self.assertIn("version: 1.3.0", metadata)
         self.assertIn('astrbot_version: ">=4.26,<5"', metadata)
-        self.assertIn("version-1.2.9", readme)
+        self.assertIn("version-1.3.0", readme)
+        self.assertIn("v1.3.0 · 2026-08-19", changelog)
         self.assertIn("v1.2.9 · 2026-08-18", changelog)
         self.assertIn("v1.2.8 · 2026-08-17", changelog)
         self.assertIn("v1.2.7 · 2026-08-16", changelog)
@@ -1520,6 +1521,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertIn("v1.2.4 · 2026-08-12", changelog)
         self.assertIn("v1.2.3 · 2026-08-11", changelog)
         self.assertIn("v1.2.2 · 2026-08-09", changelog)
+        self.assertLess(changelog.index("v1.3.0"), changelog.index("v1.2.9"))
         self.assertLess(changelog.index("v1.2.9"), changelog.index("v1.2.8"))
         self.assertLess(changelog.index("v1.2.8"), changelog.index("v1.2.7"))
         self.assertLess(changelog.index("v1.2.7"), changelog.index("v1.2.6"))
@@ -1528,6 +1530,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertLess(changelog.index("v1.2.4"), changelog.index("v1.2.3"))
         self.assertLess(changelog.index("v1.2.3"), changelog.index("v1.2.2"))
         self.assertLess(changelog.index("v1.2.2"), changelog.index("v1.2.1"))
+        release_130 = changelog.split("## 🌸 v1.3.0", 1)[1].split("## 🌸 v1.2.9", 1)[0]
         release_129 = changelog.split("## 🌸 v1.2.9", 1)[1].split("## 🌸 v1.2.8", 1)[0]
         release_128 = changelog.split("## 🌸 v1.2.8", 1)[1].split("## 🌸 v1.2.7", 1)[0]
         release_127 = changelog.split("## 🌸 v1.2.7", 1)[1].split("## 🌸 v1.2.6", 1)[0]
@@ -1537,6 +1540,13 @@ class LifeSettingsTest(unittest.TestCase):
         release_123 = changelog.split("## 🌸 v1.2.3", 1)[1].split("## 🌸 v1.2.2", 1)[0]
         release_122 = changelog.split("## 🌸 v1.2.2", 1)[1].split("## 🌸 v1.2.1", 1)[0]
         release_121 = changelog.split("## 🌸 v1.2.1", 1)[1].split("## 🌸 v1.2.0", 1)[0]
+        self.assertIn("可靠性闭环", release_130)
+        self.assertIn("食材库存", release_130)
+        self.assertIn("运行时生命周期", release_130)
+        self.assertIn("主动承诺投递", release_130)
+        self.assertIn("缓存命中与调用收束", release_130)
+        self.assertIn("日程自由度与地点轮换", release_130)
+        self.assertIn("普通聊天图片表达", release_130)
         self.assertIn("连续消息与回复可靠性", release_129)
         self.assertIn("合法尺寸", release_129)
         self.assertIn("表情发送冷却", release_129)

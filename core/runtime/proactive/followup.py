@@ -9,7 +9,8 @@ from astrbot.api import logger
 
 from ...clock import now as life_now
 from ...models import CommitmentRecord
-from ...prompts import CORE_EMOJI_DELIVERY_RULES
+from ...prompts import CORE_EMOJI_DELIVERY_RULES, cache_friendly_prompt
+from ...sources.dispatch import PermanentScopeDeliveryError, ScopeDeliveryError
 from ..capture.jsonclean import call_pure_json
 from ..markers import LOG_PREFIX
 
@@ -18,6 +19,37 @@ class ProactiveFollowupMixin:
     """把当前角色明确许下的未来联系承诺接入持久执行队列。"""
 
     _FOLLOW_UP_ACTIONS = {"contact_person", "remind_person"}
+
+    @staticmethod
+    def _validate_proactive_commitment_decision(value: dict[str, Any]) -> dict[str, Any]:
+        """把模型裁定收敛到固定字段，拒绝 should_send 与正文互相矛盾。"""
+
+        result = dict(value)
+        should_send = result.get("should_send") is True
+        settlement = str(result.get("settlement") or "").strip()
+        allowed = {"send", "wait", "already_done", "cancelled", "superseded", "invalid"}
+        if settlement not in allowed:
+            settlement = "invalid"
+        reply_text = str(result.get("reply_text") or "").strip()
+        if should_send and not reply_text:
+            should_send = False
+            settlement = "invalid"
+        try:
+            retry_after = int(result.get("retry_after_minutes") or 0)
+        except (TypeError, ValueError):
+            retry_after = 0
+        intent = result.get("expression_intent")
+        if not isinstance(intent, dict):
+            intent = {}
+        return {
+            **result,
+            "should_send": should_send,
+            "reply_text": reply_text,
+            "reason": str(result.get("reason") or "").strip(),
+            "settlement": settlement,
+            "retry_after_minutes": max(0, retry_after),
+            "expression_intent": intent,
+        }
 
     async def reconcile_scheduled_invite_contacts(
         self, now: datetime.datetime | None = None
@@ -245,19 +277,7 @@ class ProactiveFollowupMixin:
             ),
             "evidence": str(getattr(interaction, "evidence", "") or ""),
         }
-        prompt = f"""你负责在一个已经到期的主动联系承诺真正发送前做最后语义复核。
-
-当前时间：{now.strftime('%Y-%m-%d %H:%M:%S')}
-当前角色人设：
-{persona or '暂无额外人设。'}
-
-承诺对象：{target_name}
-已保存承诺：{json.dumps(commitment.as_dict(), ensure_ascii=False)}
-主动动作：{json.dumps(task_payload, ensure_ascii=False)}
-当前互动方式：{json.dumps(interaction_context, ensure_ascii=False)}
-当前生活依据：{json.dumps(life_context, ensure_ascii=False)}
-最近真实交流：
-{recent_context}
+        fixed = f"""你负责在一个已经到期的主动联系承诺真正发送前做最后语义复核。
 
 判断规则：
 1. 这是当前角色已经明确许下的未来联系或提醒，不受普通闲时回复的静默门槛和概率限制。
@@ -272,6 +292,22 @@ class ProactiveFollowupMixin:
 只返回严格 JSON：
 {{"should_send":true,"reply_text":"","reason":"","settlement":"send|wait|already_done|cancelled|superseded|invalid","retry_after_minutes":0,"expression_intent":{{"emotion":"","emotion_category":"","voice_style":"","emoji_intent":"","action_intent":"","send_emoji":false,"reason":""}}}}
 """
+        dynamic = f"""当前时间：{now.strftime('%Y-%m-%d %H:%M:%S')}
+当前角色人设：
+{persona or '暂无额外人设。'}
+
+承诺对象：{target_name}
+已保存承诺：{json.dumps(commitment.as_dict(), ensure_ascii=False)}
+主动动作：{json.dumps(task_payload, ensure_ascii=False)}
+当前互动方式：{json.dumps(interaction_context, ensure_ascii=False)}
+当前生活依据：{json.dumps(life_context, ensure_ascii=False)}
+最近真实交流：
+{recent_context}"""
+        prompt = cache_friendly_prompt(
+            fixed,
+            dynamic,
+            dynamic_title="到期承诺复核资料",
+        )
         session_id = f"daily_life_proactive_commitment_{uuid.uuid4().hex[:8]}"
         provider_id = self.config.proactive.provider
         try:
@@ -282,6 +318,16 @@ class ProactiveFollowupMixin:
                 session_id,
                 primary_provider_id=provider_id,
                 propagate_non_retryable=True,
+                strict=True,
+                validator=self._validate_proactive_commitment_decision,
+                fallback={
+                    "should_send": False,
+                    "reply_text": "",
+                    "reason": "模型未给出可执行裁定",
+                    "settlement": "wait",
+                    "retry_after_minutes": 10,
+                    "expression_intent": {},
+                },
             )
             if not isinstance(payload, dict):
                 raise ValueError("主动承诺裁定未返回有效 JSON")
@@ -301,7 +347,7 @@ class ProactiveFollowupMixin:
         commitment = await self.archive.get_commitment(commitment_id)
         if commitment is None:
             return {"outcome": "invalid", "reason": "承诺记录不存在"}
-        if commitment.status in {"done", "cancelled", "expired"}:
+        if commitment.status in {"done", "cancelled", "expired", "delivery_failed"}:
             return {
                 "outcome": commitment.status,
                 "reason": "承诺已经进入终态",
@@ -359,15 +405,34 @@ class ProactiveFollowupMixin:
             "source": "proactive_commitment",
             "expression_intent": decision.get("expression_intent") or {},
         }
-        sent = await self._send_proactive_message(
-            scope,
-            reply_text,
-            "主动承诺消息发送失败",
-            relationship=relationship,
-            contact_type="friend" if ":FriendMessage:" in scope else "",
-            send_payload=send_payload,
-            source_message_id=str(payload.get("source_message_id") or ""),
-        )
+        try:
+            sent = await self._send_proactive_message(
+                scope,
+                reply_text,
+                "主动承诺消息发送失败",
+                relationship=relationship,
+                contact_type="friend" if ":FriendMessage:" in scope else "",
+                send_payload=send_payload,
+                source_message_id=str(payload.get("source_message_id") or ""),
+                raise_delivery_errors=True,
+            )
+        except PermanentScopeDeliveryError as exc:
+            await self.archive.set_commitment_status(
+                commitment.id, "delivery_failed", now.isoformat(timespec="seconds")
+            )
+            logger.warning(
+                f"{LOG_PREFIX} 主动承诺无法投递，已标记终态：编号={commitment.id}；原因={exc}"
+            )
+            return {"outcome": "undeliverable", "reason": str(exc), "code": exc.code}
+        except ScopeDeliveryError as exc:
+            if int(getattr(task, "attempts", 0) or 0) >= int(
+                getattr(task, "max_attempts", 0) or 0
+            ):
+                await self.archive.set_commitment_status(
+                    commitment.id, "delivery_failed", now.isoformat(timespec="seconds")
+                )
+                return {"outcome": "undeliverable", "reason": str(exc), "code": exc.code}
+            raise
         if not sent:
             raise RuntimeError("主动承诺消息未成功投递")
         if settle_commitment:

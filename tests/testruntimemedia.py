@@ -100,6 +100,12 @@ class RuntimeMediaTest(unittest.TestCase):
         self.assertIn("当前图片参考状态", text)
         self.assertIn("当前消息和引用消息没有可用图片", text)
         self.assertIn("当前可用媒体表达：图片", text)
+        self.assertIn("[HiddenImageInitiative]", text)
+        self.assertIn("想让对方看看这个瞬间", text)
+        self.assertIn("角色性格、关系、对话意图、当前生活状态", text)
+        self.assertIn("不需要等对方先索要", text)
+        self.assertIn("不按关键词、固定场景清单或随机概率触发", text)
+        self.assertIn("每轮最多主动分享一张图片", text)
         self.assertNotIn("life_voice_generate", text)
 
     def test_media_expression_channel_does_not_mark_voice_switch_available(self):
@@ -144,6 +150,8 @@ class RuntimeMediaTest(unittest.TestCase):
 
         self.assertIn("当前可用媒体表达：图片、视频", text)
         self.assertIn("[HiddenMediaCadence]", text)
+        self.assertIn("[HiddenImageInitiative]", text)
+        self.assertNotIn("[HiddenVideoInitiative]", text)
 
     def test_hidden_media_cadence_reports_recent_media(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)

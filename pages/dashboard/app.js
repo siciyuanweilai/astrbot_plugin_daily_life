@@ -317,6 +317,7 @@ const state = {
   configSaveTimer: 0,
   configSaving: false,
   configSaveQueued: false,
+  configTextPending: false,
   configDirtySince: 0,
   configChangeSeq: 0,
   configVersion: 0,
@@ -595,6 +596,7 @@ function bindAutoRefreshEvents() {
     }
   });
   window.addEventListener("pagehide", () => {
+    flushConfigAutosave();
     stopClock();
     stopMemoCarousel();
     stopEmojiAutoRefresh();
@@ -1099,8 +1101,8 @@ function renderDomainFood(domains = {}) {
   });
   const pantry = (Array.isArray(domains.pantry) ? domains.pantry : []).map((item) => (
     domainRecord(
-      clean(item.name, "库存物品"),
-      "现有库存",
+      clean(item.name, "食材"),
+      "现有食材库存",
       [
         `数量：${Number(item.quantity || 0)}${enumLabelOrReadableText(item.unit, QUANTITY_UNIT_LABELS, "")}`,
         item.expires_at ? `到期：${clean(item.expires_at)}` : "",

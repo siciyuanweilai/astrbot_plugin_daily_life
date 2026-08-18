@@ -86,7 +86,7 @@ class DailyDraftMixin:
     "life_mode": "awake | sleeping | late_night | all_nighter | resting | going_out | mixed",
     "sleep": {{"mode": "normal | late_night | all_nighter | nap | early_sleep", "quality": 0-100, "depth": "awake | light_rest | light_sleep | deep_sleep", "summary": "昨晚或当前睡眠状态"}},
     "outfit": {{"decision": "keep | change | partial_change | sleepwear | outdoor", "scene_category": "{OUTFIT_SCENE_CATEGORY_ENUM}", "style_pool": "{OUTFIT_STYLE_POOL_ENUM}", "style": "简短的最终穿搭风格", "hair_style": "简短发型名称", "hair": "当前可见的详细发型", "makeup_style": "简短妆容名称", "makeup": "当前实际妆容细节或空字符串", "nails_style": "简短美甲名称", "nails": "当前实际美甲细节或空字符串", "catalog_reference_ids": ["实际采用的视觉衣橱候选编号"], "reason": "为什么这样决定"}},
-    "day_plan": {{"schedule_type": "概括今天节奏和活动主题的日程类型标签", "schedule_intent": "home | work | study | social | rest | outing | mixed", "energy_bias": "rest | normal | active", "social_bias": "avoid | light | social"}},
+    "day_plan": {{"schedule_type": "概括今天节奏和活动主题的日程类型标签", "schedule_intent": "home | work | study | social | rest | outing | travel | mixed", "energy_bias": "rest | normal | active", "social_bias": "avoid | light | social"}},
     "theme": "今天自然形成的主题",
     "mood": "心情色彩标签，必须是“颜色名·情绪词”格式"
   }},
@@ -120,7 +120,7 @@ class DailyDraftMixin:
     }},
     "summary": "一句话概括今天整体状态"
   }},
-  "outfit": "当前实际穿着的详细视觉描述，只写服装、鞋袜、材质和必要配饰，不混入发型、妆容、美甲、动作或剧情",
+  "outfit": "当前实际穿着的详细视觉描述，只写此刻身上的服装、实际鞋袜和已佩戴/携带的必要配饰；放在玄关或为稍后出门准备的鞋包属于外出备选，不写入这里，不混入发型、妆容、美甲、动作或剧情",
   "timeline": [
     {{"time": "08:15", "activity": "具体的行为描写，富有沉浸感", "status": "当前情绪/状态词", "place": "家", "place_kind": "home | poi | generic | transit | online | none", "place_scope": "local | travel", "place_city": "跨城安排的目标城市，否则为空字符串", "place_hint": "同名地点消歧所需的区县、商圈或地址，否则为空字符串", "travel_mode": "walking | cycling | driving | transit 或空字符串"}},
     {{"time": "09:30", "activity": "...", "status": "...", "place": "...", "place_kind": "...", "place_scope": "...", "place_city": "...", "place_hint": "...", "travel_mode": "..."}}
@@ -161,6 +161,7 @@ class DailyDraftMixin:
 - 如果提供了连续体力、睡眠债、偏好或生活事件池，必须把它们当作生活惯性参考；但仍由 life_decision 自主决定今天如何表现。
 - life_decision.mood 是心情色彩标签，只写“颜色名·情绪词”，不要写成“元气满满，准备……”这类心情句子；自然语言心情放到 state.mood。
 - day_plan.schedule_type 是日程类型标签，用短语概括今天的节奏、活动主题或生活重心；不要写穿搭风格、睡衣风、发型或笼统倾向。
+- 日程安排保持开放：近期地点只是连续性参考，不是固定路线；在休息日、外出意愿较高、周计划/聊天/承诺支持时，可以低频安排周边游、短途旅行或新的本地探索，schedule_intent 可使用 travel。旅行不是每天必须出现的轮换任务；没有可靠目标城市时使用本地游览或泛化场景，不虚构跨城事实。
 - decision_summary 是后台观察用的内部决策摘要，不是给用户看的旁白；只写真实参与判断的依据，不要为了填字段罗列所有资料。
 2. state 要求：
 {self.config.state_prompt}
@@ -179,6 +180,7 @@ class DailyDraftMixin:
 {OUTFIT_CONTINUITY_RULES}
 - 单纯“回家”不能默认补写换衣；timeline 只有在真实发生换衣动作时才写换装。
 - 当前/目标时刻仍在外出、路上、购物、吃饭或约会中时，穿搭必须适合当下场景和天气。
+- 当前/目标时刻在家或睡眠/休息状态时，外出鞋、单肩包、雨伞、相机等只作为未来离家节点的外出备选；不得因为下午安排出门就提前写入顶层 outfit 或早晨居家 change_outfit 的 target。
 - 保持视觉一致性：outfit 的颜色、材质和配饰要与 life_decision.mood、天气、活动和状态自然协调；style 只写穿搭风格，色彩细节放在顶层 outfit。
 - 当前外观描述规则：
 {CURRENT_APPEARANCE_GENERATION_RULES}
@@ -193,17 +195,19 @@ class DailyDraftMixin:
 - 正常整日生成需要形成从较早生活起点到晚间或睡前收束的自然跨度；目标时段生成只写目标时段。
 - 每个节点都必须填写 place_kind。home 表示居住地，poi 表示需要地图确认的具体场所，generic 表示不绑定具体商家的泛化场景，transit 表示途中，online 表示线上空间，none 表示没有地点含义。
 - place_kind 为 home 时 place 固定写“家”；为 poi 或 generic 时必须填写 place；为 transit、online 或 none 时不要虚构精确地点。
-- 普通本地生活使用 place_scope=local，place_city 留空；明确的出差、旅行、返乡或跨城安排才使用 place_scope=travel，并必须填写 place_city。
+- 普通本地生活使用 place_scope=local，place_city 留空；明确的出差、旅行、返乡或跨城安排使用 place_scope=travel 并填写 place_city；同城景点游览仍使用 local，不要把“从家前往某个公园”的交通路线误标成 travel。
 - travel_mode 表示从上一处可定位地点前往当前地点的交通方式；地点未变化或无法形成实际路线时留空。不要为了补字段制造出行动作。
 - 具体店铺、场馆、景点、车站和机场使用 poi；“附近街区”“河边散步区域”“线上群聊”等不应强行绑定随机 POI。
 4.1 planned_actions 要求：
 - 只为确实需要状态结算的 timeline 节点输出，可为空数组，不要为了填满而制造动作。
 - action_type、timeline_index、前置条件和影响必须显式填写；不得要求系统从 activity 文案猜动作。
 - timeline 只要明确发生了换装，就必须为对应节点输出 action_type=change_outfit，target 写换装后实际穿搭；不能只在 activity 文案中描述换衣。
+- 换鞋、挎上或放下随身包、穿脱外层都会改变当前穿搭组成，同样必须在实际发生的节点输出 change_outfit；不得把下午/晚些时候出门才使用的鞋包提前并入早晨或居家的 change_outfit target。
 - 本轮提供视觉衣橱候选时，change_outfit 的 payload.catalog_reference_ids 必须填写该次换装实际采用的衣橱服装编号；如果组合上装和下装，至少同时填写对应的上装与下装编号。系统会用衣橱详细描述校正 target，不能只把衣橱当作灵感后另写一套衣服。
 - action_id 在不同日期和节点间必须唯一；effects 只写该动作真实会改变的数值状态。
-- payload 只用于明确的领域数据：cook 的 ingredients、purchase 的 items 使用 {{"name":"名称","quantity":1,"unit":"可选单位"}} 数组；meal/cook/order_food 可填 meal_type 和 place；move/travel 可填 origin、destination、travel_mode；chore 的 cadence_days 使用非负整数、effort 使用 1-5 整数；exercise 的 intensity 使用 1-5 整数。
-- meal 表示直接用餐，不校验或扣减家庭库存；cook 表示实际动手烹饪，会按 ingredients 校验并扣减库存，同时由系统自动沉淀食谱；order_food 表示点餐或外卖。不要用 meal 代替 cook，也不要为 meal/order_food 填写 ingredients 或自行编造 recipe_id。
+- payload 只用于明确的领域数据：cook 的 ingredients、purchase 的 items 使用 {{"name":"名称","quantity":1,"unit":"可选单位"}} 数组；只有明确属于家庭食材、会用于后续烹饪的采购项才放入 purchase.payload.pantry_items，格式同上；普通物品、纪念品、家居用品和杂货仍放在 items，不得写入 pantry_items；meal/cook/order_food 可填 meal_type 和 place；move/travel 可填 origin、destination、travel_mode；chore 的 cadence_days 使用非负整数、effort 使用 1-5 整数；exercise 的 intensity 使用 1-5 整数。
+- 现有可用食材库存是会变化的生活事实，不得长期只当作背景。若在家自制、现做、加热、调配，或明确使用其中食材，优先生成 cook；从库存中选择实际用到的名称并填写正数 ingredients，系统会按此扣减。不要为了清库存机械安排做饭，也不要虚构库存里没有的食材。
+- meal 表示外食、现成餐食或无法确认用料的直接用餐，不校验或扣减家庭库存；cook 表示实际动手烹饪，必须填写至少一项 ingredients，会按库存校验并扣减，同时由系统自动沉淀食谱；order_food 表示点餐或外卖。不要用 meal 代替实际在家烹饪，也不要为 meal/order_food 填写 ingredients 或自行编造 recipe_id。
 - 不要从 activity 文案隐含领域参数；没有可靠参数就保留空 payload。
 - 做生活决策时独立评估今天是否适合有目的的身体活动：结合体力、身体状态、天气、近期运动负荷、日程密度和角色兴趣自主决定，也可以合理地不安排；不得为了填充生活实况面板机械增加运动。
 - 只有节点的主要目的确实是锻炼、舒展身体或运动恢复时才使用 exercise。通勤、普通出行、购物、逛街、游览、社交和拍照过程中的走动仍按各自真实目的记录，不能仅因存在步行或体力消耗就算作运动。

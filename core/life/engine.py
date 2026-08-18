@@ -15,7 +15,11 @@ from .tools import (
     resolve_daily_suggested,
     timeline_item_datetime,
 )
-from .wardrobe import normalize_outfit_decision
+from .wardrobe import (
+    normalize_outfit_decision,
+    normalize_outfit_scene_category,
+    resolve_outfit_style_pool,
+)
 
 _CURRENT_APPEARANCE_META_KEYS = (
     "outfit_decision",
@@ -246,20 +250,56 @@ class DailyEngineMixin:
             else {}
         )
         outfit_choice = normalize_outfit_decision(outfit_decision.get("decision"))
+        current_scene_category = str(
+            outfit_decision.get("scene_category") or ""
+        ).strip()
+        check_time = context.get("check_time")
+        timeline = result.get("timeline")
+        if isinstance(timeline, list) and check_time is not None:
+            occurred = []
+            for item in timeline:
+                if not isinstance(item, dict):
+                    continue
+                item_time = timeline_item_datetime(item, context.get("date_str"))
+                if item_time is not None and item_time <= check_time:
+                    occurred.append(item)
+            if occurred:
+                place_kind = str(occurred[-1].get("place_kind") or "").strip()
+                if place_kind == "home":
+                    current_scene_category = "home"
+                elif place_kind == "transit":
+                    current_scene_category = "outdoor"
+                elif place_kind in {"poi", "generic"}:
+                    current_scene_category = "public"
         current_reference_ids = self._style_catalog_reference_ids(
             outfit_decision.get("catalog_reference_ids")
         )
         if outfit_choice != "keep" and not context["manual_extra"]:
+            current_reference_ids = (
+                await self._style_catalog_resolve_new_outfit_reference_ids(
+                    current_reference_ids,
+                    scene_category=current_scene_category,
+                )
+            )
+            # 将自动修复后的编号回写到结构化结果，确保日程元数据和后续
+            # 穿搭连续性记录的引用与实际采用的候选一致。
+            outfit_decision["catalog_reference_ids"] = current_reference_ids
             (
                 catalog_appearance,
                 catalog_issue,
-            ) = await self._style_catalog_new_outfit_selection(current_reference_ids)
+            ) = await self._style_catalog_new_outfit_selection(
+                current_reference_ids,
+                scene_category=current_scene_category,
+            )
             if catalog_issue:
                 self._set_validation_issue("style_catalog_required")
                 return None, catalog_issue
         else:
             catalog_appearance = await self._style_catalog_reference_appearance(
-                current_reference_ids
+                current_reference_ids,
+                scene_category=""
+                if context["manual_extra"]
+                else current_scene_category,
             )
 
         for raw_action in result.get("planned_actions") or []:
@@ -275,17 +315,45 @@ class DailyEngineMixin:
             action_reference_ids = self._style_catalog_reference_ids(
                 payload.get("catalog_reference_ids")
             )
+            timeline_index = self._action_timeline_index(raw_action)
+            timeline = result.get("timeline")
+            timeline_item = (
+                timeline[timeline_index]
+                if isinstance(timeline, list)
+                and timeline_index is not None
+                and 0 <= timeline_index < len(timeline)
+                and isinstance(timeline[timeline_index], dict)
+                else {}
+            )
+            place_kind = str(timeline_item.get("place_kind") or "").strip()
+            action_scene_category = (
+                "home"
+                if place_kind == "home"
+                else "outdoor"
+                if place_kind == "transit"
+                else "public"
+                if place_kind in {"poi", "generic"}
+                else ""
+            )
             if context["manual_extra"]:
                 action_appearance = await self._style_catalog_reference_appearance(
-                    action_reference_ids
+                    action_reference_ids,
+                    scene_category="",
                 )
                 action_issue = ""
             else:
+                action_reference_ids = (
+                    await self._style_catalog_resolve_new_outfit_reference_ids(
+                        action_reference_ids,
+                        scene_category=action_scene_category,
+                    )
+                )
                 (
                     action_appearance,
                     action_issue,
                 ) = await self._style_catalog_new_outfit_selection(
-                    action_reference_ids
+                    action_reference_ids,
+                    scene_category=action_scene_category,
                 )
             if action_issue:
                 self._set_validation_issue("style_catalog_required")
@@ -293,6 +361,9 @@ class DailyEngineMixin:
             if action_appearance.get("outfit"):
                 raw_action["target"] = action_appearance["outfit"]
                 payload["catalog_reference_ids"] = action_reference_ids
+                reserve = str(action_appearance.get("outing_reserve") or "").strip()
+                if reserve:
+                    payload["outing_outfit_reserve"] = reserve
                 raw_action["payload"] = payload
 
         day = self._day_from_generation(
@@ -304,9 +375,23 @@ class DailyEngineMixin:
             meta=self._meta_from_generation(result),
             memo="",
         )
+        if current_scene_category:
+            day.meta["outfit_scene_category"] = normalize_outfit_scene_category(
+                current_scene_category
+            )
+            day.meta["outfit_style_pool"] = resolve_outfit_style_pool(
+                current_scene_category,
+                decision=outfit_choice,
+                requested=outfit_decision.get("style_pool"),
+            )
         catalog_outfit = catalog_appearance.pop("outfit", "")
+        outing_reserve = catalog_appearance.pop("outing_reserve", "")
         if catalog_outfit and outfit_choice != "keep":
             day.outfit = catalog_outfit
+        if outing_reserve:
+            day.meta["outing_outfit_reserve"] = outing_reserve
+        else:
+            day.meta.pop("outing_outfit_reserve", None)
         for key, value in catalog_appearance.items():
             if not str(day.meta.get(key) or "").strip():
                 day.meta[key] = value
