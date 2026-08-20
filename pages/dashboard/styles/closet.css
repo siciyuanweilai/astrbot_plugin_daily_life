@@ -321,7 +321,6 @@
   place-items: center;
   padding: 14px;
   background: rgba(35, 25, 31, 0.38);
-  backdrop-filter: blur(8px);
 }
 
 .closet-dialog-card {
@@ -463,11 +462,24 @@
   gap: 12px;
 }
 
+.closet-generate-row {
+  grid-template-columns: minmax(0, 1fr) minmax(92px, 0.28fr);
+}
+
+.closet-generate-row > label {
+  min-width: 0;
+}
+
 .closet-form input,
 .closet-form select,
 .closet-form textarea {
   width: 100%;
   min-width: 0;
+}
+
+.closet-form textarea {
+  min-height: 168px;
+  resize: vertical;
 }
 
 [data-theme="dark"] .closet-panel,

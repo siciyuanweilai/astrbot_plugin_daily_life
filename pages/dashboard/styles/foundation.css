@@ -1557,7 +1557,7 @@ h2::before {
 }
 
 .config-field.list-field textarea {
-  min-height: 132px;
+  min-height: 202px;
 }
 
 .config-field.template-list-field {

@@ -50,11 +50,10 @@ export function templateListDropIndex(pointerY, itemCenters = [], fromIndex = -1
 }
 
 const CONFIG_FIELD_DISPLAY_SECTIONS = new Map([
-  ["outfit_config.default_style_preference", "story_engine_config"],
-  ["outfit_config.default_hair_preference", "story_engine_config"],
   ["chat_style_config.casual_short_prompt", "story_engine_config"],
   ["search_config.today_prompt", "story_engine_config"],
-  ["outfit_config.default_preference_weight", "rhythm_config"],
+  ["image_generation_config.creative_wardrobe.enabled", "rhythm_config"],
+  ["image_generation_config.creative_wardrobe.default_mode", "rhythm_config"],
   ["sight_config.video_cache_ttl_hours", "storage_config"],
   ["sight_config.video_cache_max_items", "storage_config"],
   ["sight_config.sight_cache_keep_days", "storage_config"],
@@ -65,8 +64,6 @@ const CONFIG_SECTION_FIELD_ORDER = new Map([
     "story_engine_config.timeline_rules",
     "story_engine_config.world_rules",
     "story_engine_config.chat_rules",
-    "outfit_config.default_style_preference",
-    "outfit_config.default_hair_preference",
     "chat_style_config.casual_short_prompt",
     "search_config.today_prompt",
   ]],
@@ -84,6 +81,104 @@ const CONFIG_SECTION_DISPLAY_SECTIONS = new Map([
   ["sight_config", "video_generation_config"],
 ]);
 const CONFIG_SECTION_FIELD_GROUPS = new Map([
+  ["story_engine_config", [
+    {
+      key: "life_generation",
+      label: "生活状态与日程",
+      hint: "控制每日状态和时间轴如何生成，保持全天生活过程完整且自然。",
+      fields: [
+        "story_engine_config.state_rules",
+        "story_engine_config.timeline_rules",
+      ],
+    },
+    {
+      key: "world_events",
+      label: "地点与事件",
+      hint: "控制地点候选、生活事件和未来可引用内容如何沉淀。",
+      fields: [
+        "story_engine_config.world_rules",
+      ],
+    },
+    {
+      key: "chat_people",
+      label: "聊天人物",
+      hint: "控制最近聊天历史中的称呼、性别与关系判断边界。",
+      fields: [
+        "story_engine_config.chat_rules",
+      ],
+    },
+    {
+      key: "chat_prompt",
+      label: "聊天表达",
+      hint: "控制普通聊天短回复的语气和展开尺度。",
+      fields: [
+        "chat_style_config.casual_short_prompt",
+      ],
+    },
+    {
+      key: "search_prompt",
+      label: "联网灵感",
+      hint: "控制日程联网灵感查询的提示词模板和变量使用方式。",
+      fields: [
+        "search_config.today_prompt",
+      ],
+    },
+  ]],
+  ["rhythm_config", [
+    {
+      key: "basic",
+      label: "基础生成",
+      hint: "配置每日生活背景生成时间、历史参考、参考会话和基础生成模型。",
+      fields: [
+        "rhythm_config.schedule_time",
+        "rhythm_config.history_days",
+        "rhythm_config.reference_groups",
+        "rhythm_config.reference_users",
+        "rhythm_config.history_hours",
+        "rhythm_config.history_max_count",
+        "rhythm_config.llm_timeout_seconds",
+        "rhythm_config.location_planning_provider",
+      ],
+    },
+    {
+      key: "weather",
+      label: "天气环境",
+      hint: "配置天气接口，以及天气是否影响穿搭和活动。",
+      fields: [
+        "weather_awareness.api_key",
+        "weather_awareness.aware_outfit",
+        "weather_awareness.aware_activity",
+      ],
+    },
+    {
+      key: "state",
+      label: "实时状态",
+      hint: "配置角色状态刷新和静默时段。",
+      fields: [
+        "state_config.enabled",
+        "state_config.refresh_minutes",
+        "state_config.quiet_hours",
+      ],
+    },
+    {
+      key: "lifecycle",
+      label: "生活演化",
+      hint: "配置夜间复盘时间和偏好参考上限。",
+      fields: [
+        "lifecycle_config.review_time",
+        "lifecycle_config.max_preferences",
+      ],
+    },
+    {
+      key: "outfit_config",
+      label: "创意衣橱",
+      hint: "控制创意衣橱生成设置。",
+      fields: [
+        "image_generation_config.creative_wardrobe.enabled",
+        "image_generation_config.creative_wardrobe.default_mode",
+      ],
+    },
+  ]],
   ["life_domain_config", [
     {
       key: "settlement",
@@ -296,7 +391,7 @@ const CONFIG_SECTION_FIELD_GROUPS = new Map([
     },
   ]],
 ]);
-const CONFIG_GROUPED_DISPLAY_SECTIONS = new Set(["rhythm_config", "memory_config", "chat_style_config", "video_generation_config"]);
+const CONFIG_GROUPED_DISPLAY_SECTIONS = new Set(["rhythm_config", "memory_config", "chat_style_config", "video_generation_config", "story_engine_config"]);
 const CONFIG_SOURCE_GROUP_KEYS = new Map([
   ["relationship_aliases", "identity_aliases"],
   ["bot_identity_aliases", "identity_aliases"],
@@ -321,10 +416,6 @@ const CONFIG_GROUP_LABELS = new Map([
   ["lifecycle_config", {
     description: "生活演化",
     hint: "配置夜间复盘模型、复盘时间和偏好参考上限。",
-  }],
-  ["outfit_config", {
-    description: "穿搭状态",
-    hint: "控制配置审美对穿搭和发型判断的影响强度；具体审美文本仍在提示词里编辑。",
   }],
   ["identity_aliases", {
     description: "称呼与身份",
@@ -626,24 +717,41 @@ export function createConfigPanel({
 
     for (const [sectionKey, sectionSpec] of schemaEntries) {
       if (sectionSpec.type === "object") {
-        for (const [fieldKey, fieldSpec] of Object.entries(sectionSpec.items || {})) {
-          if (isProviderConfigField(fieldSpec)) {
-            providerFields.push({
-              key: `${sectionKey}.${fieldKey}`,
-              spec: fieldSpec,
-              path: [sectionKey, fieldKey],
+        const addObjectFields = (items = {}, parentPath = []) => {
+          for (const [fieldKey, fieldSpec] of Object.entries(items)) {
+            const relativePath = [...parentPath, fieldKey];
+            const fieldPath = [sectionKey, ...relativePath];
+            if (fieldSpec.type === "object" && fieldSpec.items && !fieldSpec._special) {
+              addObjectFields(fieldSpec.items, relativePath);
+              continue;
+            }
+            if (isProviderConfigField(fieldSpec)) {
+              providerFields.push({
+                key: fieldPath.join("."),
+                spec: fieldSpec,
+                path: fieldPath,
+                sectionKey,
+                fieldKey,
+              });
+              continue;
+            }
+            const displaySection = configFieldDisplaySection(
               sectionKey,
-              fieldKey,
-            });
-            continue;
+              relativePath.join("."),
+            );
+            addConfigViewGroup(
+              fieldsBySection,
+              displaySection,
+              sectionKey,
+              sectionSpec,
+            );
+            const field = displaySection === sectionKey && fieldPath.length === 2
+              ? [fieldKey, fieldSpec]
+              : [fieldKey, fieldSpec, fieldPath];
+            addConfigViewField(fieldsBySection, displaySection, field);
           }
-          const displaySection = configFieldDisplaySection(sectionKey, fieldKey);
-          addConfigViewGroup(fieldsBySection, displaySection, sectionKey, sectionSpec);
-          const field = displaySection === sectionKey
-            ? [fieldKey, fieldSpec]
-            : [fieldKey, fieldSpec, [sectionKey, fieldKey]];
-          addConfigViewField(fieldsBySection, displaySection, field);
-        }
+        };
+        addObjectFields(sectionSpec.items || {});
       } else if (isProviderConfigField(sectionSpec)) {
         providerFields.push({
           key: sectionKey,

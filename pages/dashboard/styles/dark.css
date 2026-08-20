@@ -255,7 +255,6 @@
 
 [data-theme="dark"] .emoji-detail-dialog {
   background: rgba(18, 11, 17, 0.68);
-  backdrop-filter: blur(5px);
 }
 
 [data-theme="dark"] .emoji-detail-card {

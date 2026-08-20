@@ -200,6 +200,13 @@ class GeminiImageService:
             return ""
         return str(sources[0].get("path") or "").strip()
 
+    def first_configured_character_reference_image(self) -> str:
+        """返回已上传的首张角色参考图，供显式图生图模式使用。"""
+        sources = self._configured_character_reference_sources()
+        if not sources:
+            return ""
+        return str(sources[0].get("path") or "").strip()
+
     def friend_reference_options(self) -> list[dict[str, str]]:
         result = []
         for profile in self._friend_reference_profiles():
@@ -252,6 +259,7 @@ class GeminiImageService:
         protocol: str = "",
         model: str = "",
         identity_profile: str = "",
+        include_character_reference: bool | None = None,
     ) -> GeneratedImage:
         if not self.settings.enabled:
             raise RuntimeError("图片生成未启用")
@@ -271,7 +279,10 @@ class GeminiImageService:
 
         image_bytes, route = await self._generate_image_result(
             lambda route, current_prompt: self._text_to_image_parts(
-                current_prompt, route, identity_profile=identity_profile
+                current_prompt,
+                route,
+                identity_profile=identity_profile,
+                include_character_reference=include_character_reference,
             ),
             prompt=prompt,
             aspect_ratio=aspect_ratio,
@@ -451,13 +462,23 @@ class GeminiImageService:
         return GeneratedImage(path)
 
     async def _text_to_image_parts(
-        self, prompt: str, route: ImageRoute, *, identity_profile: str = ""
+        self,
+        prompt: str,
+        route: ImageRoute,
+        *,
+        identity_profile: str = "",
+        include_character_reference: bool | None = None,
     ) -> list[dict[str, Any]]:
         reference_parts = []
         policy = str(
             getattr(self.settings, "character_reference_policy", "off") or "off"
         )
-        if policy == "always" and self._route_accepts_character_reference(
+        should_include_reference = (
+            policy == "always"
+            if include_character_reference is None
+            else bool(include_character_reference)
+        )
+        if should_include_reference and self._route_accepts_character_reference(
             route, text_to_image=True
         ):
             reference_parts = await self._character_reference_parts()
@@ -538,6 +559,9 @@ class GeminiImageService:
         )
         if policy == "off":
             return []
+        return self._configured_character_reference_sources()
+
+    def _configured_character_reference_sources(self) -> list[dict[str, Any]]:
         sources = getattr(self.settings, "character_reference_images", []) or []
         if not isinstance(sources, list):
             return []
@@ -551,7 +575,7 @@ class GeminiImageService:
         target = str(reference_image or "").strip()
         return bool(target) and any(
             str(source.get("path") or "").strip() == target
-            for source in self._character_reference_sources()
+            for source in self._configured_character_reference_sources()
         )
 
     def _friend_reference_profiles(self) -> list[dict[str, Any]]:

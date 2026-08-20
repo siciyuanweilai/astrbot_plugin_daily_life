@@ -10,8 +10,7 @@ from ..models import STYLE_CATALOG_KIND_SET, StyleCatalogItemRecord
 class StyleCatalogArchiveMixin:
     @staticmethod
     def _style_catalog_status(value: object) -> str:
-        status = str(value or "").strip().lower()
-        return "disabled" if status == "archived" else status
+        return str(value or "").strip().lower()
 
     @staticmethod
     def _style_attributes(value: object) -> dict[str, Any]:
@@ -144,11 +143,8 @@ class StyleCatalogArchiveMixin:
                 clauses.append("kind = ?")
                 values.append(normalized_kind)
             if normalized_status:
-                if normalized_status == "disabled":
-                    clauses.append("status IN ('disabled', 'archived')")
-                else:
-                    clauses.append("status = ?")
-                    values.append(normalized_status)
+                clauses.append("status = ?")
+                values.append(normalized_status)
             if normalized_scope:
                 clauses.append("source_scope = ?")
                 values.append(normalized_scope)
@@ -187,9 +183,7 @@ class StyleCatalogArchiveMixin:
         def read() -> dict[str, int]:
             clauses = ""
             values: tuple[str, ...] = ()
-            if normalized_status == "disabled":
-                clauses = " WHERE status IN ('disabled', 'archived')"
-            elif normalized_status:
+            if normalized_status:
                 clauses = " WHERE status = ?"
                 values = (normalized_status,)
             rows = self._conn.execute(
@@ -474,8 +468,6 @@ class StyleCatalogArchiveMixin:
         if normalized_id <= 0:
             return None
         normalized_sentiment = self._text(sentiment).lower()
-        if normalized_sentiment == "archive":
-            normalized_sentiment = "disable"
         if normalized_sentiment not in {"prefer", "dislike", "neutral", "disable"}:
             normalized_sentiment = "neutral"
         try:

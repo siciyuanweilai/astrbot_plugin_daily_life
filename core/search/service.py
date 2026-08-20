@@ -2336,8 +2336,12 @@ class SearchService:
         persona: str = "",
         today: str = "",
         trace_id: str = "",
+        allow_without_inspiration_setting: bool = False,
     ) -> str:
-        if not self.enabled or not self.settings.inspiration_enabled:
+        if not self.enabled or (
+            not self.settings.inspiration_enabled
+            and not allow_without_inspiration_setting
+        ):
             return ""
         values = {
             "keyword": _compact(keyword, 300),
@@ -2360,12 +2364,12 @@ class SearchService:
             "weak": "不足",
         }.get(quality, "不足")
         logger.debug(
-            f"{LOG_PREFIX} 日程联网参考：质量={quality_label}；"
+            f"{LOG_PREFIX} 联网灵感参考：质量={quality_label}；"
             f"引擎={provider_label(result.effective_providers())}；"
             f"来源={len(result.sources)}；类别={_compact(category, 40) or '未分类'}"
         )
         if quality == "weak" or not result.sources:
-            logger.debug(f"{LOG_PREFIX} 日程联网参考已忽略：缺少可核验来源")
+            logger.debug(f"{LOG_PREFIX} 联网灵感参考已忽略：缺少可核验来源")
             return ""
         source_lines = [
             f"- {item.title or item.url}：{item.url}" for item in result.sources[:3]

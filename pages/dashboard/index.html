@@ -308,8 +308,8 @@
               </div>
               <div class="emoji-tools closet-tools">
                 <div class="emoji-action-tools closet-action-tools">
+                  <button id="closetGenerateButton" type="button">创意生成</button>
                   <button id="closetImportButton" type="button">导入</button>
-                  <button id="closetBrowseButton" type="button">联网学习</button>
                   <button id="closetBackupButton" type="button">备份</button>
                   <button id="closetRestoreButton" type="button">还原</button>
                   <input id="closetImportFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp" multiple hidden>
@@ -327,7 +327,7 @@
                     <option value="active">已启用</option>
                     <option value="pending">待确认</option>
                     <option value="low_confidence">低置信度</option>
-                    <option value="web">联网来源</option>
+                    <option value="generated">创意生成</option>
                     <option value="local">本地与会话</option>
                     <option value="outfit">套装</option>
                     <option value="top">上装</option>
@@ -367,23 +367,22 @@
         </article>
       </section>
 
-      <section id="closetBrowseDialog" class="closet-dialog" hidden aria-hidden="true">
-        <article class="closet-dialog-card closet-browse-card" role="dialog" aria-modal="true" aria-labelledby="closetBrowseTitle">
+      <section id="closetGenerateDialog" class="closet-dialog" hidden aria-hidden="true">
+        <article class="closet-dialog-card closet-browse-card" role="dialog" aria-modal="true" aria-labelledby="closetGenerateTitle">
           <header class="closet-dialog-head">
             <div>
               <p class="eyebrow">视觉灵感</p>
-              <h2 id="closetBrowseTitle">联网学习</h2>
+              <h2 id="closetGenerateTitle">创意生成</h2>
             </div>
-            <button id="closetBrowseClose" class="icon-button" type="button" aria-label="关闭联网学习">×</button>
+            <button id="closetGenerateClose" class="icon-button" type="button" aria-label="关闭创意生成">×</button>
           </header>
           <div class="closet-form">
-            <label>学习需求<input id="closetBrowseQuery" type="text" maxlength="500" placeholder="例如：适合夏天的清爽通勤穿搭"></label>
-            <div class="closet-form-row">
-              <label>类型<select id="closetBrowseKind"><option value="auto">自动拆分</option><option value="outfit">套装</option><option value="top">上装</option><option value="bottom">下装</option><option value="footwear">鞋袜</option><option value="accessory">配饰</option><option value="hair">发型</option><option value="makeup">妆容</option><option value="nails">美甲</option></select></label>
-              <label>数量<input id="closetBrowseCount" type="number" min="1" max="12" value="3"></label>
+            <div class="closet-form-row closet-generate-row">
+              <label>生成方式<select id="closetGenerateMode"><option value="text_to_image">文生图</option><option value="image_to_image">图生图</option></select></label>
+              <label>数量<input id="closetGenerateCount" type="number" min="1" value="1"></label>
             </div>
-            <label>补充要求<textarea id="closetBrowseNote" rows="3" maxlength="500" placeholder="可留空"></textarea></label>
-            <button id="closetBrowseSubmit" class="primary-button" type="button">开始学习</button>
+            <label>本次生成需求<textarea id="closetGenerateNote" rows="6" maxlength="1000" placeholder="例如：适合春天去书店的浅色通勤穿搭，带自然锁骨发、清透妆容和裸色短甲"></textarea></label>
+            <button id="closetGenerateSubmit" class="primary-button" type="button">生成候选</button>
           </div>
         </article>
       </section>

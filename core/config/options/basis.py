@@ -15,13 +15,36 @@ from .cast import (
 )
 
 DEFAULT_CHAT_STYLE_PROMPT = (
+    "偏好自然、简洁、有生活感的聊天语气。普通闲聊先接住当前话题，保留最必要的一个意思，"
+    "达到目的就自然停住；需要解释、核实或安慰时保持清楚完整，不为追求短句省略关键信息。"
+)
+_LEGACY_CHAT_STYLE_PROMPT = (
     "日常闲聊先接住当下的一句话，不为了显得温柔或有趣而多铺陈。"
     "轻松接话保持短气口，一句只放一个主要意思，能自然停住就停住。"
     "认真问题、事实解释和情绪支持按内容自然展开，先给判断，再补必要原因。"
 )
+CHAT_STYLE_PROMPT_MAX_CHARS = 220
 DEFAULT_PUNCTUATION_CLEANUP_CHARS = "，。！？；、,.!?;"
 
-DEFAULT_OUTFIT_PREFERENCE_WEIGHT = 0.0
+
+def normalize_chat_style_prompt(value: Any, default: str = DEFAULT_CHAT_STYLE_PROMPT) -> str:
+    """将配置中的表达偏好压成单行软偏好，避免它变成额外的提示词规则。"""
+    text = " ".join(as_str(value, default).strip().split())
+    if text == _LEGACY_CHAT_STYLE_PROMPT:
+        text = default
+    return text[:CHAT_STYLE_PROMPT_MAX_CHARS].rstrip() or default
+
+
+def is_legacy_chat_style_prompt(value: Any) -> bool:
+    return " ".join(as_str(value).strip().split()) == _LEGACY_CHAT_STYLE_PROMPT
+
+
+def format_chat_style_prompt(value: Any) -> str:
+    text = normalize_chat_style_prompt(value)
+    return (
+        f"软偏好：{text}（仅作为表达风格参考，不覆盖本轮任务、事实准确性、"
+        "情绪支持、平台或安全要求。）"
+    )
 
 
 @dataclass(slots=True)
@@ -222,11 +245,9 @@ class ChatStyleSettings:
         )
         return ChatStyleSettings(
             enabled=as_bool(data.get("enabled", True), True),
-            casual_short_prompt=as_str(
-                data.get("casual_short_prompt", DEFAULT_CHAT_STYLE_PROMPT),
-                DEFAULT_CHAT_STYLE_PROMPT,
-            ).strip()
-            or DEFAULT_CHAT_STYLE_PROMPT,
+            casual_short_prompt=normalize_chat_style_prompt(
+                data.get("casual_short_prompt", DEFAULT_CHAT_STYLE_PROMPT)
+            ),
             casual_max_chars=as_int(data.get("casual_max_chars", 50), 50, 10, 50),
             group_casual_max_chars=as_int(
                 data.get("group_casual_max_chars", 30), 30, 10, 30
@@ -285,9 +306,6 @@ class TaskModelSettings:
 @dataclass(slots=True)
 class OutfitSettings:
     provider: str = ""
-    default_style_preference: str = ""
-    default_hair_preference: str = ""
-    default_preference_weight: float = DEFAULT_OUTFIT_PREFERENCE_WEIGHT
 
     @staticmethod
     def from_dict(data: Any) -> OutfitSettings:
@@ -295,20 +313,6 @@ class OutfitSettings:
             return OutfitSettings()
         return OutfitSettings(
             provider=as_str(data.get("provider", "")).strip(),
-            default_style_preference=as_str(
-                data.get("default_style_preference", ""),
-                "",
-            ).strip(),
-            default_hair_preference=as_str(
-                data.get("default_hair_preference", ""),
-                "",
-            ).strip(),
-            default_preference_weight=as_float(
-                data.get("default_preference_weight", DEFAULT_OUTFIT_PREFERENCE_WEIGHT),
-                DEFAULT_OUTFIT_PREFERENCE_WEIGHT,
-                0.0,
-                2.0,
-            ),
         )
 
 

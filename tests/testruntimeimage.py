@@ -30,6 +30,71 @@ from runtimehelpers import (
 
 
 class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTestCase):
+    async def test_life_image_generate_removes_direct_image_tools_after_delivery(self):
+        import core.runtime.channel.image as image_module
+
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        scope = "aiocqhttp:FriendMessage:10001"
+        event = Event(unified_msg_origin=scope)
+
+        class ToolSet:
+            def __init__(self):
+                self.tools = [
+                    types.SimpleNamespace(name="life_image_generate"),
+                    types.SimpleNamespace(name="edit_life_image"),
+                    types.SimpleNamespace(name="life_photo_suite_generate"),
+                ]
+
+            def remove_tool(self, name):
+                self.tools = [tool for tool in self.tools if tool.name != name]
+
+        runner = types.SimpleNamespace(
+            req=types.SimpleNamespace(func_tool=ToolSet()),
+            _skill_like_raw_tool_set=ToolSet(),
+            _tool_schema_param_set=ToolSet(),
+        )
+        old_follow_up = image_module._astrbot_follow_up
+        image_module._astrbot_follow_up = types.SimpleNamespace(
+            _ACTIVE_AGENT_RUNNERS={scope: runner}
+        )
+        try:
+            image_module.RuntimeImageMediaMixin._disable_direct_image_tools_for_active_turn(
+                event
+            )
+        finally:
+            image_module._astrbot_follow_up = old_follow_up
+
+        for tool_set in (
+            runner.req.func_tool,
+            runner._skill_like_raw_tool_set,
+            runner._tool_schema_param_set,
+        ):
+            self.assertEqual(
+                [tool.name for tool in tool_set.tools],
+                ["life_photo_suite_generate"],
+            )
+
+    async def test_life_image_generate_suppresses_second_direct_call_in_active_turn(self):
+        import core.runtime.channel.image as image_module
+
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        scope = "aiocqhttp:FriendMessage:10001"
+        event = Event(unified_msg_origin=scope)
+        runner = types.SimpleNamespace(_daily_life_direct_image_tools_sent={"life_image_generate"})
+        old_follow_up = image_module._astrbot_follow_up
+        image_module._astrbot_follow_up = types.SimpleNamespace(
+            _ACTIVE_AGENT_RUNNERS={scope: runner}
+        )
+        try:
+            result = await runtime.life_image_generate(event, "再次拍一张")
+        finally:
+            image_module._astrbot_follow_up = old_follow_up
+
+        payload = json.loads(result)
+        self.assertEqual(payload["status"], "sent")
+        self.assertTrue(payload["deduplicated"])
+        self.assertEqual(payload["action"], "duplicate_suppressed")
+
     def test_image_failure_text_hides_internal_provider_error(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
 
@@ -3860,6 +3925,38 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         event.set_result(event.chain_result(["我已经拍好啦。"]))
 
         self.assertTrue(runtime.hold_life_photo_suite_final_text(event))
+        self.assertIsNone(event.get_result())
+
+    async def test_photo_suite_agent_error_is_suppressed_after_acceptance(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
+        task_dir = Path(tempfile.mkdtemp())
+        runtime._photo_suite_register_request(
+            event.unified_msg_origin, "雨后散步套图", event, task_dir
+        )
+        event.set_result(
+            types.SimpleNamespace(
+                chain=[types.SimpleNamespace(text="LLM 响应错误")],
+                result_content_type="AGENT_RUNNER_ERROR",
+            )
+        )
+
+        self.assertTrue(runtime.suppress_photo_suite_agent_error(event))
+        self.assertIsNone(event.get_result())
+
+    async def test_photo_suite_agent_done_error_is_suppressed_before_result_exists(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
+        task_dir = Path(tempfile.mkdtemp())
+        runtime._photo_suite_register_request(
+            event.unified_msg_origin, "雨后散步套图", event, task_dir
+        )
+
+        self.assertTrue(
+            runtime.suppress_photo_suite_agent_error(
+                event, types.SimpleNamespace(role="err")
+            )
+        )
         self.assertIsNone(event.get_result())
 
     async def test_gemini_image_edit_sends_reference_image_part(self):

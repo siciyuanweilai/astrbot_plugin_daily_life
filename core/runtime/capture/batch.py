@@ -868,9 +868,8 @@ class ChatMemoryBatchMixin:
                 continue
             if predicate == INTERACTION_MODE_PREDICATE:
                 interaction_audited = payload.get("_interaction_audited")
-                # Interaction mode is safety-sensitive: a missing or failed
-                # calibration must never turn transport metadata into a
-                # persisted real-world distance claim.
+                # 互动模式涉及安全边界：校准缺失或失败时，绝不能把传输元数据写成
+                # 已持久化的真实世界距离事实。
                 if interaction_audited is not True:
                     continue
                 participant_ids = {

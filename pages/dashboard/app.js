@@ -265,7 +265,7 @@ const HERO_COPY = {
   closet: {
     eyebrow: "视觉衣橱 · 把喜欢的造型收进灵感册",
     title: "衣橱管理",
-    subtitle: "上传、联网学习、筛选和反馈集中管理，已启用的候选会自然参与日常穿搭与发型决策。",
+    subtitle: "上传、创意生成、筛选和反馈集中管理，已启用的候选会自然参与日常穿搭与发型决策。",
   },
   settings: {
     eyebrow: "运行设置 · 把规则整理成抽屉",
@@ -292,6 +292,7 @@ const state = {
   emojiAnimatedPreviewSeq: 0,
   closetItems: [],
   closetStats: {},
+  closetDefaultGenerationMode: "text_to_image",
   closetFilter: "all",
   closetPage: 1,
   closetLoaded: false,
@@ -416,7 +417,7 @@ const el = {
   closetFilter: byId("closetFilter"),
   closetImportButton: byId("closetImportButton"),
   closetImportFile: byId("closetImportFile"),
-  closetBrowseButton: byId("closetBrowseButton"),
+  closetGenerateButton: byId("closetGenerateButton"),
   closetBackupButton: byId("closetBackupButton"),
   closetRestoreButton: byId("closetRestoreButton"),
   closetRestoreFile: byId("closetRestoreFile"),
@@ -436,13 +437,12 @@ const el = {
   closetDetailTitle: byId("closetDetailTitle"),
   closetDetailBody: byId("closetDetailBody"),
   closetDetailClose: byId("closetDetailClose"),
-  closetBrowseDialog: byId("closetBrowseDialog"),
-  closetBrowseClose: byId("closetBrowseClose"),
-  closetBrowseQuery: byId("closetBrowseQuery"),
-  closetBrowseKind: byId("closetBrowseKind"),
-  closetBrowseCount: byId("closetBrowseCount"),
-  closetBrowseNote: byId("closetBrowseNote"),
-  closetBrowseSubmit: byId("closetBrowseSubmit"),
+  closetGenerateDialog: byId("closetGenerateDialog"),
+  closetGenerateClose: byId("closetGenerateClose"),
+  closetGenerateMode: byId("closetGenerateMode"),
+  closetGenerateCount: byId("closetGenerateCount"),
+  closetGenerateNote: byId("closetGenerateNote"),
+  closetGenerateSubmit: byId("closetGenerateSubmit"),
   configNav: byId("configNav"),
   configSectionTitle: byId("configSectionTitle"),
   configSectionHint: byId("configSectionHint"),
@@ -785,7 +785,7 @@ function setView(view) {
   if (state.view !== "closet") {
     resetClosetManageState();
     closeClosetDetail();
-    closeClosetBrowse();
+    closeClosetGenerate();
   }
   if (state.view === "emoji" && bridge && state.bridgeReady) {
     loadEmojiAssets({ quiet: state.emojiLoaded });
@@ -2811,6 +2811,7 @@ const CLOSET_SOURCE_LABELS = {
   user_image: "会话图片",
   product_image: "商品图片",
   web_image: "联网图片",
+  generated_style_image: "创意生成",
 };
 
 function closetTargetIds(ids) {
@@ -2890,8 +2891,8 @@ function filteredClosetItems() {
   if (Object.hasOwn(CLOSET_KIND_LABELS, filter)) return items.filter((item) => item.kind === filter);
   if (filter === "liked") return items.filter((item) => Number(item.preference_score || 0) > 0);
   if (filter === "low_confidence") return items.filter((item) => Number(item.confidence || 0) < 0.72);
-  if (filter === "web") return items.filter((item) => ["web_image", "product_image"].includes(item.source_kind));
-  if (filter === "local") return items.filter((item) => !["web_image", "product_image"].includes(item.source_kind));
+  if (filter === "generated") return items.filter((item) => item.source_kind === "generated_style_image");
+  if (filter === "local") return items.filter((item) => !["web_image", "product_image", "generated_style_image"].includes(item.source_kind));
   return items;
 }
 
@@ -2949,6 +2950,7 @@ function renderClosetStats() {
   const entries = [
     ["已启用", stats.active],
     ["待确认", stats.pending],
+    ["创意生成", stats.generated],
     ["套装", stats.outfit],
     ["上装", stats.top],
     ["下装", stats.bottom],
@@ -2972,6 +2974,7 @@ function closetComputedStats() {
   const items = objectItems(state.closetItems);
   const stats = {
     total: items.length,
+    generated: 0,
     active: 0,
     pending: 0,
     disabled: 0,
@@ -2985,6 +2988,7 @@ function closetComputedStats() {
     nails: 0,
   };
   items.forEach((item) => {
+    if (item.source_kind === "generated_style_image") stats.generated += 1;
     const status = closetStatus(item);
     if (Object.hasOwn(stats, status)) stats[status] += 1;
     if (Object.hasOwn(CLOSET_KIND_LABELS, item.kind)) stats[item.kind] += 1;
@@ -3010,7 +3014,6 @@ function closetBadges(item = {}) {
 
 export function closetStatus(item = {}) {
   const status = text(item.status, "pending").trim().toLowerCase();
-  if (status === "archived") return "disabled";
   return Object.hasOwn(CLOSET_STATUS_LABELS, status) ? status : "pending";
 }
 
@@ -3158,9 +3161,22 @@ function renderClosetManagement() {
 function applyClosetPayload(payload = {}) {
   state.closetItems = objectItems(payload.items);
   state.closetStats = payload.stats && typeof payload.stats === "object" ? payload.stats : {};
+  state.closetDefaultGenerationMode = ["text_to_image", "image_to_image"].includes(payload.default_generation_mode)
+    ? payload.default_generation_mode
+    : "text_to_image";
   state.closetLoaded = true;
   pruneClosetSelection();
   renderClosetManagement();
+}
+
+function closetDefaultGenerationMode() {
+  const configured = clean(
+    state.config?.image_generation_config?.creative_wardrobe?.default_mode,
+    "",
+  );
+  return ["text_to_image", "image_to_image"].includes(configured)
+    ? configured
+    : state.closetDefaultGenerationMode;
 }
 
 async function loadClosetAssets({ quiet = false } = {}) {
@@ -3184,8 +3200,8 @@ function closetDetailField(list, label, value, className = "") {
   list.append(wrapper);
 }
 
-function closetVisualPrompt(item = {}) {
-  return clean(item.attributes?.visual_prompt || item.description, "暂无视觉提示词");
+function closetDescription(item = {}) {
+  return clean(item.description, "暂无描述");
 }
 
 function closetGroupKey(item = {}) {
@@ -3307,7 +3323,7 @@ function renderClosetDetail() {
     const prompt = node("section", "closet-detail-prompt");
     prompt.append(
       node("h3", "closet-detail-prompt-title", CLOSET_KIND_LABELS[entry.kind] || "造型"),
-      node("p", "closet-detail-description", closetVisualPrompt(entry)),
+      node("p", "closet-detail-description", closetDescription(entry)),
     );
     prompts.append(prompt);
   });
@@ -3336,18 +3352,21 @@ function closeClosetDetail() {
   if (wasOpen) restoreDialogFocus();
 }
 
-function openClosetBrowse() {
-  if (!el.closetBrowseDialog) return;
-  el.closetBrowseDialog.hidden = false;
-  el.closetBrowseDialog.setAttribute("aria-hidden", "false");
-  focusDialog(el.closetBrowseDialog, el.closetBrowseQuery);
+function openClosetGenerate() {
+  if (!el.closetGenerateDialog) return;
+  if (el.closetGenerateMode) {
+    el.closetGenerateMode.value = closetDefaultGenerationMode();
+  }
+  el.closetGenerateDialog.hidden = false;
+  el.closetGenerateDialog.setAttribute("aria-hidden", "false");
+  focusDialog(el.closetGenerateDialog, el.closetGenerateMode);
 }
 
-function closeClosetBrowse() {
-  if (!el.closetBrowseDialog) return;
-  const wasOpen = !el.closetBrowseDialog.hidden;
-  el.closetBrowseDialog.hidden = true;
-  el.closetBrowseDialog.setAttribute("aria-hidden", "true");
+function closeClosetGenerate() {
+  if (!el.closetGenerateDialog) return;
+  const wasOpen = !el.closetGenerateDialog.hidden;
+  el.closetGenerateDialog.hidden = true;
+  el.closetGenerateDialog.setAttribute("aria-hidden", "true");
   if (wasOpen) restoreDialogFocus();
 }
 
@@ -3390,26 +3409,19 @@ async function importClosetFiles(files) {
   }
 }
 
-async function browseCloset() {
-  const query = clean(el.closetBrowseQuery?.value, "");
-  if (!query) {
-    setNotice("请输入要学习的穿搭或发型需求", "error");
-    el.closetBrowseQuery?.focus();
-    return;
-  }
+async function generateCloset() {
   setBusy(true);
   try {
-    const result = await apiPost("page/closet/browse", {
-      query,
-      kind: el.closetBrowseKind?.value || "auto",
-      count: Number(el.closetBrowseCount?.value || 3),
-      note: clean(el.closetBrowseNote?.value, ""),
-    }, { timeoutMs: 300000, timeoutMessage: "联网学习耗时较久，请稍后查看" });
+    const result = await apiPost("page/closet/generate", {
+      generation_mode: el.closetGenerateMode?.value || "",
+      count: Number(el.closetGenerateCount?.value || 1),
+      requirement: clean(el.closetGenerateNote?.value, ""),
+    }, { timeoutMs: 300000, timeoutMessage: "创意生成耗时较久，请稍后查看" });
     applyClosetPayload(result);
-    closeClosetBrowse();
-    setNotice("联网造型学习完成", "success");
+    closeClosetGenerate();
+    setNotice("创意衣橱生成完成", "success");
   } catch (error) {
-    setNotice(userErrorMessage(error, "联网学习失败"), "error");
+    setNotice(userErrorMessage(error, "创意衣橱生成失败"), "error");
   } finally {
     setBusy(false);
   }
@@ -3805,7 +3817,7 @@ function bindEvents() {
     if (el.closetImportFile) el.closetImportFile.value = "";
     importClosetFiles(files);
   });
-  el.closetBrowseButton?.addEventListener("click", openClosetBrowse);
+  el.closetGenerateButton?.addEventListener("click", openClosetGenerate);
   el.closetBackupButton?.addEventListener("click", backupCloset);
   el.closetRestoreButton?.addEventListener("click", () => el.closetRestoreFile?.click());
   el.closetRestoreFile?.addEventListener("change", () => {
@@ -3822,18 +3834,18 @@ function bindEvents() {
   el.closetDetailDialog?.addEventListener("click", (event) => {
     if (event.target === el.closetDetailDialog) closeClosetDetail();
   });
-  el.closetBrowseClose?.addEventListener("click", closeClosetBrowse);
-  el.closetBrowseDialog?.addEventListener("click", (event) => {
-    if (event.target === el.closetBrowseDialog) closeClosetBrowse();
+  el.closetGenerateClose?.addEventListener("click", closeClosetGenerate);
+  el.closetGenerateDialog?.addEventListener("click", (event) => {
+    if (event.target === el.closetGenerateDialog) closeClosetGenerate();
   });
-  el.closetBrowseSubmit?.addEventListener("click", browseCloset);
+  el.closetGenerateSubmit?.addEventListener("click", generateCloset);
   document.addEventListener("keydown", (event) => {
-    if (trapDialogFocus(event, [el.emojiImportDialog, el.emojiDetailDialog, el.closetDetailDialog, el.closetBrowseDialog])) return;
+    if (trapDialogFocus(event, [el.emojiImportDialog, el.emojiDetailDialog, el.closetDetailDialog, el.closetGenerateDialog])) return;
     if (event.key !== "Escape") return;
     if (state.emojiDetailId) closeEmojiDetail();
     if (el.emojiImportDialog && !el.emojiImportDialog.hidden) closeEmojiImport();
     if (state.closetDetailId) closeClosetDetail();
-    if (el.closetBrowseDialog && !el.closetBrowseDialog.hidden) closeClosetBrowse();
+    if (el.closetGenerateDialog && !el.closetGenerateDialog.hidden) closeClosetGenerate();
   });
   el.settingsView?.addEventListener("focusout", (event) => {
     if (event.relatedTarget && el.settingsView.contains(event.relatedTarget)) return;

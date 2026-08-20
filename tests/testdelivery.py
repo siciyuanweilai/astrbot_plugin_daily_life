@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 
 import support  # noqa: F401 - 安装轻量级 AstrBot 测试替身
@@ -51,6 +52,33 @@ class ReplyDeliveryServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event.sent, ["一", "二", "三", "四"])
         self.assertEqual(sleeps, [3.5, 3.5, 3.5])
         self.assertEqual(sum(sleeps), 10.5)
+
+    async def test_event_delivery_logs_each_sent_message(self):
+        event = _Event()
+        logged = []
+        runtime = type(
+            "Runtime",
+            (),
+            {"log_outbound_message": lambda _self, chain, **kwargs: logged.append(chain)},
+        )()
+        service = ReplyDeliveryService(runtime)
+
+        outcome = await service.send_event(
+            EventDeliveryRequest(
+                event=event,
+                texts=("一", "二", "三", "四"),
+                scope="private:test",
+                match="exact",
+                text_from_item=str,
+                build_message=lambda index, chain: chain[index],
+                delay_seconds=lambda _index: 0,
+                sleep=asyncio.sleep,
+                is_current=lambda: True,
+            )
+        )
+
+        self.assertEqual(outcome.status, "sent")
+        self.assertEqual(logged, ["一", "二", "三", "四"])
 
 
 if __name__ == "__main__":

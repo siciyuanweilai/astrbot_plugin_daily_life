@@ -48,16 +48,8 @@ class StyleCatalogMixin:
         return result
 
     @staticmethod
-    def _style_catalog_visual_prompt(item: Any) -> str:
-        """读取衣橱专用视觉提示词，兼容尚未重新识别的旧候选。"""
-
-        attributes = getattr(item, "attributes", {}) or {}
-        if not isinstance(attributes, dict):
-            attributes = {}
-        value = " ".join(str(attributes.get("visual_prompt") or "").split())[:800]
-        if value:
-            return value
-        return " ".join(str(getattr(item, "description", "") or "").split())[:600]
+    def _style_catalog_description(item: Any) -> str:
+        return " ".join(str(getattr(item, "description", "") or "").split())[:800]
 
     @staticmethod
     def _style_catalog_attributes(item: Any) -> dict[str, Any]:
@@ -69,15 +61,12 @@ class StyleCatalogMixin:
         """读取候选入库时的结构化居家适配角色，不分析自然语言描述。"""
 
         attributes = cls._style_catalog_attributes(item)
-        value = attributes.get("home_presence")
-        if isinstance(value, dict):
-            value = value.get("role") or value.get("scene_role")
-        role = str(value or "").strip().lower()
+        role = str(attributes.get("home_presence") or "").strip().lower()
         return role if role in STYLE_CATALOG_HOME_PRESENCE else "unknown"
 
     @classmethod
     def _style_catalog_component_profiles(cls, item: Any) -> list[dict[str, str]]:
-        """读取套装的结构化组成角色；缺失时返回空，交给调用方保守处理。"""
+        """读取套装的结构化组成角色。"""
 
         attributes = cls._style_catalog_attributes(item)
         raw = attributes.get("component_roles")
@@ -88,11 +77,11 @@ class StyleCatalogMixin:
             if not isinstance(value, dict):
                 continue
             kind = str(value.get("kind") or "").strip().lower()
-            role = str(value.get("home_presence") or value.get("scene_role") or "").strip().lower()
+            role = str(value.get("home_presence") or "").strip().lower()
             carry_mode = str(value.get("carry_mode") or "").strip().lower()
             if kind not in {"footwear", "accessory"} or role not in STYLE_CATALOG_HOME_PRESENCE:
                 continue
-            name = " ".join(str(value.get("name") or value.get("description") or "").split())[:120]
+            name = " ".join(str(value.get("name") or "").split())[:120]
             if name:
                 profiles.append(
                     {
@@ -121,18 +110,11 @@ class StyleCatalogMixin:
             return home_description, reserve_description
 
         profiles = cls._style_catalog_component_profiles(item)
-        if profiles:
-            reserved_components = [
-                profile["name"]
-                for profile in profiles
-                if profile["role"] in {"outdoor", "unknown"}
-            ]
-        else:
-            # 旧版本只记录了类别组成，没有居家适配角色。鞋袜/配饰在此状态
-            # 不做自然语言猜测，先放入外出备选，重新识别后可恢复精确角色。
-            reserved_components = cls._style_catalog_list(
-                attributes.get("footwear"), 8
-            ) + cls._style_catalog_list(attributes.get("accessories"), 8)
+        reserved_components = [
+            profile["name"]
+            for profile in profiles
+            if profile["role"] in {"outdoor", "unknown"}
+        ]
         if not reserved_components:
             return description, ""
 
@@ -199,12 +181,12 @@ class StyleCatalogMixin:
                 details.append(f"{label}：{'、'.join(values)}")
         score = float(getattr(item, "preference_score", 0.0) or 0.0)
         title = " ".join(str(getattr(item, "title", "") or "").split())[:80]
-        visual_prompt = cls._style_catalog_visual_prompt(item)[:420]
+        description = cls._style_catalog_description(item)[:420]
         suffix = f"；{'；'.join(details)}" if details else ""
         heading = title or f"{kind}候选"
         return (
             f"- #{int(getattr(item, 'id', 0) or 0)} [{kind}] "
-            f"{heading}；视觉提示词：{visual_prompt}{suffix}；偏好分 {score:.1f}"
+            f"{heading}；描述：{description}{suffix}；偏好分 {score:.1f}"
         )
 
     async def _style_catalog_has_clothing_candidates(self) -> bool:
@@ -378,7 +360,7 @@ class StyleCatalogMixin:
         }
         for item in items or []:
             kind = str(getattr(item, "kind", "")).strip().lower()
-            description = self._style_catalog_visual_prompt(item)
+            description = self._style_catalog_description(item)
             title = " ".join(
                 str(getattr(item, "title", "") or "").strip().split()
             )[:80]
@@ -401,15 +383,6 @@ class StyleCatalogMixin:
                     result["outfit"].append(current_description)
                 if reserve_description:
                     result["outing_reserve"].append(reserve_description)
-                if kind == "outfit":
-                    attributes = getattr(item, "attributes", {}) or {}
-                    if isinstance(attributes, dict):
-                        for legacy_key in ("makeup", "nails"):
-                            result[legacy_key].extend(
-                                self._style_catalog_list(
-                                    attributes.get(legacy_key), 4
-                                )
-                            )
             elif kind == "hair" and description:
                 if title:
                     result["hair_style"].append(title)

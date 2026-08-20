@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 from collections import deque
 from typing import Any
@@ -229,6 +230,7 @@ class RecallMixin:
         source_event: Any = None,
         source_message_id: str = "",
         raise_delivery_errors: bool = False,
+        log_outbound: bool = True,
     ) -> bool:
         if not self.can_send_for_source(
             scope, source_event=source_event, source_message_id=source_message_id
@@ -237,10 +239,32 @@ class RecallMixin:
         event_sender = getattr(source_event, "send", None)
         if callable(event_sender):
             await event_sender(chain)
+            if log_outbound:
+                outbound_logger = getattr(self, "log_outbound_message_async", None)
+                if not callable(outbound_logger):
+                    outbound_logger = getattr(self, "log_outbound_message", None)
+                if callable(outbound_logger):
+                    result = outbound_logger(
+                        chain,
+                        scope=scope,
+                        source_event=source_event,
+                        source="direct",
+                    )
+                    if inspect.isawaitable(result):
+                        await result
             return True
-        return await send_message_to_scope(
+        sent = await send_message_to_scope(
             self.context, scope, chain, raise_delivery_errors=raise_delivery_errors
         )
+        if sent and log_outbound:
+            outbound_logger = getattr(self, "log_outbound_message_async", None)
+            if not callable(outbound_logger):
+                outbound_logger = getattr(self, "log_outbound_message", None)
+            if callable(outbound_logger):
+                result = outbound_logger(chain, scope=scope, source="direct")
+                if inspect.isawaitable(result):
+                    await result
+        return sent
 
     def suppress_recalled_event_result(self, event: Any) -> bool:
         if not self._event_message_was_recalled(event):
@@ -262,8 +286,8 @@ class RecallMixin:
         stopper = getattr(event, "stop_event", None)
         if callable(stopper):
             stopper()
-        # AstrBot creates an empty result when stopping an event with no result.
-        # Clear it afterward so RespondStage has nothing to send or post-process.
+        # AstrBot 在停止没有结果的事件时会创建空结果；随后清除它，
+        # 使 RespondStage 没有可发送或后处理的内容。
         clearer = getattr(event, "clear_result", None)
         if callable(clearer):
             clearer()

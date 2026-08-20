@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -269,7 +270,18 @@ class TextForwardMixin:
                 reason="合并转发发送失败",
                 response_stance="没有发送成功；自然说明这次文字版没有发出去，不要复述原文",
             )
-
+        log_outbound = getattr(self, "log_outbound_message_async", None)
+        if not callable(log_outbound):
+            log_outbound = getattr(self, "log_outbound_message", None)
+        if callable(log_outbound):
+            result = log_outbound(
+                message,
+                scope=str(getattr(event, "unified_msg_origin", "") or ""),
+                source_event=event,
+                source="t2i_forward",
+            )
+            if inspect.isawaitable(result):
+                await result
         logger.info(
             f"{LOG_PREFIX} 文本转图像原文已转发：序号={requested_index}；长度={len(record.text)}"
         )

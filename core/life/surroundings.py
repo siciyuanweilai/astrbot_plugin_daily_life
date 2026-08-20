@@ -64,8 +64,7 @@ def _score_item(item: Any, index: int, kind: str) -> float:
         score += min(int(_field(item, "interactions", 0) or 0), 30) * 0.03
         score += len(_as_list(_field(item, "memory_points", []))) * 0.35
     elif kind == "places":
-        # Frequent visits are useful evidence that a place is real, but they
-        # should not make the same place win every generation context.
+        # 高频到访能证明地点真实存在，但不能让同一地点在每次生成上下文中都胜出。
         score -= min(int(_field(item, "visits", 0) or 0), 20) * 0.06
     elif kind == "events" and compact_text(_field(item, "importance")).lower() in {
         "high",
@@ -220,8 +219,8 @@ def choose_place_candidates(
             return 0
         return max(0, (date_value - seen_date).days)
 
-    # Keep a small history list stable for compatibility, but rotate larger
-    # memories so the most recently used POI cannot monopolize every prompt.
+    # 为兼容性保持小型历史列表稳定，同时轮换更大的记忆集合，避免最近使用的 POI
+    # 垄断每一次提示词。
     if len(saved) > 2:
         saved.sort(
             key=lambda item: (

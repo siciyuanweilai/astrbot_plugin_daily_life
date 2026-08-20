@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import secrets
 import uuid
 from io import BytesIO
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import urlsplit
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
@@ -31,76 +32,15 @@ from ..markers import LOG_PREFIX
 
 _STYLE_KINDS = {"auto", "both", *STYLE_CATALOG_KIND_SET}
 _STYLE_ITEM_KINDS = STYLE_CATALOG_KIND_SET
-_STYLE_FEEDBACK_SENTIMENTS = {"prefer", "dislike", "neutral", "disable", "archive"}
+_STYLE_FEEDBACK_SENTIMENTS = {"prefer", "dislike", "neutral", "disable"}
 _STYLE_IMAGE_MAX_SIDE = 1600
 _STYLE_IMAGE_JPEG_QUALITY = 90
 _STYLE_REVIEW_CONFIDENCE = 0.72
 _STYLE_PERCEPTUAL_DISTANCE = 5
+_CREATIVE_STYLE_GENERATION_MODES = {"text_to_image", "image_to_image"}
 
 
 class RuntimeStyleCatalogMixin:
-    @staticmethod
-    def _style_asset_key(value: object) -> str:
-        """生成仅用于本轮搜索去重的稳定图片地址键。"""
-        text = str(value or "").strip()
-        if not text:
-            return ""
-        try:
-            parsed = urlsplit(text)
-        except ValueError:
-            return text.casefold()
-        if parsed.scheme.casefold() not in {"http", "https"} or not parsed.netloc:
-            return text.casefold()
-        try:
-            query = [
-                (key, item)
-                for key, item in parse_qsl(parsed.query, keep_blank_values=True)
-                if not key.casefold().startswith("utm_")
-                and key.casefold() not in {"ref", "referer", "source", "spm"}
-            ]
-        except ValueError:
-            query = []
-        query.sort(key=lambda pair: (pair[0].casefold(), pair[1]))
-        host = (parsed.hostname or "").casefold()
-        try:
-            port = parsed.port
-        except ValueError:
-            return text.casefold()
-        default_port = (parsed.scheme.casefold() == "http" and port == 80) or (
-            parsed.scheme.casefold() == "https" and port == 443
-        )
-        host_port = host if not port or default_port else f"{host}:{port}"
-        return urlunsplit(
-            (
-                parsed.scheme.casefold(),
-                host_port,
-                parsed.path.rstrip("/") or "/",
-                urlencode(query, doseq=True),
-                "",
-            )
-        ).casefold()
-
-    @staticmethod
-    def _style_asset_dimensions(asset: dict[str, Any]) -> tuple[int, int]:
-        """读取搜索服务提供的尺寸元数据；缺失时不臆测。"""
-        values = []
-        for key in ("width", "height"):
-            try:
-                value = int(asset.get(key) or 0)
-            except (TypeError, ValueError):
-                value = 0
-            values.append(max(0, value))
-        return values[0], values[1]
-
-    @classmethod
-    def _style_asset_is_candidate(cls, asset: dict[str, Any]) -> bool:
-        """只过滤明确不适合作为视觉参考的尺寸，不用关键词猜测图片内容。"""
-        image = cls._style_text(asset.get("url"), 1500)
-        if not image:
-            return False
-        width, height = cls._style_asset_dimensions(asset)
-        return not (width and height and min(width, height) < 240)
-
     @staticmethod
     def _requested_style_kinds(kind: str) -> set[str]:
         return (
@@ -196,11 +136,7 @@ class RuntimeStyleCatalogMixin:
         raw = payload.get(kind)
         if not isinstance(raw, dict) or raw.get("present") is not True:
             return {}
-        # visual_prompt 只用于兼容上一个开发版本的模型返回；新数据统一
-        # 将详细视觉提示词保存到 description，避免维护两份重复描述。
-        description = cls._style_text(
-            raw.get("visual_prompt") or raw.get("description"), 800
-        )
+        description = cls._style_text(raw.get("description"), 800)
         if not description:
             return {}
         try:
@@ -557,8 +493,10 @@ class RuntimeStyleCatalogMixin:
         source_scope: str = "",
         source_batch_id: str = "",
         source_query: str = "",
+        source_attributes: dict[str, Any] | None = None,
         note: str = "",
         kind: str = "auto",
+        require_complete_clothing: bool = False,
     ) -> list[StyleCatalogItemRecord]:
         cached_image, image_hash = await self._persist_style_catalog_image(
             image,
@@ -569,6 +507,19 @@ class RuntimeStyleCatalogMixin:
         payload = await self._analyze_style_catalog_image(
             cached_image or image, note=note, kind=kind
         )
+        analyzed_by_kind = {
+            item_kind: self._style_analysis_item(payload, item_kind)
+            for item_kind in STYLE_CATALOG_KINDS
+        }
+        if require_complete_clothing and not (
+            analyzed_by_kind.get("outfit")
+            or (
+                analyzed_by_kind.get("top")
+                and analyzed_by_kind.get("bottom")
+            )
+        ):
+            await self._remove_unused_style_catalog_image(cached_image or image)
+            return []
         perceptual_hash = await asyncio.to_thread(
             self._style_perceptual_hash, cached_image or image
         )
@@ -582,10 +533,12 @@ class RuntimeStyleCatalogMixin:
         for item_kind in STYLE_CATALOG_KINDS:
             if item_kind not in requested:
                 continue
-            analyzed = self._style_analysis_item(payload, item_kind)
+            analyzed = analyzed_by_kind.get(item_kind) or {}
             if not analyzed:
                 continue
             attributes = dict(analyzed.get("attributes") or {})
+            if source_attributes:
+                attributes.update(self._style_attributes(source_attributes))
             if perceptual_hash:
                 attributes["perceptual_hash"] = perceptual_hash
             if source_batch_id:
@@ -632,6 +585,177 @@ class RuntimeStyleCatalogMixin:
         ):
             await self._remove_unused_style_catalog_image(cached_image or image)
         return saved
+
+    def _creative_style_prompt(
+        self,
+        requirement: str,
+        *,
+        generation_mode: str,
+        sequence: int = 1,
+        total: int = 1,
+    ) -> str:
+        identity_rule = (
+            "参考图仅用于保持同一角色的脸部气质、体态和身份辨识度；"
+            "忽略参考图已有的服装、鞋袜、配饰、发型、妆容和美甲，本次造型完全以以下要求为准。"
+            if generation_mode == "image_to_image"
+            else "人物不绑定任何现有角色或身份，不使用任何角色形象参考图。"
+        )
+        request_text = self._style_text(requirement, 1000) or "请自由构思一套自然、真实、适合日常生活的完整造型。"
+        variation = (
+            f"这是本批次第 {sequence}/{total} 张，在不改变用户需求和完整造型要求的前提下，"
+            "自行探索一组不同但合理的细节。"
+            if total > 1
+            else ""
+        )
+        return (
+            "生成一张真实、自然、生活化的单人完整造型照片。"
+            "竖幅 2:3，全身从头到鞋完整入镜，脸部、双手、指甲、发型、鞋袜和可见配饰都清晰可辨；"
+            "人物穿着一套可在真实日常中使用的完整搭配，不使用拼贴、分屏、商品陈列、文字、品牌标识或水印。"
+            f"{identity_rule}"
+            f"用户本次生成需求（最高优先级）：{request_text}。"
+            "请同时清楚呈现套装或上装与下装、鞋袜、配饰、发型、妆容和美甲；"
+            "所有细节必须与生活场景一致，居家场景不要加入仅适合外出的携带物品。"
+            f"{variation}"
+        )
+
+    async def life_style_generate(
+        self,
+        event: Any,
+        *,
+        requirement: str = "",
+        generation_mode: str = "",
+        count: int = 1,
+    ) -> str:
+        settings = getattr(
+            getattr(getattr(self, "config", None), "image_generation", None),
+            "creative_wardrobe",
+            None,
+        )
+        if settings is None or not bool(getattr(settings, "enabled", False)):
+            return ToolResultText(
+                "创意衣橱未启用，请先在图片设置中开启创意衣橱。",
+                status="failed",
+                media="style_catalog",
+            )
+        user_requirement = self._style_text(requirement, 1000)
+        selected_mode = self._style_text(
+            generation_mode or getattr(settings, "default_mode", "text_to_image"), 32
+        ).lower()
+        if selected_mode not in _CREATIVE_STYLE_GENERATION_MODES:
+            selected_mode = "text_to_image"
+        try:
+            target_count = max(1, int(count or 1))
+        except (TypeError, ValueError):
+            target_count = 1
+
+        image_service = getattr(getattr(self, "media", None), "image", None)
+        if image_service is None:
+            return ToolResultText(
+                "图片生成服务不可用，暂时不能创建创意衣橱候选。",
+                status="failed",
+                media="style_catalog",
+            )
+        character_reference = ""
+        if selected_mode == "image_to_image":
+            can_edit = getattr(image_service, "can_edit_image", None)
+            try:
+                if not callable(can_edit) or not can_edit():
+                    raise RuntimeError("图生图接口不可用")
+            except Exception:
+                return ToolResultText(
+                    "图生图创意生成需要可用的图生图接口和已启用的当前角色参考图；不会改用文生图替代。",
+                    status="failed",
+                    media="style_catalog",
+                )
+            resolver = getattr(
+                image_service, "first_configured_character_reference_image", None
+            )
+            if callable(resolver):
+                try:
+                    character_reference = self._style_text(resolver(), 1500)
+                except Exception:
+                    character_reference = ""
+            if not character_reference:
+                character_reference = self._life_character_reference_image()
+            if not character_reference:
+                return ToolResultText(
+                    "图生图创意生成需要可用的图生图接口和已启用的当前角色参考图；不会改用文生图替代。",
+                    status="failed",
+                    media="style_catalog",
+                )
+
+        batch_id = f"creative_{uuid.uuid4().hex[:12]}"
+        saved: list[StyleCatalogItemRecord] = []
+        failures: list[str] = []
+        for index in range(target_count):
+            seed = secrets.token_hex(8)
+            prompt = self._creative_style_prompt(
+                user_requirement,
+                generation_mode=selected_mode,
+                sequence=index + 1,
+                total=target_count,
+            )
+            try:
+                if selected_mode == "image_to_image":
+                    generated = await self._edit_life_image_with_policy_retry(
+                        event,
+                        prompt,
+                        character_reference,
+                        aspect_ratio="2:3",
+                        preserve_reference_ratio=False,
+                    )
+                else:
+                    generated = await self._generate_life_image_with_policy_retry(
+                        event,
+                        prompt,
+                        aspect_ratio="2:3",
+                        include_character_reference=False,
+                    )
+                image_path = self._style_text(getattr(generated, "path", ""), 1500)
+                if not image_path:
+                    raise RuntimeError("图片服务没有返回生成文件")
+                learned = await self._learn_style_catalog_image(
+                    event,
+                    image_path,
+                    source_kind="generated_style_image",
+                    source_scope=self._event_session_id(event) or "dashboard",
+                    source_batch_id=batch_id,
+                    source_attributes={
+                        "generation_mode": selected_mode,
+                        "creative_seed": seed,
+                        "creative_request": user_requirement,
+                        "creative_prompt_version": "creative_wardrobe_v2",
+                        "creative_sequence": index + 1,
+                    },
+                    note="创意衣橱生成图；" + self._style_text(user_requirement, 500),
+                    kind="auto",
+                    require_complete_clothing=True,
+                )
+                if learned:
+                    saved.extend(learned)
+                else:
+                    failures.append("生成图未识别出完整套装或上下装组合")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                failures.append(self._media_error_summary(exc))
+        if not saved:
+            error = failures[0] if failures else "未形成可入库的完整造型"
+            return ToolResultText(
+                f"创意衣橱生成失败：{error}",
+                status="failed",
+                media="style_catalog",
+            )
+        suffix = f"；{len(failures)} 张未入库" if failures else ""
+        return ToolResultText(
+            self._style_catalog_result_text(
+                saved,
+                heading=f"已生成并加入视觉衣橱候选（{selected_mode}）：",
+            )
+            + suffix,
+            status="ok",
+            media="style_catalog",
+        )
 
     async def review_style_catalog_item(
         self, item_id: int, *, note: str = ""
@@ -788,179 +912,6 @@ class RuntimeStyleCatalogMixin:
             media="style_catalog",
         )
 
-    async def life_style_browse_learn(
-        self,
-        event: Any,
-        query: str,
-        *,
-        kind: str = "auto",
-        count: int = 3,
-        note: str = "",
-    ) -> str:
-        query = self._style_text(query, 500)
-        if not query:
-            return ToolResultText(
-                "缺少要浏览的穿搭、单品或造型需求。",
-                status="failed",
-                media="style_catalog",
-            )
-        normalized_kind = self._style_text(kind, 16).lower()
-        if normalized_kind not in _STYLE_KINDS:
-            normalized_kind = "auto"
-        search = getattr(self, "search", None)
-        if search is None or not bool(getattr(search, "enabled", False)):
-            return ToolResultText(
-                "联网搜索未启用，暂时只能学习用户发送或指定的图片。",
-                status="failed",
-                media="style_catalog",
-            )
-        try:
-            target_count = max(1, min(int(count or 3), 12))
-        except (TypeError, ValueError):
-            target_count = 3
-        existing_items = await self.archive.get_style_catalog_items(
-            status="", limit=100
-        )
-        existing_ids = {int(item.id or 0) for item in existing_items}
-        saved: list[StyleCatalogItemRecord] = []
-        saved_keys: set[tuple[int, str]] = set()
-        successful_images = 0
-        failures: list[str] = []
-        attempted = 0
-        candidate_count = 0
-        attempted_asset_keys: set[str] = set()
-        saved_image_keys: set[str] = set()
-        batch_id = f"web_{uuid.uuid4().hex[:12]}"
-        for depth in ("quick", "deep"):
-            try:
-                result = await search.search(
-                    query,
-                    depth=depth,
-                    source_scope="web",
-                    image_search=True,
-                    image_understanding=True,
-                    include_images=True,
-                    include_image_descriptions=True,
-                    auto_parameters=True,
-                    umo=self._event_session_id(event),
-                    trace_id=f"style_catalog_{uuid.uuid4().hex[:8]}",
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                failures.append(f"{depth} 搜索失败：{self._media_error_summary(exc)}")
-                logger.debug(
-                    f"{LOG_PREFIX} 视觉衣橱联网学习搜索失败：深度={depth}；"
-                    f"原因={failures[-1][:240]}"
-                )
-                continue
-            assets = list(getattr(result, "images", []) or [])
-            logger.debug(
-                f"{LOG_PREFIX} 视觉衣橱联网学习搜索完成：查询={query[:120]}；"
-                f"深度={depth}；状态={getattr(result, 'status', '') or 'unknown'}；"
-                f"图片候选={len(assets)}"
-            )
-            if str(getattr(result, "status", "")) != "ok" or not assets:
-                failures.append(f"{depth} 搜索没有返回图片候选")
-                continue
-            candidate_count += len(assets)
-            for asset in assets[:20]:
-                if successful_images >= target_count:
-                    break
-                if not isinstance(asset, dict):
-                    continue
-                if not self._style_asset_is_candidate(asset):
-                    continue
-                image = self._style_text(asset.get("url"), 1500)
-                asset_key = self._style_asset_key(image)
-                if not asset_key or asset_key in attempted_asset_keys:
-                    continue
-                attempted_asset_keys.add(asset_key)
-                attempted += 1
-                source_url = self._style_text(asset.get("source_url"), 1500)
-                asset_note = self._style_text(asset.get("description"), 300)
-                combined_note = "；".join(
-                    item for item in (note, asset_note) if self._style_text(item)
-                )
-                try:
-                    learned = await self._learn_style_catalog_image(
-                        event,
-                        image,
-                        source_url=source_url,
-                        source_kind="web_image",
-                        note=combined_note,
-                        kind=normalized_kind,
-                        source_batch_id=batch_id,
-                        source_query=query,
-                    )
-                    if not learned:
-                        failures.append("图片中没有足够清晰的目标造型")
-                        logger.debug(
-                            f"{LOG_PREFIX} 视觉衣橱联网学习图片跳过："
-                            f"序号={attempted}；原因={failures[-1]}"
-                        )
-                        continue
-                    image_saved = False
-                    image_key = ""
-                    for item in learned:
-                        image_key = image_key or str(item.source_image_hash or "")
-                        key = (int(item.id or 0), str(item.kind or ""))
-                        if key[0] in existing_ids:
-                            failures.append("相同图片的造型已在视觉衣橱中")
-                            continue
-                        if key in saved_keys:
-                            continue
-                        saved_keys.add(key)
-                        saved.append(item)
-                        image_saved = True
-                    if image_saved and image_key and image_key not in saved_image_keys:
-                        saved_image_keys.add(image_key)
-                        successful_images += 1
-                except Exception as exc:
-                    failures.append(self._media_error_summary(exc))
-                    logger.debug(
-                        f"{LOG_PREFIX} 视觉衣橱联网学习图片失败：序号={attempted}；"
-                        f"原因={failures[-1][:240]}"
-                    )
-            if successful_images >= target_count:
-                break
-            if depth == "quick":
-                logger.debug(
-                    f"{LOG_PREFIX} 视觉衣橱快速搜索结果不足，继续深度搜索："
-                    f"目标={target_count}；当前成功图片={successful_images}"
-                )
-        logger.debug(
-            f"{LOG_PREFIX} 视觉衣橱联网学习保存完成：查询={query[:120]}；"
-            f"目标={target_count}；候选={candidate_count}；尝试={attempted}；"
-            f"成功图片={successful_images}；保存条目={len(saved)}；"
-            f"跳过或失败={len(failures)}"
-        )
-        if not saved:
-            if candidate_count <= 0:
-                return ToolResultText(
-                    "没有搜索到可用的商品或造型图片。",
-                    status="failed",
-                    media="style_catalog",
-                )
-            error = failures[0] if failures else "搜索图片无法完成视觉分析"
-            return ToolResultText(
-                f"浏览学习失败：{error}",
-                status="failed",
-                media="style_catalog",
-            )
-        result_text = self._style_catalog_result_text(saved)
-        if successful_images < target_count:
-            result_text = (
-                f"{result_text}\n"
-                f"本次需要 {target_count} 组图片，实际保存 {successful_images} 组；"
-                "其余搜索图片无法形成可靠候选。"
-            )
-        return ToolResultText(
-            result_text,
-            status="ok",
-            media="style_catalog",
-        )
-
     async def life_style_catalog_list(
         self, event: Any, *, kind: str = "", limit: int = 20
     ) -> str:
@@ -992,8 +943,7 @@ class RuntimeStyleCatalogMixin:
                 return f"{inventory_summary}\n当前没有已启用的{label}候选。"
             return (
                 f"{inventory_summary}\n视觉衣橱还没有可用候选。"
-                "如果用户本轮要求找或搜索网上新穿搭，必须继续调用 "
-                "life_style_browse_learn；life_style_catalog 不会新增候选。"
+                "用户可发送或上传图片学习，也可明确要求调用 life_style_generate 创意生成候选。"
             )
         shown_count = len(items)
         if normalized_kind:
@@ -1019,9 +969,7 @@ class RuntimeStyleCatalogMixin:
             f"{self._style_catalog_result_text(items, heading=heading)}"
             f"{remaining_hint}\n"
             "用户追问套装、上装、下装、鞋袜、配饰、发型、妆容或美甲时，"
-            "必须重新调用 life_style_catalog 并传入对应 kind，不能沿用混合查询的展示子集。\n"
-            "如果用户本轮还要求找或搜索网上新穿搭，必须继续调用 "
-            "life_style_browse_learn，不能只回复稍后再搜。"
+            "必须重新调用 life_style_catalog 并传入对应 kind，不能沿用混合查询的展示子集。"
         )
 
     async def _style_feedback_decision(
@@ -1034,7 +982,7 @@ class RuntimeStyleCatalogMixin:
             raise RuntimeError("文本模型不可用")
         item_text = "\n".join(
             f"- #{item.id} [{item.kind}] {item.title}："
-            f"{self._style_text((item.attributes or {}).get('visual_prompt') or item.description, 800)}"
+            f"{self._style_text(item.description, 800)}"
             for item in items
         )
         fixed = """你负责把用户对视觉衣橱候选的自然语言反馈转换成结构化调整。
@@ -1112,7 +1060,7 @@ class RuntimeStyleCatalogMixin:
                 continue
             status = (
                 "disabled"
-                if sentiment in {"disable", "archive"}
+                if sentiment == "disable"
                 else "active"
                 if sentiment == "prefer"
                 else ""

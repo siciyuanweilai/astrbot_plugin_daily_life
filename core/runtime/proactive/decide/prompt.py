@@ -2,7 +2,9 @@ import datetime
 from typing import Any
 
 from ....facts import person_fact_context_from_relationships
+from ....config.options.basis import format_chat_style_prompt
 from ....life.condition import format_state_prompt, normalize_state
+from ....life.calendar import format_calendar_context, format_season_context
 from ....life.tools import format_timeline_to_text
 from ....prompts import (
     CORE_EMOJI_DELIVERY_RULES,
@@ -280,7 +282,9 @@ class ProactivePromptMixin:
             "sender_name": sender_name,
             "silence_text": silence_text,
             "state_text": format_state_prompt(state),
-            "style_prompt": str(getattr(style, "casual_short_prompt", "") or "").strip()
+            "style_prompt": format_chat_style_prompt(
+                getattr(style, "casual_short_prompt", "")
+            )
             if style and self._chat_style_enabled()
             else "",
             "summary_text": chr(10).join(summary_lines)
@@ -289,6 +293,8 @@ class ProactivePromptMixin:
             "target_date_str": target_date_str,
             "timeline_text": timeline or "暂无",
             "using_extended_night_text": "是" if using_extended_night else "否",
+            "calendar_context": format_calendar_context(now),
+            "season_context": format_season_context(now),
         }
 
     def _proactive_prompt_fixed(self) -> str:
@@ -390,9 +396,12 @@ MemOS 外部长期记忆参考：
 
 当前生活状态：
 - 日期记录：{scene["target_date_str"]}；是否延续凌晨记录：{scene["using_extended_night_text"]}
+- 日历：{scene["calendar_context"]}
+- 季节：{scene["season_context"]}
 - 此刻活动：{scene["activity"]}
 - 此刻状态：{scene["state_text"]}
-- 主题/心情：{meta.get("theme", "")}；{meta.get("mood", "")}
+- 主题：{meta.get("theme", "")}
+- 心情：{meta.get("mood", "")}
 - 全天日程背景（连续性参考）：{scene["timeline_text"]}
 
 消息传输范围：{scene["chat_mode"]}（只表示平台通道，不代表现实距离）

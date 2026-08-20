@@ -168,7 +168,7 @@ class PortalBaseMixin:
             path,
             mimetype=mime,
             as_attachment=True,
-            download_name=filename,
+            attachment_filename=filename,
         )
 
     def _page_request_method(self) -> str:

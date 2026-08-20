@@ -31,6 +31,11 @@ from ..locks import operation_lock
 from ..markers import LOG_PREFIX
 from ..stage.error import MediaPromptExtractionError
 
+try:
+    from astrbot.core.pipeline.process_stage import follow_up as _astrbot_follow_up
+except Exception:
+    _astrbot_follow_up = None
+
 
 @dataclass(slots=True)
 class ImageGenerationPlan:
@@ -55,6 +60,70 @@ class ImageGenerationExecution:
 
 class RuntimeImageMediaMixin:
     _CURRENT_APPEARANCE_PROMPT_MARKER = "当前生活状态权威造型快照"
+    _DIRECT_IMAGE_TOOLS = frozenset({"life_image_generate", "edit_life_image"})
+
+    @classmethod
+    def _active_agent_runner(cls, event: Any) -> Any:
+        follow_up = _astrbot_follow_up
+        runners = getattr(follow_up, "_ACTIVE_AGENT_RUNNERS", None)
+        if not isinstance(runners, dict):
+            return None
+        return runners.get(str(getattr(event, "unified_msg_origin", "") or ""))
+
+    @classmethod
+    def _direct_image_tool_already_sent(cls, event: Any) -> bool:
+        runner = cls._active_agent_runner(event)
+        sent_tools = getattr(runner, "_daily_life_direct_image_tools_sent", None)
+        return bool(
+            isinstance(sent_tools, set)
+            and sent_tools.intersection(cls._DIRECT_IMAGE_TOOLS)
+        )
+
+    @classmethod
+    def _disable_direct_image_tools_for_active_turn(cls, event: Any) -> None:
+        """单张图片发送成功后收束当前轮次，避免模型再次生成同一类图片。"""
+
+        runner = cls._active_agent_runner(event)
+        if runner is None:
+            return
+        sent_tools = getattr(runner, "_daily_life_direct_image_tools_sent", None)
+        if not isinstance(sent_tools, set):
+            sent_tools = set()
+            setattr(runner, "_daily_life_direct_image_tools_sent", sent_tools)
+        sent_tools.update(cls._DIRECT_IMAGE_TOOLS)
+
+        removed = False
+        request = getattr(runner, "req", None)
+        tool_sets = [getattr(request, "func_tool", None)]
+        tool_sets.extend(
+            getattr(runner, attr, None)
+            for attr in ("_skill_like_raw_tool_set", "_tool_schema_param_set")
+        )
+        for tool_set in tool_sets:
+            remover = getattr(tool_set, "remove_tool", None)
+            if not callable(remover):
+                continue
+            for tool_name in cls._DIRECT_IMAGE_TOOLS:
+                before = len(getattr(tool_set, "tools", ()) or ())
+                remover(tool_name)
+                removed = removed or len(getattr(tool_set, "tools", ()) or ()) < before
+        if removed:
+            logger.debug(f"{LOG_PREFIX} 图片工具已完成本轮收束，阻止重复生成。")
+
+    @classmethod
+    def _duplicate_direct_image_result(cls) -> str:
+        return json.dumps(
+            {
+                "status": "sent",
+                "media": "image",
+                "action": "duplicate_suppressed",
+                "deduplicated": True,
+                "response_stance": (
+                    "本轮图片已经发送，不要再次调用图片工具；继续最终回复或结束本轮"
+                ),
+            },
+            ensure_ascii=False,
+        )
 
     @staticmethod
     def _outfit_change_scene_fallback(subject_route: str) -> str:
@@ -764,6 +833,7 @@ JSON 字段：
         *,
         model: str = "",
         identity_profile: str = "",
+        include_character_reference: bool | None = None,
     ) -> Any:
         resolution = str(
             resolution or ""
@@ -781,6 +851,10 @@ JSON 字段：
                 options["model"] = model
             if identity_profile:
                 options["identity_profile"] = identity_profile
+            if include_character_reference is not None:
+                options["include_character_reference"] = bool(
+                    include_character_reference
+                )
             return await self.media.image.generate_image(safe_prompt, **options)
 
         async with self.runtime_service_lease():
@@ -1399,6 +1473,9 @@ JSON 字段：
         resolution: str = "",
         provider: str = "",
     ) -> str | None:
+        if self._direct_image_tool_already_sent(event):
+            logger.debug(f"{LOG_PREFIX} 图片工具跳过重复调用：本轮已经发送过单张图片。")
+            return self._duplicate_direct_image_result()
         route = self._normalize_image_subject_route(subject_route)
         current_appearance = ""
         if current_outfit_change:
@@ -1547,6 +1624,7 @@ JSON 字段：
                     scope, plan.participant_ids[0], friend_look
                 )
             self.note_life_media_sent(event, "图片")
+            self._disable_direct_image_tools_for_active_turn(event)
             receipt_recorder = getattr(self, "record_current_life_action_receipt", None)
             if callable(receipt_recorder):
                 await receipt_recorder(
@@ -1682,6 +1760,7 @@ JSON 字段：
         )
         self._remember_life_image_for_scope(scope, generated.path)
         self.note_life_media_sent(event, "图片")
+        self._disable_direct_image_tools_for_active_turn(event)
         receipt_recorder = getattr(self, "record_current_life_action_receipt", None)
         if callable(receipt_recorder):
             await receipt_recorder(
@@ -1712,6 +1791,9 @@ JSON 字段：
         resolution: str = "",
         provider: str = "",
     ) -> str | None:
+        if self._direct_image_tool_already_sent(event):
+            logger.debug(f"{LOG_PREFIX} 图片编辑工具跳过重复调用：本轮已经发送过单张图片。")
+            return self._duplicate_direct_image_result()
         provider = requested_image_provider(provider)
         if provider:
             logger.debug(

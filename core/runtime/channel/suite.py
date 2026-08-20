@@ -186,6 +186,40 @@ class RuntimePhotoSuiteMediaMixin:
         logger.debug(f"{LOG_PREFIX} 已拦截套图交付前的文字回复，等待图片发送后再补话。")
         return True
 
+    def suppress_photo_suite_agent_error(
+        self, event: Any, response: Any = None
+    ) -> bool:
+        """套图已进入后台后，吞掉核心对最终确认语的空响应错误。"""
+
+        marker = self._photo_suite_request_from_event(event)
+        if not marker:
+            return False
+        result = getattr(event, "get_result", lambda: None)()
+        result_type = str(
+            getattr(getattr(result, "result_content_type", None), "name", "")
+            or getattr(result, "result_content_type", "")
+        ).upper()
+        response_role = getattr(response, "role", "")
+        response_role = getattr(response_role, "value", response_role)
+        response_is_error = bool(getattr(response, "is_error", False)) or (
+            str(response_role or "").strip().lower() == "err"
+        )
+        if not response_is_error and (result is None or "ERROR" not in result_type):
+            return False
+        clearer = getattr(event, "clear_result", None)
+        if callable(clearer):
+            clearer()
+        else:
+            chain = getattr(result, "chain", None)
+            if isinstance(chain, list):
+                chain.clear()
+        marker["agent_error_suppressed"] = True
+        logger.debug(
+            f"{LOG_PREFIX} 套图已进入后台，忽略最终确认语空响应错误；"
+            "等待图片真实发送后补话。"
+        )
+        return True
+
     def _photo_suite_root(self) -> Path:
         return (
             runtime_data_root(getattr(self, "data_path", None))

@@ -283,8 +283,8 @@ class ContinuousTurnMixin:
         stopper = getattr(event, "stop_event", None)
         if callable(stopper):
             stopper()
-        # AstrBot creates an empty result when stopping an event with no result.
-        # Clear it afterward so RespondStage has nothing to send or post-process.
+        # AstrBot 在停止没有结果的事件时会创建空结果；随后清除它，
+        # 使 RespondStage 没有可发送或后处理的内容。
         clearer = getattr(event, "clear_result", None)
         if callable(clearer):
             clearer()

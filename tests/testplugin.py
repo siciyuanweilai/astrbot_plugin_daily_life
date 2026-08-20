@@ -111,6 +111,37 @@ class PluginLifecycleTest(unittest.IsolatedAsyncioTestCase):
                 logging.getLogger(name).setLevel(level)
             astrbot_logger.filters[:] = previous_filters
 
+    def test_response_gate_outcome_logs_action_summary(self):
+        plugin = DailyLifePlugin.__new__(DailyLifePlugin)
+        event = Event(message_id="m-gate-log")
+
+        with patch.object(plugin_module.logger, "info") as log_info:
+            plugin._log_response_gate_outcome(
+                event,
+                {"action": "observe", "reason": "连续不回复后的短暂安静观察仍在生效"},
+            )
+
+        self.assertEqual(log_info.call_count, 1)
+        message = str(log_info.call_args.args[0])
+        self.assertNotIn("回复门控终态", message)
+        self.assertIn("触发=随心回复·状态裁定", message)
+        self.assertIn("观察不回复", message)
+        self.assertIn("原因=连续不回复后的短暂安静观察仍在生效", message)
+        self.assertNotIn("默认LLM", message)
+        self.assertNotIn("消息=", message)
+        self.assertNotIn("阶段=", message)
+
+    def test_response_gate_outcome_skips_normal_reply(self):
+        plugin = DailyLifePlugin.__new__(DailyLifePlugin)
+
+        with patch.object(plugin_module.logger, "info") as log_info:
+            plugin._log_response_gate_outcome(
+                Event(message_id="m-gate-reply"),
+                {"action": "reply", "reason": "当前自然可以回复"},
+            )
+
+        log_info.assert_not_called()
+
     async def test_expressive_send_tool_routes_current_session_plain_text(self):
         calls = []
 
@@ -822,6 +853,31 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(calls, [])
 
+    async def test_decorating_result_suppresses_pending_photo_suite_error(self):
+        calls = []
+
+        def suppress_photo_suite_agent_error(event):
+            calls.append(event)
+            event.clear_result()
+            return True
+
+        plugin = DailyLifePlugin.__new__(DailyLifePlugin)
+        plugin.runtime = types.SimpleNamespace(
+            suppress_photo_suite_agent_error=suppress_photo_suite_agent_error,
+        )
+        event = Event()
+        event.set_result(
+            types.SimpleNamespace(
+                chain=[types.SimpleNamespace(text="LLM 响应错误")],
+                result_content_type="AGENT_RUNNER_ERROR",
+            )
+        )
+
+        await plugin.on_decorating_result(event)
+
+        self.assertEqual(calls, [event])
+        self.assertIsNone(event.get_result())
+
     async def test_decorating_result_does_not_hold_plain_video_progress_text(self):
         calls = []
 
@@ -943,6 +999,43 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(getattr(event, plugin._AGENT_ERROR_SEEN_ATTR))
         self.assertFalse(getattr(event, plugin._LLM_RESPONSE_SEEN_ATTR, False))
+
+    async def test_agent_done_suppresses_pending_photo_suite_error(self):
+        calls = []
+
+        def suppress_photo_suite_agent_error(event, response):
+            calls.append((event, response))
+            return True
+
+        plugin = DailyLifePlugin.__new__(DailyLifePlugin)
+        plugin.runtime = types.SimpleNamespace(
+            suppress_photo_suite_agent_error=suppress_photo_suite_agent_error,
+        )
+        event = Event()
+        response = types.SimpleNamespace(role="err")
+
+        await plugin.on_agent_done(event, object(), response)
+
+        self.assertEqual(calls, [(event, response)])
+        self.assertTrue(getattr(event, plugin._AGENT_ERROR_SEEN_ATTR))
+
+    async def test_agent_done_suppresses_media_delivery_error(self):
+        calls = []
+
+        def suppress_media_agent_error(event, response):
+            calls.append((event, response))
+            return True
+
+        plugin = DailyLifePlugin.__new__(DailyLifePlugin)
+        plugin.runtime = types.SimpleNamespace(
+            suppress_media_agent_error=suppress_media_agent_error,
+        )
+        event = Event()
+        response = types.SimpleNamespace(role="err")
+
+        await plugin.on_agent_done(event, object(), response)
+
+        self.assertEqual(calls, [(event, response)])
 
     async def test_after_message_sent_confirms_reaction_delivery_first(self):
         calls = []

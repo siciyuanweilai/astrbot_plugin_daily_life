@@ -1912,9 +1912,9 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             history[-2]["content"][0], {"type": "text", "text": "你快点睡。"}
         )
         self.assertIn(
-            "用户 ID：123456，昵称：平台名", history[-2]["content"][1]["text"]
+            "User ID: 123456, Nickname: 平台名", history[-2]["content"][1]["text"]
         )
-        self.assertIn("当前时间：", history[-2]["content"][1]["text"])
+        self.assertIn("Current datetime:", history[-2]["content"][1]["text"])
         self._assert_last_assistant_history(runtime, event.unified_msg_origin, "我困啦")
         self.assertEqual(await runtime.archive.get_recent_action_decisions(3), [])
 

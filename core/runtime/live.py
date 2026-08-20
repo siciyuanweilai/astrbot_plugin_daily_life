@@ -19,6 +19,7 @@ from .integration import ExternalIntegrationMixin
 from .markers import LOG_PREFIX
 from .meaning import MeaningRuntimeMixin
 from .messenger import RuntimeMediaMixin
+from .outbound import OutboundLogMixin
 from .past import RuntimeHistoryMixin
 from .proactive import ProactiveMixin
 from .reaction import ToolReactionMixin
@@ -56,6 +57,7 @@ class DailyLifeRuntime(
     InjectMixin,
     ProactiveMixin,
     RuntimeMediaMixin,
+    OutboundLogMixin,
     RuntimeMemoryMixin,
     RuntimeHistoryMixin,
     BackgroundTaskMixin,

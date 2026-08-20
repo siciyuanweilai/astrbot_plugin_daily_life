@@ -92,7 +92,7 @@ class DailyLifeDashboardMixin(
             ("page/emoji/restore", self.page_emoji_restore, ["POST"], "还原表情素材"),
             ("page/closet/list", self.page_closet_list, ["GET"], "视觉衣橱列表"),
             ("page/closet/import", self.page_closet_import, ["POST"], "导入衣橱图片"),
-            ("page/closet/browse", self.page_closet_browse, ["POST"], "联网学习衣橱"),
+            ("page/closet/generate", self.page_closet_generate, ["POST"], "创意生成衣橱"),
             ("page/closet/preview", self.page_closet_preview, ["POST"], "预览衣橱图片"),
             ("page/closet/status", self.page_closet_status, ["POST"], "更新衣橱状态"),
             ("page/closet/feedback", self.page_closet_feedback, ["POST"], "保存衣橱反馈"),

@@ -1147,7 +1147,8 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("换衣不会自动改变美甲", prompt)
         self.assertIn("不得虚构没有依据的组成", prompt)
         self.assertIn("穿搭、发型和整体风格偏好只是软参考", prompt)
-        self.assertIn("近期重复抑制 > 已学习长期偏好 > 配置审美", prompt)
+        self.assertIn("近期重复抑制 > 已学习长期偏好 > 模型自由发挥", prompt)
+        self.assertNotIn("配置审美", prompt)
         self.assertIn("同义偏好即使存在多条也只能视为一次证据", prompt)
         self.assertNotIn("默认角色审美（来自配置，可清空；只作为软参考）", prompt)
         self.assertNotIn("穿搭审美偏甜美、奶系、少女感", prompt)
@@ -2220,6 +2221,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("进入持续居家、家务、休息或睡眠节奏", provider.prompts[0])
         self.assertIn('"component_review"', provider.prompts[0])
         self.assertIn("长期审美偏好", provider.prompts[0])
+        self.assertNotIn("配置审美", provider.prompts[0])
         self.assertNotIn("近期生活惯性", provider.prompts[0])
         self.assertNotIn("重复抑制参考", provider.prompts[0])
         self.assertNotIn(
@@ -2510,25 +2512,13 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
                 "confidence": 0.9,
             }
         )
-        legacy = await archive.upsert_style_catalog_item(
-            {
-                "kind": "footwear",
-                "title": "旧候选 U-01",
-                "description": "旧候选 U-01 的完整可见结构",
-                "attributes": {},
-                "source_image_hash": "structured-unknown" * 4,
-                "confidence": 0.9,
-            }
-        )
-
         appearance = await composer._style_catalog_reference_appearance(
-            [indoor.id, outdoor.id, legacy.id], scene_category="home"
+            [indoor.id, outdoor.id], scene_category="home"
         )
 
         self.assertIn(indoor.description, appearance["outfit"])
         self.assertNotIn(indoor.description, appearance["outing_reserve"])
         self.assertIn(outdoor.description, appearance["outing_reserve"])
-        self.assertIn(legacy.description, appearance["outing_reserve"])
 
     async def test_home_outfit_update_removes_outdoor_reserve_from_current_fact(self):
         full_outfit = (

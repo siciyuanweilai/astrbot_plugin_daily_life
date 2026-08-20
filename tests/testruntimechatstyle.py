@@ -250,6 +250,8 @@ class RuntimeChatStyleTest(unittest.TestCase):
         )
         self.assertIn("[HiddenChatStyle]", text)
         self.assertIn("闲聊轻一点，认真事先给判断。", text)
+        self.assertIn("软偏好：", text)
+        self.assertIn("不覆盖本轮任务、事实准确性", text)
         self.assertIn("日常闲聊参考长度约 45 字左右", text)
         self.assertIn("一句只放一个主要意思", text)
         self.assertIn("客观事实先看依据", text)
@@ -293,6 +295,8 @@ class RuntimeChatStyleTest(unittest.TestCase):
 
         self.assertIn("[HiddenChatStyle]", text)
         self.assertIn("轻松短句，事实先核一下。", text)
+        self.assertIn("软偏好：", text)
+        self.assertIn("不覆盖本轮任务、事实准确性", text)
         self.assertIn("日常闲聊参考长度约 40 字左右", text)
         self.assertLess(text.index("[HiddenChatStyle]"), text.index("</daily_life>"))
 

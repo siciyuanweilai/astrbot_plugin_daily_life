@@ -5,6 +5,7 @@ from astrbot.api import logger
 
 from ..clock import now as life_now
 from .appearance import persona_appearance_values
+from .calendar import format_calendar_context, format_season_context
 from .people import DAILY_PERSON_TEXT_PATHS
 from .tools import (
     analyze_weather,
@@ -95,6 +96,8 @@ class DailyEngineMixin:
         )
         weather_info = analyze_weather(weather_data)
         weather_section, constraint_section = self._build_weather_sections(weather_info)
+        calendar_context = format_calendar_context(date)
+        season_context = format_season_context(date)
         week_plan = await self._ensure_week_plan()
         today_hint = resolve_daily_hint(week_plan, date)
         today_suggested = resolve_daily_suggested(week_plan, date)
@@ -148,6 +151,8 @@ class DailyEngineMixin:
             previous_context,
             history_schedules_str,
             memo_str,
+            calendar_context=calendar_context,
+            season_context=season_context,
             persona=persona,
             week_plan=week_plan,
             today_hint=today_hint,
@@ -175,6 +180,8 @@ class DailyEngineMixin:
             "period_cn": period_cn,
             "weather_info": weather_info,
             "weather_str_for_prompt": weather_info["raw"],
+            "calendar_context": calendar_context,
+            "season_context": season_context,
             "week_plan": week_plan,
             "today_hint": today_hint,
             "today_suggested": today_suggested,

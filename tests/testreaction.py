@@ -278,6 +278,59 @@ class ToolReactionTest(unittest.IsolatedAsyncioTestCase):
             [TOOL_REACTION_PROCESSING, TOOL_REACTION_FAILED],
         )
 
+    async def test_media_agent_error_is_suppressed_after_image_delivery(self):
+        runtime, event, bot = self._runtime_event()
+        tool = types.SimpleNamespace(name="life_image_generate")
+
+        await runtime.note_tool_reaction_start(event, tool, {})
+        await runtime.note_tool_reaction_result(
+            event, tool, {}, json.dumps({"status": "sent", "media": "image"})
+        )
+        event.set_result(
+            types.SimpleNamespace(
+                chain=[types.SimpleNamespace(text="LLM 响应错误")],
+                result_content_type="AGENT_RUNNER_ERROR",
+            )
+        )
+
+        self.assertTrue(
+            runtime.suppress_media_agent_error(
+                event, types.SimpleNamespace(role="err")
+            )
+        )
+        self.assertIsNone(event.get_result())
+        await runtime.note_tool_reaction_agent_done(
+            event, types.SimpleNamespace(role="err")
+        )
+        self.assertEqual(
+            [item["emoji_id"] for item in bot.calls],
+            [TOOL_REACTION_PROCESSING, TOOL_REACTION_SUCCESS],
+        )
+
+    async def test_media_agent_error_is_suppressed_while_video_is_pending(self):
+        runtime, event, bot = self._runtime_event()
+        tool = types.SimpleNamespace(name="life_video_generate")
+
+        await runtime.note_tool_reaction_start(event, tool, {})
+        await runtime.note_tool_reaction_result(
+            event, tool, {}, json.dumps({"status": "pending", "media": "video"})
+        )
+
+        self.assertTrue(
+            runtime.suppress_media_agent_error(
+                event, types.SimpleNamespace(role="err")
+            )
+        )
+        self.assertIsNone(event.get_result())
+        await runtime.note_tool_reaction_agent_done(
+            event, types.SimpleNamespace(role="err")
+        )
+        await runtime.finish_tool_reaction(event, "life_video_generate", success=True)
+        self.assertEqual(
+            [item["emoji_id"] for item in bot.calls],
+            [TOOL_REACTION_PROCESSING, TOOL_REACTION_SUCCESS],
+        )
+
     async def test_contract_specific_results_do_not_use_generic_failure_matching(self):
         outcome = DailyLifeRuntime._tool_reaction_outcome
 

@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from support import Context, DailyLifeRuntime, Event, LifeSettings, Provider
 from core.runtime.delivery import BackgroundTextMode
+from core.runtime.reply import SegmentPart, SemanticSegmentPlan
 
 
 class SemanticSegmentTest(unittest.TestCase):
@@ -363,6 +364,41 @@ class SemanticSegmentTest(unittest.TestCase):
         self.assertNotIn('"bubbles"', runtime.composer.prompts[0])
         self.assertIn("最多返回 3 个分段", runtime.composer.prompts[0])
         self.assertIn("当前场景单个分段参考长度约为 15 字", runtime.composer.prompts[0])
+
+    def test_casual_semantic_plan_is_capped_at_complete_pause(self):
+        runtime = self._runtime("{}")
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
+        event.message_str = "哈哈"
+        source = "我也觉得挺好玩的。后面那段先不展开啦。"
+        plan = SemanticSegmentPlan(
+            (
+                SegmentPart("我也觉得挺好玩的。", relation="lead"),
+                SegmentPart("后面那段先不展开啦。", relation="closing"),
+            ),
+            stance="play",
+        )
+
+        trimmed = runtime._semantic_segment_trim_casual_plan(event, plan, source)
+
+        self.assertEqual(trimmed.text, "我也觉得挺好玩的。")
+        self.assertLessEqual(
+            len("".join(trimmed.text.split())),
+            runtime._chat_style_limit_for_event(event),
+        )
+
+    def test_serious_semantic_plan_is_not_capped(self):
+        runtime = self._runtime("{}")
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
+        event.message_str = "为什么会这样？"
+        source = "先看现象，再确认原因，最后给你一个能执行的处理办法。"
+        plan = SemanticSegmentPlan(
+            (SegmentPart(source, relation="standalone"),),
+            stance="reflect",
+        )
+
+        trimmed = runtime._semantic_segment_trim_casual_plan(event, plan, source)
+
+        self.assertEqual(trimmed.text, source)
 
     def test_semantic_segment_delay_uses_random_pause_range(self):
         runtime = self._runtime("{}")

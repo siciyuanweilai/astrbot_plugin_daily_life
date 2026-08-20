@@ -487,6 +487,66 @@ class SemanticSegmentRuntimeMixin:
             reason=plan.reason,
         )
 
+    def _semantic_segment_should_apply_casual_budget(
+        self, event: Any, plan: SemanticSegmentPlan, source_text: str
+    ) -> bool:
+        """仅把短闲聊收束，不把认真答复误裁成残句。"""
+        stance = str(plan.stance or "respond").strip().lower()
+        if stance not in {"respond", "play", "close"}:
+            return False
+        message = str(getattr(event, "message_str", "") or "").strip()
+        compact_message = "".join(message.split())
+        if not compact_message or len(compact_message) > 32 or "\n" in message:
+            return False
+        if self._chat_style_text_is_structural(source_text):
+            return False
+        return int(self._chat_style_limit_for_event(event) or 0) > 0
+
+    def _semantic_segment_trim_casual_plan(
+        self,
+        event: Any,
+        plan: SemanticSegmentPlan,
+        source_text: str,
+    ) -> SemanticSegmentPlan:
+        """按完整停顿收束轻闲聊的整轮总长度，不截断句内字符。"""
+        if not self._semantic_segment_should_apply_casual_budget(
+            event, plan, source_text
+        ):
+            return plan
+        limit = int(self._chat_style_limit_for_event(event) or 0)
+        compact_source = self._chat_style_compact_text(source_text)
+        if limit <= 0 or len(compact_source) <= limit:
+            return plan
+        splitter = getattr(self, "_chat_style_split_units", None)
+        units = splitter(source_text) if callable(splitter) else []
+        if not units:
+            return plan
+        selected: list[str] = []
+        selected_length = 0
+        for unit in units:
+            unit_text = str(getattr(unit, "text", "") or "").strip()
+            unit_length = len(self._chat_style_compact_text(unit_text))
+            if not unit_text:
+                continue
+            if selected and selected_length + unit_length > limit:
+                break
+            selected.append(unit_text)
+            selected_length += unit_length
+        trimmed = "".join(selected).strip()
+        if not trimmed or trimmed == source_text.strip():
+            return plan
+        first = plan.segments[0] if plan.segments else SegmentPart(trimmed)
+        return self._semantic_segment_replace_parts(
+            plan,
+            (
+                SegmentPart(
+                    text=trimmed,
+                    relation=first.relation,
+                    pause=first.pause,
+                ),
+            ),
+        )
+
     def _semantic_segment_validate_payload(
         self, payload: dict[str, Any], source_text: str
     ) -> SemanticSegmentPlan | None:
@@ -601,8 +661,9 @@ class SemanticSegmentRuntimeMixin:
             )
             dynamic = (
                 (
-                    f"当前场景单个分段参考长度约为 {int(length_hint)} 字；这是自然表达倾向，不是硬性截断，"
-                    "超过时优先寻找独立表达动作再拆分。\n"
+                    f"当前场景单个分段参考长度约为 {int(length_hint)} 字；轻闲聊整轮也以此作为总长度倾向，"
+                    "这里不是硬性截断，发送阶段会在确认属于轻闲聊时按完整停顿收束总长度，不通过多条分段绕过；"
+                    "认真问题、事实解释和情绪支持不适用。\n"
                     if int(length_hint or 0) > 0
                     else "当前没有额外长度倾向，按自然表达决定分段边界。\n"
                 )
@@ -834,6 +895,7 @@ class SemanticSegmentRuntimeMixin:
                 self._semantic_segment_metrics.get("fallback_single", 0) + 1
             )
             return False
+        plan = self._semantic_segment_trim_casual_plan(event, plan, source_text)
         plan = self._semantic_segment_clean_plan_punctuation(event, plan, source_text)
         self._semantic_segment_log_expression_trace(plan, event=event, scope=scope)
         self._semantic_segment_mark_pending(event, plan, scope)
@@ -1307,6 +1369,7 @@ class SemanticSegmentRuntimeMixin:
                     source_event=source_event,
                     source_message_id=source_message_id,
                     raise_delivery_errors=raise_delivery_errors,
+                    log_outbound=False,
                 ),
                 on_sent=lambda index, text: self.note_structured_bot_message(
                     scope,

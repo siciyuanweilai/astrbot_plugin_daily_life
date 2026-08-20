@@ -35,6 +35,7 @@ IMAGE_ASPECT_RATIOS = (
     "21:9",
 )
 
+CREATIVE_STYLE_GENERATION_MODES = {"text_to_image", "image_to_image"}
 
 def _normalize_voice_source(value: Any) -> str:
     source = as_str(value, "cloned").strip().lower()
@@ -60,6 +61,25 @@ class ImageApiChannel:
     resolution: str = "4K"
     aspect_ratio: str = "1:1"
     timeout_seconds: int = 120
+
+
+@dataclass(slots=True)
+class CreativeWardrobeSettings:
+    enabled: bool = False
+    default_mode: str = "text_to_image"
+
+    @staticmethod
+    def from_dict(data: Any) -> CreativeWardrobeSettings:
+        if not isinstance(data, dict):
+            return CreativeWardrobeSettings()
+        default_mode = as_str(data.get("default_mode", "text_to_image")).strip().lower()
+        if default_mode not in CREATIVE_STYLE_GENERATION_MODES:
+            default_mode = "text_to_image"
+
+        return CreativeWardrobeSettings(
+            enabled=as_bool(data.get("enabled", False), False),
+            default_mode=default_mode,
+        )
 
 
 def _image_resolution(value: Any, protocol: str = "gemini") -> str:
@@ -145,6 +165,9 @@ class ImageGenerationSettings:
     character_reference_images: list[dict[str, Any]] = field(default_factory=list)
     friend_reference_profiles: list[dict[str, Any]] = field(default_factory=list)
     character_reference_policy: str = "off"
+    creative_wardrobe: CreativeWardrobeSettings = field(
+        default_factory=CreativeWardrobeSettings
+    )
 
     def primary_aspect_ratio(self) -> str:
         for channels in (self.text_channels, self.edit_channels):
@@ -184,6 +207,9 @@ class ImageGenerationSettings:
                 data.get("friend_reference_profiles", [])
             ),
             character_reference_policy=policy,
+            creative_wardrobe=CreativeWardrobeSettings.from_dict(
+                data.get("creative_wardrobe", {})
+            ),
         )
 
 

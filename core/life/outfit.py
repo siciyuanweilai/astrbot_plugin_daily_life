@@ -457,7 +457,6 @@ class OutfitMixin:
                 )
         return format_life_preference_context(
             preferences,
-            self.config,
             limit=preference_limit,
             appearance_only=True,
             catalog_backed=catalog_backed,

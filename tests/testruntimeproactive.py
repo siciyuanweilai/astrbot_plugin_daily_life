@@ -1,5 +1,7 @@
 import unittest
 
+from astrbot.core.agent.message import TextPart
+
 from core.runtime.reply import SegmentPart, SemanticSegmentPlan
 from runtimehelpers import (
     BehaviorPatternRecord,
@@ -22,6 +24,7 @@ from runtimehelpers import (
     Path,
     PersonaManager,
     Provider,
+    ProviderRequest,
     ReplyEffectRecord,
     ResponseGateRuntimeMixin,
     RuntimeAsyncHelperMixin,
@@ -436,8 +439,9 @@ class RuntimeProactiveTest(ResponseGateRuntimeMixin, unittest.TestCase):
         event.message_str = "我刚到家了"
         runtime.context.config = {
             "provider_settings": {
-                "identifier": True,
-                "datetime_system_prompt": True,
+                "identifier": False,
+                "group_name_display": False,
+                "datetime_system_prompt": False,
             },
             "timezone": "Asia/Shanghai",
         }
@@ -470,8 +474,11 @@ class RuntimeProactiveTest(ResponseGateRuntimeMixin, unittest.TestCase):
         )
         reminder = history[-1]["content"][1]["text"]
         self.assertIn("<system_reminder>", reminder)
-        self.assertIn("用户 ID：10001，昵称：测试用户乙", reminder)
-        self.assertIn("当前时间：2026-06-27 18:05 (CST)，星期六", reminder)
+        self.assertIn("User ID: 10001, Nickname: 测试用户乙", reminder)
+        self.assertIn(
+            "Current datetime: 2026-06-27 18:05 (CST), Weekday: Saturday",
+            reminder,
+        )
         inserted = runtime.context.message_history_manager.inserts[-1]
         self.assertEqual(inserted.platform_id, "aiocqhttp")
         self.assertEqual(inserted.user_id, "10001")
@@ -481,6 +488,54 @@ class RuntimeProactiveTest(ResponseGateRuntimeMixin, unittest.TestCase):
         self.assertEqual(inserted.content["text"], "我刚到家了")
         self.assertEqual(
             inserted.content["message"], [{"type": "plain", "text": "我刚到家了"}]
+        )
+
+    def test_history_reminder_is_injected_once_and_persistable(self):
+        runtime = self._response_gate_runtime()
+        runtime.context.config = {"timezone": "Asia/Shanghai"}
+        event = Event(
+            unified_msg_origin="aiocqhttp:FriendMessage:10001",
+            sender_id="10001",
+            sender_name="测试用户乙",
+        )
+        request = ProviderRequest(
+            extra_user_content_parts=[TextPart(text="其他请求上下文")]
+        )
+
+        fixed_now = datetime.datetime(
+            2026,
+            6,
+            27,
+            18,
+            5,
+            tzinfo=datetime.timezone(datetime.timedelta(hours=8), "CST"),
+        )
+
+        class FixedDateTime(datetime.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed_now.astimezone(tz) if tz else fixed_now
+
+        with patch("core.runtime.past.datetime.datetime", FixedDateTime):
+            self.assertTrue(runtime.inject_astrbot_history_reminder(request, event))
+            self.assertFalse(runtime.inject_astrbot_history_reminder(request, event))
+
+        reminder_parts = [
+            part
+            for part in request.extra_user_content_parts
+            if str(getattr(part, "text", "")).startswith("<system_reminder>")
+        ]
+        self.assertEqual(len(reminder_parts), 1)
+        reminder = reminder_parts[0]
+        self.assertFalse(reminder._no_save)
+        self.assertIn("User ID: 10001, Nickname: 测试用户乙", reminder.text)
+        self.assertIn(
+            "Current datetime: 2026-06-27 18:05 (CST), Weekday: Saturday",
+            reminder.text,
+        )
+        self.assertEqual(
+            [part.text for part in request.extra_user_content_parts if part is not reminder],
+            ["其他请求上下文"],
         )
 
     def test_response_gate_private_observe_records_user_image_context(self):
@@ -3423,6 +3478,91 @@ class RuntimeProactiveAsyncTest(
         self.assertEqual(assets[0].used_count, 0)
         intents = await runtime.archive.get_expression_intents(10, scope=scope)
         self.assertEqual(intents, [])
+        self.assertEqual(len(provider.prompts), 1)
+
+    async def test_life_emoji_send_uses_current_message_when_tool_args_are_empty(self):
+        runtime, provider = self._make_proactive_runtime(
+            ['{"emoji_id": 1, "reason": "当前消息明确要求亲亲表情"}'],
+            provider_id="proactive-model",
+        )
+        scope = "aiocqhttp:FriendMessage:10001"
+        await runtime.archive.upsert_emoji_asset(
+            EmojiAssetRecord(
+                id=1,
+                file_hash="kiss-one",
+                file_path="https://example.com/kiss.png",
+                label="亲亲",
+                description="表达亲亲、示爱和亲昵互动",
+                emotions=["亲亲", "亲昵", "示爱"],
+                status="ready",
+            )
+        )
+        event = Event(
+            unified_msg_origin=scope,
+            message_id="m-empty-emoji-args",
+        )
+        event.message_str = "不是让你发个亲亲表情吗？"
+
+        result = await runtime.life_emoji_send(event)
+
+        self.assertEqual(result, "表情已发送：亲亲")
+        self.assertEqual(len(event.sent_messages), 1)
+        self.assertIn("不是让你发个亲亲表情吗？", provider.prompts[0])
+
+    async def test_life_emoji_send_removes_tool_after_successful_send(self):
+        import core.runtime.proactive.gesture as gesture_module
+
+        runtime, provider = self._make_proactive_runtime(
+            ['{"emoji_id": 1, "reason": "用户明确要求猫咪表情"}'],
+            provider_id="proactive-model",
+        )
+        scope = "aiocqhttp:FriendMessage:10001"
+        await runtime.archive.upsert_emoji_asset(
+            EmojiAssetRecord(
+                id=1,
+                file_hash="cat-one",
+                file_path="https://example.com/cat.png",
+                label="猫咪",
+                description="可爱猫咪表情",
+                emotions=["猫咪", "可爱"],
+                status="ready",
+            )
+        )
+        event = Event(
+            unified_msg_origin=scope,
+            message_id="m-remove-emoji-tool",
+        )
+        event.message_str = "发个猫咪表情"
+
+        class ToolSet:
+            def __init__(self):
+                self.tools = [
+                    types.SimpleNamespace(name="life_emoji_send"),
+                    types.SimpleNamespace(name="life_image_generate"),
+                ]
+
+            def remove_tool(self, name):
+                self.tools = [tool for tool in self.tools if tool.name != name]
+
+        runner = types.SimpleNamespace(
+            req=types.SimpleNamespace(func_tool=ToolSet()),
+            _skill_like_raw_tool_set=None,
+            _tool_schema_param_set=None,
+        )
+        old_follow_up = gesture_module._astrbot_follow_up
+        gesture_module._astrbot_follow_up = types.SimpleNamespace(
+            _ACTIVE_AGENT_RUNNERS={scope: runner}
+        )
+        try:
+            result = await runtime.life_emoji_send(event)
+        finally:
+            gesture_module._astrbot_follow_up = old_follow_up
+
+        self.assertEqual(result, "表情已发送：猫咪")
+        self.assertEqual(
+            [tool.name for tool in runner.req.func_tool.tools],
+            ["life_image_generate"],
+        )
         self.assertEqual(len(provider.prompts), 1)
 
     async def test_proactive_emoji_sends_from_expression_intent_without_cooldown(self):

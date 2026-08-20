@@ -891,6 +891,9 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
 
         settings.character_reference_policy = "off"
         self.assertEqual(service.first_character_reference_image(), "")
+        self.assertEqual(
+            service.first_configured_character_reference_image(), str(first)
+        )
 
     async def test_group_image_keeps_character_and_friend_references_separate(self):
         output_bytes = b"\x89PNG\r\n\x1a\noutput"

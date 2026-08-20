@@ -131,8 +131,7 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
             action = self._planned_action(day, stored.action_id)
             if action is None:
                 continue
-            # Generic purchases are recorded as activity only.  Only an
-            # explicit pantry_items payload has a food-inventory side effect.
+            # 普通采购只记录为活动；只有显式的 pantry_items payload 才会影响食材库存。
             if stored.action_type == "purchase" and not self._purchase_pantry_items(
                 action
             ):
@@ -721,7 +720,7 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
 
     @staticmethod
     def _purchase_pantry_items(action: LifeActionIntent) -> list[dict[str, Any]]:
-        """Return only the explicitly classified food items from a purchase."""
+        """只返回采购中被显式归类为食材的条目。"""
 
         values = action.payload.get("pantry_items")
         if not isinstance(values, list):

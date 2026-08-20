@@ -239,6 +239,8 @@ class DailyDraftMixin:
         person_fact_context: str,
         replacement_context: str,
         current_time_text: str,
+        calendar_context: str = "",
+        season_context: str = "",
     ) -> list[str]:
         return [
             self._timeline_prompt_persona_section(persona),
@@ -251,6 +253,8 @@ class DailyDraftMixin:
             f"目标日期：{date_str}",
             f"当前/目标时间线索：{period_cn}",
             f"当前/目标实际时间：{current_time_text}" if current_time_text else "",
+            f"日历：{calendar_context.strip()}" if calendar_context else "",
+            f"季节：{season_context.strip()}" if season_context else "",
             weather_section.strip(),
             constraint_section.strip(),
             inertia_section.strip(),
@@ -288,6 +292,8 @@ class DailyDraftMixin:
         replacement_context: str = "",
         expected_coverage: str = "full_day",
         current_time_text: str = "",
+        calendar_context: str = "",
+        season_context: str = "",
     ) -> str:
         fixed = self._timeline_prompt_fixed_contract(expected_coverage)
         dynamic_sections = self._timeline_prompt_dynamic_sections(
@@ -311,6 +317,8 @@ class DailyDraftMixin:
             person_fact_context=person_fact_context,
             replacement_context=replacement_context,
             current_time_text=current_time_text,
+            calendar_context=calendar_context,
+            season_context=season_context,
         )
         dynamic = "\n\n".join(part for part in dynamic_sections if part)
         return cache_friendly_prompt(fixed, dynamic, dynamic_title="今日生活资料")

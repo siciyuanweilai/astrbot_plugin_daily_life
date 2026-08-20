@@ -1,6 +1,7 @@
 import json
 import unittest
 
+from core.config.options.basis import DEFAULT_CHAT_STYLE_PROMPT
 from core.prompts import DEFAULT_TIMELINE_PROMPT, DEFAULT_WEB_TODAY_PROMPT
 from support import PLUGIN_ROOT, LifeSettings
 
@@ -63,6 +64,33 @@ def _schema_leaf_paths(spec: dict, path: str) -> set[str]:
 
 
 class LifeSettingsTest(unittest.TestCase):
+    def test_legacy_default_chat_style_prompt_upgrades_to_soft_preference(self):
+        config = LifeSettings.from_dict(
+            {
+                "chat_style_config": {
+                    "casual_short_prompt": (
+                        "日常闲聊先接住当下的一句话，不为了显得温柔或有趣而多铺陈。"
+                        "轻松接话保持短气口，一句只放一个主要意思，能自然停住就停住。"
+                        "认真问题、事实解释和情绪支持按内容自然展开，先给判断，再补必要原因。"
+                    )
+                }
+            }
+        )
+
+        self.assertEqual(config.chat_style.casual_short_prompt, DEFAULT_CHAT_STYLE_PROMPT)
+
+    def test_chat_style_prompt_is_normalized_to_one_line_and_bounded(self):
+        config = LifeSettings.from_dict(
+            {
+                "chat_style_config": {
+                    "casual_short_prompt": "  轻一点\n\n不要铺陈。" + ("追加" * 200)
+                }
+            }
+        )
+
+        self.assertNotIn("\n", config.chat_style.casual_short_prompt)
+        self.assertLessEqual(len(config.chat_style.casual_short_prompt), 220)
+
     def test_schema_leaf_paths_are_consumed_by_settings_parser(self):
         schema = json.loads(
             (PLUGIN_ROOT / "_conf_schema.json").read_text(encoding="utf-8")
@@ -772,6 +800,54 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertEqual(edit_channel.protocol, "grok")
         self.assertEqual(edit_channel.model, "grok-imagine-image")
         self.assertEqual(edit_channel.resolution, "2K")
+
+    def test_creative_wardrobe_settings_parse_direct_request_options(self):
+        config = LifeSettings.from_dict(
+            {
+                "image_generation_config": {
+                    "creative_wardrobe": {
+                        "enabled": "yes",
+                        "default_mode": "image_to_image",
+                        "max_count": "9",
+                        "web_inspiration_enabled": "yes",
+                        "outfit_style_recipes": ["旧配置应被忽略"],
+                    }
+                }
+            }
+        )
+
+        creative = config.image_generation.creative_wardrobe
+        self.assertTrue(creative.enabled)
+        self.assertEqual(creative.default_mode, "image_to_image")
+        self.assertFalse(hasattr(creative, "max_count"))
+        self.assertFalse(hasattr(creative, "web_inspiration_enabled"))
+        self.assertFalse(hasattr(creative, "outfit_style_recipes"))
+
+    def test_creative_wardrobe_schema_exposes_direct_request_options(self):
+        schema = json.loads(
+            (PLUGIN_ROOT / "_conf_schema.json").read_text(encoding="utf-8")
+        )
+        creative = schema["image_generation_config"]["items"]["creative_wardrobe"]
+
+        self.assertEqual(creative["type"], "object")
+        self.assertEqual(
+            creative["items"]["default_mode"]["options"],
+            ["text_to_image", "image_to_image"],
+        )
+        self.assertNotIn("max_count", creative["items"])
+        self.assertNotIn("web_inspiration_enabled", creative["items"])
+        for key in (
+            "sleep_style_recipes",
+            "outfit_style_recipes",
+            "mixed_style_recipes",
+            "color_palettes",
+            "hair_styles",
+            "makeup_styles",
+            "nail_styles",
+            "accessory_styles",
+            "scene_styles",
+        ):
+            self.assertNotIn(key, creative["items"])
 
     def test_conf_schema_no_longer_exposes_catalog_workshop(self):
         schema = json.loads(
@@ -1509,9 +1585,21 @@ class LifeSettingsTest(unittest.TestCase):
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertIn("version: 1.3.0", metadata)
+        self.assertIn("version: 1.3.1", metadata)
         self.assertIn('astrbot_version: ">=4.26,<5"', metadata)
-        self.assertIn("version-1.3.0", readme)
+        self.assertIn("version-1.3.1", readme)
+        self.assertIn("创意衣橱生成", readme)
+        self.assertIn("文生图不使用角色参考图", readme)
+        self.assertIn("不读取联网灵感或固定风格池", readme)
+        self.assertIn("日历与季节事实", readme)
+        self.assertIn("生活背景 → 创意衣橱", readme)
+        self.assertIn("文本输入在本地连续编辑", readme)
+        self.assertIn("`chat_style_config`", readme)
+        self.assertIn("PYTHONPATH=. pytest -q", readme)
+        self.assertNotIn("用户明确要求联网寻找灵感时", readme)
+        self.assertNotIn("图片 → 创意衣橱", readme)
+        self.assertNotIn("SiliconFlow", readme)
+        self.assertIn("v1.3.1 · 2026-08-20", changelog)
         self.assertIn("v1.3.0 · 2026-08-19", changelog)
         self.assertIn("v1.2.9 · 2026-08-18", changelog)
         self.assertIn("v1.2.8 · 2026-08-17", changelog)
@@ -1521,6 +1609,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertIn("v1.2.4 · 2026-08-12", changelog)
         self.assertIn("v1.2.3 · 2026-08-11", changelog)
         self.assertIn("v1.2.2 · 2026-08-09", changelog)
+        self.assertLess(changelog.index("v1.3.1"), changelog.index("v1.3.0"))
         self.assertLess(changelog.index("v1.3.0"), changelog.index("v1.2.9"))
         self.assertLess(changelog.index("v1.2.9"), changelog.index("v1.2.8"))
         self.assertLess(changelog.index("v1.2.8"), changelog.index("v1.2.7"))
@@ -1530,6 +1619,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertLess(changelog.index("v1.2.4"), changelog.index("v1.2.3"))
         self.assertLess(changelog.index("v1.2.3"), changelog.index("v1.2.2"))
         self.assertLess(changelog.index("v1.2.2"), changelog.index("v1.2.1"))
+        release_131 = changelog.split("## 🌸 v1.3.1", 1)[1].split("## 🌸 v1.3.0", 1)[0]
         release_130 = changelog.split("## 🌸 v1.3.0", 1)[1].split("## 🌸 v1.2.9", 1)[0]
         release_129 = changelog.split("## 🌸 v1.2.9", 1)[1].split("## 🌸 v1.2.8", 1)[0]
         release_128 = changelog.split("## 🌸 v1.2.8", 1)[1].split("## 🌸 v1.2.7", 1)[0]
@@ -1540,6 +1630,13 @@ class LifeSettingsTest(unittest.TestCase):
         release_123 = changelog.split("## 🌸 v1.2.3", 1)[1].split("## 🌸 v1.2.2", 1)[0]
         release_122 = changelog.split("## 🌸 v1.2.2", 1)[1].split("## 🌸 v1.2.1", 1)[0]
         release_121 = changelog.split("## 🌸 v1.2.1", 1)[1].split("## 🌸 v1.2.0", 1)[0]
+        self.assertIn("日历与季节感知", release_131)
+        self.assertIn("农历传统节日", release_131)
+        self.assertIn("主题与心情拆分", release_131)
+        self.assertIn("创意衣橱与生图设置", release_131)
+        self.assertIn("回复与媒体记录", release_131)
+        self.assertIn("默认方式", release_131)
+        self.assertIn("统一出站正文日志链", release_131)
         self.assertIn("可靠性闭环", release_130)
         self.assertIn("食材库存", release_130)
         self.assertIn("运行时生命周期", release_130)

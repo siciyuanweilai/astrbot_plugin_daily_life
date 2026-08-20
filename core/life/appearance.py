@@ -27,9 +27,8 @@ AUTONOMOUS_APPEARANCE_PREFERENCE_SOURCES = frozenset(
 )
 APPEARANCE_PRIORITY_RULE = (
     "优先级：用户当前明确要求 > 已经发生的当前穿着事实 > 短期生活纠偏 > 场景与天气适配 > "
-    "近期重复抑制 > 已学习长期偏好 > 配置审美 > 模型自由发挥。"
+    "近期重复抑制 > 已学习长期偏好 > 模型自由发挥。"
     "长期偏好表示审美、舒适度和生活习惯，不等于每天复刻同一件具体服装；"
-    "配置审美只作为软底色，当前场景不适合或用户纠偏时必须让位。"
 )
 PERSONA_STABLE_APPEARANCE_RULES = (
     "角色人设中明确写出的稳定外观事实（例如自然发色、固定肤色、明确的身份性外观）属于身份层，"
@@ -330,34 +329,6 @@ def _preference_key(item: PreferenceRecord) -> tuple[str, str]:
     return (_clean_text(item.category, 40), _clean_text(item.content))
 
 
-def default_appearance_preferences(config: Any) -> list[PreferenceRecord]:
-    outfit = getattr(config, "outfit", None)
-    if not outfit:
-        return []
-    try:
-        weight = float(getattr(outfit, "default_preference_weight", 0.0))
-    except (TypeError, ValueError):
-        weight = 0.0
-    weight = max(0.0, min(weight, 2.0))
-    if weight <= 0:
-        return []
-    seeds = (
-        ("outfit", getattr(outfit, "default_style_preference", "")),
-        ("hair", getattr(outfit, "default_hair_preference", "")),
-    )
-    return [
-        PreferenceRecord(
-            category=category,
-            content=text,
-            weight=weight,
-            evidence="配置审美",
-            source="config",
-        )
-        for category, raw in seeds
-        if (text := _clean_text(raw))
-    ]
-
-
 def appearance_preferences(
     preferences: Iterable[PreferenceRecord],
 ) -> list[PreferenceRecord]:
@@ -410,7 +381,6 @@ def _format_preference_line(item: PreferenceRecord) -> str:
 
 def format_life_preference_context(
     preferences: Iterable[PreferenceRecord],
-    config: Any,
     *,
     limit: int,
     appearance_only: bool = False,
@@ -424,7 +394,6 @@ def format_life_preference_context(
     if appearance_only:
         learned = appearance_preferences(learned)
     learned = _unique_preferences(learned)[: max(0, limit)]
-    defaults = default_appearance_preferences(config)
     parts = [f"- {APPEARANCE_PRIORITY_RULE}"]
     if learned:
         parts.append("已学习长期偏好：")
@@ -435,9 +404,6 @@ def format_life_preference_context(
                 "- 已启用视觉衣橱时，长期外观偏好只用于比较衣橱候选；"
                 "具体服装必须来自本轮提供的衣橱候选，不能把偏好文字直接改写成一套新衣服。"
             )
-    if defaults:
-        parts.append("配置审美（由审美影响程度控制；只作为软参考）：")
-        parts.extend(_format_preference_line(item) for item in defaults)
     if len(parts) == 1:
         return ""
     return "\n".join(parts)

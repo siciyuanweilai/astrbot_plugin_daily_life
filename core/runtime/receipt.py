@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+import inspect
 from typing import Any
 
 from astrbot.api import logger
@@ -220,6 +221,13 @@ class RuntimeActionReceiptMixin:
         sent = await send_message_to_scope(self.context, scope, chain)
         if sent is False:
             raise RuntimeError("目标平台尚未就绪，媒体将在后续任务中重试")
+        log_outbound = getattr(self, "log_outbound_message_async", None)
+        if not callable(log_outbound):
+            log_outbound = getattr(self, "log_outbound_message", None)
+        if callable(log_outbound):
+            result = log_outbound(chain, scope=scope, source="media_recovery")
+            if inspect.isawaitable(result):
+                await result
         logger.debug("[日常生活] 已恢复投递重启前生成的媒体产物")
         recorder = getattr(self, "record_current_life_action_receipt", None)
         action_type = str(payload.get("action_type") or "").strip()

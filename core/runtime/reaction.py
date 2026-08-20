@@ -42,6 +42,14 @@ BACKGROUND_TOOL_REACTION_NAMES = frozenset(
 DIRECT_DELIVERY_TOOL_REACTION_NAMES = frozenset(
     {"life_image_generate", "edit_life_image", "life_video_note"}
 )
+MEDIA_AGENT_ERROR_TOOL_NAMES = frozenset(
+    {
+        "life_image_generate",
+        "edit_life_image",
+        "life_photo_suite_generate",
+        "life_video_generate",
+    }
+)
 
 _TOOL_REACTION_STATE_TTL_SECONDS = 30 * 60
 _TOOL_REACTION_STATE_LIMIT = 256
@@ -311,12 +319,60 @@ class ToolReactionMixin:
             return False
         state["agent_done"] = True
         state["agent_has_reply"] = self._tool_reaction_response_has_content(response)
-        role = str(getattr(response, "role", "") or "").strip().lower()
-        state["agent_failed"] = role in {"err", "error"} or bool(
+        role = getattr(response, "role", "")
+        role = getattr(role, "value", role)
+        role = str(role or "").strip().lower()
+        state["agent_failed"] = not bool(state.get("agent_error_suppressed")) and (
+            role in {"err", "error"} or bool(
             getattr(response, "is_error", False)
+            )
         )
         self._touch_tool_reaction_state(state)
         return await self._try_finish_tool_reaction(event, state)
+
+    def suppress_media_agent_error(self, event: Any, response: Any = None) -> bool:
+        """媒体已经交付或进入后台时，吞掉后续确认语的空响应错误。"""
+
+        role = getattr(response, "role", "")
+        role = getattr(role, "value", role)
+        response_is_error = bool(getattr(response, "is_error", False)) or (
+            str(role or "").strip().lower() in {"err", "error"}
+        )
+        result = getattr(event, "get_result", lambda: None)()
+        result_type = str(getattr(result, "result_content_type", "") or "").upper()
+        if not response_is_error and "ERROR" not in result_type:
+            return False
+
+        key = self._tool_reaction_key(event)
+        state = self._tool_reaction_states().get(key)
+        if not isinstance(state, dict) or state.get("finalized"):
+            return False
+        tools = state.get("tools")
+        if not isinstance(tools, dict) or not (
+            set(tools).intersection(MEDIA_AGENT_ERROR_TOOL_NAMES)
+        ):
+            return False
+        if int(state.get("failures") or 0) > 0:
+            return False
+        if not (
+            int(state.get("successes") or 0) > 0
+            or int(state.get("pending_background") or 0) > 0
+        ):
+            return False
+
+        clearer = getattr(event, "clear_result", None)
+        if callable(clearer):
+            clearer()
+        else:
+            chain = getattr(result, "chain", None)
+            if isinstance(chain, list):
+                chain.clear()
+        state["agent_error_suppressed"] = True
+        self._touch_tool_reaction_state(state)
+        logger.debug(
+            f"{LOG_PREFIX} 媒体工具已交付或进入后台，忽略最终确认语空响应错误。"
+        )
+        return True
 
     async def note_tool_reaction_message_sent(self, event: Any) -> bool:
         key = self._tool_reaction_key(event)

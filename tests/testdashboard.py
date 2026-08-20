@@ -18,8 +18,11 @@ from core.models import (
     MessageVisibilityRecord,
     StyleCatalogItemRecord,
 )
-from core.runtime.generation import DailyGenerationMixin
+from core.interface.portal import entry as portal_entry
+from core.interface.portal.entry import PortalBaseMixin
+from core.outcome import ToolResultText
 from core.paths import STYLE_CATALOG_DIR_NAME
+from core.runtime.generation import DailyGenerationMixin
 from support import (
     BehaviorFeedbackRecord,
     ChatSummaryRecord,
@@ -668,7 +671,7 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
         for route in (
             "list",
             "import",
-            "browse",
+            "generate",
             "preview",
             "status",
             "feedback",
@@ -678,6 +681,7 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
             "restore",
         ):
             self.assertIn(f"/astrbot_plugin_daily_life/page/closet/{route}", paths)
+        self.assertNotIn("/astrbot_plugin_daily_life/page/closet/browse", paths)
         self.assertNotIn("/astrbot_plugin_daily_life/page/storage/cleanup", paths)
         self.assertNotIn("/astrbot_plugin_daily_life/page/storage/clear", paths)
         self.assertIn(
@@ -1074,14 +1078,13 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
             StyleCatalogItemRecord(
                 kind="outfit",
                 title="测试清爽造型",
-                description="浅色短袖搭直筒短裤",
+                description="浅色短袖上衣采用宽松直身剪裁，搭配高腰直筒短裤。",
                 image_path=str(image_path),
                 source_scope="dashboard",
                 source_kind="manual",
                 source_image_hash="closet-test".ljust(64, "0"),
                 attributes={
                     "colors": ["浅色"],
-                    "visual_prompt": "浅色短袖上衣采用宽松直身剪裁，搭配高腰直筒短裤。",
                     "makeup": ["清透底妆"],
                     "nails": ["透明短甲"],
                 },
@@ -1092,13 +1095,14 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
 
         listed = await self.plugin.page_closet_list()
         self.assertTrue(listed["ok"])
+        self.assertEqual(listed["data"]["default_generation_mode"], "text_to_image")
         self.assertEqual(listed["data"]["stats"]["total"], 1)
         self.assertEqual(listed["data"]["stats"]["pending"], 1)
         self.assertTrue(listed["data"]["items"][0]["has_makeup"])
         self.assertTrue(listed["data"]["items"][0]["has_nails"])
         self.assertIn(
             "宽松直身剪裁",
-            listed["data"]["items"][0]["attributes"]["visual_prompt"],
+            listed["data"]["items"][0]["description"],
         )
 
         self.plugin.body = {"id": item.id}
@@ -1137,6 +1141,20 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(deleted["data"]["deleted_records"], 1)
         self.assertEqual(deleted["data"]["deleted_files"], 1)
         self.assertFalse(image_path.exists())
+
+    async def test_closet_payload_uses_the_configured_default_generation_mode(self):
+        self.plugin.runtime.config = LifeSettings.from_dict(
+            {
+                "image_generation_config": {
+                    "creative_wardrobe": {"default_mode": "image_to_image"}
+                }
+            }
+        )
+
+        listed = await self.plugin.page_closet_list()
+
+        self.assertTrue(listed["ok"])
+        self.assertEqual(listed["data"]["default_generation_mode"], "image_to_image")
 
     async def test_closet_backup_and_restore_preserve_visual_candidates(self):
         closet_dir = self.plugin.runtime.data_path.parent / STYLE_CATALOG_DIR_NAME
@@ -1178,6 +1196,87 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
         restored_item = restored["data"]["items"][0]
         self.assertEqual(restored_item["title"], "测试发型候选")
         self.assertEqual(Path(restored_item["image_path"]).read_bytes(), image_bytes)
+
+    async def test_download_uses_installed_quart_attachment_filename(self):
+        original_send_file = portal_entry._quart_send_file
+        calls = {}
+
+        async def installed_send_file(
+            path, *, mimetype, as_attachment, attachment_filename
+        ):
+            calls.update(
+                {
+                    "path": path,
+                    "mimetype": mimetype,
+                    "as_attachment": as_attachment,
+                    "attachment_filename": attachment_filename,
+                }
+            )
+            return "download-response"
+
+        portal_entry._quart_send_file = installed_send_file
+        try:
+            response = await PortalBaseMixin()._page_send_download(
+                Path("/tmp/closet-backup.zip"),
+                mime="application/zip",
+                filename="daily_life_closet_backup.zip",
+            )
+        finally:
+            portal_entry._quart_send_file = original_send_file
+
+        self.assertEqual(response, "download-response")
+        self.assertEqual(
+            calls["attachment_filename"], "daily_life_closet_backup.zip"
+        )
+        self.assertTrue(calls["as_attachment"])
+
+    async def test_closet_generate_passes_selected_mode_and_marks_generated_source(self):
+        calls = []
+
+        async def generate(event, **kwargs):
+            calls.append((event, kwargs))
+            await self.plugin.runtime.archive.upsert_style_catalog_item(
+                StyleCatalogItemRecord(
+                    kind="outfit",
+                    title="测试创意生成造型",
+                    description="浅色针织上衣搭配高腰直筒长裤。",
+                    source_scope="dashboard",
+                    source_kind="generated_style_image",
+                    source_image_hash="creative-test".ljust(64, "0"),
+                    attributes={
+                        "generation_mode": "image_to_image",
+                        "creative_request": "适合自然散步的轻便外出穿搭，带自然发型和清透妆容",
+                    },
+                    confidence=0.9,
+                    status="active",
+                )
+            )
+            return ToolResultText("创意衣橱生成完成", status="ok")
+
+        self.plugin.runtime.life_style_generate = generate
+        self.plugin.body = {
+            "generation_mode": "image_to_image",
+            "count": 3,
+            "requirement": "适合自然散步的轻便外出穿搭，带自然发型和清透妆容",
+        }
+
+        result = await self.plugin.page_closet_generate()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(calls[0][0].unified_msg_origin, "dashboard")
+        self.assertEqual(
+            calls[0][1],
+            {
+                "requirement": "适合自然散步的轻便外出穿搭，带自然发型和清透妆容",
+                "generation_mode": "image_to_image",
+                "count": 3,
+            },
+        )
+        self.assertEqual(result["data"]["stats"]["generated"], 1)
+        self.assertEqual(
+            result["data"]["items"][0]["source_kind"],
+            "generated_style_image",
+        )
 
     async def test_emoji_import_upload_caches_asset_and_lists_manual_source(self):
         image_bytes = b"\x89PNG\r\n\x1a\nmanual-emoji"
@@ -3044,11 +3143,14 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         app = (root / "app.js").read_text(encoding="utf-8")
         style = self._dashboard_style(root)
         closet_style = (root / "styles" / "closet.css").read_text(encoding="utf-8")
+        dark_style = (root / "styles" / "dark.css").read_text(encoding="utf-8")
 
         self.assertIn('data-view="closet"', html)
         self.assertIn('id="closetView"', html)
         self.assertIn('id="closetImportFile"', html)
-        self.assertIn('id="closetBrowseDialog"', html)
+        self.assertIn('id="closetGenerateDialog"', html)
+        self.assertIn('class="closet-form-row closet-generate-row"', html)
+        self.assertNotIn('<option value="">使用设置默认</option>', html)
         self.assertIn('id="closetDetailDialog"', html)
         self.assertIn('id="closetBulkEnableButton"', html)
         self.assertIn('id="closetBulkDisableButton"', html)
@@ -3063,7 +3165,10 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertIn('class="emoji-pager closet-pager"', html)
         self.assertIn('id="closetPrevPage" type="button">上一页</button>', html)
         self.assertIn('id="closetNextPage" type="button">下一页</button>', html)
-        self.assertIn("联网学习", html)
+        self.assertNotIn("联网学习", html)
+        self.assertNotIn("closetBrowse", html)
+        self.assertIn("创意生成", html)
+        self.assertIn('<option value="generated">创意生成</option>', html)
         self.assertIn('<option value="outfit">套装</option>', html)
         self.assertIn('<option value="top">上装</option>', html)
         self.assertIn('<option value="bottom">下装</option>', html)
@@ -3074,7 +3179,13 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertIn("closetItems: []", app)
         self.assertIn('apiGet("page/closet/list"', app)
         self.assertIn('apiUpload("page/closet/import"', app)
-        self.assertIn('apiPost("page/closet/browse"', app)
+        self.assertIn('apiPost("page/closet/generate"', app)
+        self.assertIn("function closetDefaultGenerationMode()", app)
+        self.assertIn(
+            "el.closetGenerateMode.value = closetDefaultGenerationMode();", app
+        )
+        self.assertIn("generated_style_image", app)
+        self.assertNotIn("page/closet/browse", app)
         self.assertIn('apiPost("page/closet/preview"', app)
         self.assertIn('apiPost("page/closet/status"', app)
         self.assertIn('apiPost("page/closet/feedback"', app)
@@ -3084,13 +3195,18 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertIn('apiUpload("page/closet/restore"', app)
         self.assertIn("function closetPageWindow", app)
         self.assertNotIn('node("strong", "", "视觉提示词")', app)
-        self.assertIn("function closetVisualPrompt", app)
+        self.assertIn("function closetDescription", app)
         self.assertIn("function closetDetailItems", app)
         self.assertIn("const CLOSET_KIND_ORDER", app)
         self.assertIn('node("h3", "closet-detail-prompt-title"', app)
         self.assertIn("closet-detail-prompts", closet_style)
         self.assertIn("closet-detail-prompt-title", closet_style)
-        self.assertIn("item.attributes?.visual_prompt || item.description", app)
+        self.assertIn(".closet-generate-row", closet_style)
+        self.assertIn("grid-template-columns: minmax(0, 1fr);", closet_style)
+        self.assertNotIn("closetGeneratePool", html)
+        self.assertNotIn("backdrop-filter: blur(8px);", closet_style)
+        self.assertNotIn("backdrop-filter: blur(5px);", dark_style)
+        self.assertIn('return clean(item.description, "暂无描述")', app)
         self.assertIn('enabled ? "停用" : "启用"', app)
         self.assertIn('link.target = "_blank";', app)
         self.assertIn('link.rel = "noopener noreferrer";', app)
@@ -3611,7 +3727,7 @@ if (number.value !== "60" || state.config.test_config.level !== 60) {
         self.assertIn('["relationship_aliases", "identity_aliases"]', config)
         self.assertIn('["bot_identity_aliases", "identity_aliases"]', config)
         self.assertIn(
-            'const CONFIG_GROUPED_DISPLAY_SECTIONS = new Set(["rhythm_config", "memory_config", "chat_style_config", "video_generation_config"]);',
+            'const CONFIG_GROUPED_DISPLAY_SECTIONS = new Set(["rhythm_config", "memory_config", "chat_style_config", "video_generation_config", "story_engine_config"]);',
             config,
         )
         self.assertIn('description: "基础生成"', config)
@@ -3627,6 +3743,14 @@ if (number.value !== "60" || state.config.test_config.level !== 60) {
         self.assertIn('description: "闲时回复"', config)
         self.assertIn('description: "视频生成"', config)
         self.assertIn('description: "视频理解"', config)
+        for label in (
+            "生活状态与日程",
+            "地点与事件",
+            "聊天人物",
+            "聊天表达",
+            "联网灵感",
+        ):
+            self.assertIn(f'label: "{label}"', config)
         self.assertIn("function renderConfigGroup(field)", config)
         self.assertIn("configSectionDisplaySection(sectionKey)", config)
         self.assertIn("isProviderConfigField(fieldSpec)", config)
@@ -3891,7 +4015,43 @@ if (number.value !== "60" || state.config.test_config.level !== 60) {
         order_source = config[order_start:order_end]
         self.assertIn('"search_config.today_prompt"', order_source)
 
-    def test_dashboard_moves_outfit_prompt_settings_to_prompt_settings(self):
+    def test_dashboard_groups_prompt_settings_by_workflow(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        config = (root / "pages" / "dashboard" / "ui" / "settings.js").read_text(
+            encoding="utf-8"
+        )
+        group_source_start = config.index(
+            '["story_engine_config", [',
+            config.index("const CONFIG_SECTION_FIELD_GROUPS"),
+        )
+        group_source = config[
+            group_source_start : config.index('["rhythm_config", [', group_source_start)
+        ]
+        expected_groups = [
+            "生活状态与日程",
+            "地点与事件",
+            "聊天人物",
+            "聊天表达",
+            "联网灵感",
+        ]
+        group_positions = [
+            group_source.index(f'label: "{label}"') for label in expected_groups
+        ]
+        self.assertEqual(group_positions, sorted(group_positions))
+        expected_fields = [
+            "story_engine_config.state_rules",
+            "story_engine_config.timeline_rules",
+            "story_engine_config.world_rules",
+            "story_engine_config.chat_rules",
+            "chat_style_config.casual_short_prompt",
+            "search_config.today_prompt",
+        ]
+        for path in expected_fields:
+            self.assertEqual(group_source.count(f'"{path}"'), 1)
+
+    def test_dashboard_removes_legacy_outfit_prompt_settings(self):
         import json
         from pathlib import Path
 
@@ -3905,30 +4065,42 @@ if (number.value !== "60" || state.config.test_config.level !== 60) {
 
         self.assertEqual(schema["outfit_config"]["description"], "服装")
         self.assertEqual(schema["story_engine_config"]["description"], "提示词")
-        self.assertIn("穿搭审美", schema["story_engine_config"]["hint"])
-        self.assertIn("发型审美", schema["story_engine_config"]["hint"])
-        self.assertIn("default_style_preference", schema["outfit_config"]["items"])
-        self.assertIn("default_hair_preference", schema["outfit_config"]["items"])
-        self.assertNotIn(
-            "default_style_preference", schema["story_engine_config"]["items"]
-        )
-        self.assertNotIn(
-            "default_hair_preference", schema["story_engine_config"]["items"]
-        )
-        self.assertIn(
-            '["outfit_config.default_style_preference", "story_engine_config"]', config
-        )
-        self.assertIn(
-            '["outfit_config.default_hair_preference", "story_engine_config"]', config
-        )
-        self.assertIn(
-            '["outfit_config.default_preference_weight", "rhythm_config"]', config
-        )
+        self.assertNotIn("穿搭审美", schema["story_engine_config"]["hint"])
+        self.assertNotIn("发型审美", schema["story_engine_config"]["hint"])
+        for field in (
+            "default_style_preference",
+            "default_hair_preference",
+            "default_preference_weight",
+        ):
+            self.assertNotIn(field, schema["outfit_config"]["items"])
+            self.assertNotIn(field, config)
+        for field in (
+            "enabled",
+            "default_mode",
+        ):
+            self.assertIn(
+                f'["image_generation_config.creative_wardrobe.{field}", "rhythm_config"]',
+                config,
+            )
+        self.assertNotIn("creative_wardrobe.max_count", config)
+        self.assertNotIn("creative_wardrobe.web_inspiration_enabled", config)
+        self.assertIn('label: "创意衣橱"', config)
         self.assertNotIn('["outfit_config", "story_engine_config"]', config)
 
         self.assertIn("const CONFIG_SECTION_FIELD_ORDER = new Map", config)
         self.assertIn("function applyConfigFieldOrder(fieldsBySection)", config)
         self.assertIn("applyConfigFieldOrder(fieldsBySection);", config)
+        rhythm_groups = config.split('["rhythm_config", [', 1)[1].split(
+            '["life_domain_config", [', 1
+        )[0]
+        expected_outfit_order = [
+            "image_generation_config.creative_wardrobe.enabled",
+            "image_generation_config.creative_wardrobe.default_mode",
+        ]
+        outfit_positions = [
+            rhythm_groups.index(f'"{path}"') for path in expected_outfit_order
+        ]
+        self.assertEqual(outfit_positions, sorted(outfit_positions))
         order_start = config.index(
             '["story_engine_config", [',
             config.index("const CONFIG_SECTION_FIELD_ORDER"),
@@ -3940,8 +4112,6 @@ if (number.value !== "60" || state.config.test_config.level !== 60) {
             "story_engine_config.timeline_rules",
             "story_engine_config.world_rules",
             "story_engine_config.chat_rules",
-            "outfit_config.default_style_preference",
-            "outfit_config.default_hair_preference",
             "chat_style_config.casual_short_prompt",
         ]
         positions = [order_source.index(f'"{path}"') for path in expected_order]
@@ -4231,6 +4401,10 @@ if (state.configTextPending || timerCalls !== 1) {
         self.assertIn(".config-field.template-list-field", style)
         self.assertIn(".config-field.text-field textarea", style)
         self.assertIn(".config-field.prompt-field textarea", style)
+        self.assertIn(
+            ".config-field.list-field textarea {\n  min-height: 202px;\n}",
+            style,
+        )
         self.assertNotIn('classes.push("wide")', config)
         self.assertNotIn('classes.push("extra-wide")', config)
         self.assertNotIn(".config-field.extra-wide", style)
@@ -5654,9 +5828,6 @@ for (const status of ["active", "pending", "disabled", "rejected"]) {
   if (value !== status) {
     throw new Error(`衣橱状态枚举不应被展示翻译改写：${status} -> ${value}`);
   }
-}
-if (mod.closetStatus({ status: "archived" }) !== "disabled") {
-  throw new Error("旧版 archived 状态应兼容显示为 disabled");
 }
 if (mod.closetStatus({ status: "unknown" }) !== "pending") {
   throw new Error("未知衣橱状态应回退为 pending");

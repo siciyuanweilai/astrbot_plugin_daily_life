@@ -13,6 +13,10 @@ from astrbot.api import logger
 from astrbot.core.star.context import Context
 
 from ...archive import LifeArchive
+from ...config.options.basis import (
+    DEFAULT_CHAT_STYLE_PROMPT,
+    is_legacy_chat_style_prompt,
+)
 from ...config.options import LifeSettings
 from ...life import LifeBackgroundComposer, LifeDomainService, WeatherClient
 from ...life.reliability import NonRetryableProviderError
@@ -60,6 +64,26 @@ class RuntimeServices:
 
 
 class SpineBootMixin:
+    def _migrate_legacy_chat_style_prompt(self) -> None:
+        """仅迁移旧版内置默认文案，保留用户填写的自定义表达偏好。"""
+        raw_config = self.raw_config
+        if not isinstance(raw_config, dict):
+            return
+        chat_style = raw_config.get("chat_style_config")
+        if not isinstance(chat_style, dict):
+            return
+        if not is_legacy_chat_style_prompt(chat_style.get("casual_short_prompt")):
+            return
+
+        chat_style["casual_short_prompt"] = DEFAULT_CHAT_STYLE_PROMPT
+        save_config = getattr(raw_config, "save_config", None)
+        if not callable(save_config):
+            return
+        try:
+            save_config()
+        except Exception as exc:
+            logger.warning(f"{LOG_PREFIX} 迁移短句风格默认文案失败：{exc}")
+
     def __init__(
         self,
         context: Context,
@@ -98,6 +122,7 @@ class SpineBootMixin:
         self.archive = LifeArchive(self.data_path, initialize=not defer_start)
         self.context_snapshot = ContextSnapshotRepository(self.archive)
         self._init_sight()
+        self._migrate_legacy_chat_style_prompt()
         self._bind_runtime(LifeSettings.from_dict(raw_config))
         self._init_chat_memory_batcher()
         self.failed_dates: dict[str, datetime.datetime] = {}

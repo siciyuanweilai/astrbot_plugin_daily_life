@@ -64,27 +64,28 @@ class PortalClosetMixin:
 
         return await self._page_json(handler)
 
-    async def page_closet_browse(self):
+    async def page_closet_generate(self):
         async def handler():
             body = await self._page_json_body()
-            query = self._page_closet_text(body.get("query"), 500)
-            if not query:
-                raise ValueError("请输入要学习的穿搭、单品或造型需求")
-            kind = self._page_closet_kind(body.get("kind"))
-            note = self._page_closet_text(body.get("note"), 500)
+            generation_mode = self._page_closet_text(
+                body.get("generation_mode"), 32
+            ).lower()
+            if generation_mode not in {"text_to_image", "image_to_image"}:
+                generation_mode = ""
             try:
-                count = max(1, min(int(body.get("count") or 3), 12))
+                count = max(1, int(body.get("count") or 1))
             except (TypeError, ValueError):
-                count = 3
-            result = await self.runtime.life_style_browse_learn(
+                count = 1
+            result = await self.runtime.life_style_generate(
                 self._page_closet_event(),
-                query,
-                kind=kind,
+                requirement=self._page_closet_text(
+                    body.get("requirement") or body.get("note"), 1000
+                ),
+                generation_mode=generation_mode,
                 count=count,
-                note=note,
             )
             if str(getattr(result, "status", "ok")) != "ok":
-                raise ValueError(str(result) or "联网学习失败")
+                raise ValueError(str(result) or "创意衣橱生成失败")
             payload = await self._page_closet_payload()
             payload["message"] = str(result)
             return payload
@@ -114,8 +115,6 @@ class PortalClosetMixin:
             if not ids:
                 raise ValueError("请选择要更新的衣橱素材")
             status = self._page_closet_text(body.get("status"), 24).lower()
-            if status == "archived":
-                status = "disabled"
             if status not in {"active", "pending", "rejected", "disabled"}:
                 raise ValueError("衣橱素材状态无效")
             updated = await self.runtime.archive.set_style_catalog_status(ids, status)
@@ -139,7 +138,6 @@ class PortalClosetMixin:
                 "dislike": (-0.45, "rejected", "面板标记不喜欢"),
                 "neutral": (0.0, "", "面板清除倾向"),
                 "disable": (0.0, "disabled", "面板停用"),
-                "archive": (0.0, "disabled", "面板停用"),
             }
             if sentiment not in settings:
                 raise ValueError("衣橱反馈类型无效")
@@ -259,12 +257,26 @@ class PortalClosetMixin:
         source_groups = {
             str(item.get("source_group_key") or item.get("id")) for item in payload
         }
+        creative_settings = getattr(
+            getattr(getattr(self.runtime, "config", None), "image_generation", None),
+            "creative_wardrobe",
+            None,
+        )
+        default_generation_mode = str(
+            getattr(creative_settings, "default_mode", "text_to_image") or ""
+        ).strip().lower()
+        if default_generation_mode not in {"text_to_image", "image_to_image"}:
+            default_generation_mode = "text_to_image"
         return {
             "items": payload,
+            "default_generation_mode": default_generation_mode,
             "stats": {
                 "total": len(payload),
                 "source_groups": len(source_groups),
                 "web": sum(item["source_kind"] in {"web_image", "product_image"} for item in payload),
+                "generated": sum(
+                    item["source_kind"] == "generated_style_image" for item in payload
+                ),
                 "active": sum(item["status"] == "active" for item in payload),
                 "pending": sum(item["status"] == "pending" for item in payload),
                 "disabled": sum(item["status"] == "disabled" for item in payload),
@@ -286,8 +298,6 @@ class PortalClosetMixin:
         data = item.as_dict()
         attributes = data.get("attributes") if isinstance(data.get("attributes"), dict) else {}
         status = self._page_closet_text(data.get("status"), 24).lower()
-        if status == "archived":
-            status = "disabled"
         if status not in {"active", "pending", "disabled", "rejected"}:
             status = "pending"
         data["status"] = status

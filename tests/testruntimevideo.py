@@ -1422,7 +1422,7 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(
             history[0]["content"][0], {"type": "text", "text": "还没到吗？"}
         )
-        self.assertIn("用户 ID：10001", history[0]["content"][1]["text"])
+        self.assertIn("User ID: 10001", history[0]["content"][1]["text"])
         self.assertEqual(history[1], {"role": "assistant", "content": reply})
         self.assertEqual(await runtime.archive.get_recent_action_decisions(3), [])
 

@@ -28,7 +28,6 @@ from .core.interface import (
 from .core.runtime import PLUGIN_ID, DailyLifeRuntime
 from .core.runtime.markers import LOG_PREFIX
 from .core.runtime.sender import install_expressive_send_message_tool
-from .core.paths import migrate_style_catalog_storage
 
 EXTERNAL_LEASE_SHUTDOWN_TIMEOUT_SECONDS = 10.0
 MAP_LLM_TOOL_NAMES = (
@@ -77,6 +76,8 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         "suppress_sight_note_followup",
         "hold_life_video_final_text",
         "hold_life_photo_suite_final_text",
+        "suppress_media_agent_error",
+        "suppress_photo_suite_agent_error",
     )
     _SEND_PIPELINE_APPLY_HOOKS = (
         ("capture_t2i_source_before_send", False),
@@ -223,9 +224,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
     def _prepare_database(self) -> Path:
         data_dir = StarTools.get_data_dir(PLUGIN_ID)
         data_dir.mkdir(parents=True, exist_ok=True)
-        data_path = data_dir / "daily_life.db"
-        migrate_style_catalog_storage(data_path)
-        return data_path
+        return data_dir / "daily_life.db"
 
     async def terminate(self):
         runtime = self.runtime
@@ -1444,7 +1443,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         把用户发送、引用或明确指定的服装商品图、穿搭图、发型图、妆容图或美甲图学习为视觉衣橱候选。
         完整套装、上装、下装、鞋袜、配饰、发型、妆容与美甲会按图片可见内容分别保存；候选只用于以后需要新造型时参考，不会改变当前真实穿搭。
         用户只是询问图片内容、要求生成图片或真实换装时不要调用本工具。
-        商品页本身不是图片地址时，先用 life_web_fetch(include_images=true) 取得页面图片，再把图片地址传给本工具。
+        不会搜索或抓取网页；用户需要自行发送、引用或明确提供可读取的图片。
 
         Args:
             reference_image(string): 一张可学习图片的路径或直链；留空时自动使用当前或引用消息里的图片。
@@ -1467,40 +1466,36 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             kind=str(kind or "auto").strip(),
         )
 
-    @filter.llm_tool(name="life_style_browse_learn")
+    @filter.llm_tool(name="life_style_generate")
     @_runtime_guard
-    async def tool_life_style_browse_learn(
+    async def tool_life_style_generate(
         self,
         event: AstrMessageEvent,
-        query: str = "",
-        kind: str = "auto",
-        count: int = 3,
-        note: str = "",
+        requirement: str = "",
+        generation_mode: str = "",
+        count: int = 1,
     ):
         """
-        这是把网上图片真正搜索、视觉核对并写入视觉衣橱的唯一工具。
-        用户说“找几套/再找/搜索/浏览/学进衣橱/加入衣橱”等意思时必须调用本工具，不能只调用 life_style_catalog 查看旧候选，也不能只用文字回复“稍后再搜”。
-        在用户明确要求浏览、寻找或学习网上服装商品图/发型参考时，搜索少量相关图片并加入视觉衣橱候选。
-        不用于每天自动上网找穿搭，不用于购买、下单、整站抓取或把搜索图片直接设成当前穿搭。
-        搜索结果会再次经过视觉模型核对，网页描述不能替代图片可见事实。
+        当用户明确提出穿搭、发型、妆容、美甲或生活场景需求，并希望生成新的生活化造型图片加入视觉衣橱时调用。
+        用户需求是本次生成的唯一创作依据，模型会直接据此构思生活化细节。
+        本工具不会改变角色当前真实穿搭，也不会向用户发送生成图；只生成、视觉核对并保存衣橱候选。
+        文生图绝不使用角色参考图；图生图必须有可用图生图接口和已启用的当前角色参考图，缺少条件时必须如实失败，不能切换到另一种方式。
 
         Args:
-            query(string): 具体的商品图或发型图片需求，包含场景、季节、风格等用户真正提出的条件。
-            kind(string): 学习范围，可选 auto、outfit、top、bottom、footwear、accessory、hair、makeup、nails 或 both；默认 auto。
-            count(int): 需要分析的候选图片数量，默认 3，最多 6。
-            note(string): 可选补充取舍要求，不得加入用户未提出的限制。
+            requirement(string): 用户本次希望生成的完整需求，例如“适合春天去书店的浅色通勤穿搭，带自然锁骨发和裸色短甲”。可留空，让模型自由构思。
+            generation_mode(string): 可选 text_to_image 或 image_to_image；留空使用创意衣橱配置的默认方式。
+            count(int): 要生成的图片数量，默认 1；每张图独立视觉核对后写入衣橱候选。
         """
         denial = self._life_permission_denial(
-            event, "style:browse_learn", LifeActionScope.PRIVATE
+            event, "style:generate", LifeActionScope.PRIVATE
         )
         if denial:
             return denial
-        return await self.runtime.life_style_browse_learn(
+        return await self.runtime.life_style_generate(
             event,
-            str(query or "").strip(),
-            kind=str(kind or "auto").strip(),
-            count=self._tool_int(count, 3),
-            note=str(note or "").strip(),
+            requirement=str(requirement or "").strip(),
+            generation_mode=str(generation_mode or "").strip(),
+            count=self._tool_int(count, 1),
         )
 
     @filter.llm_tool(name="life_style_catalog")
@@ -1515,7 +1510,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         查看当前已学习且可用的视觉衣橱候选及编号，供用户检查或后续反馈。
         用户问已经学了哪些衣橱候选、要查看候选、候选数量或需要候选编号时调用。
         用户指定或追问套装、上装、下装、鞋袜、配饰、发型、妆容或美甲时，必须重新调用本工具并传入对应 kind；不得从此前留空 kind 的混合展示子集中推断该分类总数。
-        用户本轮如果还要求寻找、搜索或学习新的网上穿搭，查看结果不能结束本轮，必须继续调用 life_style_browse_learn；本工具本身不会新增候选。
+        本工具本身不会新增候选；用户明确要求生成新的候选时调用 life_style_generate，用户提供图片时调用 life_style_learn。
 
         Args:
             kind(string): 可选 outfit、top、bottom、footwear、accessory、hair、makeup 或 nails；留空查看全部类别。
@@ -1742,6 +1737,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         从本插件已收藏的表情素材池里选择一张合适表情并发送。
         用户明确要发表情，或当前文字需要配合一张已收藏表情完成语义时调用；不需要传图片路径或 URL。
         如果素材池里没有语义合适的表情，工具会直接不发送；不要为了发表情而硬调用。
+        调用成功后本轮表情发送已经完成，必须停止调用本工具，直接生成最终回复；不要重复调用。
 
         Args:
             intent(string): 本轮想发送表情的自然意图，例如“发送一张小丑自嘲表情”或“补一个调侃自嘲表情”。
@@ -1763,6 +1759,9 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         prepare_turn = self._runtime_hook("prepare_continuous_turn_llm_request")
         if prepare_turn and not prepare_turn(event, req):
             return
+        inject_history_reminder = self._runtime_hook("inject_astrbot_history_reminder")
+        if inject_history_reminder:
+            inject_history_reminder(req, event)
         gif_bridge = self._runtime_hook("bridge_animated_visual_for_llm_request")
         if gif_bridge:
             await gif_bridge(event, req)
@@ -1837,6 +1836,22 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         del run_context
         if self._response_is_agent_error(response):
             setattr(event, self._AGENT_ERROR_SEEN_ATTR, True)
+            suppress_media_error = getattr(
+                self.runtime, "suppress_media_agent_error", None
+            )
+            suppressed = bool(
+                callable(suppress_media_error)
+                and suppress_media_error(event, response)
+            )
+            suppress_suite_error = getattr(
+                self.runtime, "suppress_photo_suite_agent_error", None
+            )
+            if not suppressed and callable(suppress_suite_error) and suppress_suite_error(
+                event, response
+            ):
+                logger.debug(
+                    f"{LOG_PREFIX} 已抑制套图后续确认语错误，继续等待后台交付。"
+                )
         reaction = getattr(self.runtime, "note_tool_reaction_agent_done", None)
         if callable(reaction):
             await reaction(event, response)
@@ -1854,7 +1869,6 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             "life_web_crawl",
             "life_web_research",
             "life_web_research_status",
-            "life_style_browse_learn",
         }:
             self._mark_external_search_turn(event)
         reaction = getattr(self.runtime, "note_tool_reaction_start", None)
@@ -1940,6 +1954,48 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             message = f"{LOG_PREFIX} 消息入口处理耗时：{total_elapsed:.2f} 秒"
         if total_elapsed >= 0.1:
             logger.debug(message)
+
+    def _log_response_gate_outcome(
+        self,
+        event: AstrMessageEvent,
+        decision: dict | None = None,
+        *,
+        action: str = "",
+        reason: str = "",
+        trigger: str = "",
+    ) -> None:
+        """记录非正常放行的入口动作及其触发来源。"""
+        payload = decision if isinstance(decision, dict) else {}
+        action = str(action or payload.get("action") or "unknown").strip().lower()
+        if payload.get("superseded"):
+            action = "superseded"
+        if action == "reply":
+            return
+        reason = str(reason or payload.get("reason") or "未提供").strip()
+        action_labels = {
+            "reply": "正常放行",
+            "wait": "等待聚合",
+            "observe": "观察不回复",
+            "superseded": "后续消息接管",
+            "handled": "后台任务接管",
+            "recalled": "撤回消息跳过",
+        }
+        if not trigger:
+            if action == "superseded":
+                trigger = "连续话轮收束"
+            elif payload.get("semantic"):
+                trigger = "随心回复·语义裁定"
+            elif action == "wait":
+                trigger = "随心回复·等待聚合"
+            elif action == "observe":
+                trigger = "随心回复·状态裁定"
+            else:
+                trigger = "随心回复·入口门控"
+        logger.info(
+            f"{LOG_PREFIX} 触发={trigger}；"
+            f"动作={action_labels.get(action, action)}；"
+            f"原因={reason}"
+        )
 
     async def _capture_chat_memory(self, event: AstrMessageEvent) -> None:
         hook = self._runtime_hook("capture_chat_memory_message")
@@ -2072,6 +2128,13 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
     @filter.after_message_sent()
     @_runtime_guard
     async def after_message_sent(self, event: AstrMessageEvent):
+        outbound_logger = getattr(self.runtime, "log_outbound_result_async", None)
+        if not callable(outbound_logger):
+            outbound_logger = getattr(self.runtime, "log_outbound_result", None)
+        if callable(outbound_logger):
+            outbound_result = outbound_logger(event, source="reply")
+            if inspect.isawaitable(outbound_result):
+                await outbound_result
         self._runtime_hook_call("complete_continuous_turn", event)
         reaction = getattr(self.runtime, "note_tool_reaction_message_sent", None)
         if callable(reaction):
@@ -2101,6 +2164,12 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
     async def on_message_for_proactive_reply(self, event: AstrMessageEvent):
         started_at = time.monotonic()
         if self._runtime_hook_call("note_recalled_message", event):
+            self._log_response_gate_outcome(
+                event,
+                action="recalled",
+                reason="原消息已撤回",
+                trigger="撤回事件",
+            )
             return
         self._runtime_hook_call("note_runtime_scope_activity", event)
         self._runtime_hook_call("note_continuous_turn_incoming", event)
@@ -2113,13 +2182,26 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         await self._capture_chat_memory(event)
         if self._runtime_hook_call("schedule_bili_summary_from_event", event):
             self._runtime_hook_call("complete_continuous_turn", event)
+            self._log_response_gate_outcome(
+                event,
+                action="handled",
+                reason="已由B站视频总结后台任务接管",
+                trigger="B站视频总结",
+            )
             return
         settle_turn = self._runtime_hook("settle_continuous_turn")
         if settle_turn and not await settle_turn(event):
+            self._log_response_gate_outcome(
+                event,
+                action="superseded",
+                reason="连续话轮已由后续消息接管",
+                trigger="连续话轮收束",
+            )
             return
         self._runtime_hook_call("mark_alias_directed_event_as_wake", event)
         self.runtime.note_proactive_activity(event)
-        await self.runtime.apply_response_gate_for_event(event)
+        decision = await self.runtime.apply_response_gate_for_event(event)
+        self._log_response_gate_outcome(event, decision)
         self._log_message_entry_timing(event, started_at)
 
     @filter.event_message_type(

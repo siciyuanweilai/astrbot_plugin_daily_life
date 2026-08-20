@@ -294,7 +294,6 @@ class LifecycleMixin:
         )
         preference_context = format_life_preference_context(
             preferences,
-            self.config,
             limit=preference_limit,
             catalog_backed=catalog_backed,
         )

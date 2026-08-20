@@ -14,6 +14,11 @@ from ...models.phrasing import emoji_category_tag
 from ...prompts import CORE_JSON_OUTPUT_RULES, cache_friendly_prompt
 from ..markers import LOG_PREFIX
 
+try:
+    from astrbot.core.pipeline.process_stage import follow_up as _astrbot_follow_up
+except Exception:
+    _astrbot_follow_up = None
+
 
 class ProactiveGestureMixin:
     _EMOJI_MODEL_CANDIDATE_LIMIT = 8
@@ -172,6 +177,37 @@ class ProactiveGestureMixin:
                 return f"{attr}:{value}"
         return ""
 
+    @staticmethod
+    def _disable_emoji_tool_for_active_turn(event: Any) -> None:
+        """成功发送后收束当前 Agent 轮次，避免模型重复调用同一工具。"""
+
+        follow_up = _astrbot_follow_up
+        runners = getattr(follow_up, "_ACTIVE_AGENT_RUNNERS", None)
+        if not isinstance(runners, dict):
+            return
+        runner = runners.get(str(getattr(event, "unified_msg_origin", "") or ""))
+        if runner is None:
+            return
+        removed = False
+        for attr in ("req",):
+            request = getattr(runner, attr, None)
+            tool_set = getattr(request, "func_tool", None)
+            remover = getattr(tool_set, "remove_tool", None)
+            if callable(remover):
+                before = len(getattr(tool_set, "tools", ()) or ())
+                remover("life_emoji_send")
+                removed = removed or len(getattr(tool_set, "tools", ()) or ()) < before
+        # skills_like 模式保留了原始工具集和参数工具集，也要一并收束。
+        for attr in ("_skill_like_raw_tool_set", "_tool_schema_param_set"):
+            tool_set = getattr(runner, attr, None)
+            remover = getattr(tool_set, "remove_tool", None)
+            if callable(remover):
+                before = len(getattr(tool_set, "tools", ()) or ())
+                remover("life_emoji_send")
+                removed = removed or len(getattr(tool_set, "tools", ()) or ()) < before
+        if removed:
+            logger.debug(f"{LOG_PREFIX} 表情工具已完成本轮收束，阻止重复调用。")
+
     async def life_emoji_send(
         self,
         event: Any,
@@ -199,6 +235,7 @@ class ProactiveGestureMixin:
         ):
             mark_outcome("fallback")
             return "同一轮已发送过这个表情"
+        current_message = str(getattr(event, "message_str", "") or "").strip()
         intent_payload = {
             "send_emoji": True,
             "emotion": str(emotion or "").strip(),
@@ -206,7 +243,16 @@ class ProactiveGestureMixin:
             "emoji_intent": str(intent or "").strip(),
             "action_intent": str(intent or "").strip(),
             "reason": str(decision_reason or intent or "").strip(),
+            "_source_message": current_message,
+            "_explicit_request": True,
         }
+        if current_message and not any(
+            intent_payload.get(key)
+            for key in ("emotion", "emotion_category", "emoji_intent", "action_intent")
+        ):
+            intent_payload["emoji_intent"] = current_message
+            intent_payload["action_intent"] = current_message
+            intent_payload["reason"] = "根据当前用户消息提取表情意图"
         emoji = await self._select_emoji_asset_for_intent(intent_payload, scope=scope)
         if emoji is None:
             mark_outcome("fallback")
@@ -238,6 +284,7 @@ class ProactiveGestureMixin:
             return "原消息已撤回，已取消表情发送。"
 
         mark_outcome("sent")
+        self._disable_emoji_tool_for_active_turn(event)
         await self._mark_emoji_used(
             event,
             emoji,
@@ -562,6 +609,7 @@ class ProactiveGestureMixin:
                 "emoji_intent": intent.get("emoji_intent"),
                 "action_intent": intent.get("action_intent"),
                 "reason": intent.get("reason"),
+                "source_message": intent.get("_source_message"),
                 "recent_intents": intent.get("_recent_intents") or [],
             },
             ensure_ascii=False,
@@ -652,7 +700,7 @@ class ProactiveGestureMixin:
         if not candidate_assets:
             return None
         recent_sent_ids = await self._recent_sent_emoji_ids(scope)
-        if recent_sent_ids:
+        if recent_sent_ids and not bool(intent.get("_explicit_request")):
             candidate_assets = [
                 item
                 for item in candidate_assets
@@ -694,6 +742,7 @@ JSON 输出要求：
 表情意图：{intent.get("emoji_intent") or "无"}
 动作意图：{intent.get("action_intent") or "无"}
 理由：{intent.get("reason") or "无"}
+用户当前消息：{intent.get("_source_message") or "无"}
 
 候选表情：
 {json.dumps(candidates, ensure_ascii=False)}"""

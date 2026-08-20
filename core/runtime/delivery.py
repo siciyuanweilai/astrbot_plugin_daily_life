@@ -72,13 +72,39 @@ class ReplyDeliveryService:
         if callable(clearer):
             clearer()
 
+    async def _log_sent(
+        self,
+        chain: Any,
+        *,
+        scope: str,
+        source_event: Any = None,
+        source: str,
+    ) -> None:
+        logger_fn = getattr(self._runtime, "log_outbound_message_async", None)
+        if callable(logger_fn):
+            await logger_fn(
+                chain,
+                scope=scope,
+                source_event=source_event,
+                source=source,
+            )
+            return
+        logger_fn = getattr(self._runtime, "log_outbound_message", None)
+        if callable(logger_fn):
+            logger_fn(
+                chain,
+                scope=scope,
+                source_event=source_event,
+                source=source,
+            )
+
     async def _send_one(
         self,
         request: EventDeliveryRequest,
         chain: Sequence[Any],
         index: int,
         send: Callable[[Any], Awaitable[None]],
-    ) -> None:
+    ) -> Any:
         message = request.build_message(index, chain)
         decorator = getattr(self._runtime, "decorate_group_addressing_chain", None)
         if callable(decorator):
@@ -90,6 +116,7 @@ class ReplyDeliveryService:
                 source=request.source,
             )
         await send(message)
+        return message
 
     async def send_event(self, request: EventDeliveryRequest) -> DeliveryResult:
         event = request.event
@@ -114,7 +141,13 @@ class ReplyDeliveryService:
                 if not request.is_current():
                     self._clear_result(event)
                     return DeliveryResult("cancelled", sent_count)
-                await self._send_one(request, chain, index, send)
+                message = await self._send_one(request, chain, index, send)
+                await self._log_sent(
+                    message,
+                    scope=request.scope,
+                    source_event=event,
+                    source=request.source,
+                )
                 sent_count += 1
         except Exception as exc:
             if sent_count > 0:
@@ -156,6 +189,12 @@ class ReplyDeliveryService:
                         sent_count,
                         RuntimeError("消息发送未完成"),
                     )
+                await self._log_sent(
+                    message,
+                    scope=request.scope,
+                    source_event=request.source_event,
+                    source=request.source,
+                )
                 request.on_sent(index, text)
                 sent_count += 1
         except Exception as exc:

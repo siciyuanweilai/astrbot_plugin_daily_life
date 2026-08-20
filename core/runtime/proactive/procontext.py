@@ -3,6 +3,7 @@ from typing import Any
 
 from astrbot.api import logger
 
+from ...config.options.basis import format_chat_style_prompt
 from ...sources.history import SavedHistoryReader
 from ..markers import LOG_PREFIX
 
@@ -10,7 +11,7 @@ from ..markers import LOG_PREFIX
 class ProactiveSyntheticEvent:
     is_at_or_wake_command = False
     is_wake = False
-    # The message is a replayed context item for a background decision, not a new turn.
+    # 该消息是供后台决策重放的上下文条目，不是新的话轮。
     is_proactive_synthetic = True
 
     def __init__(
@@ -134,7 +135,7 @@ class ProactiveContextMixin:
         if not enabled:
             return ""
         style_prompt = (
-            str(getattr(style, "casual_short_prompt", "") or "").strip()
+            format_chat_style_prompt(getattr(style, "casual_short_prompt", ""))
             if style and enabled
             else ""
         )

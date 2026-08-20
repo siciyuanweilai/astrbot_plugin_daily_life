@@ -2,8 +2,20 @@ from __future__ import annotations
 
 from typing import Any
 
+from astrbot.core.agent.message import TextPart
+
 
 class HistorySceneMixin:
+    _ASTRBOT_WEEKDAY_NAMES = (
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+        "Sunday",
+    )
+
     def _astrbot_config(self, scope: str) -> dict[str, Any]:
         context = getattr(self, "context", None)
         getter = getattr(context, "get_config", None)
@@ -16,10 +28,6 @@ class HistorySceneMixin:
                 pass
         config = getattr(context, "config", None)
         return config if isinstance(config, dict) else {}
-
-    def _astrbot_provider_settings(self, scope: str) -> dict[str, Any]:
-        settings = self._astrbot_config(scope).get("provider_settings", {})
-        return settings if isinstance(settings, dict) else {}
 
     def _event_sender_id_name(self, event: Any) -> tuple[str, str]:
         sender_id = self._safe_event_call(event, "get_sender_id")
@@ -44,23 +52,54 @@ class HistorySceneMixin:
         return group_name
 
     def _system_reminder_text(self, scope: str, event: Any) -> str:
-        settings = self._astrbot_provider_settings(scope)
         parts: list[str] = []
-        if settings.get("identifier"):
-            sender_id, sender_name = self._event_sender_id_name(event)
-            parts.append(f"用户 ID：{sender_id}，昵称：{sender_name}")
-        if settings.get("group_name_display") and self._event_is_group_message(event):
+        sender_id, sender_name = self._event_sender_id_name(event)
+        if sender_id or sender_name:
+            parts.append(f"User ID: {sender_id}, Nickname: {sender_name}")
+        if self._event_is_group_message(event):
             group_name = self._event_group_name(event)
             if group_name:
-                parts.append(f"群聊名称：{group_name}")
-        if settings.get("datetime_system_prompt", True):
-            now = self._astrbot_now_for_scope(scope)
-            current_time = now.strftime("%Y-%m-%d %H:%M (%Z)")
-            parts.append(
-                f"当前时间：{current_time}，{self._WEEKDAY_NAMES[now.weekday()]}"
-            )
+                parts.append(f"Group name: {group_name}")
+        now = self._astrbot_now_for_scope(scope)
+        current_time = now.strftime("%Y-%m-%d %H:%M (%Z)")
+        parts.append(
+            f"Current datetime: {current_time}, "
+            f"Weekday: {self._ASTRBOT_WEEKDAY_NAMES[now.weekday()]}"
+        )
         content = "\n".join(parts)
         return f"<system_reminder>{content}</system_reminder>" if content else ""
+
+    def inject_astrbot_history_reminder(self, req: Any, event: Any) -> bool:
+        """将插件统一提醒加入 AstrBot 本轮可持久化的请求内容。"""
+        if event is None:
+            return False
+        marker = "_daily_life_history_reminder_injected"
+        if bool(getattr(req, marker, False)):
+            return False
+        internal_session = getattr(self, "is_internal_llm_session", None)
+        if callable(internal_session) and internal_session(req):
+            return False
+        scope = self._event_session_id(event)
+        reminder = self._system_reminder_text(scope, event)
+        if not reminder:
+            return False
+        parts = getattr(req, "extra_user_content_parts", None)
+        if not isinstance(parts, list):
+            parts = []
+            setattr(req, "extra_user_content_parts", parts)
+        if any(
+            str(
+                getattr(part, "text", "")
+                or (part.get("text", "") if isinstance(part, dict) else "")
+            ).strip()
+            == reminder
+            for part in parts
+        ):
+            setattr(req, marker, True)
+            return False
+        parts.append(TextPart(text=reminder))
+        setattr(req, marker, True)
+        return True
 
     def _conversation_user_content(
         self, scope: str, event: Any, text: str

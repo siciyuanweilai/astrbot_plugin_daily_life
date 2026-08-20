@@ -1,7 +1,9 @@
 import datetime
 from typing import Any
 
+from ...config.options.basis import format_chat_style_prompt
 from ...life.appearance import format_current_appearance_context
+from ...life.calendar import format_calendar_context, format_season_context
 from ...life.condition import format_physiological_rhythm_prompt
 from ...life.tools import (
     format_timeline_travel,
@@ -28,10 +30,13 @@ class LayerTextMixin:
                 casual_limit = int(getattr(style, "casual_max_chars", 50) or 50)
             except (TypeError, ValueError):
                 casual_limit = 0
-            prompt = str(getattr(style, "casual_short_prompt", "") or "").strip()
-            prompt_hint = f"\n- {self._hidden_text(prompt, 220)}" if prompt else ""
+            prompt = format_chat_style_prompt(
+                getattr(style, "casual_short_prompt", "")
+            )
+            prompt_hint = f"\n- {self._hidden_text(prompt, 360)}" if prompt else ""
             length_hint = (
-                f"\n- 日常闲聊参考长度约 {casual_limit} 字左右；这是表达倾向，不是硬性限制。"
+                f"\n- 日常闲聊参考长度约 {casual_limit} 字左右；轻闲聊整轮达到主要意思就停，"
+                "不要用多条消息绕过总长度；认真问题按内容自然展开。"
                 if casual_limit > 0
                 else ""
             )
@@ -45,9 +50,11 @@ class LayerTextMixin:
             )
 
         lines = ["\n[HiddenChatStyle] 默认聊天表达节奏:"]
-        prompt = str(getattr(style, "casual_short_prompt", "") or "").strip()
+        prompt = format_chat_style_prompt(
+            getattr(style, "casual_short_prompt", "")
+        )
         if prompt:
-            lines.append(f"- {self._hidden_text(prompt, 220)}")
+            lines.append(f"- {self._hidden_text(prompt, 360)}")
 
         casual_max = getattr(style, "casual_max_chars", None)
         try:
@@ -56,7 +63,8 @@ class LayerTextMixin:
             casual_max_int = 0
         if casual_max_int > 0:
             lines.append(
-                f"- 日常闲聊参考长度约 {casual_max_int} 字左右；认真问题按内容自然展开。"
+                f"- 日常闲聊参考长度约 {casual_max_int} 字左右；轻闲聊整轮达到主要意思就停，"
+                "不要用多条消息绕过总长度；认真问题按内容自然展开。"
             )
 
         lines.append("- 轻松接话保持短气口；一句只放一个主要意思，能自然停住就停住。")
@@ -372,6 +380,8 @@ class LayerTextMixin:
         parts.append(f"\n[HiddenStatusHint] {status_desc}")
         parts.append(f"\n[HiddenActivityHint] {activity}")
         parts.append(f"\n[HiddenTime] {now.strftime('%Y-%m-%d %H:%M')} ({period_cn})")
+        parts.append(f"\n[HiddenCalendar] {format_calendar_context(now)}")
+        parts.append(f"\n[HiddenSeason] {format_season_context(now)}")
         if not residence_context_stale:
             state_context = self._format_hidden_state_compact(data.state)
             if state_context:
@@ -439,6 +449,8 @@ class LayerTextMixin:
             f"{external}"
             f"{video_context}"
             f"\n[HiddenTime] {now.strftime('%Y-%m-%d %H:%M')} ({period_cn})"
+            f"\n[HiddenCalendar] {format_calendar_context(now)}"
+            f"\n[HiddenSeason] {format_season_context(now)}"
             "\n</daily_life>"
             f"{self.build_hidden_expression_channel_hint(event)}"
         )
