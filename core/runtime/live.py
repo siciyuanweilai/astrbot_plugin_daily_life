@@ -73,6 +73,12 @@ class DailyLifeRuntime(
         gateway = getattr(self, "model_gateway", None) or ModelGateway(self.composer)
         return await gateway.provider(provider_id)
 
+    async def create_voice_call_invite(self, event: Any, *, greeting: str = "") -> str:
+        manager = getattr(self, "voice_call", None)
+        if manager is None:
+            raise RuntimeError("实时语音通话服务尚未初始化")
+        return await manager.create_invite(event, greeting=greeting)
+
     def get_text_provider_candidates(self, provider_id: str = ""):
         gateway = getattr(self, "model_gateway", None) or ModelGateway(self.composer)
         return gateway.provider_candidates(provider_id)

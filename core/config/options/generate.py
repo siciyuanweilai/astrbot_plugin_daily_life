@@ -291,3 +291,59 @@ class VoiceGenerationSettings:
             timeout_seconds=as_int(data.get("timeout_seconds", 30), 30, 5, 300),
             max_retries=as_int(data.get("max_retries", 2), 2, 0, 5),
         )
+
+
+@dataclass(slots=True)
+class RealtimeVoiceCallSettings:
+    enabled: bool = False
+    listen_host: str = "0.0.0.0"
+    listen_port: int = 6186
+    public_url: str = ""
+    endpoint_url: str = "wss://openspeech.bytedance.com/api/v3/duplex/realtime/dialogue"
+    model: str = "1.2.6.1"
+    max_duration_seconds: int = 1800
+    idle_timeout_seconds: int = 90
+    invite_expire_seconds: int = 120
+    max_concurrent_calls: int = 1
+    context_turns: int = 8
+    allow_function_calls: bool = False
+    tool_call_timeout_seconds: int = 60
+    short_url_enabled: bool = True
+
+    @staticmethod
+    def from_dict(data: Any) -> RealtimeVoiceCallSettings:
+        if not isinstance(data, dict):
+            return RealtimeVoiceCallSettings()
+        endpoint_url = as_str(data.get("endpoint_url", "")).strip()
+        if not endpoint_url.startswith(("ws://", "wss://")):
+            endpoint_url = "wss://openspeech.bytedance.com/api/v3/duplex/realtime/dialogue"
+        return RealtimeVoiceCallSettings(
+            enabled=as_bool(data.get("enabled", False), False),
+            listen_host=as_str(data.get("listen_host", "0.0.0.0")).strip() or "0.0.0.0",
+            listen_port=as_int(data.get("listen_port", 6186), 6186, 1024, 65535),
+            public_url=as_str(
+                data.get("public_url", data.get("gateway_url", ""))
+            ).strip().rstrip("/"),
+            endpoint_url=endpoint_url,
+            model=as_str(data.get("model", "1.2.6.1")).strip() or "1.2.6.1",
+            max_duration_seconds=as_int(
+                data.get("max_duration_seconds", 1800), 1800, 30, 7200
+            ),
+            idle_timeout_seconds=as_int(
+                data.get("idle_timeout_seconds", 90), 90, 30, 1800
+            ),
+            invite_expire_seconds=as_int(
+                data.get("invite_expire_seconds", 120), 120, 30, 3600
+            ),
+            max_concurrent_calls=as_int(
+                data.get("max_concurrent_calls", 1), 1, 1, 4
+            ),
+            context_turns=as_int(data.get("context_turns", 8), 8, 0, 20),
+            allow_function_calls=as_bool(
+                data.get("allow_function_calls", False), False
+            ),
+            tool_call_timeout_seconds=as_int(
+                data.get("tool_call_timeout_seconds", 60), 60, 1, 300
+            ),
+            short_url_enabled=as_bool(data.get("short_url_enabled", True), True),
+        )

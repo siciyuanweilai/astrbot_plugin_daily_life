@@ -5,9 +5,16 @@ import math
 from typing import Any
 
 import aiohttp
+
 from astrbot.api import logger
 
-from ..base import LOG_PREFIX, image_mime_and_ext, normalize_openai_base_url
+from ..base import (
+    LOG_PREFIX,
+    absolute_url,
+    image_mime_and_ext,
+    normalize_openai_base_url,
+    origin_from_url,
+)
 from .pipe import ImageRequest, ImageRoute
 
 _TIER_MAX_EDGES = {"1K": 1024, "2K": 2048, "4K": 3840}
@@ -233,21 +240,36 @@ def _fit_total_pixel_budget(
     return reduced_width * unit, reduced_height * unit
 
 
-def extract_image(data: dict[str, Any]) -> bytes:
-    images: list[bytes] = []
+def extract_image(data: dict[str, Any], api_url: str = "") -> tuple[bytes, str]:
+    """读取 OpenAI 图片响应中的 Base64 图片或结果地址。
+
+    OpenAI 兼容中转接口可能返回 ``b64_json``，也可能只返回
+    ``data[].url``。调用方负责对结果地址执行网络白名单校验和下载。
+    """
+    image_bytes = b""
+    image_url = ""
     items = data.get("data")
     if not isinstance(items, list):
-        return b""
+        return image_bytes, image_url
+    base_origin = origin_from_url(normalize_openai_base_url(api_url))
     for item in items:
         if not isinstance(item, dict):
             continue
         raw = str(item.get("b64_json") or "").strip()
         if raw:
             try:
-                images.append(base64.b64decode(raw))
+                encoded = (
+                    raw.split(",", 1)[1]
+                    if raw.startswith("data:") and "," in raw
+                    else raw
+                )
+                image_bytes = base64.b64decode(encoded)
             except Exception as exc:
                 logger.warning(f"{LOG_PREFIX} 图片数据解码失败（GPT接口）：{exc}")
-    return images[-1] if images else b""
+        candidate_url = absolute_url(item.get("url"), base_origin)
+        if candidate_url:
+            image_url = candidate_url
+    return image_bytes, image_url
 
 
 def origin(api_url: str) -> str:

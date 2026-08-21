@@ -30,6 +30,7 @@ from ..gateway import ModelGateway
 from ..markers import LOG_PREFIX
 from ..scopes import RuntimeScopeState
 from ..timer import LifeRhythmClock
+from ..voicecall import VoiceCallManager
 
 _DURABLE_TASK_LABELS = {
     "daily_refresh": "每日生活刷新",
@@ -124,6 +125,7 @@ class SpineBootMixin:
         self._init_sight()
         self._migrate_legacy_chat_style_prompt()
         self._bind_runtime(LifeSettings.from_dict(raw_config))
+        self.voice_call = VoiceCallManager(self)
         self._init_chat_memory_batcher()
         self.failed_dates: dict[str, datetime.datetime] = {}
         self._proactive_last_reply_at: dict[str, datetime.datetime] = {}
@@ -161,6 +163,17 @@ class SpineBootMixin:
         self._start_chat_memory_batcher()
         self.rhythm.start()
         self._runtime_initialized = True
+        voice_call = getattr(self, "voice_call", None)
+        start_voice_call = getattr(voice_call, "start_if_enabled", None)
+        if callable(start_voice_call):
+            try:
+                await start_voice_call()
+            except Exception as exc:
+                # 网关启动失败不应阻断普通聊天，但必须留下明确的服务告警；
+                # 用户下次创建邀请时仍会再次尝试启动并返回可读错误。
+                logger.error(
+                    f"{LOG_PREFIX} 实时语音通话网关启动失败：{type(exc).__name__}"
+                )
         self._schedule_background_task(
             self.ensure_startup_day_data(),
             label="首次生活初始化",
@@ -686,6 +699,9 @@ class SpineBootMixin:
         if bool(getattr(self, "_shutdown_started", False)):
             return
         self._shutdown_started = True
+        voice_call = getattr(self, "voice_call", None)
+        if voice_call is not None:
+            await voice_call.close()
         self.rhythm.stop()
         cancel_idle_tasks = getattr(self, "_cancel_proactive_idle_tasks", None)
         if callable(cancel_idle_tasks):

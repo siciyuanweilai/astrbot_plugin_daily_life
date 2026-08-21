@@ -432,7 +432,9 @@ class SilentToolPrefaceMixin:
             return False
         if not self._is_llm_result_object(result):
             return False
-        runner = self._active_agent_runner(event)
+        # 运行时还有图片通道的同名辅助方法；这里必须固定调用工具前置
+        # 所属实现，避免 MRO 将“当前图片生成任务”误当成 Agent runner。
+        runner = SilentToolPrefaceMixin._active_agent_runner(event)
         return runner is not None and not self._runner_is_done(runner)
 
     @classmethod

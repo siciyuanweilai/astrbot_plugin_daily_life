@@ -42,6 +42,33 @@ from runtimehelpers import (
 
 
 class RuntimeProactiveTest(ResponseGateRuntimeMixin, unittest.TestCase):
+    def test_proactive_voice_call_intent_is_gated_by_private_ready_channel(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime._event_is_group_message = lambda _event: False
+        runtime._event_session_id = lambda _event: "aiocqhttp:FriendMessage:user"
+        runtime.voice_call = types.SimpleNamespace(
+            proactive_invite_available=lambda _scope: True
+        )
+        payload = {
+            "should_reply": True,
+            "reply_text": "突然有点想听你说话",
+            "voice_call_intent": {
+                "should_invite": True,
+                "greeting": "刚忙完，正好有空听你说说",
+            },
+        }
+
+        runtime._normalize_proactive_voice_call_intent(Event(), payload)
+
+        self.assertTrue(payload["voice_call_intent"]["should_invite"])
+        self.assertEqual(
+            payload["voice_call_intent"]["greeting"], "刚忙完，正好有空听你说说"
+        )
+
+        runtime._event_is_group_message = lambda _event: True
+        runtime._normalize_proactive_voice_call_intent(Event(), payload)
+        self.assertFalse(payload["voice_call_intent"]["should_invite"])
+
     def test_proactive_lifecycle_accepts_only_declared_transitions(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         now = datetime.datetime(2026, 5, 24, 12, 0)

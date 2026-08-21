@@ -785,6 +785,63 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(calls[0][3])
         self.assertEqual(_timeout_total(calls[0][4]), 180)
 
+    async def test_generate_image_downloads_openai_url_response(self):
+        output_bytes = b"\x89PNG\r\n\x1a\nopenai-url-output"
+        calls = []
+
+        class _Content:
+            async def read(self, _limit):
+                return output_bytes
+
+        class _DownloadResponse(_Response):
+            headers = {"Content-Type": "image/png"}
+            content = _Content()
+
+        class _ImageSession:
+            closed = False
+
+            def post(self, url, json=None, data=None, headers=None, timeout=None):
+                calls.append(("POST", url, json, headers or {}))
+                return _Response(
+                    payload={"data": [{"url": "https://cdn.example/openai.png"}]}
+                )
+
+            def get(self, url, timeout=None):
+                calls.append(("GET", url, timeout))
+                return _DownloadResponse()
+
+        settings = LifeSettings.from_dict(
+            {
+                "image_generation_config": {
+                    "enabled": True,
+                    "text_channels": [
+                        {
+                            "__template_key": "openai",
+                            "api_url": "https://openai-relay.example/v1",
+                            "api_key": "relay-key",
+                            "model": "gpt-image-2",
+                        }
+                    ],
+                }
+            }
+        ).image_generation
+        service = GeminiImageService(settings, Path(tempfile.mkdtemp()))
+
+        async def get_session():
+            return _ImageSession()
+
+        service._get_session = get_session
+        with patch.object(
+            picture_canvas,
+            "is_http_url_allowed_async",
+            new=AsyncMock(return_value=True),
+        ):
+            generated = await service.generate_image("雨夜生活照")
+
+        self.assertEqual(generated.path.read_bytes(), output_bytes)
+        self.assertEqual(calls[0][0:2], ("POST", "https://openai-relay.example/v1/images/generations"))
+        self.assertEqual(calls[1][0:2], ("GET", "https://cdn.example/openai.png"))
+
     async def test_openai_text_to_image_ignores_character_reference_images(self):
         output_bytes = b"\x89PNG\r\n\x1a\nopenai-output"
         temp_dir = Path(tempfile.mkdtemp())
@@ -1346,6 +1403,65 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[0][1]["Authorization"], "Bearer relay-key")
         self.assertIsNone(calls[0][2])
         self.assertIsNotNone(calls[0][3])
+
+    async def test_edit_image_downloads_openai_url_response(self):
+        output_bytes = b"\x89PNG\r\n\x1a\nopenai-edit-url-output"
+        reference = Path(tempfile.mkdtemp()) / "reference.png"
+        reference.write_bytes(b"\x89PNG\r\n\x1a\nreference")
+        calls = []
+
+        class _Content:
+            async def read(self, _limit):
+                return output_bytes
+
+        class _DownloadResponse(_Response):
+            headers = {"Content-Type": "image/png"}
+            content = _Content()
+
+        class _ImageSession:
+            closed = False
+
+            def post(self, url, json=None, data=None, headers=None, timeout=None):
+                calls.append(("POST", url, json, data, headers or {}))
+                return _Response(
+                    payload={"data": [{"url": "https://cdn.example/openai-edit.png"}]}
+                )
+
+            def get(self, url, timeout=None):
+                calls.append(("GET", url, timeout))
+                return _DownloadResponse()
+
+        settings = LifeSettings.from_dict(
+            {
+                "image_generation_config": {
+                    "enabled": True,
+                    "edit_channels": [
+                        {
+                            "__template_key": "openai",
+                            "api_url": "https://openai-relay.example/v1",
+                            "api_key": "relay-key",
+                            "model": "gpt-image-2",
+                        }
+                    ],
+                }
+            }
+        ).image_generation
+        service = GeminiImageService(settings, Path(tempfile.mkdtemp()))
+
+        async def get_session():
+            return _ImageSession()
+
+        service._get_session = get_session
+        with patch.object(
+            picture_canvas,
+            "is_http_url_allowed_async",
+            new=AsyncMock(return_value=True),
+        ):
+            generated = await service.edit_image("换成雨夜窗边", str(reference))
+
+        self.assertEqual(generated.path.read_bytes(), output_bytes)
+        self.assertEqual(calls[0][0:2], ("POST", "https://openai-relay.example/v1/images/edits"))
+        self.assertEqual(calls[1][0:2], ("GET", "https://cdn.example/openai-edit.png"))
 
     async def test_edit_image_does_not_duplicate_character_identity_anchor(self):
         output_bytes = b"\x89PNG\r\n\x1a\nopenai-edit"

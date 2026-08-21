@@ -26,6 +26,7 @@ from .basis import (
 from .cast import as_int, as_str, as_str_list, dict_section, normalize_time
 from .generate import (
     ImageGenerationSettings,
+    RealtimeVoiceCallSettings,
     VideoGenerationSettings,
     VoiceGenerationSettings,
 )
@@ -68,6 +69,9 @@ class LifeSettings:
     voice_generation: VoiceGenerationSettings = field(
         default_factory=VoiceGenerationSettings
     )
+    realtime_voice_call: RealtimeVoiceCallSettings = field(
+        default_factory=RealtimeVoiceCallSettings
+    )
     search: SearchSettings = field(default_factory=SearchSettings)
     domains: LifeDomainSettings = field(default_factory=LifeDomainSettings)
     storage: StorageSettings = field(default_factory=StorageSettings)
@@ -100,6 +104,7 @@ class LifeSettings:
         image_generation_conf = dict_section(data, "image_generation_config")
         video_generation_conf = dict_section(data, "video_generation_config")
         voice_generation_conf = dict_section(data, "voice_generation_config")
+        realtime_voice_call_conf = dict_section(data, "realtime_voice_call_config")
         search_conf = dict_section(data, "search_config")
         domains_conf = dict_section(data, "life_domain_config")
         storage_conf = dict_section(data, "storage_config")
@@ -151,6 +156,9 @@ class LifeSettings:
         )
         config.voice_generation = VoiceGenerationSettings.from_dict(
             voice_generation_conf
+        )
+        config.realtime_voice_call = RealtimeVoiceCallSettings.from_dict(
+            realtime_voice_call_conf
         )
         config.search = SearchSettings.from_dict(search_conf)
         config.domains = LifeDomainSettings.from_dict(domains_conf)

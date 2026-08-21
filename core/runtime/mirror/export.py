@@ -8,8 +8,11 @@ from astrbot.api import logger
 
 from ...clock import now as life_now
 from ...life.condition import classify_message_interrupt, message_can_interrupt
+from ...life.calendar import format_calendar_context, format_season_context
 from ...life.tools import (
     format_timeline_to_text,
+    get_time_period,
+    get_time_period_cn,
     resolve_business_now,
     resolve_daily_hint,
 )
@@ -655,7 +658,27 @@ class SnapshotExportMixin:
         )
         state_dict = data.state.as_dict() if data.state else {}
         interrupt = classify_message_interrupt()
+        weekday_names = (
+            "星期一",
+            "星期二",
+            "星期三",
+            "星期四",
+            "星期五",
+            "星期六",
+            "星期日",
+        )
+        current_awareness = {
+            "datetime": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "timezone": "Asia/Shanghai",
+            "utc_offset": "UTC+08:00",
+            "date": now.date().isoformat(),
+            "weekday": weekday_names[now.weekday()],
+            "time_period": get_time_period_cn(get_time_period(now)),
+            "calendar": format_calendar_context(now),
+            "season": format_season_context(now),
+        }
         return {
+            "current_awareness": current_awareness,
             "weather": self._life_context_weather(data),
             "outfit": data.outfit,
             "schedule": schedule,

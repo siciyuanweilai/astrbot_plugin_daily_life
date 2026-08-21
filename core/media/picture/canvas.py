@@ -989,7 +989,10 @@ class GeminiImageService:
             可直接保存的图片字节。
         """
         if route.protocol == "openai":
-            return openai.extract_image(data)
+            image_bytes, image_url = openai.extract_image(data, route.api_url)
+            if image_bytes or not image_url:
+                return image_bytes
+            return await self._download_generated_image(image_url, timeout=timeout)
         if route.protocol == "gemini":
             return gemini.extract_image(data)
         image_bytes, image_url = imagine.extract_image(data, route.api_url)
@@ -1006,7 +1009,7 @@ class GeminiImageService:
         """下载接口返回的结果图片并校验内容。
 
         Args:
-            url: Grok 接口返回的图片地址。
+            url: 图片接口返回的结果地址。
             timeout: 当前通道配置的请求超时。
 
         Returns:

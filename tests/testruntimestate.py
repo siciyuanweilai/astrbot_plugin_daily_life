@@ -145,6 +145,37 @@ class RuntimeStateTest(unittest.TestCase):
         self.assertNotIn("回复风格约束", text)
         self.assertNotIn("[HiddenAttentionState]", text)
 
+    def test_outfit_context_ignores_transient_sleep_and_outgoing_changes(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        data = DayRecord(
+            date="2026-08-21",
+            weather_info=WeatherInfo(temp=24, condition="晴"),
+            state=LifeState.from_value(
+                {
+                    "outgoing": 20,
+                    "sleep": {"depth": "awake"},
+                }
+            ),
+            timeline=[
+                TimelineItem(
+                    time="22:00",
+                    activity="回家休息",
+                    place="家",
+                    place_kind="home",
+                )
+            ],
+        )
+        now = datetime.datetime(2026, 8, 21, 22, 30)
+        before = runtime._outfit_context_signature(data, now, "深夜")
+
+        data.state.outgoing = 80
+        data.state.sleep.depth = "light_sleep"
+        after = runtime._outfit_context_signature(data, now, "深夜")
+
+        self.assertEqual(before, after)
+        data.timeline[0].place_kind = "poi"
+        self.assertNotEqual(after, runtime._outfit_context_signature(data, now, "深夜"))
+
     def test_residence_refresh_hides_stale_current_life_facts(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.config = LifeSettings.from_dict({})

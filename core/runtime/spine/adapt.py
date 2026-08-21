@@ -175,6 +175,10 @@ class SpineAdaptMixin:
                     previous_services,
                     previous_rhythm_running=previous_rhythm_running,
                 )
+                voice_call = getattr(self, "voice_call", None)
+                reconfigure_voice_call = getattr(voice_call, "reconfigure", None)
+                if callable(reconfigure_voice_call):
+                    await reconfigure_voice_call()
             # 写配置或服务替换被取消时，保持配置与运行服务一致。
             except BaseException:
                 candidate.rhythm.stop()

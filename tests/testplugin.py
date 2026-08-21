@@ -60,6 +60,57 @@ def patched_follow_up_runners(runners):
 
 
 class PluginLifecycleTest(unittest.IsolatedAsyncioTestCase):
+    async def test_voice_call_invite_tool_sends_notice_and_link_separately(self):
+        async def create_voice_call_invite(event, *, greeting=""):
+            self.assertEqual(greeting, "接通后先问候")
+            return "实时语音通话邀请已生成（120秒内有效）：\nhttps://voice.example.invalid/call/<token>"
+
+        plugin = DailyLifePlugin.__new__(DailyLifePlugin)
+        plugin.runtime = types.SimpleNamespace(
+            create_voice_call_invite=create_voice_call_invite,
+        )
+        event = Event()
+
+        replies = [
+            item
+            async for item in plugin.tool_life_voice_call_invite(
+                event,
+                greeting="接通后先问候",
+            )
+        ]
+
+        self.assertIsNone(event.get_result())
+        self.assertEqual(
+            replies,
+            [
+                "实时语音通话邀请已生成（120秒内有效）：",
+                "https://voice.example.invalid/call/<token>",
+            ],
+        )
+        self.assertTrue(event.is_stopped())
+
+    async def test_voice_call_command_yields_notice_and_link_separately(self):
+        async def create_voice_call_invite(event, *, greeting=""):
+            return "实时语音通话邀请已生成（120秒内有效）：\nhttps://voice.example.invalid/call/<token>"
+
+        plugin = DailyLifePlugin.__new__(DailyLifePlugin)
+        plugin.runtime = types.SimpleNamespace(
+            create_voice_call_invite=create_voice_call_invite,
+        )
+        event = Event()
+
+        replies = [
+            item async for item in plugin.command_voice_call(event)
+        ]
+
+        self.assertEqual(
+            replies,
+            [
+                "实时语音通话邀请已生成（120秒内有效）：",
+                "https://voice.example.invalid/call/<token>",
+            ],
+        )
+
     def test_model_sdk_debug_logs_are_suppressed(self):
         astrbot_logger = logging.getLogger("astrbot")
         previous_filters = list(astrbot_logger.filters)

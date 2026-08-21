@@ -1585,9 +1585,9 @@ class LifeSettingsTest(unittest.TestCase):
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertIn("version: 1.3.1", metadata)
+        self.assertIn("version: 1.3.2", metadata)
         self.assertIn('astrbot_version: ">=4.26,<5"', metadata)
-        self.assertIn("version-1.3.1", readme)
+        self.assertIn("version-1.3.2", readme)
         self.assertIn("创意衣橱生成", readme)
         self.assertIn("文生图不使用角色参考图", readme)
         self.assertIn("不读取联网灵感或固定风格池", readme)
@@ -1599,6 +1599,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertNotIn("用户明确要求联网寻找灵感时", readme)
         self.assertNotIn("图片 → 创意衣橱", readme)
         self.assertNotIn("SiliconFlow", readme)
+        self.assertIn("v1.3.2 · 2026-08-22", changelog)
         self.assertIn("v1.3.1 · 2026-08-20", changelog)
         self.assertIn("v1.3.0 · 2026-08-19", changelog)
         self.assertIn("v1.2.9 · 2026-08-18", changelog)
@@ -1609,6 +1610,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertIn("v1.2.4 · 2026-08-12", changelog)
         self.assertIn("v1.2.3 · 2026-08-11", changelog)
         self.assertIn("v1.2.2 · 2026-08-09", changelog)
+        self.assertLess(changelog.index("v1.3.2"), changelog.index("v1.3.1"))
         self.assertLess(changelog.index("v1.3.1"), changelog.index("v1.3.0"))
         self.assertLess(changelog.index("v1.3.0"), changelog.index("v1.2.9"))
         self.assertLess(changelog.index("v1.2.9"), changelog.index("v1.2.8"))
@@ -1619,6 +1621,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertLess(changelog.index("v1.2.4"), changelog.index("v1.2.3"))
         self.assertLess(changelog.index("v1.2.3"), changelog.index("v1.2.2"))
         self.assertLess(changelog.index("v1.2.2"), changelog.index("v1.2.1"))
+        release_132 = changelog.split("## 🌸 v1.3.2", 1)[1].split("## 🌸 v1.3.1", 1)[0]
         release_131 = changelog.split("## 🌸 v1.3.1", 1)[1].split("## 🌸 v1.3.0", 1)[0]
         release_130 = changelog.split("## 🌸 v1.3.0", 1)[1].split("## 🌸 v1.2.9", 1)[0]
         release_129 = changelog.split("## 🌸 v1.2.9", 1)[1].split("## 🌸 v1.2.8", 1)[0]
@@ -1630,6 +1633,12 @@ class LifeSettingsTest(unittest.TestCase):
         release_123 = changelog.split("## 🌸 v1.2.3", 1)[1].split("## 🌸 v1.2.2", 1)[0]
         release_122 = changelog.split("## 🌸 v1.2.2", 1)[1].split("## 🌸 v1.2.1", 1)[0]
         release_121 = changelog.split("## 🌸 v1.2.1", 1)[1].split("## 🌸 v1.2.0", 1)[0]
+        self.assertIn("实时语音通话", release_132)
+        self.assertIn("受控的结束当前通话能力", release_132)
+        self.assertIn("conversation.item.created", release_132)
+        self.assertIn("PCM 音频播放完毕", release_132)
+        self.assertIn("data[].url", release_132)
+        self.assertIn("自动穿搭刷新", release_132)
         self.assertIn("日历与季节感知", release_131)
         self.assertIn("农历传统节日", release_131)
         self.assertIn("主题与心情拆分", release_131)

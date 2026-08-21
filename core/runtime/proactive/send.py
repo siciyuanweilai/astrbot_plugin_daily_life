@@ -15,9 +15,34 @@ except Exception:
 from ...models import ExpressionIntentRecord, ExpressionReviewRecord
 from ...sources.dispatch import ScopeDeliveryError
 from ..markers import LOG_PREFIX
+from ..delivery import BackgroundTextMode
 
 
 class ProactiveSendMixin:
+    async def _send_proactive_voice_call_invite(
+        self,
+        target_scope: str,
+        notice: str,
+        link: str,
+        *,
+        source_event: Any = None,
+    ) -> bool:
+        """发送主动通话提示和单独链接，保持移动端可直接复制。"""
+
+        parts = [str(notice or "").strip(), str(link or "").strip()]
+        if not all(parts):
+            return False
+        for part in parts:
+            if not await self.send_background_text(
+                target_scope,
+                part,
+                mode=BackgroundTextMode.DIRECT,
+                source_event=source_event,
+                source="proactive_voice_call",
+            ):
+                return False
+        return True
+
     @staticmethod
     def _proactive_source_label(payload: dict[str, Any] | None) -> str:
         source = (
@@ -29,6 +54,7 @@ class ProactiveSendMixin:
             "private_revisit": "私聊回访",
             "proactive_commitment": "主动承诺",
             "proactive_reply": "闲时回复",
+            "proactive_voice_call": "主动语音邀请",
         }.get(source, "闲时回复")
 
     def _normalize_proactive_reply_text(self, reply_text: str) -> str:

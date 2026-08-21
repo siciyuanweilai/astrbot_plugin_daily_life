@@ -19,6 +19,7 @@ from .generate import (
     IMAGE_ASPECT_RATIOS,
     IMAGE_RESOLUTIONS,
     ImageGenerationSettings,
+    RealtimeVoiceCallSettings,
     VideoGenerationSettings,
     VoiceGenerationSettings,
 )
@@ -35,6 +36,7 @@ __all__ = [
     "IMAGE_ASPECT_RATIOS",
     "IMAGE_RESOLUTIONS",
     "ImageGenerationSettings",
+    "RealtimeVoiceCallSettings",
     "LifecycleSettings",
     "LifeSettings",
     "LifeDomainSettings",

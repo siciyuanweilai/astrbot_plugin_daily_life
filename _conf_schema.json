@@ -1218,6 +1218,132 @@
       }
     }
   },
+  "realtime_voice_call_config": {
+    "description": "实时语音通话",
+    "type": "object",
+    "hint": "使用火山引擎豆包实时语音全双工接口，用户点击一次性邀请链接后通过浏览器进行双向语音通话。API Key、音色、语速和音量复用“语音”设置；默认关闭，不会影响普通语音消息。",
+    "items": {
+      "enabled": {
+        "description": "启用实时语音通话",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后可使用“语音通话”命令或实时通话工具生成邀请链接。用户必须点击链接并授权麦克风后才会接通。"
+      },
+      "listen_host": {
+        "description": "网关监听地址",
+        "type": "string",
+        "default": "0.0.0.0",
+        "hint": "实时通话网关绑定的本机地址；容器部署通常保持 0.0.0.0。"
+      },
+      "listen_port": {
+        "description": "网关端口",
+        "type": "int",
+        "default": 6186,
+        "slider": {
+          "min": 1024,
+          "max": 65535,
+          "step": 1
+        },
+        "hint": "实时通话网关端口，默认 6186；外部访问需要反向代理或映射该端口。"
+      },
+      "public_url": {
+        "description": "通话公开地址",
+        "type": "string",
+        "default": "",
+        "hint": "公网地址必须使用 HTTPS，例如 https://voice.example.com；本机调试可填写 http://127.0.0.1 或 http://localhost。"
+      },
+      "endpoint_url": {
+        "description": "火山实时语音地址",
+        "type": "string",
+        "default": "wss://openspeech.bytedance.com/api/v3/duplex/realtime/dialogue",
+        "hint": "通常保持火山引擎官方 WebSocket 地址，不要暴露给浏览器。"
+      },
+      "model": {
+        "description": "实时语音模型",
+        "type": "string",
+        "default": "1.2.6.1",
+        "hint": "火山引擎全双工实时语音接口要求的模型标识。"
+      },
+      "max_duration_seconds": {
+        "description": "单次最长通话（秒）",
+        "type": "int",
+        "default": 1800,
+        "slider": {
+          "min": 30,
+          "max": 7200,
+          "step": 30
+        },
+        "hint": "达到上限后自动结束通话，避免长连接无限占用资源。"
+      },
+      "idle_timeout_seconds": {
+        "description": "无声超时（秒）",
+        "type": "int",
+        "default": 90,
+        "slider": {
+          "min": 30,
+          "max": 600,
+          "step": 30
+        },
+        "hint": "连续一段时间没有检测到用户说话或转写活动后自动结束通话。"
+      },
+      "invite_expire_seconds": {
+        "description": "邀请有效期（秒）",
+        "type": "int",
+        "default": 120,
+        "slider": {
+          "min": 30,
+          "max": 3600,
+          "step": 30
+        },
+        "hint": "邀请链接过期后不可再次使用。"
+      },
+      "max_concurrent_calls": {
+        "description": "最大并发通话",
+        "type": "int",
+        "default": 1,
+        "slider": {
+          "min": 1,
+          "max": 4,
+          "step": 1
+        },
+        "hint": "限制同时占用的实时语音会话数量。"
+      },
+      "context_turns": {
+        "description": "通话上下文轮数",
+        "type": "int",
+        "default": 8,
+        "slider": {
+          "min": 0,
+          "max": 20,
+          "step": 1
+        },
+        "hint": "限制注入实时通话的近期聊天摘要、事件和承诺数量；设为 0 表示不裁剪这些列表。"
+      },
+      "allow_function_calls": {
+        "description": "允许实时通话调用工具",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后把 AstrBot 当前已注册的插件/MCP 工具提供给实时通话；不会包含再次发起通话的工具。无论是否开启，Bot 都可在自然告别后结束当前通话。"
+      },
+      "tool_call_timeout_seconds": {
+        "description": "实时工具调用超时（秒）",
+        "type": "int",
+        "default": 60,
+        "slider": {
+          "min": 1,
+          "max": 300,
+          "step": 1
+        },
+        "hint": "单次工具调用超过该时间会将超时结果交给通话模型，不会阻塞通话网关。"
+      },
+      "short_url_enabled": {
+        "description": "启用邀请短链接",
+        "type": "bool",
+        "default": true,
+        "hint": "使用“天气”设置中的柠柚接口密钥生成短链；接口不可用时自动保留完整邀请链接。"
+      }
+    }
+  },
   "image_generation_config": {
     "description": "图片",
     "type": "object",

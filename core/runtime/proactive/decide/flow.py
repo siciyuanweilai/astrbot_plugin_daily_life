@@ -1,6 +1,7 @@
 import datetime
 import uuid
 from typing import Any
+from urllib.parse import urlparse
 
 from astrbot.api import logger
 
@@ -40,6 +41,73 @@ class ProactiveFlowMixin:
         if target_topic:
             payload["target_topic"] = target_topic
         return bool(target_message_id or target_topic)
+
+    def _normalize_proactive_voice_call_intent(
+        self, event: Any, payload: dict[str, Any]
+    ) -> None:
+        """校验主动通话意愿，确保它不会绕过私聊和通话能力门控。"""
+
+        raw = payload.get("voice_call_intent")
+        raw = raw if isinstance(raw, dict) else {}
+        requested = self._proactive_bool(raw.get("should_invite"))
+        greeting = self._proactive_reply_text(raw.get("greeting"))[:500]
+        reason = str(raw.get("reason") or "").strip()[:240]
+        manager = getattr(self, "voice_call", None)
+        checker = getattr(manager, "proactive_invite_available", None)
+        available = False
+        if not self._event_is_group_message(event) and callable(checker):
+            try:
+                available = bool(checker(self._event_session_id(event)))
+            except Exception:
+                available = False
+        should_invite = (
+            requested
+            and bool(payload.get("should_reply"))
+            and bool(payload.get("reply_text"))
+            and available
+        )
+        if requested and not available:
+            reason = "实时通话当前不可用，暂不主动邀请"
+        elif requested and not payload.get("should_reply"):
+            reason = "没有自然的主动回复承接，暂不主动邀请"
+        payload["voice_call_intent"] = {
+            "should_invite": should_invite,
+            "greeting": greeting if should_invite else "",
+            "reason": reason or ("此刻没有主动通话理由" if not should_invite else ""),
+            "delivered": False,
+        }
+
+    @staticmethod
+    def _split_voice_call_invite_message(message: str) -> tuple[str, str]:
+        """拆分主动通话的提示文本和链接，链接单独投递便于复制。"""
+
+        lines = [line.strip() for line in str(message or "").splitlines() if line.strip()]
+        for index, line in enumerate(lines):
+            parsed = urlparse(line)
+            if parsed.scheme in {"https", "http"} and parsed.netloc:
+                notice = "\n".join(lines[:index]).strip() or "实时语音通话邀请已生成。"
+                return notice, line
+        return "\n".join(lines).strip(), ""
+
+    async def _prepare_proactive_voice_call_invite(
+        self, event: Any, payload: dict[str, Any]
+    ) -> tuple[str, str] | None:
+        intent = payload.get("voice_call_intent")
+        if not isinstance(intent, dict) or not intent.get("should_invite"):
+            return None
+        creator = getattr(self, "create_voice_call_invite", None)
+        if not callable(creator):
+            return None
+        try:
+            message = await creator(
+                event,
+                greeting=str(intent.get("greeting") or "").strip(),
+            )
+        except Exception as exc:
+            logger.debug(f"{LOG_PREFIX} 主动语音邀请创建失败：{type(exc).__name__}")
+            return None
+        notice, link = self._split_voice_call_invite_message(message)
+        return (notice, link) if notice and link else None
 
     def _normalize_proactive_payload(
         self,
@@ -100,6 +168,7 @@ class ProactiveFlowMixin:
                 "reply_text": reply_text if should_reply else "",
             }
         )
+        self._normalize_proactive_voice_call_intent(event, payload)
         return payload, reply_text
 
     async def _record_proactive_decision(
@@ -415,8 +484,18 @@ class ProactiveFlowMixin:
                         "reply_text": "",
                     }
                 )
+                intent = decision.get("voice_call_intent")
+                if isinstance(intent, dict):
+                    intent.update(
+                        {
+                            "should_invite": False,
+                            "greeting": "",
+                            "reason": "双方当前同处现场，不发起线上通话邀请",
+                        }
+                    )
                 reply_text = ""
                 decision_name = "observe"
+        self._normalize_proactive_voice_call_intent(event, decision)
         if decision_name in {"cooldown", "air_delay", "wait"}:
             retry_after = max(60, int(decision.get("retry_after") or 60))
             candidate["next_evaluation_at"] = now + datetime.timedelta(
@@ -439,6 +518,38 @@ class ProactiveFlowMixin:
                 stage=target_state,
                 reason_code=str(decision.get("reason_code") or "decision_deferred"),
                 outcome=str(decision.get("reason") or "等待更合适的时机"),
+            )
+            return
+        voice_invite = await self._prepare_proactive_voice_call_invite(event, decision)
+        voice_intent = decision.get("voice_call_intent")
+        if isinstance(voice_intent, dict) and voice_intent.get("should_invite") and voice_invite is None:
+            decision.update(
+                {
+                    "should_reply": False,
+                    "decision": "observe",
+                    "reason": "主动通话邀请暂时无法创建，避免只说想打电话却不给入口",
+                    "reason_code": "voice_call_invite_unavailable",
+                    "reply_text": "",
+                }
+            )
+            voice_intent.update({"should_invite": False, "reason": decision["reason"]})
+            self._update_proactive_air_after_decision(key, decision, now, sent=False)
+            self._proactive_idle_candidates.pop(key, None)
+            await self._advance_proactive_decision_trace(
+                event,
+                decision,
+                stage="abandoned",
+                reason_code="voice_call_invite_unavailable",
+                outcome=decision["reason"],
+            )
+            self._transition_proactive_lifecycle(
+                key,
+                "abandoned",
+                event="voice_call_invite_unavailable",
+                reason=decision["reason"],
+                now=now,
+                revision=revision,
+                candidate=candidate,
             )
             return
         if decision.get("should_reply") and reply_text:
@@ -466,6 +577,19 @@ class ProactiveFlowMixin:
                 source_event=event,
             )
             if sent:
+                if voice_invite is not None:
+                    notice, link = voice_invite
+                    invite_sent = await self._send_proactive_voice_call_invite(
+                        str(candidate.get("target_scope") or ""),
+                        notice,
+                        link,
+                        source_event=event,
+                    )
+                    intent = decision.get("voice_call_intent")
+                    if isinstance(intent, dict):
+                        intent["delivered"] = invite_sent
+                    if not invite_sent:
+                        logger.warning(f"{LOG_PREFIX} 主动语音邀请链接发送失败")
                 sender_name = str(candidate.get("sender_name") or "").strip()
                 await self._commit_proactive_decision(
                     event,

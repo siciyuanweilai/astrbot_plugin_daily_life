@@ -187,12 +187,19 @@ class RefreshMixin:
     ) -> str:
         current, next_item = get_current_timeline_status(data.timeline, now, data.date)
         weather = data.weather_info
-        state = data.state
 
         def item_text(item: Any) -> str:
             if item is None:
                 return ""
-            return f"{getattr(item, 'time', '')}:{getattr(item, 'activity', '')}"
+            if isinstance(item, dict):
+                time = item.get("time", "")
+                activity = item.get("activity", "")
+                place_kind = item.get("place_kind", "")
+            else:
+                time = getattr(item, "time", "")
+                activity = getattr(item, "activity", "")
+                place_kind = getattr(item, "place_kind", "")
+            return f"{time}:{activity}:{place_kind}"
 
         try:
             temperature_bucket = (
@@ -200,22 +207,17 @@ class RefreshMixin:
             )
         except (TypeError, ValueError):
             temperature_bucket = ""
-        try:
-            outgoing_bucket = round(float(state.outgoing) / 20) if state else ""
-        except (TypeError, ValueError):
-            outgoing_bucket = ""
-        sleep = getattr(state, "sleep", None) if state else None
         pending_outfit, _ = self._pending_commitment_outfit(data, now)
         values = (
-            "component_review_v1",
+            # 精力、睡眠深度等实时状态会在后台巡检中频繁波动，不能单独
+            # 触发重新选衣；真正影响穿搭的是时段、日程场景、天气和明确要求。
+            "component_review_v2",
             data.date,
             period,
             item_text(current),
             item_text(next_item),
             str(weather.condition or ""),
             str(temperature_bucket),
-            str(outgoing_bucket),
-            str(getattr(sleep, "depth", "") or ""),
             pending_outfit,
         )
         return "|".join(values)
@@ -382,27 +384,68 @@ class RefreshMixin:
                 or previous_outfit_context != current_outfit_context
             )
             outfit_changed = False
+            outfit_context_recorded = False
             if outfit_context_changed:
-                outfit_before = (data.outfit, data.time_period)
-                outfit_kwargs: dict[str, Any] = {"current_time": now}
-                pending_outfit_instruction, _ = self._pending_commitment_outfit(
-                    data, now
-                )
-                if pending_outfit_instruction:
-                    outfit_kwargs["instruction"] = pending_outfit_instruction
-                if source_event is not None and self._event_message_id(source_event):
-                    outfit_kwargs["should_abort"] = lambda: self.event_was_recalled(
-                        source_event, log_skip=True
-                    )
-                updated = await self.composer.update_outfit(
-                    target_date_str, current_period, **outfit_kwargs
-                )
-                data = updated or data or await self.archive.get_day(target_date_str)
-                outfit_changed = bool(
-                    data and (data.outfit, data.time_period) != outfit_before
-                )
-                if data and updated and pending_outfit_instruction:
-                    data.meta.pop("pending_commitment_outfit", None)
+                # 自主巡检可能由定时器和聊天后台刷新同时触发。使用与
+                # 明确换装相同的租约，并在拿到锁后重新读取上下文，避免
+                # 两个已经排队的任务依次再次调用模型。
+                async with operation_lock(self, f"outfit:{target_date_str}"):
+                    latest = await self.archive.get_day(target_date_str)
+                    if latest:
+                        latest_context = self._outfit_context_signature(
+                            latest, now, current_period
+                        )
+                        latest_recorded = str(
+                            (latest.meta or {}).get("auto_outfit_context", "") or ""
+                        )
+                        if latest_recorded and latest_recorded == latest_context:
+                            data = latest
+                            current_outfit_context = latest_context
+                            outfit_context_changed = False
+                            outfit_context_recorded = True
+                            logger.debug(
+                                f"{LOG_PREFIX} 同一轮穿搭判断已由并发任务完成，跳过重复模型调用"
+                            )
+                        else:
+                            data = latest
+                            current_outfit_context = latest_context
+                            outfit_before = (data.outfit, data.time_period)
+                            outfit_kwargs: dict[str, Any] = {"current_time": now}
+                            pending_outfit_instruction, _ = (
+                                self._pending_commitment_outfit(data, now)
+                            )
+                            if pending_outfit_instruction:
+                                outfit_kwargs["instruction"] = (
+                                    pending_outfit_instruction
+                                )
+                            if source_event is not None and self._event_message_id(
+                                source_event
+                            ):
+                                outfit_kwargs["should_abort"] = lambda: (
+                                    self.event_was_recalled(source_event, log_skip=True)
+                                )
+                            updated = await self.composer.update_outfit(
+                                target_date_str, current_period, **outfit_kwargs
+                            )
+                            data = (
+                                updated
+                                or data
+                                or await self.archive.get_day(target_date_str)
+                            )
+                            outfit_changed = bool(
+                                data
+                                and (data.outfit, data.time_period) != outfit_before
+                            )
+                            if data and updated:
+                                if pending_outfit_instruction:
+                                    data.meta.pop("pending_commitment_outfit", None)
+                                # 在释放租约前落下去重标记，后续排队任务
+                                # 才能看到这次自动判断已经完成。
+                                data.meta["auto_outfit_context"] = (
+                                    current_outfit_context
+                                )
+                                outfit_context_recorded = True
+                                await self.archive.save_day(data)
             else:
                 logger.debug(f"{LOG_PREFIX} 穿搭上下文未变化，跳过本次穿搭模型判断")
             if source_event is not None and self.event_was_recalled(
@@ -415,15 +458,16 @@ class RefreshMixin:
                 return data
             if data:
                 if not state_due:
-                    data.meta["auto_outfit_context"] = self._outfit_context_signature(
-                        data, now, current_period
-                    )
-                    await self.archive.save_day(data)
-                    await self.mark_page_status_changed(
-                        "outfit_update"
-                        if outfit_context_changed
-                        else "timeline_execution"
-                    )
+                    if outfit_context_recorded or not outfit_context_changed:
+                        data.meta["auto_outfit_context"] = (
+                            self._outfit_context_signature(data, now, current_period)
+                        )
+                        await self.archive.save_day(data)
+                        await self.mark_page_status_changed(
+                            "outfit_update"
+                            if outfit_context_changed
+                            else "timeline_execution"
+                        )
                     return data
                 stable = not any(
                     (
@@ -444,9 +488,10 @@ class RefreshMixin:
                 stable_checks = previous_stable_checks + 1 if stable else 0
                 data.meta["auto_life_last_checked_at"] = now.strftime("%Y-%m-%d %H:%M")
                 data.meta["auto_life_stable_checks"] = str(stable_checks)
-                data.meta["auto_outfit_context"] = self._outfit_context_signature(
-                    data, now, current_period
-                )
+                if outfit_context_recorded or not outfit_context_changed:
+                    data.meta["auto_outfit_context"] = (
+                        self._outfit_context_signature(data, now, current_period)
+                    )
                 next_check = self._next_auto_life_check_at(
                     data,
                     now,

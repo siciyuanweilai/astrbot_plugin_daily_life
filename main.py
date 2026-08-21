@@ -69,6 +69,17 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
     _LLM_RESPONSE_SEEN_ATTR = "_daily_life_llm_response_seen"
     _AGENT_ERROR_SEEN_ATTR = "_daily_life_agent_error_seen"
 
+    @staticmethod
+    def _split_voice_call_invite_message(message: str) -> tuple[str, str | None]:
+        """拆分通话邀请提示与可单独复制的链接。"""
+
+        lines = [line.strip() for line in str(message or "").splitlines() if line.strip()]
+        for index, line in enumerate(lines):
+            if line.startswith(("https://", "http://")):
+                notice = "\n".join(lines[:index]).strip()
+                return notice or line, line
+        return "\n".join(lines).strip(), None
+
     _SEND_PIPELINE_STOP_HOOKS = (
         "suppress_recalled_event_result",
         "suppress_intermediate_tool_result",
@@ -1723,6 +1734,49 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             event, str(text or "").strip(), **voice_kwargs
         )
 
+    @filter.command("语音通话")
+    @_runtime_guard
+    async def command_voice_call(self, event: AstrMessageEvent):
+        """创建一次性实时语音通话邀请。"""
+        try:
+            message = await self.runtime.create_voice_call_invite(event)
+        except Exception as exc:
+            message = f"暂时不能发起实时语音通话：{str(exc)[:240]}"
+        notice, invite_link = self._split_voice_call_invite_message(message)
+        yield event.plain_result(notice)
+        if invite_link:
+            yield event.plain_result(invite_link)
+
+    @filter.llm_tool(name="life_voice_call_invite")
+    @_runtime_guard
+    async def tool_life_voice_call_invite(
+        self,
+        event: AstrMessageEvent,
+        greeting: str = "",
+    ):
+        """
+        创建一次性实时语音通话邀请。
+        仅当用户明确要求打电话、语音通话或实时说话时调用，不要因为用户只要求发送一条语音而调用。
+        返回邀请链接后，先让用户点击接受；不要声称通话已经接通。
+
+        Args:
+            greeting(string): 可选的自然开场白。结合当前角色、时间、状态和最近话题判断：
+                这次确实有合适由头先开口时才填写一句上下文相关的话；没有合适由头必须留空，
+                让通话接通后先听用户说话。不要每次都填写“你好，听得到吗”等固定寒暄。
+        """
+        message = await self.runtime.create_voice_call_invite(
+            event, greeting=str(greeting or "").strip()
+        )
+        notice, invite_link = self._split_voice_call_invite_message(message)
+        # 实时通话邀请必须立刻交付；链接单独 yield，便于移动端直接复制。
+        # 仍走 AstrBot 原生响应管线，保留标准发送日志和对话记录。
+        if invite_link:
+            yield event.plain_result(notice)
+            yield event.plain_result(invite_link)
+        else:
+            yield event.plain_result(notice)
+        event.stop_event()
+
     @filter.llm_tool(name="life_emoji_send")
     @_runtime_guard
     async def tool_life_emoji_send(
@@ -1801,6 +1855,13 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
                 toolset.remove_tool("life_video_generate")
             if not voice_enabled:
                 toolset.remove_tool("life_voice_generate")
+            realtime_call_enabled = bool(
+                getattr(
+                    getattr(life_config, "realtime_voice_call", None), "enabled", False
+                )
+            )
+            if not realtime_call_enabled:
+                toolset.remove_tool("life_voice_call_invite")
             domains = getattr(self.runtime, "domains", None)
             map_available = getattr(domains, "map_tools_available", None)
             if not callable(map_available) or not map_available():
