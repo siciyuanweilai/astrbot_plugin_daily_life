@@ -85,7 +85,7 @@ class ProactiveFlowMixin:
         for index, line in enumerate(lines):
             parsed = urlparse(line)
             if parsed.scheme in {"https", "http"} and parsed.netloc:
-                notice = "\n".join(lines[:index]).strip() or "实时语音通话邀请已生成。"
+                notice = "\n".join(lines[:index]).strip() or "语音通话邀请已生成。"
                 return notice, line
         return "\n".join(lines).strip(), ""
 

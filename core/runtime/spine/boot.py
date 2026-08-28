@@ -31,6 +31,7 @@ from ..markers import LOG_PREFIX
 from ..scopes import RuntimeScopeState
 from ..timer import LifeRhythmClock
 from ..voicecall import VoiceCallManager
+from ..voicecall.voicegateway import voice_gateway_start_error_detail
 
 _DURABLE_TASK_LABELS = {
     "daily_refresh": "每日生活刷新",
@@ -40,6 +41,8 @@ _DURABLE_TASK_LABELS = {
     "media_delivery": "媒体投递恢复",
     "web_research": "网页研究报告",
     "proactive_commitment": "主动承诺履行",
+    "commitment_photo": "承诺拍照",
+    "commitment_video": "承诺拍视频",
 }
 
 # 平台管理器会先加载插件，再异步建立 IM 适配器连接。首次日程生成依赖
@@ -171,8 +174,11 @@ class SpineBootMixin:
             except Exception as exc:
                 # 网关启动失败不应阻断普通聊天，但必须留下明确的服务告警；
                 # 用户下次创建邀请时仍会再次尝试启动并返回可读错误。
+                settings = getattr(voice_call, "settings", None)
                 logger.error(
-                    f"{LOG_PREFIX} 实时语音通话网关启动失败：{type(exc).__name__}"
+                    "%s 实时语音通话网关启动失败：%s",
+                    LOG_PREFIX,
+                    voice_gateway_start_error_detail(exc, settings),
                 )
         self._schedule_background_task(
             self.ensure_startup_day_data(),
@@ -448,6 +454,12 @@ class SpineBootMixin:
     async def _run_durable_tasks_once(self) -> int:
         """租用并执行一批白名单生活任务，禁止持久化任意可执行代码。"""
         owner = getattr(self, "_durable_task_owner", f"runtime:{id(self)}")
+        reconcile_photos = getattr(self, "reconcile_commitment_photo_tasks", None)
+        if callable(reconcile_photos):
+            await reconcile_photos()
+        reconcile_videos = getattr(self, "reconcile_commitment_video_tasks", None)
+        if callable(reconcile_videos):
+            await reconcile_videos()
         await self.archive.recover_expired_durable_tasks()
         tasks = await self.archive.lease_durable_tasks(
             owner,
@@ -472,7 +484,13 @@ class SpineBootMixin:
             try:
                 result = (
                     await handler(task)
-                    if task.kind in {"media_delivery", "proactive_commitment"}
+                    if task.kind
+                    in {
+                        "media_delivery",
+                        "proactive_commitment",
+                        "commitment_photo",
+                        "commitment_video",
+                    }
                     else await handler()
                 )
             except asyncio.CancelledError:
@@ -544,6 +562,8 @@ class SpineBootMixin:
             handlers = {}
             self._durable_runtime_handlers = handlers
         handlers["proactive_commitment"] = self.run_proactive_commitment_task
+        handlers["commitment_photo"] = self.run_commitment_photo_task
+        handlers["commitment_video"] = self.run_commitment_video_task
         return LifeRhythmClock(
             config=config or self.config,
             daily_task=self._leased_rhythm_callback(

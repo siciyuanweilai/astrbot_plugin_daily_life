@@ -34,7 +34,22 @@ def build_request(
             {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
         ],
     }
-    return ImageRequest(url=url, headers=headers, payload=payload)
+    reference_image_count = sum(
+        1
+        for part in parts
+        if isinstance(part, dict)
+        and isinstance(part.get("inlineData") or part.get("inline_data"), dict)
+        and str(
+            (part.get("inlineData") or part.get("inline_data") or {}).get("data")
+            or ""
+        ).strip()
+    )
+    return ImageRequest(
+        url=url,
+        headers=headers,
+        payload=payload,
+        reference_image_count=reference_image_count,
+    )
 
 
 def extract_image(data: dict[str, Any]) -> bytes:

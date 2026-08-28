@@ -2,6 +2,7 @@ import asyncio
 import json
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from core.config.options import LifeSettings
@@ -10,10 +11,20 @@ from core.runtime.voicecall.manager import (
     VoiceCallManager,
     VoiceCallTranscriptTurn,
 )
-from core.runtime.voicecall.voicegateway import _transcript_page_html
-from core.runtime.voicecall.voicegateway import _VoiceCallBridge
+from core.runtime.voicecall.voicegateway import (
+    _VoiceCallBridge,
+    _decode_o20_frame,
+    _encode_o20_frame,
+    _transcript_page_html,
+    voice_gateway_start_error_detail,
+)
+from core.runtime.voicecall import voicegateway as voicegateway_module
 from core.runtime.voicecall.web import VOICE_CALL_PAGE
-from core.runtime.voicecall.toolbridge import VoiceCallToolBridge, _chain_text
+from core.runtime.voicecall.toolbridge import (
+    VoiceCallToolBridge,
+    VoiceCallToolEvent,
+    _chain_text,
+)
 
 
 class _Event:
@@ -81,6 +92,82 @@ class _OneBotAvatarEvent:
 
 
 class VoiceCallSettingsTest(unittest.IsolatedAsyncioTestCase):
+    async def test_upstream_init_error_preserves_detail_for_retry(self):
+        config = LifeSettings.from_dict(
+            {
+                "voice_generation_config": {
+                    "api_key": "api-key",
+                    "speaker_id": "speaker",
+                },
+                "realtime_voice_call_config": {"enabled": True},
+            }
+        )
+        manager = VoiceCallManager(_Runtime(config))
+        invite = VoiceCallInvite(
+            "id",
+            "scope",
+            "u",
+            "用户",
+            "context",
+            "",
+            time.time(),
+            time.time() + 120,
+            accepted=True,
+            state="connecting",
+        )
+        browser = type(
+            "Browser",
+            (),
+            {"send_json": AsyncMock(), "close": AsyncMock()},
+        )()
+        bridge = _VoiceCallBridge(
+            type("Gateway", (), {"manager": manager})(), browser, invite, "token"
+        )
+
+        class Upstream:
+            async def receive(self, timeout):
+                return type(
+                    "Message",
+                    (),
+                    {
+                        # aiohttp.WSMsgType.TEXT 的数值，避免测试本身依赖宿主环境。
+                        "type": 1,
+                        "data": json.dumps(
+                            {
+                                "type": "error",
+                                "error": {
+                                    "code": "invalid_session",
+                                    "message": "音色不可用",
+                                },
+                            },
+                            ensure_ascii=False,
+                        ),
+                    },
+                )()
+
+        bridge.upstream = Upstream()
+        ws_types = SimpleNamespace(
+            BINARY=2,
+            CLOSE=8,
+            CLOSING=256,
+            CLOSED=257,
+            ERROR=258,
+            TEXT=1,
+        )
+        with unittest.mock.patch.object(
+            voicegateway_module.aiohttp, "WSMsgType", ws_types, create=True
+        ):
+            with self.assertRaisesRegex(RuntimeError, "音色不可用"):
+                await bridge._wait_for_session_ready()
+
+        self.assertEqual(invite.end_reason, "上游服务错误：音色不可用")
+        browser.send_json.assert_awaited_once()
+        await manager.close()
+
+    def test_retryable_upstream_status_is_not_terminal_in_voice_page(self):
+        self.assertIn("payload.retryable === true", VOICE_CALL_PAGE)
+        self.assertIn("正在恢复|恢复中", VOICE_CALL_PAGE)
+
     async def test_voice_call_end_control_is_available_without_external_tools(self):
         config = LifeSettings.from_dict({"realtime_voice_call_config": {}})
         runtime = _Runtime(config)
@@ -1102,6 +1189,214 @@ class VoiceCallSettingsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session["audio"]["output"]["format"], {"type": "pcm_s16le", "rate": 24000})
         self.assertEqual(session["audio"]["output"]["voice"], "voice")
 
+    async def test_session_payload_keeps_official_capabilities_disabled_by_default(self):
+        config = LifeSettings.from_dict(
+            {
+                "voice_generation_config": {"speaker_id": "voice"},
+                "realtime_voice_call_config": {"model": "1.2.6.1"},
+            }
+        )
+        manager = VoiceCallManager(_Runtime(config))
+
+        payload = manager.session_create_payload(
+            VoiceCallInvite("id", "scope", "u", "name", "instructions", "", 0, 1)
+        )
+
+        dialog_extra = payload["extension"]["dialog"]["extra"]
+        self.assertEqual(
+            dialog_extra,
+            {"enable_volc_websearch": False, "enable_music": False},
+        )
+
+    async def test_session_payload_enables_official_internet_with_valid_settings(self):
+        config = LifeSettings.from_dict(
+            {
+                "voice_generation_config": {"speaker_id": "voice"},
+                "realtime_voice_call_config": {
+                    "official_internet_enabled": True,
+                    "official_internet_type": "web_agent",
+                    "official_internet_api_key": "search-key",
+                    "official_internet_bot_id": "bot-123",
+                    "official_internet_result_count": 4,
+                    "official_internet_no_result_message": "没有搜到相关内容。",
+                },
+            }
+        )
+        manager = VoiceCallManager(_Runtime(config))
+
+        payload = manager.session_create_payload(
+            VoiceCallInvite("id", "scope", "u", "name", "instructions", "", 0, 1)
+        )
+
+        self.assertEqual(
+            payload["extension"]["dialog"]["extra"],
+            {
+                "enable_volc_websearch": True,
+                "enable_music": False,
+                "volc_websearch_type": "web_agent",
+                "volc_websearch_api_key": "search-key",
+                "volc_websearch_bot_id": "bot-123",
+                "volc_websearch_result_count": 4,
+                "volc_websearch_no_result_message": "暂时没有找到相关信息。",
+            },
+        )
+        self.assertFalse(
+            hasattr(
+                config.realtime_voice_call,
+                "official_internet_no_result_message",
+            )
+        )
+
+    async def test_session_payload_disables_invalid_official_capabilities_safely(self):
+        config = LifeSettings.from_dict(
+            {
+                "voice_generation_config": {"speaker_id": "voice"},
+                "realtime_voice_call_config": {
+                    "model": "doubao-seed-2-0-lite-260428",
+                    "official_internet_enabled": True,
+                    "official_internet_type": "web_agent",
+                    "official_internet_api_key": "search-key",
+                    "official_music_enabled": True,
+                },
+            }
+        )
+        manager = VoiceCallManager(_Runtime(config))
+
+        payload = manager.session_create_payload(
+            VoiceCallInvite("id", "scope", "u", "name", "instructions", "", 0, 1)
+        )
+
+        self.assertEqual(
+            payload["extension"]["dialog"]["extra"],
+            {"enable_volc_websearch": False, "enable_music": False},
+        )
+
+    async def test_session_payload_enables_official_music_for_supported_model(self):
+        config = LifeSettings.from_dict(
+            {
+                "voice_generation_config": {"speaker_id": "voice"},
+                "realtime_voice_call_config": {
+                    "model": "1.2.1.1",
+                    "official_music_enabled": True,
+                },
+            }
+        )
+        manager = VoiceCallManager(_Runtime(config))
+
+        payload = manager.session_create_payload(
+            VoiceCallInvite("id", "scope", "u", "name", "instructions", "", 0, 1)
+        )
+
+        self.assertTrue(payload["extension"]["dialog"]["extra"]["enable_music"])
+
+    async def test_o20_session_payload_uses_binary_protocol_fields(self):
+        config = LifeSettings.from_dict(
+            {
+                "voice_generation_config": {
+                    "api_key": "voice-key",
+                    "speaker_id": "zh_female_vv_jupiter_bigtts",
+                },
+                "realtime_voice_call_config": {
+                    "model": "1.2.1.1",
+                    "official_music_enabled": True,
+                },
+            }
+        )
+        manager = VoiceCallManager(_Runtime(config))
+        payload = manager.o20_session_payload(
+            VoiceCallInvite("id", "scope", "u", "name", "instructions", "", 0, 1)
+        )
+        self.assertEqual(payload["tts"]["speaker"], "zh_female_vv_jupiter_bigtts")
+        self.assertEqual(payload["tts"]["audio_config"]["sample_rate"], 24000)
+        self.assertEqual(payload["dialog"]["extra"]["input_mod"], "keep_alive")
+        self.assertTrue(payload["dialog"]["extra"]["enable_music"])
+
+    async def test_o20_binary_frame_round_trip(self):
+        start = _encode_o20_frame(1, b"{}")
+        self.assertEqual(
+            list(start),
+            [17, 20, 16, 0, 0, 0, 0, 1, 0, 0, 0, 2, 123, 125],
+        )
+        decoded = _decode_o20_frame(start)
+        self.assertEqual(decoded["event_id"], 1)
+        self.assertEqual(decoded["payload"], b"{}")
+        audio = _encode_o20_frame(200, b"\x01\x02", session_id="session", audio=True)
+        decoded_audio = _decode_o20_frame(audio)
+        self.assertEqual(decoded_audio["event_id"], 200)
+        self.assertEqual(decoded_audio["session_id"], "session")
+        self.assertEqual(decoded_audio["payload"], b"\x01\x02")
+
+    async def test_o20_invalid_speaker_error_explains_required_voice_resource(self):
+        detail = _VoiceCallBridge._o20_error_detail(
+            {
+                "error_code": 55_000_001,
+                "payload": b'{"message":"ClientError:InvalidSpeaker"}',
+            }
+        )
+
+        self.assertIn("InvalidSpeaker", detail)
+        self.assertIn("O2.0", detail)
+        self.assertIn("官方音色 ID", detail)
+
+    def test_gateway_start_error_identifies_listener_and_errno(self):
+        settings = type(
+            "Settings", (), {"listen_host": "127.0.0.1", "listen_port": 6186}
+        )()
+        detail = voice_gateway_start_error_detail(
+            OSError(98, "Address already in use"), settings
+        )
+
+        self.assertIn("监听=127.0.0.1:6186", detail)
+        self.assertIn("errno=98", detail)
+        self.assertIn("Address already in use", detail)
+
+    async def test_official_capabilities_change_runtime_configuration_signature(self):
+        base = LifeSettings.from_dict(
+            {"realtime_voice_call_config": {"model": "1.2.6.1"}}
+        )
+        configured = LifeSettings.from_dict(
+            {
+                "realtime_voice_call_config": {
+                    "model": "1.2.6.1",
+                    "official_internet_enabled": True,
+                    "official_internet_api_key": "search-key",
+                    "official_music_enabled": True,
+                }
+            }
+        )
+        manager = VoiceCallManager(_Runtime(base))
+        self.assertNotEqual(
+            manager._settings_signature(base.realtime_voice_call),
+            manager._settings_signature(configured.realtime_voice_call),
+        )
+
+    async def test_voice_source_change_updates_runtime_configuration_signature(self):
+        base = LifeSettings.from_dict(
+            {
+                "voice_generation_config": {
+                    "api_key": "voice-key",
+                    "speaker_source": "preset",
+                    "speaker_id": "voice",
+                }
+            }
+        )
+        configured = LifeSettings.from_dict(
+            {
+                "voice_generation_config": {
+                    "api_key": "voice-key",
+                    "speaker_source": "cloned",
+                    "speaker_id": "voice",
+                }
+            }
+        )
+        manager = VoiceCallManager(_Runtime(base))
+        configured_manager = VoiceCallManager(_Runtime(configured))
+
+        self.assertNotEqual(
+            manager._settings_signature(base.realtime_voice_call),
+            configured_manager._settings_signature(configured.realtime_voice_call),
+        )
+
     async def test_session_payload_keeps_persona_instructions(self):
         config = LifeSettings.from_dict(
             {
@@ -1142,6 +1437,55 @@ class VoiceCallSettingsTest(unittest.IsolatedAsyncioTestCase):
         payload = json.loads(bridge.upstream.send_str.await_args.args[0])
         self.assertEqual(payload["type"], "response.create")
         self.assertTrue(payload["event_id"].startswith("event_call_"))
+
+    async def test_model_1261_skips_incompatible_manual_initial_response(self):
+        class Upstream:
+            closed = False
+
+            def __init__(self):
+                self.send_str = AsyncMock()
+
+        class Manager:
+            settings = type("Settings", (), {"model": "1.2.6.1"})()
+            uses_o20_protocol = False
+
+        bridge = _VoiceCallBridge(
+            type("Gateway", (), {"manager": Manager()})(),
+            object(),
+            VoiceCallInvite("id", "scope", "u", "name", "context", "你好，听得到吗？", 0, 1),
+            "token",
+        )
+        bridge.upstream = Upstream()
+
+        self.assertFalse(bridge._should_start_initial_response())
+        await bridge._start_initial_response()
+        bridge.upstream.send_str.assert_not_awaited()
+
+    async def test_o20_initial_response_uses_say_hello_binary_event(self):
+        class Upstream:
+            closed = False
+
+            def __init__(self):
+                self.send_bytes = AsyncMock()
+
+        class Manager:
+            settings = type("Settings", (), {"model": "1.2.1.1"})()
+            uses_o20_protocol = True
+
+        bridge = _VoiceCallBridge(
+            type("Gateway", (), {"manager": Manager()})(),
+            object(),
+            VoiceCallInvite("id", "scope", "u", "name", "context", "你好，听得到吗？", 0, 1),
+            "token",
+        )
+        bridge.upstream = Upstream()
+        await bridge._start_initial_response()
+
+        packet = bridge.upstream.send_bytes.await_args.args[0]
+        decoded = _decode_o20_frame(packet)
+        self.assertEqual(decoded["event_id"], 300)
+        self.assertEqual(decoded["session_id"], "id")
+        self.assertEqual(json.loads(decoded["payload"])["content"], "你好，听得到吗？")
 
     async def test_session_payload_includes_optional_greeting(self):
         config = LifeSettings.from_dict(
@@ -1208,6 +1552,18 @@ class VoiceCallSettingsTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_voice_tool_bridge_result_text_and_function_event_parsing(self):
         self.assertEqual(_chain_text({"content": [{"text": "天气不错"}]}), "天气不错")
+        event = VoiceCallToolEvent(
+            VoiceCallInvite("id", "scope", "u", "用户", "context", "", 0, 1),
+            _Runtime(LifeSettings.from_dict({})),
+        )
+        self.assertEqual(_chain_text(event.plain_result("已找到歌曲")), "已找到歌曲")
+
+        class Record:
+            pass
+
+        event_result = event.chain_result([Record()])
+        self.assertEqual(_chain_text(event_result), "已发送语音。")
+
         call_id, name, arguments, done = _VoiceCallBridge._function_call_parts(
             {
                 "type": "response.function_call_arguments.done",
@@ -1226,6 +1582,33 @@ class VoiceCallSettingsTest(unittest.IsolatedAsyncioTestCase):
             }
         )
         self.assertEqual(delta, ("call-1", "life_weather", '{"city":', False))
+        items_call = _VoiceCallBridge._function_call_parts(
+            {
+                "type": "response.function_call_arguments.done",
+                "items": [
+                    {
+                        "type": "function_call",
+                        "call_id": "call-2",
+                        "name": "life_weather",
+                        "arguments": '{"city":"测试市"}',
+                    }
+                ],
+            }
+        )
+        self.assertEqual(
+            items_call,
+            ("call-2", "life_weather", '{"city":"测试市"}', True),
+        )
+        self.assertFalse(
+            _VoiceCallBridge._is_function_call_completion(
+                {"type": "response.function_call_arguments.delta"}
+            )
+        )
+        self.assertTrue(
+            _VoiceCallBridge._is_function_call_completion(
+                {"type": "response.function_call_arguments.done"}
+            )
+        )
 
     async def test_function_call_created_event_is_joined_to_arguments_done(self):
         calls = []
@@ -1233,7 +1616,7 @@ class VoiceCallSettingsTest(unittest.IsolatedAsyncioTestCase):
         class ToolBridge:
             async def call(self, name, arguments):
                 calls.append((name, arguments))
-                return "已请求结束当前实时通话。"
+                return "天气不错。"
 
         class Manager:
             def tool_bridge(self, _invite):
@@ -1254,21 +1637,43 @@ class VoiceCallSettingsTest(unittest.IsolatedAsyncioTestCase):
                 "item": {
                     "type": "function_call",
                     "call_id": "call-end",
-                    "name": "life_voice_call_end",
+                    "name": "life_weather",
                 },
             }
         )
         await bridge._handle_function_call(
             {
                 "type": "response.function_call_arguments.done",
-                "call_id": "call-end",
-                "arguments": '{"reason":"自然道别"}',
+                "items": [
+                    {
+                        "type": "function_call",
+                        "call_id": "call-end",
+                        "name": "life_weather",
+                        "arguments": '{"city":"测试市"}',
+                    }
+                ],
             }
         )
 
-        self.assertEqual(calls, [("life_voice_call_end", {"reason": "自然道别"})])
-        sent = [json.loads(call.args[0])["type"] for call in bridge.upstream.send_str.await_args_list]
-        self.assertIn("response.create", sent)
+        self.assertEqual(calls, [("life_weather", {"city": "测试市"})])
+        sent = [json.loads(call.args[0]) for call in bridge.upstream.send_str.await_args_list]
+        tool_result = next(
+            payload for payload in sent if payload["type"] == "conversation.item.create"
+        )
+        self.assertNotIn("response.create", [payload["type"] for payload in sent])
+        self.assertEqual(
+            tool_result["items"],
+            [
+                {
+                    "type": "message",
+                    "role": "tool",
+                    "call_id": "call-end",
+                    "content": [
+                        {"type": "input_text", "text": "天气不错。"}
+                    ],
+                }
+            ],
+        )
 
         config = LifeSettings.from_dict(
             {"realtime_voice_call_config": {"allow_function_calls": True}}

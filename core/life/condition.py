@@ -1,14 +1,16 @@
 import datetime
 from typing import Any
 
+from ..clock import now as life_now
 from ..labels import (
     bot_watch_state_label,
     interrupt_level_label,
     sleep_depth_label,
     source_label,
 )
-from ..clock import now as life_now
-
+from ..models.vitals import (
+    normalize_body_burden_intensity,
+)
 
 STATE_DEFAULTS = {
     "energy": 60,
@@ -62,6 +64,7 @@ PHYSIOLOGICAL_RHYTHM_DEFAULTS = {
     "body_condition": {
         "label": "无明显不适",
         "intensity": 0,
+        "burden_present": False,
         "source": "生活状态",
         "expires_at": "",
     },
@@ -145,13 +148,58 @@ def _expired_date(value: Any, now: datetime.datetime | None = None) -> bool:
     text = _compact_text(value, 32)
     if not text:
         return False
-    today = (now or life_now()).date()
-    for pattern in ("%Y-%m-%d", "%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
+    current = (now or life_now()).replace(tzinfo=None)
+    for pattern in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
         try:
-            return datetime.datetime.strptime(text, pattern).date() < today
+            return datetime.datetime.strptime(text, pattern) <= current
         except ValueError:
             continue
+    try:
+        return datetime.datetime.strptime(text, "%Y-%m-%d").date() < current.date()
+    except ValueError:
+        pass
     return False
+
+
+def daily_variability_signal(
+    date_value: Any,
+    *,
+    state: Any = None,
+) -> dict[str, str]:
+    """根据已知状态给出可解释的波动空间，不从日期抽签制造症状。"""
+
+    del date_value
+    raw_state = state.as_dict() if hasattr(state, "as_dict") else _state_dict(state)
+    rhythm = raw_state.get("physiological_rhythm")
+    rhythm = rhythm if isinstance(rhythm, dict) else {}
+    body = rhythm.get("body_condition")
+    body = body if isinstance(body, dict) else {}
+    burden = _bool_flag(body.get("burden_present"))
+    body_load = max(
+        _clamp_score(raw_state.get("sleepiness"), 0),
+        _clamp_score(raw_state.get("stress"), 0),
+        _clamp_score(body.get("intensity"), 0),
+    )
+    mood_load = max(
+        100 - _clamp_score(raw_state.get("mood_score"), 50),
+        100 - _clamp_score(raw_state.get("emotional_stability"), 50),
+        _clamp_score(raw_state.get("stress"), 0),
+    )
+    return {
+        "body": "watch" if burden or body_load >= 65 else "ordinary",
+        "mood": "watch" if mood_load >= 65 else "ordinary",
+    }
+
+
+def format_daily_variability_prompt(date_value: Any, *, state: Any = None) -> str:
+    signal = daily_variability_signal(date_value, state=state)
+    labels = {"watch": "需要留意", "ordinary": "常规"}
+    return (
+        f"身体状态线索：{labels[signal['body']]}；"
+        f"情绪状态线索：{labels[signal['mood']]}。"
+        "只能根据既有体力、睡眠、压力和身体负荷做连续的小幅变化；"
+        "不得根据日期、时段或随机性凭空制造不适、疾病或情绪低潮。"
+    )
 
 
 def _normalize_optional_cycle(raw_cycle: dict) -> dict:
@@ -187,6 +235,30 @@ def normalize_physiological_rhythm(
         prev_condition = {}
 
     condition_default = defaults["body_condition"]
+    previous_intensity = normalize_body_burden_intensity(
+        prev_condition.get("intensity"),
+        burden_present=prev_condition.get("burden_present"),
+    )
+    raw_burden_present = _bool_flag(raw_condition.get("burden_present"))
+    raw_explicitly_declares_burden = "burden_present" in raw_condition
+    raw_intensity = (
+        normalize_body_burden_intensity(
+            raw_condition.get("intensity"),
+            burden_present=raw_burden_present,
+        )
+        if raw_condition.get("intensity") is not None
+        else None
+    )
+    # 有明确期限的短期不适不能被下一轮普通刷新瞬间改写为健康；
+    # 到期后或出现新的明确身体事实时再自然更新。
+    if (
+        previous_intensity >= 20
+        and prev_condition.get("expires_at")
+        and not _expired_date(prev_condition.get("expires_at"), now)
+        and not raw_explicitly_declares_burden
+    ):
+        raw_condition = {}
+        raw_intensity = None
     condition = {
         "label": _compact_text(
             raw_condition.get("label")
@@ -195,10 +267,17 @@ def normalize_physiological_rhythm(
             60,
         ),
         "intensity": _clamp_score(
-            raw_condition.get("intensity"),
-            _clamp_score(
-                prev_condition.get("intensity"), int(condition_default["intensity"])
-            ),
+            raw_intensity if raw_condition else None,
+            previous_intensity
+            if prev_condition
+            else int(condition_default["intensity"]),
+        ),
+        "burden_present": (
+            raw_burden_present
+            if raw_condition
+            else bool(previous_intensity > 0)
+            if prev_condition
+            else bool(condition_default["burden_present"])
         ),
         "source": _compact_text(
             raw_condition.get("source")
@@ -286,6 +365,7 @@ def normalize_state(
     now: datetime.datetime | None = None,
     source: str = "daily",
     previous: dict | None = None,
+    max_score_delta: int | None = None,
 ) -> dict:
     raw = _state_dict(raw_state)
     prev = _state_dict(previous)
@@ -315,12 +395,42 @@ def normalize_state(
         )
         for key in STATE_SCORE_FIELDS
     }
+    if max_score_delta is not None and prev:
+        maximum_delta = max(1, min(int(max_score_delta), 100))
+        for key, value in scores.items():
+            previous_score = _clamp_score(prev.get(key), STATE_DEFAULTS[key])
+            scores[key] = max(
+                0,
+                min(100, max(previous_score - maximum_delta, min(previous_score + maximum_delta, value))),
+            )
     rhythm = normalize_physiological_rhythm(
         raw.get("physiological_rhythm"),
         previous=prev.get("physiological_rhythm"),
         now=now,
         default_social_battery=scores["interaction_capacity"],
     )
+    if max_score_delta is not None and prev:
+        previous_rhythm = prev.get("physiological_rhythm")
+        previous_rhythm = previous_rhythm if isinstance(previous_rhythm, dict) else {}
+        previous_body = previous_rhythm.get("body_condition")
+        previous_body = previous_body if isinstance(previous_body, dict) else {}
+        body = rhythm.get("body_condition")
+        if isinstance(body, dict):
+            previous_intensity = _clamp_score(previous_body.get("intensity"), 0)
+            maximum_body_delta = max(1, min(int(max_score_delta) * 2, 100))
+            body["intensity"] = max(
+                0,
+                min(
+                    100,
+                    max(
+                        previous_intensity - maximum_body_delta,
+                        min(
+                            previous_intensity + maximum_body_delta,
+                            _clamp_score(body.get("intensity"), 0),
+                        ),
+                    ),
+                ),
+            )
     watch_state = _choice(
         raw.get("watch_state") or prev.get("watch_state"),
         WATCH_STATES,

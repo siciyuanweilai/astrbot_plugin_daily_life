@@ -20,6 +20,8 @@ class CommitmentArchiveMixin:
             trigger_date=row["trigger_date"],
             trigger_time=row["trigger_time"],
             time_window=row["time_window"],
+            owner=row["owner"],
+            media_kind=row["media_kind"],
             people=self._get_people_unlocked(
                 "commitment_people", "commitment_id", row["id"]
             ),
@@ -45,6 +47,8 @@ class CommitmentArchiveMixin:
             raise ValueError("承诺内容不能为空")
         item.kind = self._text(item.kind) or "plan"
         item.status = self._text(item.status) or "active"
+        item.owner = self._text(item.owner) or "未定"
+        item.media_kind = self._text(item.media_kind).lower() or "none"
         item.confidence = max(min(float(item.confidence or 0.0), 1.0), 0.0)
 
         def dbwork():
@@ -116,7 +120,7 @@ class CommitmentArchiveMixin:
                     """
                     UPDATE commitments
                     SET content = ?, kind = ?, trigger_date = ?, trigger_time = ?,
-                        time_window = ?, place = ?, status = ?, confidence = ?,
+                        time_window = ?, owner = ?, media_kind = ?, place = ?, status = ?, confidence = ?,
                         source = ?, source_session = ?, source_message_id = ?,
                         source_message = ?,
                         activated_at = ?, completed_at = ?
@@ -128,6 +132,8 @@ class CommitmentArchiveMixin:
                         item.trigger_date,
                         item.trigger_time,
                         item.time_window,
+                        item.owner,
+                        item.media_kind,
                         item.place,
                         item.status,
                         item.confidence,
@@ -145,12 +151,12 @@ class CommitmentArchiveMixin:
                 cursor = self._conn.execute(
                     """
                     INSERT INTO commitments(
-                        content, kind, trigger_date, trigger_time, time_window, place,
+                        content, kind, trigger_date, trigger_time, time_window, owner, media_kind, place,
                         status, confidence, source, source_session,
                         source_message_id, source_message,
                         activated_at, completed_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         item.content,
@@ -158,6 +164,8 @@ class CommitmentArchiveMixin:
                         item.trigger_date,
                         item.trigger_time,
                         item.time_window,
+                        item.owner,
+                        item.media_kind,
                         item.place,
                         item.status,
                         item.confidence,
@@ -277,16 +285,25 @@ class CommitmentArchiveMixin:
         return await self._run_db(dbwork)
 
     async def reschedule_commitment(
-        self, commitment_id: int, trigger_date: str, time_window: str = ""
+        self,
+        commitment_id: int,
+        trigger_date: str,
+        time_window: str = "",
+        trigger_time: str = "",
     ) -> bool:
         def dbwork():
             cursor = self._conn.execute(
                 """
                 UPDATE commitments
-                SET trigger_date = ?, time_window = ?, status = 'active', activated_at = ''
+                SET trigger_date = ?, trigger_time = ?, time_window = ?, status = 'active', activated_at = ''
                 WHERE id = ?
                 """,
-                (self._text(trigger_date), self._text(time_window), int(commitment_id)),
+                (
+                    self._text(trigger_date),
+                    self._text(trigger_time),
+                    self._text(time_window),
+                    int(commitment_id),
+                ),
             )
             self._conn.execute(
                 """
@@ -295,7 +312,15 @@ class CommitmentArchiveMixin:
                 WHERE commitment_id = ?
                 """,
                 (
-                    self._text(trigger_date) or self._text(time_window),
+                    " ".join(
+                        value
+                        for value in (
+                            self._text(trigger_date),
+                            self._text(trigger_time),
+                        )
+                        if value
+                    )
+                    or self._text(time_window),
                     int(commitment_id),
                 ),
             )

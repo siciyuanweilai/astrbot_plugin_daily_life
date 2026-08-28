@@ -17,8 +17,12 @@ class FocusArchiveMixin:
             focus_key=row["focus_key"],
             label=self._text(row["label"]),
             priority=int(row["priority"] or 0),
+            progress=int(row["progress"] or 0),
+            status=self._text(row["status"]) or "active",
             reason=self._text(row["reason"]),
+            last_evidence=self._text(row["last_evidence"]),
             last_active_at=row["last_active_at"],
+            last_progress_at=row["last_progress_at"],
             expires_at=row["expires_at"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
@@ -37,15 +41,23 @@ class FocusArchiveMixin:
             self._conn.execute(
                 """
                 INSERT INTO focus_slots(
-                    scope, focus_key, label, priority, reason, last_active_at,
-                    expires_at, created_at, updated_at
+                    scope, focus_key, label, priority, progress, status, reason,
+                    last_evidence, last_active_at, last_progress_at, expires_at,
+                    created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 ON CONFLICT(scope, focus_key) DO UPDATE SET
                     label = COALESCE(NULLIF(excluded.label, ''), focus_slots.label),
                     priority = excluded.priority,
+                    progress = MAX(focus_slots.progress, excluded.progress),
+                    status = CASE
+                        WHEN focus_slots.status <> 'active' THEN focus_slots.status
+                        ELSE excluded.status
+                    END,
                     reason = COALESCE(NULLIF(excluded.reason, ''), focus_slots.reason),
+                    last_evidence = COALESCE(NULLIF(excluded.last_evidence, ''), focus_slots.last_evidence),
                     last_active_at = COALESCE(NULLIF(excluded.last_active_at, ''), focus_slots.last_active_at),
+                    last_progress_at = COALESCE(NULLIF(excluded.last_progress_at, ''), focus_slots.last_progress_at),
                     expires_at = COALESCE(NULLIF(excluded.expires_at, ''), focus_slots.expires_at),
                     updated_at = CURRENT_TIMESTAMP
                 """,
@@ -54,8 +66,12 @@ class FocusArchiveMixin:
                     focus_key,
                     self._text(item.label) or focus_key,
                     max(0, min(int(item.priority or 0), 100)),
+                    max(0, min(int(item.progress or 0), 100)),
+                    self._text(item.status) or "active",
                     self._text(item.reason),
+                    self._text(item.last_evidence),
                     self._text(item.last_active_at),
+                    self._text(item.last_progress_at),
                     self._text(item.expires_at),
                 ),
             )
@@ -83,6 +99,7 @@ class FocusArchiveMixin:
                 clauses.append("(scope = ? OR scope = '')")
                 params.append(self._text(scope))
             if active_only:
+                clauses.append("status = 'active'")
                 clauses.append("(expires_at = '' OR expires_at >= ?)")
                 params.append(life_today().isoformat())
             if clauses:
@@ -93,6 +110,67 @@ class FocusArchiveMixin:
                 params.append(limit)
             rows = self._conn.execute(sql, tuple(params)).fetchall()
             return [self._compose_focus_slot(row) for row in rows]
+
+        return await self._run_db(dbwork)
+
+    async def update_focus_slot_progress(
+        self,
+        focus_id: int,
+        *,
+        progress_delta: int = 0,
+        status: str = "active",
+        evidence: str = "",
+        date: str = "",
+    ) -> FocusSlotRecord | None:
+        """用可追溯证据更新短期目标，不从普通决策文本猜测进度。"""
+
+        allowed_statuses = {"active", "completed", "blocked", "abandoned"}
+        target_status = self._text(status).lower()
+        if target_status not in allowed_statuses:
+            return None
+        try:
+            target_id = int(focus_id)
+            delta = max(0, min(int(progress_delta), 100))
+        except (TypeError, ValueError):
+            return None
+        evidence_text = self._text(evidence)[:240]
+        if target_id <= 0 or not evidence_text:
+            return None
+
+        def dbwork():
+            row = self._conn.execute(
+                "SELECT * FROM focus_slots WHERE id = ?", (target_id,)
+            ).fetchone()
+            if row is None or self._text(row["status"]) != "active":
+                return None
+            current_progress = max(0, min(int(row["progress"] or 0), 100))
+            next_progress = min(100, current_progress + delta)
+            if target_status == "completed":
+                next_progress = 100
+            next_priority = int(row["priority"] or 50)
+            if target_status != "active":
+                next_priority = 0
+            self._conn.execute(
+                """
+                UPDATE focus_slots
+                SET progress = ?, status = ?, priority = ?, last_evidence = ?,
+                    last_progress_at = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (
+                    next_progress,
+                    target_status,
+                    max(0, min(next_priority, 100)),
+                    evidence_text,
+                    self._text(date),
+                    target_id,
+                ),
+            )
+            self._conn.commit()
+            updated = self._conn.execute(
+                "SELECT * FROM focus_slots WHERE id = ?", (target_id,)
+            ).fetchone()
+            return self._compose_focus_slot(updated) if updated else None
 
         return await self._run_db(dbwork)
 

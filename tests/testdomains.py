@@ -371,7 +371,39 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("存在多个同名候选", reason)
         self.assertIn("place_hint", reason)
 
-    async def test_daily_location_audit_final_fallback_uses_ranked_map_candidate(
+    async def test_daily_location_audit_downgrades_ambiguous_poi_safely(self):
+        service = self._location_audit_service()
+        service._map.search_places = AsyncMock(
+            return_value=[
+                {
+                    "poi_id": "poi-a",
+                    "name": "测试书店",
+                    "address": "测试区甲路1号",
+                    "city": "测试市",
+                    "coordinate": (23.01, 113.01),
+                },
+                {
+                    "poi_id": "poi-b",
+                    "name": "测试书店",
+                    "address": "测试区乙路2号",
+                    "city": "测试市",
+                    "coordinate": (23.02, 113.02),
+                },
+            ]
+        )
+
+        revised, reason = await service.audit_daily_locations(
+            self._location_payload(),
+            allow_safe_corrections=True,
+        )
+
+        self.assertEqual(reason, "")
+        self.assertEqual(revised["timeline"][1]["place"], "测试书店")
+        self.assertEqual(revised["timeline"][1]["place_kind"], "generic")
+        self.assertIsNone(revised["timeline"][1]["place_latitude"])
+        self.assertEqual(revised["location_audit"]["downgraded_places"], 1)
+
+    async def test_daily_location_audit_does_not_substitute_unconfirmed_poi(
         self,
     ):
         service = self._location_audit_service()
@@ -400,17 +432,14 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(reason, "")
-        self.assertEqual(revised["timeline"][1]["place"], "另一家测试书店")
-        self.assertEqual(revised["timeline"][1]["place_kind"], "poi")
-        self.assertEqual(revised["timeline"][1]["place_address"], "测试区测试街9号")
-        self.assertEqual(revised["timeline"][1]["activity"], "到另一家测试书店看看")
-        self.assertEqual(revised["planned_actions"][0]["target"], "另一家测试书店")
-        self.assertEqual(revised["location_audit"]["substituted_places"], 1)
-        self.assertEqual(
-            revised["location_audit"]["place_substitutions"],
-            [{"original": "街角测试书店", "canonical": "另一家测试书店"}],
-        )
-        self.assertEqual(revised["location_audit"]["downgraded_places"], 0)
+        self.assertEqual(revised["timeline"][1]["place"], "街角测试书店")
+        self.assertEqual(revised["timeline"][1]["place_kind"], "generic")
+        self.assertEqual(revised["timeline"][1]["place_address"], "")
+        self.assertIsNone(revised["timeline"][1]["place_latitude"])
+        self.assertEqual(revised["timeline"][1]["activity"], "到街角测试书店看看")
+        self.assertEqual(revised["planned_actions"][0]["target"], "街角测试书店")
+        self.assertEqual(revised["location_audit"]["substituted_places"], 0)
+        self.assertEqual(revised["location_audit"]["downgraded_places"], 1)
 
     async def test_daily_location_audit_final_fallback_uses_generic_without_candidate(
         self,
@@ -1156,7 +1185,51 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(snapshot["timeline"]), 1)
         self.assertEqual(snapshot["timeline"][0]["kind"], "fitness")
         self.assertEqual(snapshot["timeline"][0]["action_id"], "2026-08-03:exercise:0")
+        self.assertEqual(snapshot["timeline"][0]["date"], "2026-08-03")
+        self.assertTrue(snapshot["timeline"][0]["occurred_at"])
         self.assertNotIn("voice", snapshot)
+
+    async def test_unified_timeline_uses_activity_start_time_for_activity_records(self):
+        timeline = self.archive._domain_unified_timeline(
+            {
+                "activity_sessions": [
+                    {
+                        "action_id": "2026-08-03:activity:0",
+                        "date": "2026-08-03",
+                        "title": "测试活动",
+                        "status": "completed",
+                        "started_at": "2026-08-03 09:30:00",
+                        "ended_at": "2026-08-04 07:00:00",
+                        "source": "daily_plan",
+                    }
+                ]
+            },
+            10,
+        )
+
+        self.assertEqual(timeline[0]["date"], "2026-08-03")
+        self.assertEqual(timeline[0]["occurred_at"], "2026-08-03 09:30:00")
+
+    async def test_domain_snapshot_deduplicates_chore_definitions_by_name(self):
+        definitions = self.archive._dedupe_chore_definitions(
+            [
+                {
+                    "id": "old",
+                    "name": "  擦拭测试桌面 ",
+                    "enabled": 1,
+                    "updated_at": "2026-08-01 10:00:00",
+                },
+                {
+                    "id": "new",
+                    "name": "擦拭测试桌面",
+                    "enabled": 1,
+                    "updated_at": "2026-08-02 10:00:00",
+                },
+            ]
+        )
+
+        self.assertEqual(len(definitions), 1)
+        self.assertEqual(definitions[0]["id"], "new")
 
     async def test_skipped_activity_session_keeps_distinct_status(self):
         day = self._day(
@@ -1527,6 +1600,35 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("现有可用食材库存", context)
         self.assertIn("可用食材 2.0份", context)
         self.assertNotIn("耗尽食材", context)
+
+    async def test_pantry_float_residual_is_normalized_and_hidden(self):
+        await self.archive.adjust_pantry_item("薄荷", 0.3, unit="把", source="test")
+        await self.archive.adjust_pantry_item("薄荷", -0.1, unit="把", source="test")
+        await self.archive.adjust_pantry_item("薄荷", -0.2, unit="把", source="test")
+
+        pantry = await self.archive.get_pantry_items(limit=0)
+        snapshot = await self.archive.get_domain_snapshot(limit=0)
+        context = await self.domains.format_context()
+
+        self.assertEqual(pantry, [])
+        self.assertEqual(snapshot["pantry"], [])
+        self.assertNotIn("薄荷", context)
+
+    async def test_depleted_pantry_item_is_removed_and_can_be_restocked(self):
+        await self.archive.adjust_pantry_item("水蜜桃", 1, unit="个", source="test")
+        depleted = await self.archive.adjust_pantry_item(
+            "水蜜桃", -1, unit="个", source="test"
+        )
+
+        self.assertEqual(depleted["quantity"], 0.0)
+        self.assertEqual(await self.archive.get_pantry_items(limit=0), [])
+
+        await self.archive.adjust_pantry_item("水蜜桃", 2, unit="个", source="test")
+        pantry = await self.archive.get_pantry_items(limit=0)
+        self.assertEqual(
+            [(item["name"], item["quantity"]) for item in pantry],
+            [("水蜜桃", 2.0)],
+        )
 
     async def test_route_falls_back_without_coordinates(self):
         route = await self.domains.estimate_route("地点甲", "地点乙")

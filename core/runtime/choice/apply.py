@@ -14,8 +14,6 @@ from ...life.tools import extract_json_from_text
 from ...prompts import CORE_JSON_OUTPUT_RULES, cache_friendly_prompt
 from ..markers import LOG_PREFIX
 
-RESPONSE_GATE_SEMANTIC_SCORE_MIN = 0.40
-RESPONSE_GATE_SEMANTIC_SCORE_MAX = 0.68
 RESPONSE_GATE_SEMANTIC_TIMEOUT_SECONDS = 2.5
 
 
@@ -111,7 +109,13 @@ class ResponseGateApplyMixin:
         provider_getter = getattr(self, "_get_proactive_provider", None)
         if not callable(provider_getter):
             return None
-        provider = await provider_getter()
+        try:
+            provider = await provider_getter()
+        except Exception as exc:
+            logger.debug(
+                f"{LOG_PREFIX} 随心回复语义模型不可用：{type(exc).__name__}: {exc}"
+            )
+            return None
         if not provider:
             return None
         is_group = self._event_is_group_message(event)
@@ -306,55 +310,42 @@ JSON 输出要求：
             score += 0.08
         score = max(0.0, min(score, 1.0))
 
-        semantic_turn_checker = getattr(
-            self, "continuous_turn_semantic_enabled_for_event", None
+        semantic = await self._response_gate_semantic_decision(
+            event,
+            score=score,
+            reasons=reasons,
+            pending_count=pending_count,
+            wait_state=wait_state,
         )
-        semantic_turn = bool(
-            semantic_turn_checker(event) if callable(semantic_turn_checker) else False
-        )
-        if (
-            RESPONSE_GATE_SEMANTIC_SCORE_MIN
-            <= score
-            <= RESPONSE_GATE_SEMANTIC_SCORE_MAX
-            or wait_state
-            or semantic_turn
-        ):
-            semantic = await self._response_gate_semantic_decision(
-                event,
-                score=score,
-                reasons=reasons,
-                pending_count=pending_count,
-                wait_state=wait_state,
-            )
-            superseded = self._response_gate_superseded_decision(event)
-            if superseded:
-                return superseded
-            if semantic:
-                action = semantic["action"]
-                if action == "reply":
-                    self._response_gate_record_reply(key, now)
-                elif action == "observe":
-                    self._response_gate_clear_wait(key)
-                    self._response_gate_record_no_reply(key, now)
-                return {**semantic, "score": round(score, 3)}
+        superseded = self._response_gate_superseded_decision(event)
+        if superseded:
+            return superseded
+        if semantic:
+            action = semantic["action"]
+            if action == "reply":
+                self._response_gate_record_reply(key, now)
+            elif action == "observe":
+                self._response_gate_clear_wait(key)
+                self._response_gate_record_no_reply(key, now)
+            return {**semantic, "score": round(score, 3)}
 
         self._response_gate_semantic_metrics["fallback"] += 1
-        roll = self._response_gate_roll(event)
-        action = "reply" if roll <= score else "observe"
+        fallback_threshold = 0.58 if is_group else 0.5
+        action = "reply" if score >= fallback_threshold else "observe"
 
         if action == "reply":
             self._response_gate_record_reply(key, now)
             return {
                 "action": "reply",
                 "score": round(score, 3),
-                "roll": round(roll, 3),
-                "reason": "；".join(reasons) or "当前自然可以回复",
+                "reason": "；".join(reasons)
+                or "语义裁定暂不可用，当前结构化状态适合回复",
             }
 
         self._response_gate_record_no_reply(key, now)
         return {
             "action": "observe",
             "score": round(score, 3),
-            "roll": round(roll, 3),
-            "reason": "；".join(reasons) or "当前更适合看见但不打断",
+            "reason": "；".join(reasons)
+            or "语义裁定暂不可用，当前结构化状态更适合观察",
         }

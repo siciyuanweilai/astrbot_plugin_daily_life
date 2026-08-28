@@ -185,38 +185,120 @@ class RefreshMixin:
     def _outfit_context_signature(
         self, data: DayRecord, now: datetime.datetime, period: str
     ) -> str:
-        current, next_item = get_current_timeline_status(data.timeline, now, data.date)
+        del period  # 普通时段切换本身不是换装事件。
+        current, _ = get_current_timeline_status(data.timeline, now, data.date)
         weather = data.weather_info
 
-        def item_text(item: Any) -> str:
+        def item_field(item: Any, key: str) -> str:
             if item is None:
                 return ""
             if isinstance(item, dict):
-                time = item.get("time", "")
-                activity = item.get("activity", "")
-                place_kind = item.get("place_kind", "")
+                return str(item.get(key) or "").strip()
+            return str(getattr(item, key, "") or "").strip()
+
+        current_index = -1
+        if current is not None:
+            current_index = next(
+                (
+                    index
+                    for index, item in enumerate(data.timeline)
+                    if item is current
+                ),
+                -1,
+            )
+
+        # online/none 只说明活动没有实体地点，不应让在家网聊之类的活动
+        # 看起来像换了穿衣场景；沿用最近一个明确的实体生活场景。
+        scene = ""
+        for item in data.timeline[: current_index + 1]:
+            place_kind = item_field(item, "place_kind").lower()
+            if place_kind == "home":
+                scene = "home"
+            elif place_kind in {"poi", "generic", "transit"}:
+                scene = "away"
+        if not scene:
+            stored_scene = str(
+                (data.meta or {}).get("outfit_scene_category") or ""
+            ).strip().lower()
+            if stored_scene in {"home", "sleep"}:
+                scene = "home"
+            elif stored_scene in {"outdoor", "public"}:
+                scene = "away"
             else:
-                time = getattr(item, "time", "")
-                activity = getattr(item, "activity", "")
-                place_kind = getattr(item, "place_kind", "")
-            return f"{time}:{activity}:{place_kind}"
+                scene = "unknown"
+
+        action_events: dict[int, str] = {}
+        raw_actions = str((data.meta or {}).get("planned_life_actions") or "")
+        try:
+            planned_actions = json.loads(raw_actions) if raw_actions else []
+        except (TypeError, ValueError, json.JSONDecodeError):
+            planned_actions = []
+        for action in planned_actions if isinstance(planned_actions, list) else []:
+            if not isinstance(action, dict):
+                continue
+            action_type = str(action.get("action_type") or "").strip().lower()
+            if action_type not in {"change_outfit", "exercise", "groom"}:
+                continue
+            try:
+                timeline_index = int(action.get("timeline_index"))
+            except (TypeError, ValueError):
+                continue
+            if 0 <= timeline_index <= current_index:
+                action_events[timeline_index] = action_type
+
+        relevant_tokens = (
+            ("outfit", ("换衣", "换装", "换上", "换下", "穿上", "脱下", "换鞋", "睡衣")),
+            ("hygiene", ("洗澡", "淋浴", "沐浴")),
+            ("exercise", ("运动", "锻炼", "跑步", "健身", "瑜伽", "游泳")),
+            ("sleep", ("起床", "入睡", "睡觉", "就寝")),
+            ("comfort", ("淋雨", "湿透", "汗湿", "弄脏衣服")),
+        )
+        latest_event = "none"
+        for index, item in enumerate(data.timeline[: current_index + 1]):
+            if item_field(item, "execution_state").lower() in {
+                "expired",
+                "skipped",
+                "cancelled",
+            }:
+                continue
+            event_kind = action_events.get(index, "")
+            if not event_kind:
+                activity = item_field(item, "activity")
+                event_kind = next(
+                    (
+                        kind
+                        for kind, tokens in relevant_tokens
+                        if any(token in activity for token in tokens)
+                    ),
+                    "",
+                )
+            if event_kind:
+                latest_event = f"{index}:{event_kind}"
 
         try:
             temperature_bucket = (
-                round(float(weather.temp) / 3) if weather.temp is not None else ""
+                round(float(weather.temp) / 5) if weather.temp is not None else ""
             )
         except (TypeError, ValueError):
             temperature_bucket = ""
+        condition = str(weather.condition or "").strip()
+        if bool(getattr(weather, "is_rainy", False)) or any(
+            token in condition for token in ("雨", "雷", "雹")
+        ):
+            weather_kind = "rain"
+        elif "雪" in condition:
+            weather_kind = "snow"
+        else:
+            weather_kind = "dry"
         pending_outfit, _ = self._pending_commitment_outfit(data, now)
         values = (
-            # 精力、睡眠深度等实时状态会在后台巡检中频繁波动，不能单独
-            # 触发重新选衣；真正影响穿搭的是时段、日程场景、天气和明确要求。
-            "component_review_v2",
+            # 普通活动、时段和实时数值都会频繁变化。只有实体生活场景、
+            # 最近一次穿衣相关事件、穿衣相关天气或明确要求才触发重审。
+            "event_driven_v3",
             data.date,
-            period,
-            item_text(current),
-            item_text(next_item),
-            str(weather.condition or ""),
+            scene,
+            latest_event,
+            weather_kind,
             str(temperature_bucket),
             pending_outfit,
         )

@@ -31,7 +31,7 @@ CREATE INDEX IF NOT EXISTS idx_behavior_patterns_recent ON behavior_patterns(las
 CREATE INDEX IF NOT EXISTS idx_behavior_scenes_recent ON behavior_scenes(last_seen DESC, confidence DESC, support_count DESC);
 CREATE INDEX IF NOT EXISTS idx_session_mid_summaries_recent ON session_mid_summaries(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_temporary_expression_states_active ON temporary_expression_states(expires_at, updated_at DESC);
-CREATE INDEX IF NOT EXISTS idx_focus_slots_active ON focus_slots(expires_at, priority DESC, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_focus_slots_active ON focus_slots(status, expires_at, priority DESC, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_expression_intents_recent ON expression_intents(id DESC);
 CREATE INDEX IF NOT EXISTS idx_emoji_assets_available ON emoji_assets(status, sendable, used_count ASC, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_video_insights_scope_recent ON video_insights(scope, updated_at DESC, id DESC);

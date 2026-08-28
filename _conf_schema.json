@@ -1104,7 +1104,7 @@
   "voice_generation_config": {
     "description": "语音",
     "type": "object",
-    "hint": "使用火山引擎语音合成 2.0 发送语音。声音复刻仍在火山引擎控制台完成，插件只调用已生成的音色。",
+    "hint": "语音设置分为普通语音和语音通话两组。普通语音使用火山引擎语音合成 2.0；语音通话使用 WebSocket 全双工接口，声音复刻仍在火山引擎控制台完成。",
     "items": {
       "enabled": {
         "description": "启用语音生成",
@@ -1155,7 +1155,7 @@
       "speaker_source": {
         "description": "音色类型",
         "type": "string",
-        "default": "cloned",
+        "default": "preset",
         "options": [
           "cloned",
           "preset"
@@ -1169,7 +1169,7 @@
       "speaker_id": {
         "description": "音色 ID",
         "type": "string",
-        "default": "",
+        "default": "zh_female_xiaohe_jupiter_bigtts",
         "hint": "填写火山引擎控制台音色库中的 speaker ID。声音复刻完成后，将复刻音色 ID 填在这里。"
       },
       "speech_rate": {
@@ -1219,15 +1219,15 @@
     }
   },
   "realtime_voice_call_config": {
-    "description": "实时语音通话",
+    "description": "实时通话",
     "type": "object",
-    "hint": "使用火山引擎豆包实时语音全双工接口，用户点击一次性邀请链接后通过浏览器进行双向语音通话。API Key、音色、语速和音量复用“语音”设置；默认关闭，不会影响普通语音消息。",
+    "hint": "“实时语音通话”使用 WebSocket 全双工接口；“AI 音视频通话”使用火山 veRTC 智能体。两者共用 6186 网关，分别使用对应配置；默认关闭，不会影响普通语音消息。",
     "items": {
       "enabled": {
         "description": "启用实时语音通话",
         "type": "bool",
         "default": false,
-        "hint": "开启后可使用“语音通话”命令或实时通话工具生成邀请链接。用户必须点击链接并授权麦克风后才会接通。"
+        "hint": "开启后可使用“实时语音通话”命令，也可由实时通话工具生成邀请链接。用户必须点击链接并授权麦克风后才会接通。"
       },
       "listen_host": {
         "description": "网关监听地址",
@@ -1256,13 +1256,14 @@
         "description": "火山实时语音地址",
         "type": "string",
         "default": "wss://openspeech.bytedance.com/api/v3/duplex/realtime/dialogue",
-        "hint": "通常保持火山引擎官方 WebSocket 地址，不要暴露给浏览器。"
+        "hint": "普通实时语音模型使用的 WebSocket 地址；模型为 1.2.1.1 时会自动改用 O2.0 二进制地址，不要暴露给浏览器。"
       },
       "model": {
         "description": "实时语音模型",
         "type": "string",
-        "default": "1.2.6.1",
-        "hint": "火山引擎全双工实时语音接口要求的模型标识。"
+        "default": "1.2.1.1",
+        "multiline": false,
+        "hint": "实时语音通话使用的模型。模型决定所用协议和可用音色，请填写与模型匹配且 API Key 有权限使用的音色 ID；填写 1.2.1.1 时自动切换火山 O2.0 二进制协议并复用语音配置中的 API Key 和音色 ID，其他模型使用新版 JSON 全双工协议。"
       },
       "max_duration_seconds": {
         "description": "单次最长通话（秒）",
@@ -1325,6 +1326,59 @@
         "default": false,
         "hint": "开启后把 AstrBot 当前已注册的插件/MCP 工具提供给实时通话；不会包含再次发起通话的工具。无论是否开启，Bot 都可在自然告别后结束当前通话。"
       },
+      "official_internet_enabled": {
+        "description": "启用官方联网能力",
+        "type": "bool",
+        "default": false,
+        "hint": "使用火山实时对话内置的联网能力，不是 AstrBot 工具调用；需要单独填写火山融合信息搜索 API Key。默认关闭，未配置密钥时会安全降级为关闭。"
+      },
+      "official_internet_type": {
+        "description": "官方联网类型",
+        "type": "string",
+        "default": "web_global_api",
+        "options": [
+          "web",
+          "web_summary",
+          "web_agent",
+          "web_global_api"
+        ],
+        "option_labels": {
+          "web": "网页搜索",
+          "web_summary": "网页搜索并总结",
+          "web_agent": "搜索智能体",
+          "web_global_api": "全局搜索 API"
+        },
+        "hint": "通常使用 web_global_api；web_agent 还需要填写 Bot ID。具体可用类型以火山实时对话控制台和账号权限为准。"
+      },
+      "official_internet_api_key": {
+        "description": "官方联网搜索 API Key",
+        "type": "string",
+        "default": "",
+        "hint": "填写火山融合信息搜索 API 或搜索智能体使用的密钥；不要填写实时语音 API Key，也不要填写 AstrBot 的 Tavily 密钥。"
+      },
+      "official_internet_bot_id": {
+        "description": "官方搜索智能体 Bot ID",
+        "type": "string",
+        "default": "",
+        "hint": "仅当官方联网类型选择 web_agent 时填写，其他类型留空。"
+      },
+      "official_internet_result_count": {
+        "description": "官方联网结果数量",
+        "type": "int",
+        "default": 10,
+        "slider": {
+          "min": 1,
+          "max": 10,
+          "step": 1
+        },
+        "hint": "每次官方联网最多返回的检索结果数。"
+      },
+      "official_music_enabled": {
+        "description": "启用官方唱歌能力",
+        "type": "bool",
+        "default": false,
+        "hint": "使用火山实时对话内置唱歌能力；官方文档目前仅支持模型 1.2.1.1。其他模型会自动关闭本次能力，避免会话创建失败。"
+      },
       "tool_call_timeout_seconds": {
         "description": "实时工具调用超时（秒）",
         "type": "int",
@@ -1341,6 +1395,130 @@
         "type": "bool",
         "default": true,
         "hint": "使用“天气”设置中的柠柚接口密钥生成短链；接口不可用时自动保留完整邀请链接。"
+      },
+      "rtc_model_name": {
+        "description": "AI 音视频模型",
+        "type": "string",
+        "default": "Doubao-Seed-1.6｜250615",
+        "hint": "AI 音视频通话使用的智能体模型名称。"
+      },
+      "rtc_app_id": {
+        "description": "AI 音视频 AppId",
+        "type": "string",
+        "default": "",
+        "hint": "填写火山引擎 AI 音视频互动方案的 AppId。"
+      },
+      "rtc_app_key": {
+        "description": "AI 音视频 AppKey",
+        "type": "string",
+        "default": "",
+        "hint": "填写火山引擎 AI 音视频互动方案的 AppKey。"
+      },
+      "rtc_access_key": {
+        "description": "AI 音视频 Access Key",
+        "type": "string",
+        "default": "",
+        "hint": "填写火山引擎 OpenAPI 的 Access Key ID。"
+      },
+      "rtc_secret_key": {
+        "description": "AI 音视频 Secret Key",
+        "type": "string",
+        "default": "",
+        "hint": "填写火山引擎 OpenAPI 的 Secret Access Key。"
+      },
+      "rtc_region": {
+        "description": "AI 音视频区域",
+        "type": "string",
+        "default": "cn-north-1",
+        "hint": "火山 OpenAPI 签名区域，通常保持 cn-north-1。"
+      },
+      "rtc_callback_url": {
+        "description": "AI 音视频回调地址",
+        "type": "string",
+        "default": "",
+        "hint": "留空时使用公开地址加 /rtc/callback；必须是公网 HTTPS 地址。"
+      },
+      "rtc_callback_signature": {
+        "description": "AI 音视频回调密钥",
+        "type": "string",
+        "default": "",
+        "hint": "填写火山 AI 音视频互动方案回调配置中的回调秘钥。"
+      },
+      "rtc_token_ttl_seconds": {
+        "description": "AI 音视频令牌有效期（秒）",
+        "type": "int",
+        "default": 3600,
+        "slider": {
+          "min": 300,
+          "max": 86400,
+          "step": 300
+        },
+        "hint": "浏览器进入 RTC 房间使用的临时令牌有效期。"
+      },
+      "rtc_sdk_url": {
+        "description": "AI 音视频 SDK 地址",
+        "type": "string",
+        "default": "https://unpkg.com/@volcengine/rtc@4.69.0/index.min.js",
+        "hint": "浏览器加载 veRTC Web SDK 的地址，通常保持默认值。"
+      },
+      "rtc_video_enabled": {
+        "description": "启用摄像头视频",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后 AI 音视频通话页面会申请摄像头，并向智能体提供采样画面。"
+      },
+      "rtc_vision_image_detail": {
+        "description": "视觉图片细节",
+        "type": "string",
+        "default": "low",
+        "options": [
+          "low",
+          "high"
+        ],
+        "option_labels": {
+          "low": "低",
+          "high": "高"
+        },
+        "hint": "AI 音视频视觉理解采样图片的细节等级。"
+      },
+      "rtc_vision_height": {
+        "description": "视觉图片高度",
+        "type": "int",
+        "default": 480,
+        "slider": {
+          "min": 0,
+          "max": 1792,
+          "step": 16
+        },
+        "hint": "视觉采样图片高度；0 表示由服务端默认处理。"
+      },
+      "rtc_vision_interval_ms": {
+        "description": "视觉采样间隔（毫秒）",
+        "type": "int",
+        "default": 1000,
+        "slider": {
+          "min": 200,
+          "max": 10000,
+          "step": 100
+        },
+        "hint": "摄像头画面上传给智能体的采样间隔。"
+      },
+      "rtc_vision_images_limit": {
+        "description": "视觉采样图片数",
+        "type": "int",
+        "default": 2,
+        "slider": {
+          "min": 1,
+          "max": 10,
+          "step": 1
+        },
+        "hint": "单次视觉理解最多保留的采样图片数量。"
+      },
+      "rtc_vision_auto_select": {
+        "description": "自动选择视觉采样",
+        "type": "bool",
+        "default": false,
+        "hint": "允许服务端根据对话内容自动选择是否发送采样画面。"
       }
     }
   },
@@ -1578,6 +1756,22 @@
                 ],
                 "hint": "gpt-image-2 仅显示上游支持的比例；请求会映射到 LeoStudio 的固定合法尺寸。"
               },
+              "quality": {
+                "description": "图片质量",
+                "type": "string",
+                "default": "medium",
+                "options": [
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "option_labels": {
+                  "low": "低",
+                  "medium": "中",
+                  "high": "高"
+                },
+                "hint": "传给 GPT Image 文生图和图生图接口的质量档位。"
+              },
               "timeout_seconds": {
                 "description": "超时（秒）",
                 "type": "int",
@@ -1753,6 +1947,22 @@
                 "default": "GPT Image",
                 "hint": "自定义这条图生图接口通道的名称，用于区分不同接口分组。"
               },
+              "edit_request_format": {
+                "description": "图生图请求格式",
+                "type": "string",
+                "default": "auto",
+                "options": [
+                  "auto",
+                  "leo_json",
+                  "multipart"
+                ],
+                "option_labels": {
+                  "auto": "自动（按接口地址）",
+                  "leo_json": "Leo JSON",
+                  "multipart": "OpenAI multipart"
+                },
+                "hint": "仅影响这条图生图通道。思次元 Leo 接口选 Leo JSON；G-AISC / OpenAI 图片编辑接口选 OpenAI multipart，本地参考图会直接作为文件上传。"
+              },
               "api_url": {
                 "description": "接口地址",
                 "type": "string",
@@ -1799,6 +2009,22 @@
                   "21:9"
                 ],
                 "hint": "gpt-image-2 仅显示上游支持的比例；请求会映射到 LeoStudio 的固定合法尺寸。"
+              },
+              "quality": {
+                "description": "图片质量",
+                "type": "string",
+                "default": "medium",
+                "options": [
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "option_labels": {
+                  "low": "低",
+                  "medium": "中",
+                  "high": "高"
+                },
+                "hint": "传给 GPT Image 文生图和图生图接口的质量档位。"
               },
               "timeout_seconds": {
                 "description": "超时（秒）",
@@ -1906,14 +2132,11 @@
         "default": "",
         "hint": "填写视频中转站根地址即可，插件会自动补全 /v1/videos。"
       },
-      "api_keys": {
+      "api_key": {
         "description": "接口密钥",
-        "type": "list",
-        "items": {
-          "type": "string"
-        },
-        "default": [],
-        "hint": "可填写多个密钥，调用时会轮换使用。"
+        "type": "string",
+        "default": "",
+        "hint": "填写视频生成接口使用的 API Key。"
       },
       "model": {
         "description": "模型名称",
@@ -2394,7 +2617,7 @@
         "description": "结算虚拟生活动作",
         "type": "bool",
         "default": true,
-        "hint": "允许纯虚拟的休息、用餐、做饭、采购、换装、家务、运动和出行在日程完成后生成模拟回执；聊天、社交、发图、拍照和视频仍必须有真实回执。"
+        "hint": "允许有执行证据或复盘确认的纯虚拟休息、用餐、做饭、采购、换装、家务、运动和出行生成模拟回执；仅有计划或时间经过不会结算。聊天、社交、发图、拍照和视频仍必须有真实回执。"
       },
       "location_enabled": {
         "description": "启用地点与出行",
@@ -2516,7 +2739,7 @@
           "max": 365,
           "step": 1
         },
-        "hint": "清理过旧活动会话、路线缓存、饮食、库存流水、家务、运动和已结束行动项；当前库存和家务定义保留。0 表示长期保留。"
+        "hint": "清理过旧活动会话、路线缓存、饮食、库存流水、家务、运动和已结束行动项；过期且不再被用餐记录引用的自动食谱一并清理，当前库存、手工食谱和家务定义保留。0 表示长期保留。"
       },
       "cognition_keep_days": {
         "description": "认知运行保留天数",
@@ -2671,7 +2894,7 @@
       "state_rules": {
         "description": "状态生成规则",
         "type": "text",
-        "default": "- energy 表示体力，busyness 表示忙碌度，social 表示社交意愿，sleep.quality 表示睡眠质量，均为 0-100。\n- state 写今天整体身体、情绪、忙碌和睡眠底色；summary 用自然生活语言概括。\n- state 要影响 timeline 的活动强度、外出倾向、社交负担和收束节奏。",
+        "default": "- energy 表示体力，busyness 表示忙碌度，social 表示社交意愿，sleep.quality 表示睡眠质量，均为 0-100。\n- state 写今天整体身体、情绪、忙碌和睡眠底色；summary 用自然生活语言概括。\n- state 要影响 timeline 的活动强度、外出倾向、社交负担和收束节奏。\n- body_condition.burden_present 是身体负荷的唯一语义开关：true 才允许 intensity 表示负荷，false 时 intensity 必须为 0；不要从自然语言标签推断。\n- 不要把普通一天写成持续高分的完美状态；允许低频、可延续、会恢复的负面情绪与轻微身体不适。",
         "hint": "控制 state 字段如何生成，以及状态如何影响日程。"
       },
       "timeline_rules": {

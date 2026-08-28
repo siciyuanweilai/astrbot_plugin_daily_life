@@ -3,6 +3,7 @@ import copy
 import datetime
 import inspect
 import json
+import math
 import re
 from pathlib import Path
 
@@ -793,11 +794,23 @@ class PageViewMixin:
                 ("meals", ("date", "occurred_at")),
                 ("chore_records", ("occurred_at",)),
                 ("fitness", ("date", "occurred_at")),
-                ("timeline", ("occurred_at",)),
+                ("timeline", ("date", "occurred_at")),
             ):
                 result[key] = self._page_records_for_date(
                     list(snapshot.get(key) or []), date_text, *fields
                 )
+
+        pantry = []
+        for item in snapshot.get("pantry") or []:
+            if not isinstance(item, dict):
+                continue
+            try:
+                quantity = round(float(item.get("quantity") or 0), 6)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(quantity) and quantity > 0:
+                pantry.append({**item, "quantity": quantity})
+        result["pantry"] = pantry
 
         labels: dict[str, str] = {}
         action_items = []

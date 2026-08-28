@@ -25,6 +25,7 @@ from .appearance import (
     format_life_preference_context,
     is_autonomous_appearance_preference,
 )
+from .condition import format_daily_variability_prompt
 from .evolution import LifeEvolutionService
 from .tools import (
     extract_json_from_text,
@@ -258,6 +259,10 @@ class LifecycleMixin:
         exclude_daily_plan_date: str = "",
     ) -> str:
         sections = []
+        sections.append(
+            "## 🌦️ 状态因果线索\n"
+            + format_daily_variability_prompt(date.strftime("%Y-%m-%d"))
+        )
         previous_day = await self.archive.get_day(
             (date - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
         )
@@ -404,6 +409,7 @@ class LifecycleMixin:
         decisions: list[Any],
         feedback: list[Any],
         reply_effects: list[Any],
+        focus_slots: list[Any],
     ) -> str:
         state = day.state.as_dict() if day.state else {}
         pref_text = (
@@ -448,6 +454,9 @@ class LifecycleMixin:
   "timeline_updates": [
     {{"item_index": 时间轴数组下标, "status": "completed|skipped|cancelled", "reason": "为什么这样收束", "evidence": "当天状态、互动或事件中的具体依据"}}
   ],
+  "focus_updates": [
+    {{"focus_id": 已输入短期目标的编号, "progress_delta": 0-100, "status": "active|completed|blocked|abandoned", "evidence": "可引用证据编号；没有证据不输出"}}
+  ],
   "reflection_score": {{"novelty": 0.0-1.0, "emotional_intensity": 0.0-1.0, "goal_impact": 0.0-1.0, "social_impact": 0.0-1.0}},
   "reflection": {{
     "summary": "只有高价值时才填写的反思",
@@ -469,7 +478,8 @@ class LifecycleMixin:
 - life_events 是能自然延续几天的小事件，不要编造重大剧情。
 - event_updates 只更新输入中已有的开放事件；仍会继续影响后续生活就保持 open，已经完成或取消时及时收束。
 - decision_outcomes 只更新输入中已有的当天生活决策。它必须描述实际发生的结果，不能复述原计划或编造未发生事项。
-- timeline_updates 只在有具体依据时把活动标成 skipped/cancelled；正常随时间推进的活动标成 completed，不得用关键词猜测执行结果。
+- timeline_updates 只在有具体依据时把活动标成 completed/skipped/cancelled；正常随时间推进的活动已经由系统标为 elapsed，不要因为时间经过把它标成 completed。
+- focus_updates 只更新输入中列出的短期目标编号，必须引用可引用证据编号；提到目标、制定计划或希望完成不等于进度。没有真实回执、互动结果或事件依据时返回空数组。
 - 根据 state.sleep、sleep_debt 和时间轴判断睡眠债增减；不要用固定文本匹配活动文字。
 - reflection_score 必须按四个数值维度独立评分；低价值日常允许 reflection 留空，系统会在阈值以下跳过模型反思沉淀。
 - affect_updates 和 relationship_updates 只能引用“可引用证据编号”，没有证据就返回空数组；关系数值只能小步变化。
@@ -496,6 +506,8 @@ class LifecycleMixin:
 {format_timeline_to_text(day.timeline)}
 今日地点：{json.dumps([item.as_dict() for item in day.places], ensure_ascii=False)}
 今日事件：{json.dumps([item.as_dict() for item in day.new_events], ensure_ascii=False)}
+短期目标（只能引用这些编号）：
+{json.dumps([item.as_dict() for item in focus_slots], ensure_ascii=False)}
 已学习偏好：
 {pref_text}
 开放生活事件：
@@ -549,12 +561,13 @@ class LifecycleMixin:
         ).strip():
             return existing
 
-        preferences, events, decisions, feedback, reply_effects = await asyncio.gather(
+        preferences, events, decisions, feedback, reply_effects, focus_slots = await asyncio.gather(
             self.archive.get_preferences(12),
             self.archive.get_life_events(status="open", limit=8),
             self.archive.get_life_decisions(limit=8, date=date_str),
             self.archive.get_behavior_feedback(limit=12),
             self.archive.get_reply_effects(limit=12),
+            self.archive.get_focus_slots(limit=12),
         )
         feedback = [
             item for item in feedback if str(getattr(item, "date", "")) == date_str
@@ -565,6 +578,17 @@ class LifecycleMixin:
             if str(getattr(item, "created_at", ""))[:10] == date_str
             and str(getattr(item, "outcome", "")) != "pending"
         ]
+        allowed_evidence_ids = {
+            f"{prefix}:{int(getattr(item, 'id', 0) or 0)}"
+            for prefix, items in (
+                ("event", events),
+                ("decision", decisions),
+                ("feedback", feedback),
+                ("reply_effect", reply_effects),
+            )
+            for item in items
+            if int(getattr(item, "id", 0) or 0) > 0
+        }
         review = existing
         review_payload: dict[str, Any] = dict(existing.payload) if existing else {}
         if review is None or force:
@@ -578,7 +602,13 @@ class LifecycleMixin:
                     text = await self._call_llm_text(
                         provider,
                         self._build_daily_review_prompt(
-                            day, preferences, events, decisions, feedback, reply_effects
+                            day,
+                            preferences,
+                            events,
+                            decisions,
+                            feedback,
+                            reply_effects,
+                            focus_slots,
                         ),
                         session_id,
                         primary_provider_id=provider_id,
@@ -615,6 +645,12 @@ class LifecycleMixin:
             events, review_payload, date_str=date_str
         )
         await self._apply_life_decision_review_outcomes(decisions, review_payload)
+        await self._apply_focus_review_updates(
+            focus_slots,
+            review_payload,
+            date_str=date_str,
+            allowed_evidence_ids=allowed_evidence_ids,
+        )
         await self._apply_timeline_review_updates(day, review_payload)
         evolution = LifeEvolutionService(self.archive)
         await evolution.settle_review(
@@ -676,6 +712,47 @@ class LifecycleMixin:
 
         await self.archive.mutate_day(date_str, mark_completed)
 
+    async def _apply_focus_review_updates(
+        self,
+        focus_slots: list[Any],
+        payload: dict[str, Any],
+        *,
+        date_str: str,
+        allowed_evidence_ids: set[str],
+    ) -> None:
+        """只接受针对现有目标编号且带证据的显式进度更新。"""
+
+        updater = getattr(self.archive, "update_focus_slot_progress", None)
+        raw_updates = payload.get("focus_updates") if isinstance(payload, dict) else None
+        if not callable(updater) or not isinstance(raw_updates, list):
+            return
+        allowed = {int(getattr(item, "id", 0) or 0) for item in focus_slots}
+        for raw in raw_updates[: len(allowed)]:
+            if not isinstance(raw, dict):
+                continue
+            try:
+                focus_id = int(raw.get("focus_id") or 0)
+                progress_delta = max(
+                    0, min(int(raw.get("progress_delta") or 0), 100)
+                )
+            except (TypeError, ValueError):
+                continue
+            evidence = _compact(raw.get("evidence"), 200)
+            status = str(raw.get("status") or "active").strip().lower()
+            if (
+                focus_id not in allowed
+                or not evidence
+                or evidence not in allowed_evidence_ids
+            ):
+                continue
+            await updater(
+                focus_id,
+                progress_delta=progress_delta,
+                status=status,
+                evidence=evidence,
+                date=date_str,
+            )
+
     async def _apply_timeline_review_updates(
         self, day, payload: dict[str, Any]
     ) -> None:
@@ -706,7 +783,7 @@ class LifecycleMixin:
                         "cancelled",
                     }:
                         continue
-                    if status in {"skipped", "cancelled"} and not evidence:
+                    if not evidence:
                         continue
                     item = current_day.timeline[item_index]
                     if item.execution_state in TIMELINE_TERMINAL_STATES:
@@ -716,11 +793,12 @@ class LifecycleMixin:
                     item.execution_evidence = evidence or "夜间复盘"
                     item.execution_updated_at = updated_at
 
+            # 复盘只应用有证据的人工收束；不能再次用时钟把计划改成完成。
             reconcile_timeline_execution(
                 current_day.timeline,
                 review_end,
                 current_day.date,
-                evidence="夜间复盘：时间轴收束",
+                evidence="夜间复盘：时间轴观察",
             )
             return before != [item.as_dict() for item in current_day.timeline]
 

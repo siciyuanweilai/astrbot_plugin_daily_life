@@ -10,7 +10,7 @@ from .tables.mind import COGNITION_INDEX_SQL, COGNITION_SQL
 
 SCHEMA_VERSION_KEY = "schema_version"
 BASELINE_SCHEMA_VERSION = 1
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 16
 LEGACY_BASELINE_SCHEMA_FINGERPRINT = (
     "9e6243276bf6bd509f6019502e30192310da4197838bd0f7d478f0100f8750a5"
 )
@@ -41,8 +41,17 @@ PREVIOUS_V10_SCHEMA_FINGERPRINT = (
 PREVIOUS_V11_SCHEMA_FINGERPRINT = (
     "a1cf402aa1ee09e7ee070240284ad4ffaef9cdadfce4f80acc0453720a026400"
 )
-CURRENT_SCHEMA_FINGERPRINT = (
+PREVIOUS_V12_SCHEMA_FINGERPRINT = (
     "c4f031632aeaf20c37c3a8f36bbd11032075ab933215c0051e06b5b38a252074"
+)
+PREVIOUS_V14_SCHEMA_FINGERPRINT = (
+    "94726281d21d652e331f3310e808ffb1829eead45cdf0504ceef076042293dd4"
+)
+PREVIOUS_V15_SCHEMA_FINGERPRINT = (
+    "d4ae34f6ec613ffacf13dcac7a86a5f419a6f7cbea632ebef45b69fcc4eda498"
+)
+CURRENT_SCHEMA_FINGERPRINT = (
+    "b6ec5c00a0b6eff3e54503eb390c3a39f740c2a602d934cc29188730d1f204fe"
 )
 
 MigrationStep = Callable[[sqlite3.Connection], None]
@@ -107,7 +116,10 @@ KNOWN_SCHEMA_VERSIONS: dict[str, int] = {
     PREVIOUS_V11_SCHEMA_FINGERPRINT: 11,
     # v13 旧结构没有聊天记忆重试字段；启动时会由 schema 校准补齐。
     "86365a73b9bb947feab3191007402f5cf72cfed879215b9416d671c5a33a4eb2": 12,
-    CURRENT_SCHEMA_FINGERPRINT: 12,
+    PREVIOUS_V12_SCHEMA_FINGERPRINT: 12,
+    PREVIOUS_V14_SCHEMA_FINGERPRINT: 14,
+    PREVIOUS_V15_SCHEMA_FINGERPRINT: 15,
+    CURRENT_SCHEMA_FINGERPRINT: 16,
 }
 
 
@@ -490,6 +502,59 @@ def _migrate_style_catalog_categories(conn: sqlite3.Connection) -> None:
         raise ValueError("视觉衣橱索引迁移脚本存在不完整语句")
 
 
+def _migrate_physiological_rhythm_burden_flag(conn: sqlite3.Connection) -> None:
+    """为身体节律记录增加显式负荷标记，禁止从自然语言标签反推。"""
+
+    columns = {
+        str(row[1])
+        for row in conn.execute(
+            "PRAGMA table_info(physiological_rhythm_logs)"
+        ).fetchall()
+    }
+    if "body_burden_present" not in columns:
+        conn.execute(
+            "ALTER TABLE physiological_rhythm_logs "
+            "ADD COLUMN body_burden_present INTEGER"
+        )
+
+
+def _migrate_commitment_media_contract(conn: sqlite3.Connection) -> None:
+    """为媒体承诺保存明确的承担人和媒体类型，禁止运行时文本猜测。"""
+
+    columns = {
+        str(row[1]) for row in conn.execute("PRAGMA table_info(commitments)").fetchall()
+    }
+    additions = {
+        "owner": "TEXT NOT NULL DEFAULT '未定'",
+        "media_kind": "TEXT NOT NULL DEFAULT 'none'",
+    }
+    for name, definition in additions.items():
+        if name not in columns:
+            conn.execute(f"ALTER TABLE commitments ADD COLUMN {name} {definition}")
+
+
+def _migrate_focus_slot_progress(conn: sqlite3.Connection) -> None:
+    """为短期目标增加可追踪的进度和终态，避免文本命中即降权。"""
+
+    columns = {
+        str(row[1]) for row in conn.execute("PRAGMA table_info(focus_slots)").fetchall()
+    }
+    additions = {
+        "progress": "INTEGER NOT NULL DEFAULT 0",
+        "status": "TEXT NOT NULL DEFAULT 'active'",
+        "last_evidence": "TEXT NOT NULL DEFAULT ''",
+        "last_progress_at": "TEXT NOT NULL DEFAULT ''",
+    }
+    for name, definition in additions.items():
+        if name not in columns:
+            conn.execute(f"ALTER TABLE focus_slots ADD COLUMN {name} {definition}")
+    conn.execute("DROP INDEX IF EXISTS idx_focus_slots_active")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_focus_slots_active "
+        "ON focus_slots(status, expires_at, priority DESC, updated_at DESC)"
+    )
+
+
 # 键是迁移完成后的目标版本；每个步骤只负责从前一版本升级一次。
 MIGRATIONS: dict[int, MigrationStep] = {
     2: _migrate_timeline_execution_state,
@@ -504,6 +569,9 @@ MIGRATIONS: dict[int, MigrationStep] = {
     11: _migrate_travel_detail,
     12: _migrate_style_catalog,
     13: _migrate_style_catalog_categories,
+    14: _migrate_physiological_rhythm_burden_flag,
+    15: _migrate_commitment_media_contract,
+    16: _migrate_focus_slot_progress,
 }
 
 
@@ -642,6 +710,7 @@ __all__ = [
     "PREVIOUS_V9_SCHEMA_FINGERPRINT",
     "PREVIOUS_V10_SCHEMA_FINGERPRINT",
     "PREVIOUS_V11_SCHEMA_FINGERPRINT",
+    "PREVIOUS_V12_SCHEMA_FINGERPRINT",
     "SCHEMA_VERSION",
     "SCHEMA_VERSION_KEY",
     "MigrationStep",

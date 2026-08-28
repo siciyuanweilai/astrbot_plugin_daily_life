@@ -3,8 +3,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import gzip
 import json
+import struct
 import time
+import uuid
 from typing import Any
 
 import aiohttp
@@ -16,10 +19,167 @@ except (ImportError, AttributeError):  # 测试桩或精简运行环境可能只
 from astrbot.api import logger
 
 from .web import VOICE_CALL_PAGE
+from .rtcweb import rtc_page
 
 VOLCENGINE_DUPLEX_ENDPOINT = (
     "wss://openspeech.bytedance.com/api/v3/duplex/realtime/dialogue"
 )
+VOLCENGINE_O20_ENDPOINT = "wss://openspeech.bytedance.com/api/v3/realtime/dialogue"
+
+_O20_CONNECTION_EVENTS = frozenset({1, 2, 50, 51, 52})
+_O20_FULL_CLIENT = 0x10
+_O20_AUDIO_CLIENT = 0x20
+_O20_FULL_SERVER = 0x90
+_O20_AUDIO_SERVER = 0xB0
+_O20_ERROR = 0xF0
+_O20_WITH_EVENT = 0x04
+_O20_JSON = 0x10
+_O20_RAW = 0x00
+# 该模型使用新版 JSON 全双工协议，但不接受手动 response.create；
+# 连接建立后由服务端 VAD/用户音频自动驱动首轮响应。
+_MODELS_WITHOUT_MANUAL_RESPONSE_CREATE = frozenset({"1.2.6.1"})
+
+
+def voice_gateway_listener_address(settings: Any) -> str:
+    """返回日志中可安全展示的本地监听地址。"""
+
+    host = str(getattr(settings, "listen_host", "127.0.0.1") or "127.0.0.1").strip()
+    port = str(getattr(settings, "listen_port", 6186) or 6186).strip()
+    return f"[{host}]:{port}" if ":" in host and not host.startswith("[") else f"{host}:{port}"
+
+
+def voice_gateway_start_error_detail(exc: BaseException, settings: Any) -> str:
+    """把监听失败转换为可排查且不暴露配置秘密的日志文本。"""
+
+    parts = [
+        f"类型={type(exc).__name__}",
+        f"监听={voice_gateway_listener_address(settings)}",
+    ]
+    errno = getattr(exc, "errno", None)
+    if errno is not None:
+        parts.append(f"errno={errno}")
+    detail = " ".join(str(exc).split())[:240]
+    if detail:
+        parts.append(f"详情={detail}")
+    return "；".join(parts)
+
+
+def _o20_error_guidance(detail: str) -> str:
+    normalized = str(detail or "").lower()
+    speaker_error_markers = (
+        "invalidspeaker",
+        "speaker related resource",
+        "resource id is mismatched",
+        "speaker resource",
+    )
+    if any(marker in normalized for marker in speaker_error_markers):
+        return (
+            f"{detail}；当前模型使用火山 O2.0 协议，请在语音配置中改用已开通 "
+            "O2.0 权限的官方音色 ID，并确认 API Key 对该音色有使用权限。"
+        )
+    return detail
+
+
+def _encode_o20_frame(
+    event_id: int,
+    payload: bytes = b"",
+    *,
+    session_id: str = "",
+    audio: bool = False,
+) -> bytes:
+    """按火山 O2.0 事件协议编码一帧客户端消息。"""
+
+    message_type = _O20_AUDIO_CLIENT if audio else _O20_FULL_CLIENT
+    serialization = _O20_RAW if audio else _O20_JSON
+    frame = bytearray((0x11, message_type | _O20_WITH_EVENT, serialization, 0x00))
+    frame.extend(struct.pack(">i", int(event_id)))
+    if event_id not in _O20_CONNECTION_EVENTS:
+        session_bytes = str(session_id or "").encode("utf-8")
+        if not session_bytes:
+            raise ValueError(f"O2.0 事件 {event_id} 缺少 session_id")
+        frame.extend(struct.pack(">I", len(session_bytes)))
+        frame.extend(session_bytes)
+    frame.extend(struct.pack(">I", len(payload)))
+    frame.extend(payload)
+    return bytes(frame)
+
+
+def _decode_o20_frame(frame: bytes) -> dict[str, Any]:
+    """解析火山 O2.0 服务端帧，并保留压缩和错误元数据。"""
+
+    if len(frame) < 4:
+        raise ValueError("O2.0 响应帧长度不足")
+    header_size = max(4, (frame[0] & 0x0F) * 4)
+    if len(frame) < header_size:
+        raise ValueError("O2.0 响应帧头不完整")
+    message_type = frame[1] & 0xF0
+    flags = frame[1] & 0x0F
+    serialization = frame[2] & 0xF0
+    compression = frame[2] & 0x0F
+    offset = header_size
+    error_code: int | None = None
+    event_id: int | None = None
+    session_id = ""
+    connect_id = ""
+
+    def read_uint32() -> int:
+        nonlocal offset
+        if offset + 4 > len(frame):
+            raise ValueError("O2.0 响应帧字段不完整")
+        value = struct.unpack(">I", frame[offset : offset + 4])[0]
+        offset += 4
+        return value
+
+    if message_type == _O20_ERROR:
+        error_code = read_uint32()
+    contains_sequence = (flags & 0x01) == 0x01 or (flags & 0x03) == 0x03
+    if contains_sequence and message_type in {_O20_AUDIO_CLIENT, _O20_AUDIO_SERVER}:
+        read_uint32()
+    if flags & _O20_WITH_EVENT:
+        event_id = struct.unpack(">i", struct.pack(">I", read_uint32()))[0]
+        if event_id not in _O20_CONNECTION_EVENTS:
+            session_size = read_uint32()
+            if offset + session_size > len(frame):
+                raise ValueError("O2.0 响应帧 session_id 不完整")
+            session_id = frame[offset : offset + session_size].decode(
+                "utf-8", errors="replace"
+            )
+            offset += session_size
+        if event_id in {50, 51, 52}:
+            connect_size = read_uint32()
+            if offset + connect_size > len(frame):
+                raise ValueError("O2.0 响应帧 connect_id 不完整")
+            connect_id = frame[offset : offset + connect_size].decode(
+                "utf-8", errors="replace"
+            )
+            offset += connect_size
+    payload_size = read_uint32()
+    if offset + payload_size > len(frame):
+        raise ValueError("O2.0 响应帧 payload 不完整")
+    payload = frame[offset : offset + payload_size]
+    if compression == 0x01:
+        payload = gzip.decompress(payload)
+    return {
+        "message_type": message_type,
+        "serialization": serialization,
+        "compression": compression,
+        "event_id": event_id,
+        "session_id": session_id,
+        "connect_id": connect_id,
+        "error_code": error_code,
+        "payload": payload,
+    }
+
+
+def _o20_payload_object(decoded: dict[str, Any]) -> dict[str, Any]:
+    payload = decoded.get("payload")
+    if not isinstance(payload, (bytes, bytearray)) or not payload:
+        return {}
+    try:
+        value = json.loads(bytes(payload).decode("utf-8"))
+    except (UnicodeDecodeError, TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def _transcript_page_html(profile_json: str, turns_json: str) -> str:
@@ -49,7 +209,7 @@ def _transcript_page_html(profile_json: str, turns_json: str) -> str:
     .avatar[data-has-avatar="true"] img { display: block; }
     .avatar[data-has-avatar="true"] span { display: none; }
     .content { display: grid; min-inline-size: 0; }
-    .bubble { position: relative; padding: 11px 13px; border: 1px solid #f1b6cd; border-radius: 18px 18px 18px 7px; background: #fff8fb; box-shadow: 0 8px 18px rgb(43 15 34 / 18%); color: #553448; font-size: 16px; line-height: 1.58; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .bubble { position: relative; padding: 11px 13px; border: 1px solid #f1b6cd; border-radius: 18px 18px 18px 7px; background: #fff8fb; color: #553448; font-size: 16px; line-height: 1.58; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; }
     .turn.peer .bubble::after { position: absolute; inset-inline-start: -5px; inset-block-end: 3px; inline-size: 10px; block-size: 10px; content: ""; border-inline-start: 1px solid #f1b6cd; border-block-end: 1px solid #f1b6cd; background: #fff8fb; transform: rotate(45deg); }
     .turn.user .bubble { border-color: #b7d8b0; border-radius: 16px 8px 16px 16px; background: #d7efd1; color: #18311a; }
     @media (min-width: 720px) { body { background: #11151f; } .page { min-block-size: 100dvb; background: #171b27; box-shadow: 0 0 80px #02040b80; } }
@@ -125,6 +285,8 @@ def _web_module():
 
 _FORWARDED_BROWSER_EVENTS = {
     "input_audio_buffer.commit",
+    "input_audio_mute.commit",
+    "input_audio_unmute.commit",
     "speech_text_buffer.commit",
     "speech_text_buffer.replacement.append",
     "speech_text_buffer.replacement.commit",
@@ -170,6 +332,12 @@ class VoiceCallGateway:
                 [
                     web_api.get("/healthz", self._health),
                     web_api.get("/call/{token}", self._page),
+                    web_api.get("/rtc/session/{token}", self._rtc_session),
+                    web_api.post("/rtc/start/{token}", self._rtc_start),
+                    web_api.get("/rtc/status/{token}", self._rtc_status),
+                    web_api.post("/rtc/finish/{token}", self._rtc_finish),
+                    web_api.post("/rtc/callback", self._rtc_callback_static),
+                    web_api.post("/rtc/callback/{token}", self._rtc_callback),
                     web_api.get("/transcript/{token}", self._transcript_page),
                     web_api.get("/transcript-data/{token}", self._transcript_data),
                     web_api.get("/ws/{token}", self._websocket),
@@ -202,8 +370,8 @@ class VoiceCallGateway:
                 self._runner = None
                 raise
             logger.info(
-                "[日常生活] 实时语音通话网关已启动："
-                f"{getattr(settings, 'listen_host', '')}:{getattr(settings, 'listen_port', '')}"
+                "[日常生活] 实时语音通话网关已启动：%s",
+                voice_gateway_listener_address(settings),
             )
 
     async def close(self) -> None:
@@ -224,6 +392,14 @@ class VoiceCallGateway:
                 "ok": True,
                 "service": "daily_life_voice_call",
                 "enabled": bool(getattr(settings, "enabled", False)),
+                "transports": ["websocket", "rtc"],
+                "websocket_configured": bool(
+                    getattr(self.manager, "api_key", "")
+                    and getattr(self.manager, "speaker_id", "")
+                ),
+                "rtc_configured": not bool(
+                    getattr(getattr(self.manager, "rtc", None), "rtc_configuration_error", lambda: "rtc")()
+                ),
                 "active_calls": self.manager.active_count,
             }
         )
@@ -231,8 +407,20 @@ class VoiceCallGateway:
     async def _page(self, request: web.Request) -> web.Response:
         token = str(request.match_info.get("token") or "")
         invite = self.manager.pending_invite(token)
-        if invite is None:
+        rtc_manager = getattr(self.manager, "rtc", None)
+        rtc_invite = rtc_manager.pending_invite(token) if rtc_manager else None
+        if invite is None and rtc_invite is None:
             raise web.HTTPGone(text="通话邀请已失效")
+        if rtc_invite is not None:
+            profile = rtc_manager.page_profile_payload(rtc_invite)
+            return web.Response(
+                text=rtc_page(
+                    profile,
+                    str(getattr(rtc_manager.settings, "rtc_sdk_url", "") or ""),
+                ),
+                content_type="text/html",
+                headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+            )
         profile_json = json.dumps(
             self.manager.page_profile_payload(invite),
             ensure_ascii=False,
@@ -243,6 +431,91 @@ class VoiceCallGateway:
             content_type="text/html",
             headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
         )
+
+    async def _rtc_session(self, request: web.Request) -> web.Response:
+        manager = getattr(self.manager, "rtc", None)
+        token = str(request.match_info.get("token") or "")
+        if manager is None:
+            return web.json_response({"ok": False, "error": "AI 音视频通话未启用"}, status=404)
+        try:
+            payload = await manager.prepare_rtc_session(token)
+        except (RuntimeError, ValueError) as exc:
+            return web.json_response({"ok": False, "error": str(exc)[:500]}, status=409)
+        except Exception as exc:
+            logger.warning(f"[日常生活] veRTC 会话创建失败：{type(exc).__name__}")
+            return web.json_response({"ok": False, "error": "实时通话服务暂时不可用"}, status=502)
+        return web.json_response(payload, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+
+    async def _rtc_start(self, request: web.Request) -> web.Response:
+        manager = getattr(self.manager, "rtc", None)
+        token = str(request.match_info.get("token") or "")
+        if manager is None:
+            return web.json_response({"ok": False, "error": "AI 音视频通话未启用"}, status=404)
+        try:
+            payload = await manager.start_rtc_session(token)
+        except (RuntimeError, ValueError) as exc:
+            return web.json_response({"ok": False, "error": str(exc)[:500]}, status=409)
+        except Exception as exc:
+            logger.warning(f"[日常生活] veRTC 任务启动失败：{type(exc).__name__}")
+            return web.json_response({"ok": False, "error": "实时通话任务暂时不可用"}, status=502)
+        return web.json_response(payload, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+
+    async def _rtc_status(self, request: web.Request) -> web.Response:
+        manager = getattr(self.manager, "rtc", None)
+        token = str(request.match_info.get("token") or "")
+        payload = manager.rtc_status_payload(token) if manager else None
+        if payload is None:
+            return web.json_response({"ok": False, "error": "通话不存在"}, status=404)
+        return web.json_response(payload, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+
+    async def _rtc_finish(self, request: web.Request) -> web.Response:
+        manager = getattr(self.manager, "rtc", None)
+        token = str(request.match_info.get("token") or "")
+        invite = await manager.finish_rtc_session(token) if manager else None
+        if invite is None:
+            return web.json_response({"ok": False, "error": "通话不存在"}, status=404)
+        return web.json_response({"ok": True})
+
+    async def _rtc_callback(self, request: web.Request) -> web.Response:
+        manager = getattr(self.manager, "rtc", None)
+        token = str(request.match_info.get("token") or "")
+        if manager is None:
+            return web.Response(status=404, text="rtc unavailable")
+        try:
+            raw = await request.read()
+            try:
+                payload = json.loads(raw.decode("utf-8") or "{}")
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                payload = raw
+            await manager.handle_rtc_callback(token, payload, headers=dict(request.headers), raw_body=raw)
+        except PermissionError:
+            return web.Response(status=403, text="invalid signature")
+        except LookupError:
+            return web.Response(status=404, text="unknown call")
+        except Exception as exc:
+            logger.warning("[日常生活] veRTC 回调处理失败：%s；原因=%s", type(exc).__name__, str(exc)[:240])
+            return web.Response(status=500, text="callback failed")
+        return web.Response(text="ok")
+
+    async def _rtc_callback_static(self, request: web.Request) -> web.Response:
+        manager = getattr(self.manager, "rtc", None)
+        if manager is None:
+            return web.Response(status=404, text="rtc unavailable")
+        try:
+            raw = await request.read()
+            try:
+                payload = json.loads(raw.decode("utf-8") or "{}")
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                payload = raw
+            await manager.handle_rtc_callback_static(payload, headers=dict(request.headers), raw_body=raw)
+        except PermissionError:
+            return web.Response(status=403, text="invalid signature")
+        except LookupError:
+            return web.Response(status=404, text="unknown call")
+        except Exception as exc:
+            logger.warning("[日常生活] veRTC 固定回调处理失败：%s；原因=%s", type(exc).__name__, str(exc)[:240])
+            return web.Response(status=500, text="callback failed")
+        return web.Response(text="ok")
 
     async def _transcript_page(self, request: web.Request) -> web.Response:
         """提供独立只读的通话转写页，不领取或中断正在进行的通话。"""
@@ -322,13 +595,17 @@ class VoiceCallGateway:
                 if (
                     not retryable_failure
                     and invite.active_at <= 0
-                    and end_reason
-                    in {
-                        "上游服务错误",
-                        "上游返回错误",
-                        "上游会话结束",
-                        "浏览器断开",
-                    }
+                    and (
+                        end_reason in {
+                            "上游服务错误",
+                            "上游返回错误",
+                            "上游会话结束",
+                            "浏览器断开",
+                        }
+                        or end_reason.startswith("上游服务错误：")
+                        or end_reason.startswith("上游返回错误：")
+                        or end_reason.startswith("实时语音会话初始化失败：")
+                    )
                 ):
                     retryable_failure = True
                 if retryable_failure and self.manager.reset_invite_for_retry(
@@ -375,10 +652,13 @@ class _VoiceCallBridge:
         self._response_finished = asyncio.Event()
         self._audio_playback_finished = asyncio.Event()
         self._hangup_reason = ""
+        # 保留上游最后一次 error 的可读原因，避免多次重试后只剩泛化异常。
+        self._last_upstream_error = ""
         self.claimed = False
         self._function_arguments: dict[str, str] = {}
         self._function_names: dict[str, str] = {}
         self._handled_function_calls: set[str] = set()
+        self._tool_tasks: set[asyncio.Task[Any]] = set()
 
     @property
     def manager(self):
@@ -420,9 +700,49 @@ class _VoiceCallBridge:
                 json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
             )
 
+    async def _send_o20_event(
+        self,
+        event_id: int,
+        payload: bytes | dict[str, Any] = b"",
+        *,
+        audio: bool = False,
+        with_session: bool = True,
+    ) -> None:
+        if self.upstream is None or self.upstream.closed:
+            return
+        if isinstance(payload, dict):
+            payload = json.dumps(
+                payload, ensure_ascii=False, separators=(",", ":")
+            ).encode("utf-8")
+        session_id = self.invite.token_id if with_session else ""
+        frame = _encode_o20_frame(
+            event_id,
+            bytes(payload),
+            session_id=session_id,
+            audio=audio,
+        )
+        async with self._write_lock:
+            await self.upstream.send_bytes(frame)
+
+    async def _close_upstream_session(self) -> None:
+        if bool(getattr(self.manager, "uses_o20_protocol", False)):
+            await self._send_o20_event(102, {})
+            return
+        await self._send_upstream(
+            {"type": "session.close", "event_id": self._event_id()}
+        )
+
     async def _start_initial_response(self) -> None:
         """有自然开场白时触发首轮语音；没有开场白就先听用户说话。"""
 
+        if not self._should_start_initial_response():
+            return
+        greeting = str(getattr(self.invite, "greeting", "") or "").strip()
+        if bool(getattr(self.manager, "uses_o20_protocol", False)):
+            # O2.0 使用专门的 SayHello 事件播报开场，不能把开场白伪装成
+            # 用户的 ChatTextQuery，否则会改变对话角色并生成额外回答。
+            await self._send_o20_event(300, {"content": greeting})
+            return
         await self._send_upstream(
             {"type": "response.create", "event_id": self._event_id()}
         )
@@ -430,14 +750,71 @@ class _VoiceCallBridge:
     def _should_start_initial_response(self) -> bool:
         """只为主模型明确准备了自然开场的通话触发首轮生成。"""
 
-        return bool(str(getattr(self.invite, "greeting", "") or "").strip())
+        if not bool(str(getattr(self.invite, "greeting", "") or "").strip()):
+            return False
+        if bool(getattr(self.manager, "uses_o20_protocol", False)):
+            return True
+        model = str(
+            getattr(getattr(self.manager, "settings", None), "model", "") or ""
+        ).strip()
+        return model not in _MODELS_WITHOUT_MANUAL_RESPONSE_CREATE
+
+    @staticmethod
+    def _function_call_item(event: dict[str, Any]) -> dict[str, Any]:
+        """兼容实时接口将函数调用放在 item 或 items 中的事件格式。"""
+
+        item = event.get("item")
+        if isinstance(item, dict):
+            return item
+        items = event.get("items")
+        if isinstance(items, list):
+            for candidate in items:
+                if isinstance(candidate, dict) and candidate.get("type") == "function_call":
+                    return candidate
+            for candidate in items:
+                if isinstance(candidate, dict):
+                    return candidate
+        return {}
+
+    @staticmethod
+    def _is_function_call_completion(event: dict[str, Any]) -> bool:
+        """判断事件是否可能触发耗时工具执行。"""
+
+        event_type = str(event.get("type") or "")
+        if event_type.endswith(".delta"):
+            return False
+        return event_type.startswith("response.function_call_arguments.") or event_type in {
+            "response.function_call.done",
+            "response.output_item.done",
+        }
+
+    def _schedule_function_call(self, event: dict[str, Any]) -> None:
+        """把工具执行移出上游接收循环，避免图片/搜索阻塞音频事件。"""
+
+        task = asyncio.create_task(self._handle_function_call(event))
+        self._tool_tasks.add(task)
+
+        def finish(done: asyncio.Task[Any]) -> None:
+            self._tool_tasks.discard(done)
+            if done.cancelled():
+                return
+            with contextlib.suppress(asyncio.CancelledError):
+                error = done.exception()
+                if error is not None:
+                    logger.warning(
+                        "[日常生活] 实时语音工具任务失败：类型=%s；详情=%s",
+                        type(error).__name__,
+                        str(error)[:240],
+                    )
+
+        task.add_done_callback(finish)
 
     @staticmethod
     def _function_call_parts(event: dict[str, Any]) -> tuple[str, str, str, bool]:
         """从实时事件的不同变体中提取函数调用信息。"""
 
         event_type = str(event.get("type") or "")
-        item = event.get("item") if isinstance(event.get("item"), dict) else {}
+        item = _VoiceCallBridge._function_call_item(event)
         function = event.get("function") if isinstance(event.get("function"), dict) else {}
         call_id = str(
             event.get("call_id")
@@ -483,8 +860,18 @@ class _VoiceCallBridge:
 
     async def _handle_function_call(self, event: dict[str, Any]) -> None:
         event_type = str(event.get("type") or "")
+        items = event.get("items")
+        if isinstance(items, list) and len(items) > 1:
+            # 官方全双工事件允许一次携带多个函数项；逐项处理，确保每个
+            # call_id 都得到独立的 role=tool 结果。
+            for item in items:
+                if isinstance(item, dict):
+                    await self._handle_function_call(
+                        {**event, "item": item, "items": [item]}
+                    )
+            return
         if event_type == "conversation.item.created":
-            item = event.get("item") if isinstance(event.get("item"), dict) else {}
+            item = self._function_call_item(event)
             if item.get("type") != "function_call":
                 return
             call_id, name, arguments, _is_done = self._function_call_parts(event)
@@ -530,15 +917,23 @@ class _VoiceCallBridge:
             {
                 "type": "conversation.item.create",
                 "event_id": self._event_id(),
-                "item": {
-                    "type": "function_call_output",
-                    "call_id": call_id,
-                    "output": str(result or "工具没有返回结果。"),
-                },
+                "items": [
+                    {
+                        "type": "message",
+                        "role": "tool",
+                        "call_id": call_id,
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": str(result or "工具没有返回结果。"),
+                            }
+                        ],
+                    }
+                ],
             }
         )
-        # 函数结果需要在实时协议中开启新一轮模型生成。
-        await self._send_upstream({"type": "response.create", "event_id": self._event_id()})
+        # 全双工协议在收到 role=tool 的结果后会自动继续生成，不能再发送
+        # response.create，否则第一次工具调用可能被打断或变成空响应。
 
     async def _hangup_watch(self) -> None:
         """等待 Bot 的结束请求，并有序关闭浏览器与上游会话。"""
@@ -560,7 +955,7 @@ class _VoiceCallBridge:
         with contextlib.suppress(Exception):
             await self.browser.send_json({"kind": "status", "message": "通话已结束"})
         with contextlib.suppress(Exception):
-            await self._send_upstream({"type": "session.close", "event_id": self._event_id()})
+            await self._close_upstream_session()
         with contextlib.suppress(Exception):
             await self.browser.close(code=1000, message=b"bot hangup")
 
@@ -572,6 +967,55 @@ class _VoiceCallBridge:
         else:
             detail = event.get("message") or error
         return str(detail or "上游未返回可用会话")[:240]
+
+    @staticmethod
+    def _o20_error_detail(decoded: dict[str, Any]) -> str:
+        payload = _o20_payload_object(decoded)
+        detail = payload.get("message") or payload.get("error") or payload.get("code")
+        if isinstance(detail, dict):
+            detail = detail.get("message") or detail.get("code")
+        if not detail:
+            raw = decoded.get("payload")
+            if isinstance(raw, (bytes, bytearray)):
+                detail = bytes(raw).decode("utf-8", errors="replace").strip()
+        code = decoded.get("error_code")
+        if code is not None and detail:
+            detail = f"{code}: {detail}"
+        else:
+            detail = str(detail or code or "上游未返回可用会话")
+        return _o20_error_guidance(detail[:240])
+
+    async def _receive_o20_frame(self, *, timeout: float | None = None) -> dict[str, Any]:
+        if self.upstream is None:
+            raise RuntimeError("实时语音上游连接未建立")
+        while True:
+            message = await self.upstream.receive(timeout=timeout)
+            if message.type == aiohttp.WSMsgType.BINARY:
+                return _decode_o20_frame(bytes(message.data))
+            if message.type in {
+                aiohttp.WSMsgType.CLOSE,
+                aiohttp.WSMsgType.CLOSING,
+                aiohttp.WSMsgType.CLOSED,
+                aiohttp.WSMsgType.ERROR,
+            }:
+                raise RuntimeError("O2.0 上游在会话初始化时断开")
+
+    async def _wait_for_o20_event(self, expected_event: int, *, stage: str) -> None:
+        while True:
+            decoded = await self._receive_o20_frame(timeout=12)
+            event_id = decoded.get("event_id")
+            if decoded.get("message_type") == _O20_ERROR or event_id == 153:
+                detail = self._o20_error_detail(decoded)
+                self._last_upstream_error = detail
+                logger.warning(
+                    "[日常生活] O2.0 实时语音上游拒绝会话：阶段=%s；详情=%s",
+                    stage,
+                    detail,
+                )
+                self.manager.mark_ending(self.invite, f"上游服务错误：{detail}")
+                raise RuntimeError(f"O2.0 上游拒绝会话：{detail}")
+            if event_id == expected_event:
+                return
 
     async def _wait_for_session_ready(self) -> None:
         """等待上游确认会话创建，再允许浏览器开始推送麦克风音频。"""
@@ -603,9 +1047,16 @@ class _VoiceCallBridge:
             if event_type == "session.created":
                 return
             if event_type == "error":
-                raise RuntimeError(
-                    f"上游拒绝创建会话：{self._upstream_error_detail(event)}"
+                detail = self._upstream_error_detail(event)
+                self._last_upstream_error = detail
+                logger.warning(
+                    "[日常生活] 实时语音上游拒绝创建会话：阶段=初始化；详情=%s",
+                    detail,
                 )
+                # record_event 会先写入通用原因；这里必须立即覆盖为完整原因，
+                # 否则网关 finally 会把真正的上游错误吞掉，只显示“上游返回错误”。
+                self.manager.mark_ending(self.invite, f"上游服务错误：{detail}")
+                raise RuntimeError(f"上游拒绝创建会话：{detail}")
             if event_type == "session.closed":
                 raise RuntimeError("上游在会话初始化时结束")
 
@@ -615,9 +1066,14 @@ class _VoiceCallBridge:
         session = self.gateway._session
         if session is None:
             raise RuntimeError("通话网关尚未就绪")
-        endpoint = str(
-            getattr(self.manager.settings, "endpoint_url", "")
-            or VOLCENGINE_DUPLEX_ENDPOINT
+        uses_o20 = bool(getattr(self.manager, "uses_o20_protocol", False))
+        endpoint = (
+            VOLCENGINE_O20_ENDPOINT
+            if uses_o20
+            else str(
+                getattr(self.manager.settings, "endpoint_url", "")
+                or VOLCENGINE_DUPLEX_ENDPOINT
+            )
         )
         last_error: Exception | None = None
         for attempt in range(1, 4):
@@ -633,13 +1089,58 @@ class _VoiceCallBridge:
                     }
                 )
                 self.manager.mark_connecting(self.invite)
+                headers = {"X-Api-Key": self.manager.api_key}
+                if uses_o20:
+                    headers.update(
+                        {
+                            "X-Api-Resource-Id": "volc.speech.dialog",
+                            "X-Api-Connect-Id": str(uuid.uuid4()),
+                        }
+                    )
                 self.upstream = await session.ws_connect(
                     endpoint,
-                    headers={"X-Api-Key": self.manager.api_key},
+                    headers=headers,
                     heartbeat=20,
                     receive_timeout=None,
                 )
-                await self._send_upstream(self.manager.session_create_payload(self.invite))
+                if uses_o20:
+                    logger.info(
+                        "[日常生活] 实时语音创建 O2.0 上游会话：模型=%s；音色=%s",
+                        str(getattr(self.manager.settings, "model", "") or "")[:80],
+                        self.manager.speaker_id[:120],
+                    )
+                    await self._send_o20_event(1, {}, with_session=False)
+                    await self._wait_for_o20_event(50, stage="建立连接")
+                    await self._send_o20_event(
+                        100,
+                        self.manager.o20_session_payload(self.invite),
+                    )
+                    await self._wait_for_o20_event(150, stage="创建会话")
+                    created_event = {"type": "session.created"}
+                    self.manager.record_event(self.invite, created_event)
+                    await self.browser.send_json(
+                        {"kind": "upstream", "event": created_event}
+                    )
+                    await self.browser.send_json(
+                        {"kind": "ready", "message": "已连接，可以说话"}
+                    )
+                    return
+                payload = self.manager.session_create_payload(self.invite)
+                session_payload = payload.get("session") if isinstance(payload, dict) else {}
+                session_payload = session_payload if isinstance(session_payload, dict) else {}
+                tools = session_payload.get("tools")
+                tool_names = [
+                    str(tool.get("name") or "")
+                    for tool in tools
+                    if isinstance(tool, dict) and str(tool.get("name") or "")
+                ] if isinstance(tools, list) else []
+                logger.info(
+                    "[日常生活] 实时语音创建上游会话：模型=%s；工具数=%d；工具=%s",
+                    str(session_payload.get("model") or "")[:80],
+                    len(tool_names),
+                    ",".join(tool_names)[:240] or "无",
+                )
+                await self._send_upstream(payload)
                 await self._wait_for_session_ready()
                 await self.browser.send_json(
                     {"kind": "ready", "message": "已连接，可以说话"}
@@ -657,9 +1158,10 @@ class _VoiceCallBridge:
                     self.upstream = None
                 if attempt < 3:
                     await asyncio.sleep(0.8 * attempt)
+        detail = str(last_error or "未知错误")[:240]
         raise RuntimeError(
             "实时语音会话初始化失败："
-            f"{type(last_error).__name__ if last_error else '未知错误'}"
+            f"{type(last_error).__name__ if last_error else '未知错误'}；详情={detail}"
         )
 
     async def run(self) -> None:
@@ -692,8 +1194,9 @@ class _VoiceCallBridge:
             tasks.discard(start_wait_task)
             start_wait_task.cancel()
             await asyncio.gather(start_wait_task, return_exceptions=True)
-            if not self.manager.api_key or not self.manager.speaker_id:
-                raise RuntimeError("实时通话缺少火山 API Key 或音色 ID")
+            configuration_error = self.manager.upstream_configuration_error()
+            if configuration_error:
+                raise RuntimeError(configuration_error)
             await self._connect_upstream_session()
             tasks.update(
                 {
@@ -728,17 +1231,25 @@ class _VoiceCallBridge:
                 if not task.done():
                     task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            tool_tasks = list(self._tool_tasks)
+            for task in tool_tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tool_tasks, return_exceptions=True)
             with contextlib.suppress(Exception):
-                await self._send_upstream({"type": "session.close", "event_id": self._event_id()})
+                await self._close_upstream_session()
             if self.upstream is not None:
                 await self.upstream.close()
 
     async def _browser_to_upstream(self) -> None:
         async for message in self.browser:
             if message.type == aiohttp.WSMsgType.BINARY:
-                await self._send_upstream(
-                    {"type": "input_audio_buffer.append", "audio": base64.b64encode(message.data).decode("ascii")}
-                )
+                if bool(getattr(self.manager, "uses_o20_protocol", False)):
+                    await self._send_o20_event(200, bytes(message.data), audio=True)
+                else:
+                    await self._send_upstream(
+                        {"type": "input_audio_buffer.append", "audio": base64.b64encode(message.data).decode("ascii")}
+                    )
                 continue
             if message.type != aiohttp.WSMsgType.TEXT:
                 if message.type in {aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR}:
@@ -763,7 +1274,15 @@ class _VoiceCallBridge:
             elif kind == "audio":
                 audio = str(payload.get("audio") or "")
                 if audio:
-                    await self._send_upstream({"type": "input_audio_buffer.append", "audio": audio})
+                    if bool(getattr(self.manager, "uses_o20_protocol", False)):
+                        try:
+                            pcm = base64.b64decode(audio, validate=True)
+                        except (ValueError, TypeError):
+                            pcm = b""
+                        if pcm:
+                            await self._send_o20_event(200, pcm, audio=True)
+                    else:
+                        await self._send_upstream({"type": "input_audio_buffer.append", "audio": audio})
             elif kind == "hangup":
                 self.manager.mark_ending(self.invite, "用户结束通话")
                 return
@@ -771,12 +1290,152 @@ class _VoiceCallBridge:
                 self._audio_playback_finished.set()
             elif kind == "event" and isinstance(payload.get("event"), dict):
                 event = dict(payload["event"])
-                if str(event.get("type") or "") in _FORWARDED_BROWSER_EVENTS:
+                if (
+                    not bool(getattr(self.manager, "uses_o20_protocol", False))
+                    and str(event.get("type") or "") in _FORWARDED_BROWSER_EVENTS
+                ):
                     await self._send_upstream(event)
         if self.claimed and not self.invite.end_reason:
             self.manager.mark_ending(self.invite, "浏览器断开")
 
+    async def _publish_o20_event(self, event: dict[str, Any]) -> None:
+        self.manager.record_event(self.invite, event)
+        self._update_response_lifecycle(event)
+        if self.manager.is_transcript_event(event):
+            await self.browser.send_json(
+                {
+                    "kind": "transcript",
+                    "turns": self.manager.transcript_payload(self.invite),
+                }
+            )
+        await self.browser.send_json({"kind": "upstream", "event": event})
+
+    async def _o20_upstream_to_browser(self) -> None:
+        """把 O2.0 二进制事件翻译为现有网页和历史记录使用的事件。"""
+
+        assert self.upstream is not None
+        async for message in self.upstream:
+            if message.type != aiohttp.WSMsgType.BINARY:
+                if message.type in {
+                    aiohttp.WSMsgType.CLOSE,
+                    aiohttp.WSMsgType.CLOSING,
+                    aiohttp.WSMsgType.CLOSED,
+                    aiohttp.WSMsgType.ERROR,
+                }:
+                    self.manager.mark_ending(self.invite, "O2.0 上游会话结束")
+                    return
+                continue
+            try:
+                decoded = _decode_o20_frame(bytes(message.data))
+            except (OSError, ValueError, struct.error) as exc:
+                logger.warning(
+                    "[日常生活] O2.0 实时语音响应解析失败：%s",
+                    str(exc)[:240],
+                )
+                continue
+            event_id = decoded.get("event_id")
+            if decoded.get("message_type") == _O20_ERROR or event_id == 153:
+                detail = self._o20_error_detail(decoded)
+                self._last_upstream_error = detail
+                logger.warning(
+                    "[日常生活] O2.0 实时语音上游返回错误：详情=%s",
+                    detail,
+                )
+                self.manager.mark_ending(self.invite, f"上游服务错误：{detail}")
+                await self._publish_o20_event(
+                    {"type": "error", "error": {"message": detail}}
+                )
+                return
+
+            payload = _o20_payload_object(decoded)
+            if decoded.get("message_type") == _O20_AUDIO_SERVER or event_id == 352:
+                raw_audio = decoded.get("payload")
+                if isinstance(raw_audio, (bytes, bytearray)) and raw_audio:
+                    await self.browser.send_json(
+                        {
+                            "kind": "upstream",
+                            "event": {
+                                "type": "response.output_audio.delta",
+                                "delta": base64.b64encode(raw_audio).decode("ascii"),
+                            },
+                        }
+                    )
+                continue
+            if event_id == 350:
+                await self._publish_o20_event(
+                    {"type": "response.output_audio.started"}
+                )
+                continue
+            if event_id == 450:
+                self._last_user_activity = time.monotonic()
+                await self._publish_o20_event(
+                    {
+                        "type": "conversation.item.input_audio_transcription.started",
+                        "item_id": str(payload.get("question_id") or ""),
+                    }
+                )
+                continue
+            if event_id == 451:
+                results = payload.get("results")
+                result = results[0] if isinstance(results, list) and results else {}
+                if not isinstance(result, dict):
+                    result = {}
+                text = str(result.get("text") or "").strip()
+                if not text:
+                    continue
+                self._last_user_activity = time.monotonic()
+                item_id = str(
+                    result.get("question_id") or payload.get("question_id") or ""
+                )
+                if bool(result.get("is_interim", True)):
+                    event = {
+                        "type": "conversation.item.input_audio_transcription.delta",
+                        "item_id": item_id,
+                        "delta": text,
+                    }
+                else:
+                    event = {
+                        "type": "conversation.item.input_audio_transcription.completed",
+                        "item_id": item_id,
+                        "text": text,
+                    }
+                await self._publish_o20_event(event)
+                continue
+            if event_id == 459:
+                await self._publish_o20_event(
+                    {"type": "conversation.item.input_audio_transcription.completed"}
+                )
+                continue
+            if event_id == 550:
+                text = str(payload.get("content") or payload.get("text") or "")
+                if text:
+                    await self._publish_o20_event(
+                        {
+                            "type": "response.output_text.delta",
+                            "response_id": str(payload.get("reply_id") or ""),
+                            "delta": text,
+                        }
+                    )
+                continue
+            if event_id == 351:
+                # TTSSentenceEnd 只表示当前音频句子结束，文本可能仍会继续
+                # 通过 ChatResponse(550) 返回，不能在此结束整轮响应。
+                continue
+            if event_id == 359:
+                await self._publish_o20_event({"type": "response.output_audio.done"})
+                continue
+            if event_id == 559:
+                await self._publish_o20_event({"type": "response.output_text.done"})
+                await self._publish_o20_event({"type": "response.done"})
+                continue
+            if event_id in {152, 600}:
+                self.manager.mark_ending(self.invite, "O2.0 上游会话结束")
+                return
+
     async def _upstream_to_browser(self) -> None:
+        if bool(getattr(self.manager, "uses_o20_protocol", False)):
+            await self._o20_upstream_to_browser()
+            return
         assert self.upstream is not None
         async for message in self.upstream:
             if message.type == aiohttp.WSMsgType.BINARY:
@@ -809,14 +1468,26 @@ class _VoiceCallBridge:
                 }:
                     self._last_user_activity = time.monotonic()
                 await self.browser.send_json({"kind": "upstream", "event": event})
-                await self._handle_function_call(event)
+                if self._is_function_call_completion(event):
+                    self._schedule_function_call(event)
+                else:
+                    # 参数增量和 function item 建立事件必须按顺序更新缓冲区；
+                    # 真正的工具执行在完成事件中异步调度。
+                    await self._handle_function_call(event)
                 if event.get("type") == "error":
-                    self.manager.mark_ending(self.invite, "上游服务错误")
+                    detail = self._upstream_error_detail(event)
+                    self._last_upstream_error = detail
+                    logger.warning(
+                        "[日常生活] 实时语音上游返回错误：阶段=通话中；详情=%s",
+                        detail,
+                    )
+                    self.manager.mark_ending(self.invite, f"上游服务错误：{detail}")
                     with contextlib.suppress(Exception):
                         await self.browser.send_json(
                             {
                                 "kind": "status",
-                                "message": "语音服务返回错误，请重新点击开始通话",
+                                "message": f"语音服务返回错误，正在恢复：{detail}",
+                                "retryable": True,
                             }
                         )
                     return
@@ -838,4 +1509,8 @@ class _VoiceCallBridge:
                 return
 
 
-__all__ = ["VOLCENGINE_DUPLEX_ENDPOINT", "VoiceCallGateway"]
+__all__ = [
+    "VOLCENGINE_DUPLEX_ENDPOINT",
+    "VOLCENGINE_O20_ENDPOINT",
+    "VoiceCallGateway",
+]

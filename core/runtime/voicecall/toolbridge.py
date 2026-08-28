@@ -66,15 +66,29 @@ def _chain_text(value: Any) -> str:
     if isinstance(value, (list, tuple, set)):
         parts = [_chain_text(item) for item in value]
         return "\n".join(part for part in parts if part).strip()
+    # MessageEventResult/MessageChain 携带的媒体组件没有可读的 ``text``。
+    # 先递归消息链，避免把 Record/File/Image 的对象 repr 传回实时模型。
+    chain = getattr(value, "chain", None)
+    if chain is not None:
+        text = _chain_text(chain)
+        if text:
+            return text
+        return ""
     text = getattr(value, "text", None)
     if text is not None:
         return str(text).strip()
-    chain = getattr(value, "chain", None)
-    if chain is not None:
-        return _chain_text(chain)
     content = getattr(value, "content", None)
     if content is not None:
         return _chain_text(content)
+    component_name = type(value).__name__.lower()
+    if component_name == "record":
+        return "已发送语音。"
+    if component_name == "image":
+        return "已发送图片。"
+    if component_name == "video":
+        return "已发送视频。"
+    if component_name == "file":
+        return "已发送文件。"
     return str(value).strip()
 
 
@@ -149,6 +163,34 @@ class VoiceCallToolEvent:
         # 语音通话不能把工具的发送动作重复投递到平台；发送链改为作为工具结果返回给模型。
         self._outbound.append(message)
         return message
+
+    def plain_result(self, text: Any) -> Any:
+        """创建普通文本结果，兼容依赖 AstrMessageEvent 的外部工具。"""
+
+        try:
+            from astrbot.core.message.message_event_result import MessageEventResult
+
+            return MessageEventResult().message(str(text or ""))
+        except (ImportError, ModuleNotFoundError):
+            # 单元测试和精简运行环境可能没有完整 AstrBot 消息模块；
+            # send() 只需能够捕获并整理结果即可。
+            return str(text or "")
+
+    def chain_result(self, chain: Any) -> Any:
+        """创建消息链结果，保留语音/图片/文件等媒体组件供工具桥读取。"""
+
+        items = list(chain or [])
+        try:
+            from astrbot.core.message.message_event_result import MessageEventResult
+
+            result = MessageEventResult()
+            result.chain = items
+            return result
+        except (ImportError, ModuleNotFoundError):
+            return SimpleNamespace(
+                chain=items,
+                result_content_type="LLM_RESULT",
+            )
 
     async def send_with_session(self, message: Any, *args: Any, **kwargs: Any) -> Any:
         return await self.send(message, *args, **kwargs)

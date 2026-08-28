@@ -1746,7 +1746,8 @@ h2::before {
     minmax(0, 1.2fr)
     minmax(54px, 72px)
     minmax(58px, 76px)
-    minmax(68px, 80px);
+    minmax(68px, 80px)
+    minmax(68px, 82px);
   gap: 6px;
   align-items: end;
 }
@@ -1793,7 +1794,8 @@ h2::before {
   .template-list-item-compact
     .template-list-subfield:is(
       [data-template-field="resolution"],
-      [data-template-field="aspect_ratio"]
+      [data-template-field="aspect_ratio"],
+      [data-template-field="quality"]
     )
     .life-select-menu {
     left: auto;

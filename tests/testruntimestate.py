@@ -176,6 +176,93 @@ class RuntimeStateTest(unittest.TestCase):
         data.timeline[0].place_kind = "poi"
         self.assertNotEqual(after, runtime._outfit_context_signature(data, now, "深夜"))
 
+    def test_outfit_context_ignores_period_and_ordinary_home_activity_progress(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        data = DayRecord(
+            date="2026-08-21",
+            weather_info=WeatherInfo(temp=24, condition="晴"),
+            timeline=[
+                TimelineItem(
+                    time="08:00",
+                    activity="在书桌前处理邮件",
+                    place="家",
+                    place_kind="home",
+                ),
+                TimelineItem(
+                    time="10:00",
+                    activity="泡杯茶继续阅读",
+                    place="家",
+                    place_kind="home",
+                ),
+                TimelineItem(
+                    time="12:00",
+                    activity="在家吃午饭",
+                    place="家",
+                    place_kind="home",
+                ),
+            ],
+        )
+
+        morning = runtime._outfit_context_signature(
+            data, datetime.datetime(2026, 8, 21, 9, 30), "上午"
+        )
+        noon = runtime._outfit_context_signature(
+            data, datetime.datetime(2026, 8, 21, 12, 30), "中午"
+        )
+
+        self.assertEqual(morning, noon)
+
+    def test_outfit_context_changes_on_relevant_event_but_not_after_it(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        data = DayRecord(
+            date="2026-08-21",
+            weather_info=WeatherInfo(temp=24, condition="晴"),
+            timeline=[
+                TimelineItem(
+                    time="08:00",
+                    activity="在家整理书桌",
+                    place="家",
+                    place_kind="home",
+                ),
+                TimelineItem(
+                    time="09:00",
+                    activity="换上轻便日常装",
+                    place="家",
+                    place_kind="home",
+                ),
+                TimelineItem(
+                    time="10:00",
+                    activity="坐在窗边阅读",
+                    place="家",
+                    place_kind="home",
+                ),
+            ],
+            meta={
+                "planned_life_actions": json.dumps(
+                    [
+                        {
+                            "action_id": "outfit-morning",
+                            "action_type": "change_outfit",
+                            "timeline_index": 1,
+                        }
+                    ]
+                )
+            },
+        )
+
+        before = runtime._outfit_context_signature(
+            data, datetime.datetime(2026, 8, 21, 8, 30), "上午"
+        )
+        during = runtime._outfit_context_signature(
+            data, datetime.datetime(2026, 8, 21, 9, 15), "上午"
+        )
+        after = runtime._outfit_context_signature(
+            data, datetime.datetime(2026, 8, 21, 10, 15), "上午"
+        )
+
+        self.assertNotEqual(before, during)
+        self.assertEqual(during, after)
+
     def test_residence_refresh_hides_stale_current_life_facts(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.config = LifeSettings.from_dict({})
@@ -2057,6 +2144,10 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertIn("当前状态", selected_provider.prompts[0])
         self.assertIn("【通用自主原则】", selected_provider.prompts[0])
         self.assertIn("【通用状态行为原则】", selected_provider.prompts[0])
+        self.assertIn("数值以 50 为普通中性基线", selected_provider.prompts[0])
+        self.assertIn("状态因果线索", selected_provider.prompts[0])
+        self.assertIn("身体状态线索", selected_provider.prompts[0])
+        self.assertIn("body_condition.burden_present", selected_provider.prompts[0])
         self.assertIn("缺少明确依据时使用空字符串", selected_provider.prompts[0])
         self.assertLess(
             selected_provider.prompts[0].index("【通用自主原则】"),
@@ -2074,7 +2165,8 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             selected_provider.prompts[0].index("当前状态"),
             selected_provider.prompts[0].index("触发来源：chat"),
         )
-        self.assertEqual(data.state.energy, 28)
+        self.assertEqual(data.state.energy, 48)
+        self.assertEqual(data.state.busyness, 57)
         self.assertEqual(data.state.source, "chat")
         self.assertEqual(data.state.updated_at, "2026-05-24 12:00")
         self.assertTrue(data.state_log)

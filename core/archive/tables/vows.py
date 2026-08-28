@@ -7,6 +7,8 @@ CREATE TABLE IF NOT EXISTS commitments (
             trigger_date TEXT NOT NULL DEFAULT '',
             trigger_time TEXT NOT NULL DEFAULT '',
             time_window TEXT NOT NULL DEFAULT '',
+            owner TEXT NOT NULL DEFAULT '未定',
+            media_kind TEXT NOT NULL DEFAULT 'none',
             place TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL DEFAULT 'active',
             confidence REAL NOT NULL DEFAULT 1.0,

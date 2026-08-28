@@ -3242,17 +3242,15 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(DailyLifeRuntime._photo_suite_count(1), 2)
         self.assertEqual(DailyLifeRuntime._photo_suite_count(4), 4)
         self.assertEqual(DailyLifeRuntime._photo_suite_count(20), 6)
-        self.assertEqual(
-            DailyLifeRuntime._photo_suite_parse_plan(
-                '{"shots":[{"title":"全景","prompt":"完整全景"},'
-                '{"title":"近景","prompt":"完整近景"}]}',
-                2,
-            ),
-            [
-                {"title": "全景", "prompt": "完整全景"},
-                {"title": "近景", "prompt": "完整近景"},
-            ],
+        parsed = DailyLifeRuntime._photo_suite_parse_plan(
+            '{"shared":{"setting":"室内","subject":"一个人","style":"真实摄影","continuity":"外观一致"},'
+            '"shots":[{"title":"全景","action":"站在桌边","camera":"远景平视","composition":"人物融入环境"},'
+            '{"title":"近景","action":"看向镜头","camera":"近景平视","composition":"突出面部"}]}',
+            2,
         )
+        self.assertEqual([item["title"] for item in parsed], ["全景", "近景"])
+        self.assertTrue(all("当前唯一镜头要求" in item["prompt"] for item in parsed))
+        self.assertIn("action：站在桌边", parsed[0]["prompt"])
         self.assertEqual(
             DailyLifeRuntime._photo_suite_parse_plan(
                 '{"shots":[{"title":"全景","prompt":"完整全景"}]}', 2
@@ -3273,6 +3271,12 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(len(object_fallback), 3)
         self.assertTrue(
             all("不要拼图或多宫格" in item["prompt"] for item in person_fallback)
+        )
+        self.assertTrue(
+            all("当前唯一镜头要求" in item["prompt"] for item in person_fallback)
+        )
+        self.assertTrue(
+            all("不要把其他镜头带入当前画面" in item["prompt"] for item in person_fallback)
         )
         self.assertTrue(
             all(
@@ -3388,9 +3392,9 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             captured.append(prompt)
             return (
                 '{"shots":['
-                '{"title":"并肩","prompt":"人物 A 与人物 B 并肩坐着"},'
-                '{"title":"互动","prompt":"人物 A 与人物 B 自然聊天"}'
-                "]}"
+                '{"title":"并肩","action":"并肩坐着","camera":"中景平视","composition":"两人同框"},'
+                '{"title":"互动","action":"自然聊天","camera":"侧面中景","composition":"突出互动"}],'
+                '"shared":{"setting":"深夜客厅","subject":"人物 A 与人物 B","style":"真实摄影","continuity":"身份外观一致"}}'
             )
 
         runtime.call_text_model = call_text_model
@@ -3403,6 +3407,8 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         )
 
         self.assertEqual(len(planned), 2)
+        self.assertTrue(all("当前唯一镜头要求" in item["prompt"] for item in planned))
+        self.assertTrue(all("不要拼图或多宫格" in item["prompt"] for item in planned))
         self.assertIn("人物 A 是当前角色，人物 B 是好友", captured[0])
         self.assertIn("默认只应用于人物 A", captured[0])
         self.assertIn("人物参考图只用于确认各自身份和稳定外观", captured[0])
@@ -3495,6 +3501,36 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         for coro in scheduled:
             coro.close()
 
+    async def test_photo_suite_deduplicates_repeated_call_in_same_turn(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        root = Path(tempfile.mkdtemp())
+        runtime.data_path = root / "daily_life.db"
+        scheduled = []
+        runtime._schedule_background_task = lambda coro, label="", key="": (
+            scheduled.append(coro) or True
+        )
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
+
+        first = await runtime.life_photo_suite_generate(
+            event,
+            "雨后街边生活套图",
+            count=3,
+            subject_route="current_character",
+        )
+        second = await runtime.life_photo_suite_generate(
+            event,
+            "雨后街边生活套图",
+            count=3,
+            subject_route="current_character",
+        )
+
+        self.assertEqual(json.loads(first)["status"], "pending")
+        self.assertEqual(str(second), "这组照片已经在准备了。")
+        self.assertEqual(getattr(second, "status", ""), "pending")
+        self.assertEqual(len(scheduled), 1)
+        for coro in scheduled:
+            coro.close()
+
     async def test_photo_suite_snapshots_current_appearance_for_new_character_suite(
         self,
     ):
@@ -3550,9 +3586,20 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         planner_payload = json.dumps(
             {
                 "shots": [
-                    {"title": f"镜头 {index}", "prompt": f"雨后公园镜头{index}"}
+                    {
+                        "title": f"镜头 {index}",
+                        "action": f"雨后公园镜头{index}",
+                        "camera": "平视中景",
+                        "composition": "自然生活抓拍",
+                    }
                     for index in range(1, 5)
-                ]
+                ],
+                "shared": {
+                    "setting": "雨后公园",
+                    "subject": "一个人",
+                    "style": "真实摄影",
+                    "continuity": "外观和光线保持一致",
+                },
             },
             ensure_ascii=False,
         )
@@ -3570,7 +3617,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             generation_options.append(dict(kwargs))
             try:
                 await asyncio.sleep(0.01)
-                if prompt.endswith("镜头2") and failed_second:
+                if "雨后公园镜头2" in prompt and failed_second:
                     raise RuntimeError("第二张暂时失败")
                 path = root / f"source-{len(prompt_calls)}-{prompt[-1]}.png"
                 path.write_bytes(b"\x89PNG\r\n\x1a\n" + prompt.encode("utf-8"))
@@ -3644,7 +3691,12 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         await scheduled[0][2]
         self.assertEqual([item["emoji_id"] for item in reaction_calls], [125, 79])
         self.assertLessEqual(max_active, 2)
-        self.assertEqual(prompt_calls["雨后公园镜头2"], 2)
+        shot2_calls = sum(
+            count
+            for prompt, count in prompt_calls.items()
+            if "雨后公园镜头2" in prompt
+        )
+        self.assertEqual(shot2_calls, 2, prompt_calls)
         manifests = list(
             (root / "generated" / "images" / "suites").glob("*/manifest.json")
         )
@@ -3662,10 +3714,10 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         )
         self.assertFalse(manifests[0].with_suffix(".json.tmp").exists())
         self.assertEqual(runtime.context.sent_messages, [])
-        first_chain = event.sent_messages[0]
+        first_messages = event.sent_messages[:3]
         self.assertEqual(
-            [Path(item["file"]).name for item in first_chain.items],
-            ["01.png", "03.png", "04.png"],
+            [[Path(item["file"]).name for item in chain.items] for chain in first_messages],
+            [["01.png"], ["03.png"], ["04.png"]],
         )
 
         failed_second = False
@@ -3681,12 +3733,15 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertTrue(
             all(options == {"resolution": "2K"} for options in generation_options)
         )
-        self.assertEqual(prompt_calls["雨后公园镜头1"], 1)
-        self.assertEqual(prompt_calls["雨后公园镜头2"], 3)
-        self.assertEqual(prompt_calls["雨后公园镜头3"], 1)
-        self.assertEqual(prompt_calls["雨后公园镜头4"], 1)
+        for shot_index, expected_calls in ((1, 1), (2, 3), (3, 1), (4, 1)):
+            shot_calls = sum(
+                count
+                for prompt, count in prompt_calls.items()
+                if f"雨后公园镜头{shot_index}" in prompt
+            )
+            self.assertEqual(shot_calls, expected_calls, prompt_calls)
         self.assertEqual(
-            [Path(item["file"]).name for item in event.sent_messages[1].items],
+            [Path(item["file"]).name for item in event.sent_messages[3].items],
             ["02.png"],
         )
         self.assertEqual(len(expressed), 2)
@@ -3885,7 +3940,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(path, suite_root / "task-a" / "manifest.json")
         self.assertEqual(manifest["id"], "task-a")
 
-    async def test_photo_suite_multi_image_send_falls_back_to_ordered_single_images(
+    async def test_photo_suite_multi_image_send_uses_ordered_single_images(
         self,
     ):
         root = Path(tempfile.mkdtemp())
@@ -3912,8 +3967,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         sent = await runtime._photo_suite_send_images("scope", Event(), shots)
 
         self.assertEqual(sent, {1, 2, 3})
-        self.assertEqual(calls[0], [str(path) for path in paths])
-        self.assertEqual(calls[1:], [[str(path)] for path in paths])
+        self.assertEqual(calls, [[str(path)] for path in paths])
 
     async def test_photo_suite_final_text_is_held_until_background_delivery(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)

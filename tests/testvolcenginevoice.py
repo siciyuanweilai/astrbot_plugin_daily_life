@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from core.config.options import LifeSettings
-from core.media.volcengine import VolcengineVoiceService
+from core.media.volcengine import VolcengineVoiceError, VolcengineVoiceService
 
 
 class _Response:
@@ -137,6 +137,13 @@ class VolcengineVoiceTest(unittest.IsolatedAsyncioTestCase):
         service = VolcengineVoiceService(settings, Path(tempfile.mkdtemp()))
         with self.assertRaisesRegex(RuntimeError, "缺少音色 ID"):
             await service.synthesize("你好")
+
+    def test_resource_mismatch_error_explains_voice_source_configuration(self):
+        with self.assertRaisesRegex(VolcengineVoiceError, "音色与 TTS 资源不匹配"):
+            VolcengineVoiceService._consume_sse_line(
+                'data: {"code":55000000,"message":"resource ID is mismatched with speaker related resource"}',
+                bytearray(),
+            )
 
     def test_long_text_splits_at_utf8_limit_and_punctuation(self):
         text = "第一句很长。" * 120

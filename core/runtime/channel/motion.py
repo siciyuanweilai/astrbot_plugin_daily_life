@@ -328,11 +328,22 @@ class RuntimeVideoMediaMixin:
             continue_last_result=bool(continue_last_result),
             initial_reference_image=str(initial_reference_image or "").strip(),
         )
-        self._schedule_background_task(
+        scheduled = self._schedule_background_task(
             self._life_video_generate_background(request),
             label="生活视频生成",
             key=f"life_video:{scope}:{prompt[:80]}",
         )
+        if not scheduled:
+            self._finish_life_video_request(request_id)
+            self.cancel_tool_reaction(request.event, "life_video_generate")
+            return json.dumps(
+                {
+                    "status": "failed",
+                    "media": "video",
+                    "reason": "视频后台任务队列暂时繁忙，请稍后重试",
+                },
+                ensure_ascii=False,
+            )
         return json.dumps(
             {
                 "status": "pending",
@@ -343,6 +354,12 @@ class RuntimeVideoMediaMixin:
             ensure_ascii=False,
         )
 
+    @staticmethod
+    def _resolve_life_video_commitment_future(event: Any, outcome: str) -> None:
+        completion = getattr(event, "_daily_life_commitment_video_future", None)
+        if isinstance(completion, asyncio.Future) and not completion.done():
+            completion.set_result(str(outcome or "failed"))
+
     async def _life_video_generate_background(self, request: LifeVideoRequest) -> None:
         started_at = time.monotonic()
         try:
@@ -352,6 +369,23 @@ class RuntimeVideoMediaMixin:
             self.cancel_tool_reaction(request.event, "life_video_generate")
             raise
         except Exception as exc:
+            completion = getattr(
+                request.event, "_daily_life_commitment_video_future", None
+            )
+            if isinstance(completion, asyncio.Future) and completion.done():
+                try:
+                    outcome = str(completion.result() or "")
+                except Exception:
+                    outcome = ""
+                if outcome in {"sent", "cancelled"}:
+                    logger.warning(f"{LOG_PREFIX} 视频已投递，后处理记录失败：{exc}")
+                    if outcome == "sent":
+                        await self.finish_tool_reaction(
+                            request.event, "life_video_generate", success=True
+                        )
+                    return
+            if isinstance(completion, asyncio.Future) and not completion.done():
+                completion.set_exception(exc)
             error = self._media_error_summary(exc)
             logger.warning(f"{LOG_PREFIX} 视频生成或发送失败：{error}")
             self._update_life_video_request(
@@ -437,7 +471,7 @@ class RuntimeVideoMediaMixin:
         request: LifeVideoRequest,
         execution: LifeVideoExecution,
         started_at: float,
-    ) -> None:
+    ) -> bool:
         generated_url = str(getattr(execution.generated, "url", "") or "").strip()
         delivery_task = await self.stage_durable_media_delivery(
             request.scope,
@@ -460,7 +494,11 @@ class RuntimeVideoMediaMixin:
                 request.request_id, video_status="cancelled"
             )
             self.cancel_tool_reaction(request.event, "life_video_generate")
-            return
+            self._resolve_life_video_commitment_future(request.event, "cancelled")
+            return False
+        # send_message_if_not_recalled 返回成功即代表真实视频已经送出；持久承诺
+        # 此时先收到成功信号，后续记录/自然补话失败也不能导致视频重复生成。
+        self._resolve_life_video_commitment_future(request.event, "sent")
         self._update_life_video_request(request.request_id, video_status="sent")
         summary = await self._media_result_summary(generated_url, started_at)
         logger.info(f"{LOG_PREFIX} 视频已发送：{summary}")
@@ -509,6 +547,7 @@ class RuntimeVideoMediaMixin:
         await self.finish_tool_reaction(
             request.event, "life_video_generate", success=True
         )
+        return True
 
     def _update_life_video_request(self, request_id: str, **values: str) -> None:
         marker = self._life_video_requests().get(request_id)

@@ -886,6 +886,19 @@ class OutfitMixin:
                 final_nails != old_nails,
             )
         )
+        comparable_old_outfit = strip_hair_from_outfit(
+            old_outfit,
+            old_hair_style,
+            old_hair,
+        )
+        comparable_old_outfit = strip_hair_from_outfit(
+            comparable_old_outfit,
+            final_hair_style,
+            final_hair,
+        )
+        outfit_changed = bool(
+            new_outfit and new_outfit != comparable_old_outfit
+        )
         user_confirmed = (
             str(old_meta.get("outfit_fact_source") or "").strip()
             == "user_instruction"
@@ -927,7 +940,10 @@ class OutfitMixin:
             return None
         if should_abort and should_abort():
             return None
-        old_data.outfit_history[target_period] = new_outfit
+        # outfit_history 是服装变化历史，不是每个时段的状态快照。
+        # keep、只改发型/妆容以及同一套衣服的措辞整理都不新增记录。
+        if outfit_changed:
+            old_data.outfit_history[target_period] = new_outfit
         clearable_keys = {
             "style",
             "hair_style",

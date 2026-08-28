@@ -940,7 +940,7 @@ class LifeActionMixin:
             if repair_outfit_expiration:
                 expirations.pop(action.action_id, None)
                 timeline_item.execution_state = "completed"
-                timeline_item.execution_reason = "换装由虚拟生活时间轴自动结算"
+                timeline_item.execution_reason = "已有当前穿搭事实，修复旧版过期结算"
                 timeline_item.execution_evidence = (
                     timeline_item.execution_evidence
                     or action.evidence
@@ -954,6 +954,8 @@ class LifeActionMixin:
                 continue
             if timeline_item.execution_state != "completed":
                 continue
+            # completed 已不能由时钟产生，只能来自显式回执或有证据的复盘。
+            # 对虚拟世界内部动作，此时才允许生成模拟回执并落地库存、地点等事实。
             domain_service = getattr(self, "domains", None)
             should_simulate = getattr(domain_service, "should_simulate", None)
             if callable(should_simulate) and should_simulate(action):
@@ -963,7 +965,7 @@ class LifeActionMixin:
                     {
                         "receipt_id": f"simulation:{action.action_id}",
                         "status": "simulated",
-                        "source": "timeline_simulation",
+                        "source": "evidence_reviewed_timeline",
                         "source_id": action.action_id,
                         "occurred_at": (now or life_now()).strftime(
                             "%Y-%m-%d %H:%M:%S"
@@ -971,13 +973,35 @@ class LifeActionMixin:
                         "evidence": [
                             timeline_item.execution_evidence
                             or action.evidence
-                            or "虚拟生活时间轴已完成该内部动作"
+                            or "有证据的生活复盘已确认该内部动作"
                         ],
                     },
                     now=now,
                 )
                 if simulated is not None:
                     outcomes.append(simulated)
+                continue
+            receipt_getter = getattr(self.archive, "get_life_action_receipts", None)
+            existing_receipts = (
+                await receipt_getter(action_id=action.action_id, limit=1)
+                if callable(receipt_getter)
+                else []
+            )
+            if existing_receipts:
+                outcomes.append(
+                    LifeActionOutcome(
+                        action_id=action.action_id,
+                        action_type=action.action_type,
+                        status="committed",
+                        reason="已存在执行回执",
+                        committed_at=str(
+                            getattr(existing_receipts[0], "occurred_at", "")
+                            or (now or life_now()).strftime("%Y-%m-%d %H:%M:%S")
+                        ),
+                        timeline_index=action.timeline_index,
+                        evidence=timeline_item.execution_evidence or action.evidence,
+                    )
+                )
                 continue
             expired_at = (now or life_now()).strftime("%Y-%m-%d %H:%M:%S")
             outcome = LifeActionOutcome(

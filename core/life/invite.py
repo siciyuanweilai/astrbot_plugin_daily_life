@@ -275,6 +275,130 @@ class InviteMixin:
         restored.sort(key=lambda item: cls._timeline_minutes(item.time) or 0)
         return restored
 
+    @classmethod
+    def _route_anchor_from_past_timeline(
+        cls, past_timeline: list[TimelineItem]
+    ) -> TimelineItem | None:
+        """返回最后一个可定位的历史节点，仅供计算下一段路线。"""
+
+        for item in reversed(past_timeline):
+            candidate = cls._copy_timeline_item(item)
+            if (
+                candidate.place_kind in {"home", "poi"}
+                and candidate.place_latitude is not None
+                and candidate.place_longitude is not None
+            ):
+                return candidate
+        return None
+
+    @classmethod
+    def _merge_audited_places(
+        cls,
+        *,
+        timeline: list[TimelineItem],
+        current_places: list | None,
+        audited_places: list | None,
+    ) -> list[dict]:
+        """以最终时间轴为准合并历史地点和本次审计得到的地点。"""
+
+        valid_kinds = {"home", "poi", "generic"}
+        timeline_places = [
+            item
+            for item in timeline
+            if item.place and item.place_kind in valid_kinds
+        ]
+        allowed_names = {item.place for item in timeline_places}
+        candidates: dict[str, PlaceRecord] = {}
+        for value in [*(current_places or []), *(audited_places or [])]:
+            place = PlaceRecord.from_value(value)
+            if place is not None and place.name in allowed_names:
+                candidates[place.name] = place
+
+        merged: list[dict] = []
+        seen_names: set[str] = set()
+        for item in timeline_places:
+            if item.place in seen_names:
+                continue
+            seen_names.add(item.place)
+            existing = candidates.get(item.place)
+            value = existing.as_dict() if existing is not None else {
+                "name": item.place,
+                "type": "home" if item.place_kind == "home" else item.place_kind,
+                "hint": item.place_hint or item.place_address,
+            }
+            if item.place_latitude is not None and item.place_longitude is not None:
+                value.update(
+                    {
+                        "latitude": item.place_latitude,
+                        "longitude": item.place_longitude,
+                        "coordinate_source": item.place_coordinate_source,
+                    }
+                )
+            merged.append(value)
+        return merged
+
+    async def _audit_future_timeline(
+        self,
+        *,
+        past_timeline: list[TimelineItem],
+        mutable_timeline: list[TimelineItem],
+        protected_timeline: list[TimelineItem],
+        current_places: list | None,
+    ) -> tuple[list[TimelineItem] | None, dict[str, object], str]:
+        """审计可变的未来日程，历史节点绝不接受地图回写。"""
+
+        location_auditor = getattr(
+            getattr(self, "domains", None), "audit_daily_locations", None
+        )
+        if not callable(location_auditor):
+            return list(mutable_timeline), {}, ""
+
+        route_anchor = self._route_anchor_from_past_timeline(past_timeline)
+        audit_timeline = [
+            item.as_dict()
+            for item in ([route_anchor] if route_anchor is not None else [])
+            + mutable_timeline
+        ]
+        audit_kwargs = {"allow_safe_corrections": True}
+        reusable_places = self._reusable_location_candidates(current_places)
+        if reusable_places:
+            audit_kwargs["preselected_places"] = reusable_places
+        audited, location_reason = await location_auditor(
+            {
+                "timeline": audit_timeline,
+                "planned_actions": [],
+                "places": self._serialized_current_places(current_places),
+            },
+            **audit_kwargs,
+        )
+        if location_reason:
+            return None, {}, location_reason
+        raw_timeline = audited.get("timeline") if isinstance(audited, dict) else None
+        expected_count = len(mutable_timeline) + int(route_anchor is not None)
+        if not isinstance(raw_timeline, list) or len(raw_timeline) != expected_count:
+            return None, {}, "地点核验返回的时间轴不完整，未应用本次调整"
+        if route_anchor is not None:
+            raw_timeline = raw_timeline[1:]
+        audited_future = [TimelineItem.from_value(item) for item in raw_timeline]
+        restored_future = self._restore_protected_timeline(
+            audited_future,
+            protected_timeline,
+            mutable_timeline,
+        )
+        complete_timeline = past_timeline + restored_future
+        return (
+            restored_future,
+            {
+                "places": self._merge_audited_places(
+                    timeline=complete_timeline,
+                    current_places=current_places,
+                    audited_places=audited.get("places", []),
+                ),
+                "location_audit": audited.get("location_audit", {}),
+            },
+            "",
+        )
+
     async def handle_invite(
         self,
         date_str,
@@ -406,32 +530,14 @@ JSON 输出要求：
                         result["decision"] = decision
                         result["reason"] = f"日程调整暂时无法确认：{edit_issue}"
                         result["timeline_issue"] = edit_issue
-                    else:
-                        candidate_timeline = past_timeline + merged_future
-                        protected_timeline = past_timeline + protected_future
-                    location_auditor = getattr(
-                        getattr(self, "domains", None),
-                        "audit_daily_locations",
-                        None,
-                    )
-                    if accepted and callable(location_auditor):
-                        audit_kwargs = {"allow_safe_corrections": True}
-                        reusable_places = self._reusable_location_candidates(
-                            current_places
-                        )
-                        if reusable_places:
-                            audit_kwargs["preselected_places"] = reusable_places
-                        audited, location_reason = await location_auditor(
-                            {
-                                "timeline": [
-                                    item.as_dict() for item in candidate_timeline
-                                ],
-                                "planned_actions": [],
-                                "places": self._serialized_current_places(
-                                    current_places
-                                ),
-                            },
-                            **audit_kwargs,
+                    if accepted:
+                        audited_future, audit_details, location_reason = (
+                            await self._audit_future_timeline(
+                                past_timeline=past_timeline,
+                                mutable_timeline=merged_future,
+                                protected_timeline=protected_future,
+                                current_places=current_places,
+                            )
                         )
                         if location_reason:
                             accepted = False
@@ -443,20 +549,12 @@ JSON 输出要求：
                             )
                             result["location_issue"] = location_reason
                         else:
-                            new_timeline = self._restore_protected_timeline(
-                                [
-                                    TimelineItem.from_value(item)
-                                    for item in audited.get("timeline", [])
-                                ],
-                                protected_timeline,
-                                candidate_timeline,
-                            )
-                            result["_audited_places"] = audited.get("places", [])
-                            result["_location_audit"] = audited.get(
-                                "location_audit", {}
-                            )
-                    elif accepted:
-                        new_timeline = candidate_timeline
+                            new_timeline = past_timeline + (audited_future or [])
+                            if audit_details:
+                                result["_audited_places"] = audit_details["places"]
+                                result["_location_audit"] = audit_details[
+                                    "location_audit"
+                                ]
                 await self._save_life_decision_record(
                     kind="invite",
                     date=date_str,
@@ -611,41 +709,23 @@ JSON 输出要求：
                 result["_retryable"] = True
                 result["reconcile_issue"] = edit_issue
                 return None, result
-            candidate_timeline = past_timeline + merged_future
-            protected_timeline = past_timeline + protected_future
-            location_auditor = getattr(
-                getattr(self, "domains", None),
-                "audit_daily_locations",
-                None,
+            audited_future, audit_details, location_reason = (
+                await self._audit_future_timeline(
+                    past_timeline=past_timeline,
+                    mutable_timeline=merged_future,
+                    protected_timeline=protected_future,
+                    current_places=current_places,
+                )
             )
-            if callable(location_auditor):
-                audit_kwargs = {"allow_safe_corrections": True}
-                reusable_places = self._reusable_location_candidates(current_places)
-                if reusable_places:
-                    audit_kwargs["preselected_places"] = reusable_places
-                audited, location_reason = await location_auditor(
-                    {
-                        "timeline": [item.as_dict() for item in candidate_timeline],
-                        "planned_actions": [],
-                        "places": self._serialized_current_places(current_places),
-                    },
-                    **audit_kwargs,
-                )
-                if location_reason:
-                    result["reason"] = f"地点安排暂时无法确认：{location_reason}"
-                    result["location_issue"] = location_reason
-                    result["_retryable"] = True
-                    return None, result
-                candidate_timeline = self._restore_protected_timeline(
-                    [
-                        TimelineItem.from_value(item)
-                        for item in audited.get("timeline", [])
-                    ],
-                    protected_timeline,
-                    candidate_timeline,
-                )
-                result["_audited_places"] = audited.get("places", [])
-                result["_location_audit"] = audited.get("location_audit", {})
+            if location_reason:
+                result["reason"] = f"地点安排暂时无法确认：{location_reason}"
+                result["location_issue"] = location_reason
+                result["_retryable"] = True
+                return None, result
+            candidate_timeline = past_timeline + (audited_future or [])
+            if audit_details:
+                result["_audited_places"] = audit_details["places"]
+                result["_location_audit"] = audit_details["location_audit"]
             await self._save_life_decision_record(
                 kind="commitment_reconcile",
                 date=date_str,

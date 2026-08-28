@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import math
 from typing import Any
+from urllib.parse import urlsplit
+from uuid import uuid4
 
 import aiohttp
 
@@ -77,23 +79,67 @@ def build_request(
 ) -> ImageRequest:
     base = normalize_openai_base_url(route.api_url)
     headers = {"Authorization": f"Bearer {route.api_key}"}
+    siciyuanweilai = is_siciyuanweilai(route.api_url)
+    if siciyuanweilai:
+        # Keep the request traceable and idempotent at the gateway.
+        headers["X-Client-Request-ID"] = f"daily-life-{uuid4().hex}"
     size = size_for(resolution, aspect_ratio, model=route.model)
     images = inline_images(parts)
     if not images:
+        payload = {
+            "model": route.model,
+            "prompt": prompt_from_parts(parts),
+            "size": size,
+        }
+        if siciyuanweilai:
+            payload.update(
+                {
+                    "n": 1,
+                    "response_format": "url",
+                    "extra_fields": {"quality": route.quality.upper()},
+                }
+            )
+        else:
+            payload["quality"] = route.quality
         return ImageRequest(
             url=f"{base}/images/generations",
+            headers=headers,
+            payload=payload,
+        )
+
+    edit_request_format = normalized_edit_request_format(
+        route.edit_request_format,
+        siciyuanweilai=siciyuanweilai,
+    )
+    if edit_request_format == "leo_json":
+        return ImageRequest(
+            url=f"{base}/images/edits",
             headers=headers,
             payload={
                 "model": route.model,
                 "prompt": prompt_from_parts(parts),
                 "size": size,
+                "n": 1,
+                "extra_fields": {
+                    "quality": route.quality.upper(),
+                    "guidances": {
+                        "image_reference": [
+                            {"image": {"id": f"{{{{upload:{index}}}}}"}}
+                            for index in range(len(images))
+                        ],
+                    },
+                },
+                "image": [image_data_url(image, mime) for image, mime in images],
             },
+            reference_image_count=len(images),
         )
 
     form = form_data()
     form.add_field("model", route.model)
     form.add_field("prompt", prompt_from_parts(parts))
     form.add_field("size", size)
+    form.add_field("quality", route.quality)
+    form.add_field("response_format", "url")
     for index, (image_bytes, mime_type) in enumerate(images, start=1):
         _, ext = image_mime_and_ext(image_bytes)
         form.add_field(
@@ -102,12 +148,39 @@ def build_request(
             filename=f"reference_{index}{ext}",
             content_type=mime_type,
         )
-    return ImageRequest(url=f"{base}/images/edits", headers=headers, form=form)
+    return ImageRequest(
+        url=f"{base}/images/edits",
+        headers=headers,
+        form=form,
+        reference_image_count=len(images),
+    )
 
 
 def form_data() -> Any:
     form = getattr(aiohttp, "FormData", None)
     return form() if callable(form) else SimpleFormData()
+
+
+def normalized_edit_request_format(value: str, *, siciyuanweilai: bool) -> str:
+    request_format = str(value or "auto").strip().lower() or "auto"
+    if request_format == "auto":
+        return "leo_json" if siciyuanweilai else "multipart"
+    if request_format not in {"leo_json", "multipart"}:
+        raise ValueError("GPT Image 图生图请求格式只能是自动、Leo JSON 或 multipart")
+    return request_format
+
+
+def is_siciyuanweilai(api_url: str) -> bool:
+    try:
+        host = (urlsplit(normalize_openai_base_url(api_url)).hostname or "").lower()
+    except ValueError:
+        return False
+    return host in {"siciyuanweilai.com", "www.siciyuanweilai.com"}
+
+
+def image_data_url(image_bytes: bytes, mime_type: str) -> str:
+    encoded = base64.b64encode(image_bytes).decode("ascii")
+    return f"data:{mime_type};base64,{encoded}"
 
 
 def prompt_from_parts(parts: list[dict[str, Any]]) -> str:

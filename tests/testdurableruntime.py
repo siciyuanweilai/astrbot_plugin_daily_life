@@ -390,6 +390,429 @@ class ProactiveCommitmentScheduleTest(unittest.IsolatedAsyncioTestCase):
             await self.archive.get_durable_tasks(kind="proactive_commitment"), []
         )
 
+    async def test_photo_commitment_creates_private_image_task_at_morning_window(self):
+        commitment = await self.archive.save_commitment(
+            CommitmentRecord(
+                content="明早醒来拍张照片给对方",
+                trigger_date="2026-08-27",
+                trigger_time="08:00",
+                time_window="早晨醒后",
+                owner="当前角色",
+                media_kind="photo",
+                source_session="test:FriendMessage:1",
+                source_message="明早醒来拍张照片给对方",
+            )
+        )
+
+        scheduled = await self.runtime.schedule_commitment_photo(
+            commitment,
+            owner="当前角色",
+            observed_at=datetime.datetime(2026, 8, 26, 23, 0),
+        )
+        tasks = await self.archive.get_durable_tasks(kind="commitment_photo")
+
+        self.assertTrue(scheduled)
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0].available_at, "2026-08-27 08:00:00")
+        self.assertEqual(tasks[0].payload["scope"], "test:FriendMessage:1")
+
+    async def test_photo_commitment_targets_original_group_scope_and_rejects_other_owned_promise(self):
+        group_commitment = await self.archive.save_commitment(
+            CommitmentRecord(
+                content="拍张照片给对方",
+                trigger_date="2026-08-27",
+                trigger_time="08:00",
+                owner="当前角色",
+                media_kind="photo",
+                source_session="test:GroupMessage:1",
+            )
+        )
+        speaker_commitment = await self.archive.save_commitment(
+            CommitmentRecord(
+                content="对方给我拍张照片",
+                trigger_date="2026-08-27",
+                trigger_time="08:00",
+                owner="说话人",
+                media_kind="photo",
+                source_session="test:FriendMessage:1",
+            )
+        )
+
+        self.assertTrue(
+            await self.runtime.schedule_commitment_photo(
+                group_commitment,
+                owner="当前角色",
+                observed_at=datetime.datetime(2026, 8, 27, 7, 0),
+            )
+        )
+        self.assertFalse(
+            await self.runtime.schedule_commitment_photo(
+                speaker_commitment,
+                owner="说话人",
+                observed_at=datetime.datetime(2026, 8, 27, 7, 0),
+            )
+        )
+        self.assertEqual(
+            [
+                task.payload["scope"]
+                for task in await self.archive.get_durable_tasks(kind="commitment_photo")
+            ],
+            [group_commitment.source_session],
+        )
+
+    async def test_photo_reconcile_recovers_due_group_commitments_to_original_group(self):
+        stale = await self.archive.save_commitment(
+            CommitmentRecord(
+                content="昨天拍张照片给对方",
+                trigger_date="2026-08-25",
+                trigger_time="09:00",
+                owner="当前角色",
+                media_kind="photo",
+                source_session="test:GroupMessage:stale-photo",
+            )
+        )
+        upcoming = await self.archive.save_commitment(
+            CommitmentRecord(
+                content="明早拍张照片给对方",
+                trigger_date="2026-08-27",
+                trigger_time="08:00",
+                time_window="早晨",
+                owner="当前角色",
+                media_kind="photo",
+                source_session="test:GroupMessage:upcoming-photo",
+            )
+        )
+
+        created = await self.runtime.reconcile_commitment_photo_tasks(
+            datetime.datetime(2026, 8, 26, 23, 0)
+        )
+        tasks = await self.archive.get_durable_tasks(kind="commitment_photo")
+
+        self.assertEqual(created, 2)
+        self.assertEqual(
+            {task.payload["commitment_id"] for task in tasks},
+            {stale.id, upcoming.id},
+        )
+
+    async def test_photo_commitment_recognizes_food_and_rejects_video_promises(self):
+        food_commitment = await self.archive.save_commitment(
+            CommitmentRecord(
+                content="去糖水铺时给对方拍好吃的",
+                trigger_date="2026-06-21",
+                trigger_time="10:00",
+                time_window="等会儿",
+                owner="当前角色",
+                media_kind="photo",
+                source_session="target:FriendMessage:photo-food",
+                source_message="拍好吃的给你看",
+                confidence=1.0,
+            )
+        )
+        video_commitment = await self.archive.save_commitment(
+            CommitmentRecord(
+                content="下次给对方拍视频",
+                trigger_date="2026-06-21",
+                trigger_time="10:00",
+                owner="当前角色",
+                media_kind="video",
+                source_session="target:FriendMessage:photo-video",
+                source_message="拍视频给你看",
+                confidence=1.0,
+            )
+        )
+
+        self.assertTrue(
+            await self.runtime.schedule_commitment_photo(
+                food_commitment,
+                observed_at=datetime.datetime(2026, 6, 21, 10, 0),
+            )
+        )
+        self.assertFalse(
+            await self.runtime.schedule_commitment_photo(
+                video_commitment,
+                owner="当前角色",
+                observed_at=datetime.datetime(2026, 6, 21, 10, 0),
+            )
+        )
+        tasks = await self.archive.get_durable_tasks(kind="commitment_photo")
+        self.assertEqual([task.payload["commitment_id"] for task in tasks], [food_commitment.id])
+
+    async def test_photo_task_marks_commitment_done_after_image_is_sent(self):
+        commitment = await self.archive.save_commitment(
+            CommitmentRecord(
+                content="拍张照片给对方",
+                owner="当前角色",
+                media_kind="photo",
+                source_session="test:FriendMessage:1",
+            )
+        )
+        self.runtime.config = SimpleNamespace(
+            image_generation=SimpleNamespace(enabled=True)
+        )
+        calls = []
+
+        async def generate(event, prompt, **kwargs):
+            calls.append((event, prompt, kwargs))
+            return '{"status":"sent","media":"image"}'
+
+        self.runtime.life_image_generate = generate
+        task = SimpleNamespace(
+            payload={
+                "scope": commitment.source_session,
+                "commitment_id": commitment.id,
+                "prompt": commitment.content,
+            },
+            attempts=1,
+            max_attempts=4,
+        )
+
+        result = await self.runtime.run_commitment_photo_task(task)
+
+        self.assertEqual(result["outcome"], "sent")
+        self.assertEqual((await self.archive.get_commitment(commitment.id)).status, "done")
+        self.assertEqual(calls[0][0].unified_msg_origin, commitment.source_session)
+
+    async def test_photo_task_can_deliver_to_original_group_scope(self):
+        commitment = await self.archive.save_commitment(
+            CommitmentRecord(
+                content="拍张照片给对方",
+                owner="当前角色",
+                media_kind="photo",
+                source_session="test:GroupMessage:photo-delivery",
+            )
+        )
+        self.runtime.config = SimpleNamespace(
+            image_generation=SimpleNamespace(enabled=True)
+        )
+        calls = []
+
+        async def generate(event, prompt, **kwargs):
+            calls.append((event, prompt, kwargs))
+            return '{"status":"sent","media":"image"}'
+
+        self.runtime.life_image_generate = generate
+        task = SimpleNamespace(
+            payload={
+                "scope": commitment.source_session,
+                "commitment_id": commitment.id,
+                "prompt": commitment.content,
+            },
+            attempts=1,
+            max_attempts=4,
+        )
+
+        result = await self.runtime.run_commitment_photo_task(task)
+
+        self.assertEqual(result["outcome"], "sent")
+        self.assertEqual(calls[0][0].unified_msg_origin, commitment.source_session)
+
+    async def test_video_commitment_creates_private_video_task_at_morning_window(self):
+        commitment = await self.archive.save_commitment(
+            CommitmentRecord(
+                content="明早醒来拍一段视频给对方",
+                trigger_date="2026-08-27",
+                trigger_time="08:00",
+                time_window="早晨醒后",
+                owner="当前角色",
+                media_kind="video",
+                source_session="test:FriendMessage:1",
+                source_message="明早醒来拍一段视频给你看",
+            )
+        )
+
+        scheduled = await self.runtime.schedule_commitment_video(
+            commitment,
+            owner="当前角色",
+            observed_at=datetime.datetime(2026, 8, 26, 23, 0),
+        )
+        tasks = await self.archive.get_durable_tasks(kind="commitment_video")
+
+        self.assertTrue(scheduled)
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0].available_at, "2026-08-27 08:00:00")
+        self.assertEqual(tasks[0].payload["scope"], "test:FriendMessage:1")
+
+    async def test_rescheduling_pending_media_commitment_refreshes_task_time(self):
+        commitment = await self.archive.save_commitment(
+            CommitmentRecord(
+                content="明天拍视频给对方",
+                trigger_date="2026-08-27",
+                trigger_time="09:00",
+                owner="当前角色",
+                media_kind="video",
+                source_session="test:FriendMessage:reschedule",
+            )
+        )
+        await self.runtime.schedule_commitment_video(
+            commitment,
+            owner="当前角色",
+            observed_at=datetime.datetime(2026, 8, 26, 23, 0),
+        )
+        self.assertEqual(
+            (await self.archive.get_durable_tasks(kind="commitment_video"))[0].available_at,
+            "2026-08-27 09:00:00",
+        )
+
+        self.assertTrue(
+            await self.archive.reschedule_commitment(
+                commitment.id, "2026-08-29", "", trigger_time="09:00"
+            )
+        )
+        refreshed = await self.archive.get_commitment(commitment.id)
+        await self.runtime.schedule_commitment_video(
+            refreshed,
+            owner="当前角色",
+            observed_at=datetime.datetime(2026, 8, 26, 23, 0),
+        )
+        self.assertEqual(
+            (await self.archive.get_durable_tasks(kind="commitment_video"))[0].available_at,
+            "2026-08-29 09:00:00",
+        )
+
+    async def test_video_commitment_accepts_selfie_video(self):
+        commitment = await self.archive.save_commitment(
+            CommitmentRecord(
+                content="明天录一个自拍视频给对方",
+                trigger_date="2026-08-27",
+                trigger_time="09:00",
+                owner="当前角色",
+                media_kind="video",
+                source_session="test:FriendMessage:selfie-video",
+            )
+        )
+
+        self.assertTrue(
+            await self.runtime.schedule_commitment_video(
+                commitment,
+                owner="当前角色",
+                observed_at=datetime.datetime(2026, 8, 26, 23, 0),
+            )
+        )
+
+    async def test_video_commitment_rejects_calls_and_mixed_media_but_targets_original_group_scope(self):
+        call_commitment = await self.archive.save_commitment(
+            CommitmentRecord(
+                content="下次和对方视频通话",
+                trigger_date="2026-08-27",
+                trigger_time="09:00",
+                owner="当前角色",
+                media_kind="none",
+                source_session="test:FriendMessage:call",
+            )
+        )
+        mixed_commitment = await self.archive.save_commitment(
+            CommitmentRecord(
+                content="拍照并录视频给对方",
+                trigger_date="2026-08-27",
+                trigger_time="09:00",
+                owner="当前角色",
+                media_kind="none",
+                source_session="test:FriendMessage:mixed",
+            )
+        )
+        group_commitment = await self.archive.save_commitment(
+            CommitmentRecord(
+                content="拍视频给对方",
+                trigger_date="2026-08-27",
+                trigger_time="09:00",
+                owner="当前角色",
+                media_kind="video",
+                source_session="test:GroupMessage:video",
+            )
+        )
+
+        self.assertFalse(
+            await self.runtime.schedule_commitment_video(
+                call_commitment,
+                owner="当前角色",
+                observed_at=datetime.datetime(2026, 8, 27, 7, 0),
+            )
+        )
+        self.assertFalse(
+            await self.runtime.schedule_commitment_video(
+                mixed_commitment,
+                owner="当前角色",
+                observed_at=datetime.datetime(2026, 8, 27, 7, 0),
+            )
+        )
+        self.assertTrue(
+            await self.runtime.schedule_commitment_video(
+                group_commitment,
+                owner="当前角色",
+                observed_at=datetime.datetime(2026, 8, 27, 7, 0),
+            )
+        )
+        tasks = await self.archive.get_durable_tasks(kind="commitment_video")
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0].payload["scope"], group_commitment.source_session)
+
+    async def test_video_reconcile_recovers_due_group_commitments_to_original_group(self):
+        stale = await self.archive.save_commitment(
+            CommitmentRecord(
+                content="昨天拍视频给对方",
+                trigger_date="2026-08-25",
+                trigger_time="09:00",
+                owner="当前角色",
+                media_kind="video",
+                source_session="test:GroupMessage:stale-video",
+            )
+        )
+        upcoming = await self.archive.save_commitment(
+            CommitmentRecord(
+                content="明早拍视频给对方",
+                trigger_date="2026-08-27",
+                trigger_time="08:00",
+                time_window="早晨",
+                owner="当前角色",
+                media_kind="video",
+                source_session="test:GroupMessage:upcoming-video",
+            )
+        )
+
+        created = await self.runtime.reconcile_commitment_video_tasks(
+            datetime.datetime(2026, 8, 26, 23, 0)
+        )
+        tasks = await self.archive.get_durable_tasks(kind="commitment_video")
+
+        self.assertEqual(created, 2)
+        self.assertEqual(
+            {task.payload["commitment_id"] for task in tasks},
+            {stale.id, upcoming.id},
+        )
+
+    async def test_video_task_settles_only_after_async_video_delivery(self):
+        commitment = await self.archive.save_commitment(
+            CommitmentRecord(
+                content="拍视频给对方",
+                owner="当前角色",
+                media_kind="video",
+                source_session="test:FriendMessage:video",
+            )
+        )
+        self.runtime.config = SimpleNamespace(
+            video_generation=SimpleNamespace(enabled=True, timeout_seconds=30)
+        )
+
+        async def generate(event, prompt, **kwargs):
+            event._daily_life_commitment_video_future.set_result("sent")
+            return '{"status":"pending","media":"video"}'
+
+        self.runtime.life_video_generate = generate
+        task = SimpleNamespace(
+            payload={
+                "scope": commitment.source_session,
+                "commitment_id": commitment.id,
+                "prompt": commitment.content,
+            },
+            attempts=1,
+            max_attempts=4,
+        )
+
+        result = await self.runtime.run_commitment_video_task(task)
+
+        self.assertEqual(result["outcome"], "sent")
+        self.assertEqual((await self.archive.get_commitment(commitment.id)).status, "done")
+
     async def test_invite_contact_does_not_settle_shared_commitment(self):
         commitment = await self.archive.save_commitment(
             {

@@ -10,6 +10,7 @@ from astrbot.api import logger
 from ..archive import DayRevisionConflict
 from ..clock import now as life_now
 from ..life.condition import (
+    format_daily_variability_prompt,
     format_state_prompt,
     normalize_state,
     state_is_stale,
@@ -124,7 +125,7 @@ class StatusMixin:
   "sleep": {{"quality": 0-100, "depth": "awake|light_rest|light_sleep|deep_sleep", "summary": "睡眠影响是否仍在"}},
   "physiological_rhythm": {{
     "energy_curve": "此刻到接下来一段时间的精力起伏",
-    "body_condition": {{"label": "身体状态", "intensity": 0-100, "source": "依据来源", "expires_at": "YYYY-MM-DD 或空字符串"}},
+    "body_condition": {{"label": "身体状态", "intensity": "burden_present=true 时填写身体负荷强度 0-100，否则填 0", "burden_present": "布尔值，true 表示当前确有身体负荷，false 表示当前无身体负荷", "source": "依据来源", "expires_at": "YYYY-MM-DD、YYYY-MM-DD HH:MM 或空字符串"}},
     "recovery_actions": ["自然恢复动作"],
     "social_battery": 0-100,
     "attention_state": "注意力/感官负荷状态",
@@ -153,6 +154,9 @@ class StatusMixin:
 - watch_state、boredom、fishing、attention_openness 和 interrupt_level 是同一个主观注意力状态机；要根据体力、困倦、忙碌、社交意愿、当前活动和触发信息自主判断，不要套固定时间或固定文本规则。
 - sleep.depth 是此刻睡眠/休息层级：awake=清醒，light_rest=浅休息但仍可能留意，light_sleep=浅睡眠且普通消息难进入，deep_sleep=深度睡眠只可能被强打断信号影响。它由能量、困意、当前活动、昨日睡眠债、时间线索和消息打断等级共同判断，不要由固定时间直接决定。
 - physiological_rhythm 是通用身体节律：包括精力曲线、身体状态、恢复动作、社交电量、注意力状态和可选周期字段。
+- body_condition.burden_present 是身体负荷的唯一语义开关：有负荷填 true 并让 intensity、source、recovery_actions 与期限相互一致；无负荷填 false、intensity=0。不要让消费端从 label、source、summary 或其他自然语言反推身体负荷。
+- 结合下方“状态因果线索”重新审视状态。线索只允许由已有体力、睡眠、压力或身体负荷带来连续的小幅变化；没有依据时保持稳定，不得凭日期、时段或随机性制造疾病、疼痛或情绪低潮。
+- 已有 body_condition 在 expires_at 到期前默认仍有余波；除非本轮有明确恢复或新的身体事实，不得直接改成“完全舒适”。
 - 不要输出 meta.life_mode 或 meta.sleep_mode；它们属于今日生成的日程基调，不属于实时状态刷新。
 - emotion_arc 只记录当前情绪脉络的结构化摘要；没有新触发时可以延续原状态并降低强度。
 - 实时刷新只能更新此刻身体、情绪和未来日程可行性，不得推导或保存长期偏好、关系事实与生活事件。
@@ -172,6 +176,7 @@ class StatusMixin:
 当前时间：{now.strftime("%Y-%m-%d %H:%M")}
 触发来源：{source}
 触发信息：{detail or "无"}
+状态因果线索：{format_daily_variability_prompt(data.date, state=data.state)}
 近期锚点细化：{json.dumps(near_term[:4] if isinstance(near_term, list) else [], ensure_ascii=False)}
 可局部重排的未来锚点：{json.dumps(future_anchors, ensure_ascii=False)}
 待处理重排原因：{pending_replan or "无"}"""
@@ -350,10 +355,23 @@ class StatusMixin:
             for field_name in tracked_fields
         )
         if previous_state is not None:
-            significant_change = significant_change or any(
-                str(getattr(state, field_name, "") or "").strip()
-                != str(getattr(previous_state, field_name, "") or "").strip()
-                for field_name in ("mood", "watch_state", "interrupt_level")
+            current_body = state.physiological_rhythm.body_condition
+            previous_body = previous_state.physiological_rhythm.body_condition
+            significant_change = significant_change or (
+                abs(
+                    self._state_score(current_body.intensity, 0)
+                    - self._state_score(previous_body.intensity, 0)
+                )
+                >= 10
+                or (
+                    max(
+                        self._state_score(current_body.intensity, 0),
+                        self._state_score(previous_body.intensity, 0),
+                    )
+                    >= 20
+                    and str(current_body.label or "").strip()
+                    != str(previous_body.label or "").strip()
+                )
             )
         if not significant_change:
             return
@@ -392,6 +410,7 @@ class StatusMixin:
                 now=spec.now,
                 source=spec.source,
                 previous=data.state,
+                max_score_delta=12,
             )
         )
         previous_date = (spec.now - datetime.timedelta(days=1)).strftime("%Y-%m-%d")

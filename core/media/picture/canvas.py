@@ -39,6 +39,9 @@ _SUPPORTED_ASPECT_RATIO_VALUES = {
 }
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 _GENERATED_IMAGE_MAX_BYTES = 32 * 1024 * 1024
+_REMOTE_IMAGE_DOWNLOAD_ATTEMPTS = 4
+_REMOTE_IMAGE_RETRY_DELAYS = (1.0, 2.0, 4.0)
+_REMOTE_IMAGE_RETRY_STATUS = frozenset({400, 408, 425, 429, 500, 502, 503, 504})
 _REFERENCE_IMAGE_DOWNLOAD_TIMEOUT = aiohttp.ClientTimeout(
     total=20,
     connect=8,
@@ -52,6 +55,10 @@ _REFERENCE_IMAGE_REQUEST_HEADERS = {
         "Chrome/124.0.0.0 Safari/537.36"
     ),
 }
+
+
+class _RetryableRemoteImageError(RuntimeError):
+    pass
 
 
 def _best_supported_aspect_ratio(width: int, height: int) -> str:
@@ -83,6 +90,42 @@ def _image_dimensions(image_bytes: bytes) -> tuple[int, int]:
     ):
         return _webp_dimensions(image_bytes)
     return 0, 0
+
+
+def _validate_downloaded_image(
+    image_bytes: bytes,
+    content_type: str,
+    *,
+    label: str,
+) -> None:
+    """Reject CDN responses that contain only an image header or metadata."""
+    if not image_bytes:
+        raise _RetryableRemoteImageError(f"{label}为空")
+
+    width, height = _image_dimensions(image_bytes)
+    if width <= 0 or height <= 0:
+        raise _RetryableRemoteImageError(f"{label}内容不完整或无法解析")
+
+    if image_bytes.startswith(b"\xff\xd8"):
+        if image_bytes.rfind(b"\xff\xd9") < 0:
+            raise _RetryableRemoteImageError(f"{label} JPEG 内容不完整")
+        return
+    if image_bytes.startswith(_PNG_SIGNATURE):
+        if image_bytes.rfind(b"IEND") < 0:
+            raise _RetryableRemoteImageError(f"{label} PNG 内容不完整")
+        return
+    if image_bytes.startswith((b"GIF87a", b"GIF89a")):
+        if not image_bytes.endswith(b";"):
+            raise _RetryableRemoteImageError(f"{label} GIF 内容不完整")
+        return
+    if len(image_bytes) >= 12 and image_bytes[8:12] == b"WEBP":
+        riff_size = int.from_bytes(image_bytes[4:8], "little")
+        if riff_size + 8 > len(image_bytes):
+            raise _RetryableRemoteImageError(f"{label} WEBP 内容不完整")
+        return
+
+    detected_type = str(content_type or "").split(";", 1)[0].strip().lower()
+    raise ValueError(f"{label}格式不受支持：{detected_type or '未知'}")
 
 
 def _png_dimensions(image_bytes: bytes) -> tuple[int, int]:
@@ -527,7 +570,10 @@ class GeminiImageService:
             f"{reference_instruction}高质量 {route.resolution} 分辨率、{route.aspect_ratio} 比例新图片。"
             f"{self._character_reference_instruction(character_reference)}"
             f"{self._physical_identity_instruction(identity_profile)}"
-            "只有在符合要求时才保留参考图里的视觉身份、构图和姿态线索。"
+            "必须基于随请求上传的参考图进行编辑，不得把参考图忽略为纯文本文生图。"
+            "未被画面要求明确改变的主体、构图、姿态与物件关系应从参考图延续；"
+            "参考图包含人物时，必须以其脸部气质、五官、肤色、体态和身份辨识度为视觉锚点，"
+            "不得随机替换成另一位人物。"
             f"画面要求：{prompt}。直接输出编辑后的图片。"
         )
 
@@ -751,34 +797,16 @@ class GeminiImageService:
     async def _download_reference_image(
         self, url: str, *, referer: str = ""
     ) -> tuple[bytes, str]:
-        if not await is_http_url_allowed_async(url):
-            raise ValueError("参考图片地址不在允许的媒体网络范围内")
-        session = await self._get_session()
         headers = dict(_REFERENCE_IMAGE_REQUEST_HEADERS)
         if str(referer or "").startswith(("http://", "https://")):
             headers["Referer"] = str(referer).strip()
-        async with session.get(
+        return await self._download_remote_image(
             url,
             headers=headers,
             timeout=_REFERENCE_IMAGE_DOWNLOAD_TIMEOUT,
-        ) as response:
-            if response.status != 200:
-                raise RuntimeError(f"参考图片下载失败（HTTP {response.status}）")
-            content_type = (
-                str(response.headers.get("Content-Type", "") or "")
-                .split(";", 1)[0]
-                .strip()
-                .lower()
-            )
-            if content_type and not content_type.startswith("image/"):
-                raise ValueError("参考图片链接不是图片内容")
-            data = await response.content.read(REFERENCE_IMAGE_MAX_BYTES + 1)
-        if not data:
-            raise ValueError("参考图片为空")
-        if len(data) > REFERENCE_IMAGE_MAX_BYTES:
-            raise ValueError("参考图片过大")
-        detected_mime, _ = image_mime_and_ext(data)
-        return data, content_type or detected_mime
+            max_bytes=REFERENCE_IMAGE_MAX_BYTES,
+            label="参考图片",
+        )
 
     async def _generate_image_result(
         self,
@@ -835,7 +863,12 @@ class GeminiImageService:
             )
             try:
                 data = await self._request_image_data(
-                    session, route, timeout, parts_for_route, prompt
+                    session,
+                    route,
+                    timeout,
+                    parts_for_route,
+                    prompt,
+                    require_reference=str(mode or "").strip().lower() == "edit",
                 )
             except Exception as exc:
                 message = f"{route_label}：{self._error_text(exc)}"
@@ -922,11 +955,20 @@ class GeminiImageService:
         timeout: aiohttp.ClientTimeout,
         parts_for_route: Callable[[ImageRoute, str], Any],
         prompt: str,
+        *,
+        require_reference: bool = False,
     ) -> dict[str, Any] | Any:
         parts = parts_for_route(route, prompt)
         if inspect.isawaitable(parts):
             parts = await parts
         request = self._build_request(route, parts)
+        if require_reference and request.reference_image_count <= 0:
+            raise ValueError("图生图请求没有可上传的参考图，已终止请求")
+        if request.reference_image_count:
+            logger.debug(
+                f"{LOG_PREFIX} 图生图参考图已挂载：数量={request.reference_image_count}；"
+                f"端点={request.url.rsplit('/', 1)[-1]}"
+            )
         post = (
             session.post(
                 request.url, data=request.form, headers=request.headers, timeout=timeout
@@ -1019,26 +1061,135 @@ class GeminiImageService:
             ValueError: 地址、内容类型、大小或内容为空时抛出。
             RuntimeError: 图片地址返回非成功状态时抛出。
         """
-        if not await is_http_url_allowed_async(url):
-            raise ValueError("生成图片地址不在允许的媒体网络范围内")
-        session = await self._get_session()
-        async with session.get(url, timeout=timeout) as response:
-            if response.status != 200:
-                raise RuntimeError(f"生成图片下载失败（HTTP {response.status}）")
-            content_type = (
-                str(response.headers.get("Content-Type", "") or "")
-                .split(";", 1)[0]
-                .strip()
-                .lower()
-            )
-            if content_type and not content_type.startswith("image/"):
-                raise ValueError("生成图片链接返回的不是图片内容")
-            image_bytes = await response.content.read(_GENERATED_IMAGE_MAX_BYTES + 1)
-        if not image_bytes:
-            raise ValueError("生成图片内容为空")
-        if len(image_bytes) > _GENERATED_IMAGE_MAX_BYTES:
-            raise ValueError("生成图片内容过大")
+        image_bytes, _ = await self._download_remote_image(
+            url,
+            timeout=timeout,
+            max_bytes=_GENERATED_IMAGE_MAX_BYTES,
+            label="生成图片",
+        )
         return image_bytes
+
+    async def _download_remote_image(
+        self,
+        url: str,
+        *,
+        timeout: aiohttp.ClientTimeout,
+        max_bytes: int,
+        label: str,
+        headers: dict[str, str] | None = None,
+    ) -> tuple[bytes, str]:
+        """Download an image only after the remote body passes integrity checks."""
+        if not await is_http_url_allowed_async(url):
+            raise ValueError(f"{label}地址不在允许的媒体网络范围内")
+        session = await self._get_session()
+        last_error: Exception | None = None
+        for attempt in range(_REMOTE_IMAGE_DOWNLOAD_ATTEMPTS):
+            request_headers = dict(headers or {})
+            if attempt:
+                # CDN 可能把第一次传输中断的对象缓存下来。重试时同时绕过
+                # 无签名 URL 的缓存，并禁用压缩与连接复用，避免继续得到同一截残片。
+                request_headers["Cache-Control"] = "no-cache, no-store"
+                request_headers["Pragma"] = "no-cache"
+                request_headers["Accept-Encoding"] = "identity"
+                request_headers["Connection"] = "close"
+                if attempt >= 2:
+                    # 当结果服务拒绝缓存键时，使用从首字节开始的范围请求，
+                    # 让 CDN 重新建立完整对象；服务可能返回 206。
+                    request_headers["Range"] = "bytes=0-"
+            request_url = url
+            try:
+                request_kwargs: dict[str, Any] = {"timeout": timeout}
+                if request_headers:
+                    request_kwargs["headers"] = request_headers
+                async with session.get(request_url, **request_kwargs) as response:
+                    status = int(getattr(response, "status", 0) or 0)
+                    if status not in {200, 206}:
+                        detail = ""
+                        try:
+                            detail = (await response.text())[:300].strip()
+                        except Exception:
+                            pass
+                        message = f"{label}下载失败（HTTP {status}）"
+                        if detail:
+                            message += f"：{detail}"
+                        if status in _REMOTE_IMAGE_RETRY_STATUS:
+                            raise _RetryableRemoteImageError(message)
+                        raise RuntimeError(message)
+                    response_headers = getattr(response, "headers", {}) or {}
+                    content_type = (
+                        str(response_headers.get("Content-Type", "") or "")
+                        .split(";", 1)[0]
+                        .strip()
+                        .lower()
+                    )
+                    if content_type and not content_type.startswith("image/"):
+                        raise ValueError(f"{label}链接返回的不是图片内容")
+                    content_length = self._content_length(response_headers)
+                    if content_length is not None and content_length > max_bytes:
+                        raise ValueError(f"{label}内容过大")
+                    image_bytes = await self._read_remote_image_body(
+                        response,
+                        max_bytes=max_bytes,
+                    )
+                    if content_length is not None and len(image_bytes) != content_length:
+                        raise _RetryableRemoteImageError(
+                            f"{label}下载不完整（声明={content_length}字节，实际={len(image_bytes)}字节）"
+                        )
+                if len(image_bytes) > max_bytes:
+                    raise ValueError(f"{label}内容过大")
+                _validate_downloaded_image(
+                    image_bytes,
+                    content_type,
+                    label=label,
+                )
+                detected_mime, _ = image_mime_and_ext(image_bytes)
+                return image_bytes, content_type or detected_mime
+            except _RetryableRemoteImageError as exc:
+                last_error = exc
+            except (asyncio.TimeoutError, aiohttp.ClientError) as exc:
+                last_error = exc
+            except ValueError as exc:
+                raise RuntimeError(f"{label}下载失败：{exc}") from exc
+            if attempt + 1 >= _REMOTE_IMAGE_DOWNLOAD_ATTEMPTS:
+                break
+            delay = _REMOTE_IMAGE_RETRY_DELAYS[min(attempt, len(_REMOTE_IMAGE_RETRY_DELAYS) - 1)]
+            logger.debug(
+                f"{LOG_PREFIX} {label}暂不可用，第 {attempt + 1} 次下载失败，"
+                f"将在 {delay:g} 秒后重试：{last_error}"
+            )
+            await asyncio.sleep(delay)
+        raise RuntimeError(f"{label}下载失败：{last_error or '未知错误'}") from last_error
+
+    @staticmethod
+    async def _read_remote_image_body(response: Any, *, max_bytes: int) -> bytes:
+        """持续读取到 EOF，避免把首个网络分片误当成完整图片。"""
+        content = getattr(response, "content", None)
+        iterator = getattr(content, "iter_chunked", None)
+        if callable(iterator):
+            chunks: list[bytes] = []
+            total = 0
+            async for chunk in iterator(64 * 1024):
+                data = bytes(chunk or b"")
+                total += len(data)
+                if total > max_bytes:
+                    raise ValueError("生成图片内容过大")
+                chunks.append(data)
+            return b"".join(chunks)
+        data = await content.read(max_bytes + 1)
+        if len(data) > max_bytes:
+            raise ValueError("生成图片内容过大")
+        return data
+
+    @staticmethod
+    def _content_length(headers: Any) -> int | None:
+        value = str(getattr(headers, "get", lambda *_: "")("Content-Length", "") or "").strip()
+        if not value:
+            return None
+        try:
+            length = int(value)
+        except (TypeError, ValueError):
+            return None
+        return length if length >= 0 else None
 
     @staticmethod
     def _route_with_options(
@@ -1078,6 +1229,8 @@ class GeminiImageService:
             timeout_seconds=route.timeout_seconds,
             origin=route.origin,
             resolution_source=resolution_source,
+            quality=route.quality,
+            edit_request_format=route.edit_request_format,
         )
 
     @staticmethod
@@ -1153,6 +1306,8 @@ class GeminiImageService:
                 channel.resolution,
                 channel.aspect_ratio,
                 channel.timeout_seconds,
+                getattr(channel, "quality", "medium"),
+                getattr(channel, "edit_request_format", "auto"),
             )
             for index, channel in enumerate(
                 (

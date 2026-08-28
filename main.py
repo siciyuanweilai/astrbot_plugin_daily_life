@@ -80,6 +80,26 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
                 return notice or line, line
         return "\n".join(lines).strip(), None
 
+    async def _deliver_call_invite(self, event: AstrMessageEvent, message: str) -> None:
+        """一次性投递通话邀请，并阻止当前事件再次经过默认响应出口。"""
+
+        notice, invite_link = self._split_voice_call_invite_message(message)
+        parts = [part for part in (notice, invite_link) if part]
+        sender = getattr(event, "send", None)
+        if callable(sender):
+            for part in parts:
+                await sender(event.plain_result(part))
+        else:
+            # 测试替身或极简事件没有 send 时，仍保留一个待发送结果。
+            if parts:
+                event.set_result(event.plain_result("\n".join(parts)))
+        clearer = getattr(event, "clear_result", None)
+        if callable(clearer):
+            clearer()
+        stopper = getattr(event, "stop_event", None)
+        if callable(stopper):
+            stopper()
+
     _SEND_PIPELINE_STOP_HOOKS = (
         "suppress_recalled_event_result",
         "suppress_intermediate_tool_result",
@@ -700,7 +720,9 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         city: str = "",
     ):
         """
-        查询天气；查询默认居住地天气时会同步到当前生活日。
+        查询当前天气；查询默认居住地天气时会同步到当前生活日。
+        只适合当前实时天气，不负责明天或未来预报；用户询问明天/未来天气时，
+        应改用 life_web_search，并提交包含城市和日期的完整问题。
 
         Args:
             city(string): 可选城市名；留空使用当前地图服务从居住地解析出的城市。
@@ -1283,6 +1305,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         不能提前声称整组已经拍好，也不要提及模型、任务、并发、缓存或生成流程。工具会在后台规划并生成整组照片，
         一次发送成功图片，交付后再按实际结果自然补一句。不要为了生成套图而自行连续调用多次单图工具。
         同一组会保持人物身份、人数、发型、服装、场景、时间、光线和画面风格一致，只让景别、机位、姿势和动作产生变化。
+        套图工具只使用这里声明的参数：数量参数名是 count，不要传 photo_count 或 suite_count；套图工具不接受 current_outfit_change 或 current_outfit_instruction，生成套图不会修改当前生活穿搭状态。
         current_character 套图中，用户没有另行指定穿搭、发型或造型风格时，应参考系统注入的当前外观状态；用户本轮明确要求始终优先。
         current_character 用于当前角色本人套图；group 用于当前角色与一位已配置好友的合影套图，participants 必须且只能填写系统给出的关系档案 ID。
         合影套图中把当前角色作为人物 A、好友作为人物 B，分别固定两人的服装、发型、体态和外观呈现，不能把一人的穿搭复制给另一人。
@@ -1376,6 +1399,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         连续修改失败时不能用它重新生成，否则会丢失上一张图片的画面连续性，通常应直接调用 life_image_generate。
         用户要求当前角色与已配置好友参考某张场景图合影时，participants 填写系统上下文给出的一个关系档案 ID；用户图片只作为场景、构图或姿态参考，不作为好友身份图。
         合影改图仍须把当前角色作为人物 A、好友作为人物 B，分别保持两人的服装、发型、体态和外观呈现；未归属的单套穿搭默认只属于人物 A，不得自动复制给人物 B。
+        改图工具不接受 subject_route；主体路线只在 life_image_generate、life_photo_suite_generate 和 life_video_generate 中使用。
 
         Args:
             prompt(string): 想要的图片效果，例如“保留人物姿势，改成午后咖啡店随手拍，暖色自然光，生活抓拍感”。
@@ -1734,7 +1758,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             event, str(text or "").strip(), **voice_kwargs
         )
 
-    @filter.command("语音通话")
+    @filter.command("实时语音通话")
     @_runtime_guard
     async def command_voice_call(self, event: AstrMessageEvent):
         """创建一次性实时语音通话邀请。"""
@@ -1742,10 +1766,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             message = await self.runtime.create_voice_call_invite(event)
         except Exception as exc:
             message = f"暂时不能发起实时语音通话：{str(exc)[:240]}"
-        notice, invite_link = self._split_voice_call_invite_message(message)
-        yield event.plain_result(notice)
-        if invite_link:
-            yield event.plain_result(invite_link)
+        await self._deliver_call_invite(event, message)
 
     @filter.llm_tool(name="life_voice_call_invite")
     @_runtime_guard
@@ -1767,15 +1788,38 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         message = await self.runtime.create_voice_call_invite(
             event, greeting=str(greeting or "").strip()
         )
-        notice, invite_link = self._split_voice_call_invite_message(message)
-        # 实时通话邀请必须立刻交付；链接单独 yield，便于移动端直接复制。
-        # 仍走 AstrBot 原生响应管线，保留标准发送日志和对话记录。
-        if invite_link:
-            yield event.plain_result(notice)
-            yield event.plain_result(invite_link)
-        else:
-            yield event.plain_result(notice)
-        event.stop_event()
+        await self._deliver_call_invite(event, message)
+
+    @filter.command("AI音视频通话")
+    @_runtime_guard
+    async def command_video_call(self, event: AstrMessageEvent):
+        """创建一次性 AI 音视频通话邀请。"""
+        try:
+            message = await self.runtime.create_video_call_invite(event)
+        except Exception as exc:
+            message = f"暂时不能发起 AI 音视频通话：{str(exc)[:240]}"
+        await self._deliver_call_invite(event, message)
+
+    @filter.llm_tool(name="life_video_call_invite")
+    @_runtime_guard
+    async def tool_life_video_call_invite(
+        self,
+        event: AstrMessageEvent,
+        greeting: str = "",
+    ):
+        """
+        创建一次性 AI 音视频通话邀请。
+        仅当用户明确要求视频通话、AI 音视频通话或打开摄像头实时交流时调用；
+        不要因为用户只要求普通语音或发送视频而调用。返回邀请链接后，先让用户点击接受。
+
+        Args:
+            greeting(string): 可选的自然开场白。只有当前话题确实适合接通后先开口时填写，
+                没有合适由头时留空，让通话接通后先听用户说话。
+        """
+        message = await self.runtime.create_video_call_invite(
+            event, greeting=str(greeting or "").strip()
+        )
+        await self._deliver_call_invite(event, message)
 
     @filter.llm_tool(name="life_emoji_send")
     @_runtime_guard
@@ -1861,7 +1905,8 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
                 )
             )
             if not realtime_call_enabled:
-                toolset.remove_tool("life_voice_call_invite")
+                for name in ("life_voice_call_invite", "life_video_call_invite"):
+                    toolset.remove_tool(name)
             domains = getattr(self.runtime, "domains", None)
             map_available = getattr(domains, "map_tools_available", None)
             if not callable(map_available) or not map_available():

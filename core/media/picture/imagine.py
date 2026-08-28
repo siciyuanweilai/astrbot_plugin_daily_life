@@ -74,6 +74,7 @@ def build_request(
         url=f"{base}/images/edits",
         headers=headers,
         payload=payload,
+        reference_image_count=len(images),
     )
 
 

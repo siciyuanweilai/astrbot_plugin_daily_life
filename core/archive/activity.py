@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from typing import Any
 
 from ..clock import today as life_today
@@ -8,6 +9,27 @@ from ..clock import today as life_today
 
 class DomainArchiveMixin:
     """持久化活动、饮食、家务、运动和出行记录。"""
+
+    _PANTRY_QUANTITY_DECIMALS = 6
+    _PANTRY_ZERO_EPSILON = 1e-9
+
+    @classmethod
+    def _pantry_quantity(cls, value: Any) -> float:
+        number = float(value or 0)
+        if not math.isfinite(number):
+            raise ValueError("库存数量必须是有限数字")
+        normalized = round(number, cls._PANTRY_QUANTITY_DECIMALS)
+        return 0.0 if abs(normalized) <= cls._PANTRY_ZERO_EPSILON else normalized
+
+    @classmethod
+    def _pantry_row(cls, row: Any) -> dict[str, Any]:
+        result = dict(row)
+        result["quantity"] = cls._pantry_quantity(result.get("quantity"))
+        result["minimum_quantity"] = max(
+            0.0,
+            cls._pantry_quantity(result.get("minimum_quantity")),
+        )
+        return result
 
     @staticmethod
     def _domain_json(value: Any, fallback: Any) -> str:
@@ -389,37 +411,48 @@ class DomainArchiveMixin:
             row = self._conn.execute(
                 "SELECT * FROM pantry_items WHERE name = ?", (item_name,)
             ).fetchone()
-            current = float(row["quantity"] or 0) if row else 0.0
-            updated = max(0.0, current + float(delta or 0))
+            current = self._pantry_quantity(row["quantity"] if row else 0)
+            movement = self._pantry_quantity(delta)
+            updated = max(0.0, self._pantry_quantity(current + movement))
             stored_unit = self._text(unit) or (self._text(row["unit"]) if row else "")
-            stored_minimum = max(0.0, float(minimum_quantity or 0))
+            stored_minimum = max(0.0, self._pantry_quantity(minimum_quantity))
             if row and stored_minimum == 0:
-                stored_minimum = max(0.0, float(row["minimum_quantity"] or 0))
+                stored_minimum = max(
+                    0.0,
+                    self._pantry_quantity(row["minimum_quantity"]),
+                )
             stored_expiry = self._text(expires_at) or (
                 self._text(row["expires_at"]) if row else ""
             )
-            self._conn.execute(
-                """
-                INSERT INTO pantry_items(
-                    name, quantity, unit, minimum_quantity, expires_at, source, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(name) DO UPDATE SET
-                    quantity = excluded.quantity,
-                    unit = excluded.unit,
-                    minimum_quantity = excluded.minimum_quantity,
-                    expires_at = excluded.expires_at,
-                    source = excluded.source,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                (
-                    item_name,
-                    updated,
-                    stored_unit,
-                    stored_minimum,
-                    stored_expiry,
-                    self._text(source) or "life_action",
-                ),
-            )
+            stored_source = self._text(source) or "life_action"
+            if updated > 0:
+                self._conn.execute(
+                    """
+                    INSERT INTO pantry_items(
+                        name, quantity, unit, minimum_quantity, expires_at, source, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(name) DO UPDATE SET
+                        quantity = excluded.quantity,
+                        unit = excluded.unit,
+                        minimum_quantity = excluded.minimum_quantity,
+                        expires_at = excluded.expires_at,
+                        source = excluded.source,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (
+                        item_name,
+                        updated,
+                        stored_unit,
+                        stored_minimum,
+                        stored_expiry,
+                        stored_source,
+                    ),
+                )
+            else:
+                self._conn.execute(
+                    "DELETE FROM pantry_items WHERE name = ?",
+                    (item_name,),
+                )
             self._conn.execute(
                 """
                 INSERT INTO pantry_movements(
@@ -428,32 +461,42 @@ class DomainArchiveMixin:
                 """,
                 (
                     item_name,
-                    float(delta or 0),
+                    movement,
                     stored_unit,
                     self._text(reason),
                     self._text(action_id),
                     self._text(occurred_at),
-                    self._text(source) or "life_action",
+                    stored_source,
                 ),
             )
             self._conn.commit()
             saved = self._conn.execute(
                 "SELECT * FROM pantry_items WHERE name = ?", (item_name,)
             ).fetchone()
-            return dict(saved)
+            if saved:
+                return self._pantry_row(saved)
+            return {
+                "name": item_name,
+                "quantity": 0.0,
+                "unit": stored_unit,
+                "minimum_quantity": stored_minimum,
+                "expires_at": stored_expiry,
+                "source": stored_source,
+            }
 
         return await self._run_db(dbwork)
 
     async def get_pantry_items(self, limit: int = 50) -> list[dict[str, Any]]:
         def dbwork() -> list[dict[str, Any]]:
-            sql = (
-                "SELECT * FROM pantry_items ORDER BY expires_at, updated_at DESC, name"
-            )
-            params: tuple[Any, ...] = ()
-            if limit > 0:
-                sql += " LIMIT ?"
-                params = (int(limit),)
-            return [dict(row) for row in self._conn.execute(sql, params).fetchall()]
+            rows = [
+                self._pantry_row(row)
+                for row in self._conn.execute(
+                    "SELECT * FROM pantry_items "
+                    "ORDER BY expires_at, updated_at DESC, name"
+                ).fetchall()
+            ]
+            visible = [row for row in rows if row["quantity"] > 0]
+            return visible[: int(limit)] if limit > 0 else visible
 
         return await self._run_db(dbwork)
 
@@ -850,7 +893,7 @@ class DomainArchiveMixin:
                     if is_visible_plan_record(item, date_value=item.get("date", ""))
                 ]
             )
-            chores = visible_limit(
+            chores = self._dedupe_chore_definitions(
                 [
                     item
                     for item in rows(
@@ -864,12 +907,21 @@ class DomainArchiveMixin:
                     )
                 ]
             )
+            chores = visible_limit(chores)
+
+            pantry = [
+                self._pantry_row(item)
+                for item in rows(
+                    "pantry_items", "expires_at, updated_at DESC, name", 0
+                )
+            ]
+            pantry = visible_limit(
+                [item for item in pantry if item["quantity"] > 0]
+            )
 
             return {
                 "activity_sessions": activity_sessions,
-                "pantry": rows(
-                    "pantry_items", "expires_at, updated_at DESC, name", limit
-                ),
+                "pantry": pantry,
                 "recipes": rows("recipes", "updated_at DESC, name", limit),
                 "meals": meals,
                 "chores": chores,
@@ -883,6 +935,30 @@ class DomainArchiveMixin:
         snapshot = await self._run_db(dbwork)
         snapshot["timeline"] = self._domain_unified_timeline(snapshot, max(limit, 40))
         return snapshot
+
+    @staticmethod
+    def _dedupe_chore_definitions(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """按名称合并历史家务定义，保留当前有效且最近更新的一条。"""
+
+        selected: dict[str, dict[str, Any]] = {}
+
+        def preference(item: dict[str, Any]) -> tuple[int, str, str, str]:
+            enabled = str(item.get("enabled") or "").strip().lower()
+            enabled_score = int(enabled in {"1", "true", "yes", "on"})
+            return (
+                enabled_score,
+                str(item.get("updated_at") or ""),
+                str(item.get("last_completed_at") or ""),
+                str(item.get("id") or ""),
+            )
+
+        for item in items:
+            name = " ".join(str(item.get("name") or "").split()).strip()
+            key = name.casefold() or f"id:{item.get('id') or len(selected)}"
+            current = selected.get(key)
+            if current is None or preference(item) > preference(current):
+                selected[key] = item
+        return list(selected.values())
 
     @staticmethod
     def _domain_unified_timeline(
@@ -905,6 +981,13 @@ class DomainArchiveMixin:
                         "kind": kind,
                         "title": item.get(title_key),
                         "status": item.get("status"),
+                        "date": item.get("date")
+                        or str(
+                            item.get("occurred_at")
+                            or item.get("due_at")
+                            or item.get("created_at")
+                            or ""
+                        )[:10],
                         "occurred_at": item.get("occurred_at")
                         or item.get("due_at")
                         or item.get("created_at"),
@@ -924,7 +1007,10 @@ class DomainArchiveMixin:
                     "kind": "activity",
                     "title": item.get("title") or item.get("activity_type"),
                     "status": item.get("status"),
-                    "occurred_at": item.get("ended_at") or item.get("started_at"),
+                    # 结束时间通常是日结算时间，不代表活动实际发生的日期。
+                    # 总览按开始时间排序和筛选，避免昨天的记录在次日结算时重复出现。
+                    "date": item.get("date"),
+                    "occurred_at": item.get("started_at") or item.get("ended_at"),
                     "source": item.get("source"),
                     "action_id": action_id,
                     "details": item.get("metadata", {}),

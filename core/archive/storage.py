@@ -530,6 +530,22 @@ class StorageArchiveMixin:
                 (cutoff,),
             ),
             (
+                """
+                DELETE FROM recipes
+                WHERE updated_at < ?
+                  AND (
+                      id LIKE 'recipe:auto:%'
+                      OR source IN ('life_action', 'life_action_simulation')
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM meal_records
+                      WHERE meal_records.recipe_id = recipes.id
+                  )
+                """,
+                (cutoff,),
+            ),
+            (
                 "DELETE FROM chore_records WHERE occurred_at <> '' AND occurred_at < ?",
                 (cutoff,),
             ),

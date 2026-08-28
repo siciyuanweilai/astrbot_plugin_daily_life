@@ -903,11 +903,18 @@ class DataManager:
             item.activated_at = when
         return True
 
-    async def reschedule_commitment(self, commitment_id, trigger_date, time_window=""):
+    async def reschedule_commitment(
+        self,
+        commitment_id,
+        trigger_date,
+        time_window="",
+        trigger_time="",
+    ):
         item = self.commitments.get(int(commitment_id))
         if not item:
             return False
         item.trigger_date = trigger_date
+        item.trigger_time = trigger_time
         item.time_window = time_window
         item.status = "active"
         item.activated_at = ""
@@ -2308,10 +2315,35 @@ class DataManager:
             values = [
                 item
                 for item in values
-                if not item.expires_at or item.expires_at >= today
+                if item.status == "active"
+                and (not item.expires_at or item.expires_at >= today)
             ]
         values.sort(key=lambda item: (item.priority, item.id), reverse=True)
         return values[:limit] if limit > 0 else values
+
+    async def update_focus_slot_progress(
+        self,
+        focus_id,
+        *,
+        progress_delta=0,
+        status="active",
+        evidence="",
+        date="",
+    ):
+        item = self.focus_slots.get(int(focus_id or 0))
+        if not item or item.status != "active" or not str(evidence or "").strip():
+            return None
+        if status not in {"active", "completed", "blocked", "abandoned"}:
+            return None
+        item.progress = min(100, item.progress + max(0, int(progress_delta or 0)))
+        item.status = status
+        item.last_evidence = str(evidence)
+        item.last_progress_at = str(date or "")
+        if status == "completed":
+            item.progress = 100
+        if status != "active":
+            item.priority = 0
+        return item
 
     async def upsert_focus_target(self, target):
         item = (

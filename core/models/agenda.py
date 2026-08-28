@@ -8,7 +8,15 @@ from .relations import EventRecord, PlaceRecord
 from .vitals import LifeState, WeatherInfo
 
 TIMELINE_EXECUTION_STATES = frozenset(
-    {"planned", "active", "completed", "expired", "skipped", "cancelled"}
+    {
+        "planned",
+        "active",
+        "elapsed",
+        "completed",
+        "expired",
+        "skipped",
+        "cancelled",
+    }
 )
 TIMELINE_TERMINAL_STATES = frozenset(
     {"completed", "expired", "skipped", "cancelled"}

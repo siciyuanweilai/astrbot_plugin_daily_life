@@ -28,20 +28,47 @@ def _clean_list(value: Any, limit: int = 6, item_limit: int = 40) -> list[str]:
     return items
 
 
+def normalize_body_burden_intensity(
+    value: Any,
+    *,
+    burden_present: Any = None,
+) -> int:
+    """按结构化负荷标记解释身体强度，不从自然语言猜测语义。"""
+
+    try:
+        score = int(float(value))
+    except (TypeError, ValueError):
+        score = 0
+    if optional_bool(burden_present) is not True:
+        return 0
+    return max(0, min(score, 100))
+
+
 @dataclass(slots=True)
 class BodyCondition:
     label: str = ""
     intensity: int | None = None
+    burden_present: bool | None = None
     source: str = ""
     expires_at: str = ""
 
     @staticmethod
     def from_value(value: Any) -> "BodyCondition":
         raw = value if isinstance(value, dict) else {}
+        label = _clean_text(raw.get("label"), 60)
+        source = _clean_text(raw.get("source"), 60)
+        burden_present = optional_bool(raw.get("burden_present"))
         return BodyCondition(
-            label=_clean_text(raw.get("label"), 60),
-            intensity=optional_int(raw.get("intensity")),
-            source=_clean_text(raw.get("source"), 60),
+            label=label,
+            intensity=(
+                normalize_body_burden_intensity(
+                    raw.get("intensity"), burden_present=burden_present
+                )
+                if raw.get("intensity") is not None
+                else None
+            ),
+            burden_present=burden_present,
+            source=source,
             expires_at=_clean_text(raw.get("expires_at"), 32),
         )
 
@@ -51,6 +78,8 @@ class BodyCondition:
             result["label"] = self.label
         if self.intensity is not None:
             result["intensity"] = self.intensity
+        if self.burden_present is not None:
+            result["burden_present"] = self.burden_present
         if self.source:
             result["source"] = self.source
         if self.expires_at:

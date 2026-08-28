@@ -14,8 +14,12 @@ class FocusSlotRecord:
     focus_key: str = ""
     label: str = ""
     priority: int = 50
+    progress: int = 0
+    status: str = "active"
     reason: str = ""
+    last_evidence: str = ""
     last_active_at: str = ""
+    last_progress_at: str = ""
     expires_at: str = ""
     created_at: str = ""
     updated_at: str = ""
@@ -32,14 +36,22 @@ class FocusSlotRecord:
         if not (focus_key or label):
             return None
         priority = optional_int(raw.get("priority"))
+        progress = optional_int(raw.get("progress"))
+        status = _text(raw.get("status") or "active", 24).lower()
+        if status not in {"active", "completed", "blocked", "abandoned"}:
+            status = "active"
         return FocusSlotRecord(
             id=optional_int(raw.get("id")) or 0,
             scope=_text(raw.get("scope"), 180),
             focus_key=focus_key or label,
             label=label or focus_key,
             priority=max(0, min(priority if priority is not None else 50, 100)),
+            progress=max(0, min(progress if progress is not None else 0, 100)),
+            status=status,
             reason=_text(raw.get("reason"), 240),
+            last_evidence=_text(raw.get("last_evidence"), 240),
             last_active_at=_text(raw.get("last_active_at"), 40),
+            last_progress_at=_text(raw.get("last_progress_at"), 40),
             expires_at=_text(raw.get("expires_at"), 40),
             created_at=_text(raw.get("created_at"), 40),
             updated_at=_text(raw.get("updated_at"), 40),
@@ -52,8 +64,12 @@ class FocusSlotRecord:
             "focus_key": self.focus_key,
             "label": self.label,
             "priority": self.priority,
+            "progress": self.progress,
+            "status": self.status,
             "reason": self.reason,
+            "last_evidence": self.last_evidence,
             "last_active_at": self.last_active_at,
+            "last_progress_at": self.last_progress_at,
             "expires_at": self.expires_at,
             "created_at": self.created_at,
             "updated_at": self.updated_at,

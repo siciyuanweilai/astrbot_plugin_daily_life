@@ -836,6 +836,39 @@ class CognitionArchiveMixin:
 
         return await self._run_db(dbwork)
 
+    async def reschedule_durable_task(
+        self, task_key: str, available_at: str
+    ) -> bool:
+        """刷新尚未执行的持久任务时间。
+
+        只更新仍处于 pending 状态的任务，避免用户延期时并发中的任务被
+        悄悄改写而继续使用旧的执行上下文。
+        """
+
+        key = self._text(task_key)
+        point = self._text(available_at)
+        if not key or not point:
+            return False
+
+        def dbwork() -> bool:
+            cursor = self._conn.execute(
+                """
+                UPDATE durable_tasks
+                SET available_at = ?, last_error = '', result_json = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE task_key = ? AND status = 'pending'
+                """,
+                (
+                    point,
+                    self._cognition_json({}, default={}),
+                    key,
+                ),
+            )
+            self._conn.commit()
+            return int(cursor.rowcount or 0) > 0
+
+        return await self._run_db(dbwork)
+
     async def get_durable_tasks(
         self, *, status: str = "", kind: str = "", limit: int = 100
     ) -> list[DurableTaskRecord]:

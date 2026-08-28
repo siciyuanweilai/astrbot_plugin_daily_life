@@ -6,6 +6,7 @@ from typing import Any
 from .coerce import compact_text as _text
 from .coerce import compact_texts as _texts
 from .primitive import optional_bool, optional_float, optional_int
+from .vitals import normalize_body_burden_intensity
 
 
 @dataclass(slots=True)
@@ -119,6 +120,9 @@ class PhysiologicalRhythmLogRecord:
     energy_curve: str = ""
     body_label: str = ""
     body_intensity: int = 0
+    # Directly constructed records are typed API input; a supplied intensity
+    # therefore represents a burden unless the caller explicitly clears it.
+    body_burden_present: bool | None = True
     body_source: str = ""
     body_expires_at: str = ""
     recovery_actions: list[str] = field(default_factory=list)
@@ -203,9 +207,11 @@ class PhysiologicalRhythmLogRecord:
             source=_text(raw.get("source") or source, 40) or source,
             energy_curve=energy_curve,
             body_label=body_label,
-            body_intensity=PhysiologicalRhythmLogRecord._score(
-                raw.get("body_intensity"), 0
+            body_intensity=normalize_body_burden_intensity(
+                raw.get("body_intensity"),
+                burden_present=raw.get("body_burden_present"),
             ),
+            body_burden_present=optional_bool(raw.get("body_burden_present")),
             body_source=_text(raw.get("body_source"), 80),
             body_expires_at=_text(raw.get("body_expires_at"), 40),
             recovery_actions=recovery_actions,
@@ -239,6 +245,7 @@ class PhysiologicalRhythmLogRecord:
             "energy_curve": self.energy_curve,
             "body_label": self.body_label,
             "body_intensity": self.body_intensity,
+            "body_burden_present": self.body_burden_present,
             "body_source": self.body_source,
             "body_expires_at": self.body_expires_at,
             "recovery_actions": list(self.recovery_actions),

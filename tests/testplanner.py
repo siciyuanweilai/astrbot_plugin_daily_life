@@ -34,6 +34,7 @@ from core.models import (
     EventRecord,
     FocusSlotRecord,
     LifeEpisodeRecord,
+    LifeEventRecord,
     LifeState,
     MemoryCorrectionRecord,
     PlaceRecord,
@@ -1121,6 +1122,11 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("schedule_type", prompt)
         self.assertIn("【通用自主原则】", prompt)
         self.assertIn("【通用状态行为原则】", prompt)
+        self.assertIn("数值以 50 为普通中性基线", prompt)
+        self.assertIn("状态因果线索", prompt)
+        self.assertIn("身体状态线索", prompt)
+        self.assertIn('"life_event"', prompt)
+        self.assertIn("body_condition.burden_present", prompt)
         self.assertIn("JSON 输出要求", prompt)
         self.assertIn("颜色名·情绪词", prompt)
         self.assertIn("日程类型标签", prompt)
@@ -1346,12 +1352,12 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("；连续外出", decision_evidence[0].summary)
         focus_slots = await archive.get_focus_slots(limit=5, active_only=False)
         absorbed = [item for item in focus_slots if item.focus_key == "early_sleep"][0]
-        self.assertLess(absorbed.priority, 90)
-        self.assertEqual(absorbed.expires_at, "2026-06-12")
-        self.assertIn("已参与 2026-06-12 的daily_plan决策", absorbed.reason)
+        self.assertEqual(absorbed.priority, 90)
+        self.assertEqual(absorbed.progress, 0)
+        self.assertEqual(absorbed.status, "active")
+        self.assertEqual(absorbed.reason, "这两天睡眠债偏高")
         focus_evidence = await archive.get_memory_evidence(target_type="focus", limit=5)
-        self.assertEqual(focus_evidence[0].evidence_type, "decision")
-        self.assertIn("早睡恢复", focus_evidence[0].summary)
+        self.assertEqual(focus_evidence, [])
 
     async def test_daily_generation_uses_only_active_life_corrections(self):
         composer, provider, _, archive = make_composer(
@@ -2772,6 +2778,10 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stored.meta["outfit_decision"], "partial_change")
         self.assertEqual(stored.meta["outfit_scene_category"], "home")
         self.assertEqual(stored.meta["outfit_style_pool"], "mixed")
+        self.assertEqual(
+            stored.outfit_history["evening"],
+            "浅蓝连衣裙，脱下短外套并换成室内拖鞋",
+        )
         self.assertEqual(stored.meta["hair_style"], "松散低马尾")
         self.assertEqual(
             stored.meta["hair"],
@@ -2878,6 +2888,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stored.meta["outfit_decision"], "partial_change")
         self.assertEqual(stored.meta["makeup"], "夏日橘粉水光妆")
         self.assertNotEqual(stored.meta["makeup"], "未知")
+        self.assertNotIn("forenoon", stored.outfit_history)
 
     async def test_update_outfit_clears_replaced_optional_appearance_fields(self):
         composer, _, _, archive = make_composer(
@@ -3171,10 +3182,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNotNone(data)
         self.assertEqual(stored.outfit, "浅杏色短袖衬衫，牛仔短裤")
-        self.assertEqual(
-            stored.outfit_history["afternoon"],
-            "浅杏色短袖衬衫，牛仔短裤",
-        )
+        self.assertNotIn("afternoon", stored.outfit_history)
         self.assertEqual(stored.meta["hair"], "高马尾")
         self.assertEqual(stored.meta["outfit_scene_category"], "public")
         self.assertEqual(stored.meta["outfit_style_pool"], "outfit_styles")
@@ -3403,10 +3411,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(result)
         stored = await archive.get_day("2026-06-23")
         self.assertEqual(stored.outfit, "米白针织开衫配浅色吊带裙，长发用发带松松束着")
-        self.assertEqual(
-            stored.outfit_history["evening"],
-            "米白针织开衫配浅色吊带裙，长发用发带松松束着",
-        )
+        self.assertNotIn("evening", stored.outfit_history)
         self.assertNotEqual(stored.meta.get("style"), "柔软治愈系")
         self.assertNotEqual(stored.meta.get("hair"), "自然披发")
         self.assertEqual(len(provider.prompts), 1)
@@ -3449,7 +3454,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(result)
         stored = await archive.get_day("2026-06-23")
         self.assertIn("云朵绒长袖睡衣", stored.outfit)
-        self.assertEqual(stored.outfit_history["dawn"], stored.outfit)
+        self.assertNotIn("dawn", stored.outfit_history)
         prompt = provider.prompts[0]
         self.assertIn("生活日程日期：2026-06-23", prompt)
         self.assertIn("20:50 - 洗完澡换上奶油色云朵绒长袖睡衣套装 [困倦]", prompt)
@@ -3520,6 +3525,38 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         preferences = await archive.get_preferences(10)
         self.assertEqual([item.category for item in preferences], ["activity"])
         self.assertEqual(preferences[0].source, "daily_review")
+
+    async def test_daily_review_updates_focus_only_with_listed_evidence(self):
+        composer, _, _, archive = make_composer(
+            [
+                '{"summary":"目标有了真实进展","focus_updates":['
+                '{"focus_id":1,"progress_delta":30,"status":"active",'
+                '"evidence":"event:1"}]}'
+            ]
+        )
+        await archive.upsert_focus_slot(
+            FocusSlotRecord(
+                focus_key="sleep_recovery",
+                label="恢复睡眠节律",
+                priority=85,
+            )
+        )
+        await archive.add_life_event(
+            LifeEventRecord(
+                date="2026-05-24",
+                title="完成一次有记录的恢复安排",
+                status="open",
+            )
+        )
+        await archive.save_day(DayRecord(date="2026-05-24"))
+
+        await composer.compose_daily_review("2026-05-24", force=True)
+
+        focus = (await archive.get_focus_slots(active_only=False))[0]
+        self.assertEqual(focus.progress, 30)
+        self.assertEqual(focus.status, "active")
+        self.assertEqual(focus.last_evidence, "event:1")
+        self.assertEqual(focus.last_progress_at, "2026-05-24")
 
     async def test_existing_daily_review_finishes_missing_timeline_settlement(self):
         composer, provider, _, archive = make_composer()
@@ -3643,7 +3680,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
 
         stored = await archive.get_day("2026-05-24")
         self.assertEqual(stored.timeline[0].activity, "其他任务更新后的活动")
-        self.assertEqual(stored.timeline[0].execution_state, "completed")
+        self.assertEqual(stored.timeline[0].execution_state, "elapsed")
         self.assertEqual(
             stored.meta["daily_review_timeline_settled_at"],
             "2026-05-25 00:00:00",
@@ -3869,10 +3906,80 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNotNone(new_timeline)
         self.assertEqual(new_timeline[-1].place_address, "测试区测试路1号")
-        self.assertEqual(result["_audited_places"][0]["name"], "测试书店")
+        self.assertIn(
+            "测试书店", {item["name"] for item in result["_audited_places"]}
+        )
         self.assertEqual(result["_location_audit"]["map_provider"], "高德地图")
         self.assertTrue(audit_kwargs[0]["allow_safe_corrections"])
         self.assertEqual(audit_payloads[0]["places"][0]["name"], "测试书店")
+
+    async def test_invite_location_audit_cannot_rewrite_past_location(self):
+        composer, _, _, _ = make_composer(
+            [
+                '{"decision":"accept","accept":true,"reason":"愿意一起去",'
+                '"new_future_timeline":[{"time":"16:00","activity":"一起去测试书店",'
+                '"status":"期待","place":"测试书店","place_kind":"poi",'
+                '"place_scope":"local","place_city":"","place_hint":"测试区",'
+                '"travel_mode":"walking"}]}'
+            ]
+        )
+        audit_payloads = []
+
+        async def audit(payload, **kwargs):
+            del kwargs
+            audit_payloads.append(payload)
+            for item in payload["timeline"]:
+                if item["time"] == "14:00":
+                    item.update(
+                        {
+                            "place": "错误地点",
+                            "place_kind": "poi",
+                            "place_city": "错误城市",
+                            "place_address": "错误地址",
+                            "travel_mode": "transit",
+                            "travel_origin": "错误起点",
+                            "travel_minutes": 99,
+                        }
+                    )
+            return payload, ""
+
+        composer.domains.audit_daily_locations = AsyncMock(side_effect=audit)
+        _, new_timeline, result = await composer.handle_invite(
+            "2026-05-24",
+            [
+                TimelineItem(
+                    time="14:00",
+                    activity="在家休息",
+                    status="平静",
+                    place="家",
+                    place_kind="home",
+                    place_scope="local",
+                    place_city="测试市",
+                    place_address="测试住宅",
+                    place_latitude=23.01,
+                    place_longitude=113.01,
+                    place_coordinate_source="amap_home_address",
+                    travel_mode="walking",
+                    travel_origin="楼下花园",
+                    travel_minutes=12,
+                ),
+                TimelineItem(time="16:00", activity="原计划散步", status="平静"),
+            ],
+            "下午一起去书店吗",
+            datetime.datetime(2026, 5, 24, 15, 0),
+            user_name="阿林",
+        )
+
+        self.assertTrue(result["accept"])
+        self.assertIsNotNone(new_timeline)
+        self.assertEqual([item["time"] for item in audit_payloads[0]["timeline"]], ["14:00", "16:00"])
+        past = next(item for item in new_timeline if item.time == "14:00")
+        self.assertEqual(past.place, "家")
+        self.assertEqual(past.place_city, "测试市")
+        self.assertEqual(past.place_address, "测试住宅")
+        self.assertEqual(past.travel_mode, "walking")
+        self.assertEqual(past.travel_origin, "楼下花园")
+        self.assertEqual(past.travel_minutes, 12)
 
     async def test_invite_edits_preserve_unrelated_later_schedule(self):
         composer, _, _, _ = make_composer(

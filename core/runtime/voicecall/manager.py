@@ -25,18 +25,20 @@ from ...life.tools import get_time_period, get_time_period_cn
 from ...models import LifeEventRecord
 from ...sources.events import event_attr, event_call, iter_event_sources
 from ...sources.platforms import is_onebot_event
-from .voicegateway import VoiceCallGateway
+from .calltranscript import VoiceCallTranscriptMixin, VoiceCallTranscriptTurn
+from .voicegateway import VoiceCallGateway, voice_gateway_start_error_detail
+from .videocall import (
+    RtcVoiceCallManager,
+    VoiceCallInvite as RtcVoiceCallInvite,
+    _rtc_function_calls,
+)
 
 
-@dataclass(slots=True)
-class VoiceCallTranscriptTurn:
-    """实时通话中的一条已归并发言。"""
-
-    role: str
-    text: str = ""
-    upstream_id: str = ""
-    finalized: bool = False
-    interrupted: bool = False
+_REALTIME_OFFICIAL_SEARCH_TYPES = frozenset(
+    {"web", "web_summary", "web_agent", "web_global_api"}
+)
+_REALTIME_OFFICIAL_MUSIC_MODELS = frozenset({"1.2.1.1"})
+_REALTIME_OFFICIAL_NO_RESULT_MESSAGE = "暂时没有找到相关信息。"
 
 
 @dataclass(slots=True)
@@ -98,7 +100,7 @@ class _VoiceCallHistoryEvent:
         return self.group_name
 
 
-class VoiceCallManager:
+class VoiceCallManager(VoiceCallTranscriptMixin):
     """管理实时语音邀请和独立的本地网关生命周期。"""
 
     def __init__(self, runtime: Any):
@@ -108,6 +110,7 @@ class VoiceCallManager:
         self._bridges: dict[str, Any] = {}
         self._lock = asyncio.Lock()
         self.gateway = VoiceCallGateway(self)
+        self.rtc = RtcVoiceCallManager(runtime, gateway=self.gateway)
         self._config_signature = self._settings_signature(self.settings)
 
     _OPEN_STATES = frozenset({"invited", "accepted", "connecting", "active", "ending"})
@@ -127,9 +130,31 @@ class VoiceCallManager:
                 "public_url",
                 "endpoint_url",
                 "model",
+                "rtc_model_name",
                 "short_url_enabled",
                 "allow_function_calls",
+                "official_internet_enabled",
+                "official_internet_type",
+                "official_internet_api_key",
+                "official_internet_bot_id",
+                "official_internet_result_count",
+                "official_music_enabled",
                 "tool_call_timeout_seconds",
+                "rtc_app_id",
+                "rtc_app_key",
+                "rtc_access_key",
+                "rtc_secret_key",
+                "rtc_region",
+                "rtc_callback_url",
+                "rtc_callback_signature",
+                "rtc_token_ttl_seconds",
+                "rtc_sdk_url",
+                "rtc_video_enabled",
+                "rtc_vision_image_detail",
+                "rtc_vision_height",
+                "rtc_vision_interval_ms",
+                "rtc_vision_images_limit",
+                "rtc_vision_auto_select",
             )
         )
         voice_settings = getattr(
@@ -137,14 +162,22 @@ class VoiceCallManager:
         )
         voice_signature = tuple(
             str(getattr(voice_settings, name, "") or "").strip()
-            for name in ("api_key", "speaker_id", "speech_rate", "loudness_rate")
+            for name in (
+                "api_key",
+                "speaker_source",
+                "speaker_id",
+                "speech_rate",
+                "loudness_rate",
+            )
         )
         return realtime_signature + voice_signature
 
     @property
     def active_count(self) -> int:
         self._prune()
-        return sum(1 for invite in self._invites.values() if self._is_open(invite))
+        rtc = getattr(self, "rtc", None)
+        rtc_count = int(getattr(rtc, "active_count", 0) or 0) if rtc else 0
+        return sum(1 for invite in self._invites.values() if self._is_open(invite)) + rtc_count
 
     @property
     def settings(self) -> Any:
@@ -158,8 +191,27 @@ class VoiceCallManager:
     def speaker_id(self) -> str:
         return str(getattr(getattr(self.runtime.config, "voice_generation", None), "speaker_id", "") or "").strip()
 
+    @property
+    def uses_o20_protocol(self) -> bool:
+        """1.2.1.1 使用旧版 O2.0 二进制事件协议。"""
+
+        return str(getattr(self.settings, "model", "") or "").strip() == "1.2.1.1"
+
+    def upstream_configuration_error(self) -> str:
+        missing: list[str] = []
+        if not self.api_key:
+            missing.append("火山 API Key")
+        if not self.speaker_id:
+            missing.append("音色 ID")
+        return f"实时语音通话缺少{'、'.join(missing)}" if missing else ""
+
     def voice_tool_schemas(self, invite: VoiceCallInvite) -> list[dict[str, Any]]:
         """返回当前 AstrBot 注册的实时通话工具定义。"""
+
+        if self.uses_o20_protocol:
+            # O2.0 的二进制事件协议没有当前新版函数调用事件，不能把工具
+            # 定义塞入 StartSession 后假装可以执行。
+            return []
 
         from .toolbridge import VoiceCallToolBridge
 
@@ -228,6 +280,9 @@ class VoiceCallManager:
     async def close(self) -> None:
         # 与邀请创建共用同一把锁，避免配置重载时留下半创建的邀请。
         async with self._lock:
+            rtc = getattr(self, "rtc", None)
+            if rtc is not None:
+                await rtc.close()
             for invite in list(self._invites.values()):
                 await self.finish_invite(
                     invite,
@@ -244,6 +299,9 @@ class VoiceCallManager:
         signature = self._settings_signature(settings)
         if signature == self._config_signature:
             return
+        rtc = getattr(self, "rtc", None)
+        if rtc is not None:
+            await rtc.reconfigure()
         await self.close()
         if bool(getattr(settings, "enabled", False)):
             try:
@@ -252,8 +310,8 @@ class VoiceCallManager:
                 await self.gateway.start()
             except Exception as exc:
                 logger.error(
-                    "[日常生活] 实时语音配置已变更，但网关重新启动失败："
-                    f"{type(exc).__name__}"
+                    "[日常生活] 实时语音配置已变更，但网关重新启动失败：%s",
+                    voice_gateway_start_error_detail(exc, settings),
                 )
                 raise
             self._config_signature = signature
@@ -644,8 +702,9 @@ class VoiceCallManager:
         }
         if not (parsed_url.scheme == "https" and parsed_url.hostname) and not is_local_http:
             raise RuntimeError("实时语音通话公开地址必须使用 HTTPS")
-        if not self.api_key or not self.speaker_id:
-            raise RuntimeError("实时语音通话缺少火山 API Key 或音色 ID")
+        configuration_error = self.upstream_configuration_error()
+        if configuration_error:
+            raise RuntimeError(configuration_error)
         async with self._lock:
             self._prune()
             # 先确保代理后面的本地服务已就绪，再检查/复用邀请。
@@ -666,7 +725,7 @@ class VoiceCallManager:
                 logger.debug(
                     f"[日常生活] 复用当前会话已有实时通话邀请：剩余有效期={remaining}秒"
                 )
-                return f"实时语音通话邀请已生成（{remaining}秒内有效）：\n{link}"
+                return f"语音通话邀请已生成（{remaining}秒内有效）：\n{link}"
             maximum = max(1, int(getattr(settings, "max_concurrent_calls", 1) or 1))
             if sum(
                 1
@@ -702,7 +761,7 @@ class VoiceCallManager:
             self._invites[invite.token_id] = invite
         link = await self._shorten_invite_url(self._link_for_invite(invite))
         logger.info(f"[日常生活] 已创建实时语音通话邀请：有效期={int(invite.expires_at - now)}秒")
-        return f"实时语音通话邀请已生成（{int(invite.expires_at - now)}秒内有效）：\n{link}"
+        return f"语音通话邀请已生成（{int(invite.expires_at - now)}秒内有效）：\n{link}"
 
     def _short_url_api_key(self) -> str:
         weather = getattr(getattr(self.runtime, "config", None), "weather", None)
@@ -1000,7 +1059,138 @@ class VoiceCallManager:
             "type": "session.create",
             "event_id": "event_session_create",
             "session": session,
-            "extension": {"asr": {"extra": {}}, "tts": {"extra": {}}, "dialog": {"extra": {"enable_music": False}}},
+            "extension": self._official_extension_payload(),
+        }
+
+    def o20_session_payload(self, invite: VoiceCallInvite) -> dict[str, Any]:
+        """构建 1.2.1.1 所需的 O2.0 StartSession 配置。"""
+
+        modern_payload = self.session_create_payload(invite)
+        session = modern_payload.get("session")
+        session = session if isinstance(session, dict) else {}
+        extension = self._official_extension_payload()
+        dialog_extension = extension.get("dialog")
+        dialog_extension = dialog_extension if isinstance(dialog_extension, dict) else {}
+        dialog_extra = dialog_extension.get("extra")
+        dialog_extra = dict(dialog_extra) if isinstance(dialog_extra, dict) else {}
+        dialog_extra.update(
+            {
+                "strict_audit": False,
+                "recv_timeout": max(
+                    30,
+                    int(getattr(self.settings, "idle_timeout_seconds", 90) or 90),
+                ),
+                "input_mod": "keep_alive",
+                "model": "1.2.1.1",
+            }
+        )
+        voice_settings = getattr(self.runtime.config, "voice_generation", None)
+        return {
+            "asr": {
+                "extra": {
+                    "end_smooth_window_ms": 1500,
+                    "enable_custom_vad": False,
+                }
+            },
+            "tts": {
+                "speaker": self.speaker_id,
+                "audio_config": {
+                    "channel": 1,
+                    "format": "pcm_s16le",
+                    "sample_rate": 24000,
+                },
+                "extra": {
+                    "speech_rate": int(
+                        getattr(voice_settings, "speech_rate", 0) or 0
+                    ),
+                    "loudness_rate": int(
+                        getattr(voice_settings, "loudness_rate", 0) or 0
+                    ),
+                },
+            },
+            "dialog": {
+                "bot_name": str(invite.bot_name or "对方").strip()[:80] or "对方",
+                "system_role": str(session.get("instructions") or invite.context),
+                "speaking_style": "自然、口语化地交流，保持角色设定并简洁回应。",
+                "extra": dialog_extra,
+            },
+        }
+
+    def _official_extension_payload(self) -> dict[str, Any]:
+        """构建火山实时对话的官方联网和唱歌能力开关。
+
+        这两个能力属于上游实时对话扩展，不等同于 AstrBot 工具调用。
+        缺少上游搜索密钥或使用不支持唱歌的模型时主动降级，避免会话创建失败。
+        """
+
+        settings = self.settings
+        dialog_extra: dict[str, Any] = {
+            "enable_volc_websearch": False,
+            "enable_music": False,
+        }
+        model = str(getattr(settings, "model", "") or "").strip()
+        if bool(getattr(settings, "official_internet_enabled", False)):
+            api_key = str(
+                getattr(settings, "official_internet_api_key", "") or ""
+            ).strip()
+            search_type = str(
+                getattr(settings, "official_internet_type", "web_global_api")
+                or "web_global_api"
+            ).strip().lower()
+            if search_type not in _REALTIME_OFFICIAL_SEARCH_TYPES:
+                search_type = "web_global_api"
+            bot_id = str(
+                getattr(settings, "official_internet_bot_id", "") or ""
+            ).strip()
+            if not api_key:
+                logger.warning(
+                    "[日常生活] 实时语音官方联网已启用，但未配置火山搜索 API Key，已暂时关闭本次联网能力"
+                )
+            elif search_type == "web_agent" and not bot_id:
+                logger.warning(
+                    "[日常生活] 实时语音官方联网类型为 web_agent，但未配置 Bot ID，已暂时关闭本次联网能力"
+                )
+            else:
+                dialog_extra.update(
+                    {
+                        "enable_volc_websearch": True,
+                        "volc_websearch_type": search_type,
+                        "volc_websearch_api_key": api_key,
+                        "volc_websearch_result_count": max(
+                            1,
+                            min(
+                                10,
+                                int(
+                                    getattr(
+                                        settings,
+                                        "official_internet_result_count",
+                                        10,
+                                    )
+                                    or 10
+                                ),
+                            ),
+                        ),
+                        "volc_websearch_no_result_message": (
+                            _REALTIME_OFFICIAL_NO_RESULT_MESSAGE
+                        ),
+                    }
+                )
+                if search_type == "web_agent":
+                    dialog_extra["volc_websearch_bot_id"] = bot_id
+
+        if bool(getattr(settings, "official_music_enabled", False)):
+            if model in _REALTIME_OFFICIAL_MUSIC_MODELS:
+                dialog_extra["enable_music"] = True
+            else:
+                logger.warning(
+                    "[日常生活] 实时语音唱歌能力已启用，但当前模型不支持该能力（仅支持 1.2.1.1），已暂时关闭本次唱歌能力：模型=%s",
+                    model or "未设置",
+                )
+
+        return {
+            "asr": {"extra": {}},
+            "tts": {"extra": {}},
+            "dialog": {"extra": dialog_extra},
         }
 
     def record_event(self, invite: VoiceCallInvite, event: dict[str, Any]) -> None:
@@ -1052,235 +1242,6 @@ class VoiceCallManager:
                 item["interrupted"] = True
             payload.append(item)
         return payload
-
-    @classmethod
-    def _begin_transcript_turn(
-        cls,
-        invite: VoiceCallInvite,
-        role: str,
-        event: dict[str, Any],
-    ) -> VoiceCallTranscriptTurn:
-        upstream_id = cls._transcript_upstream_id(event)
-        latest = invite.transcript_turns[-1] if invite.transcript_turns else None
-        if latest and latest.role != role and not latest.finalized:
-            # 用户打断时，上一次未完成的角色文本必须停留在原气泡中。
-            latest.interrupted = latest.role == "assistant"
-            latest.finalized = True
-        if latest and latest.role == role and not latest.finalized:
-            if not latest.text or not upstream_id or latest.upstream_id == upstream_id:
-                return latest
-            latest.finalized = True
-        turn = VoiceCallTranscriptTurn(role=role, upstream_id=upstream_id)
-        invite.transcript_turns.append(turn)
-        return turn
-
-    @classmethod
-    def _update_transcript_turn(
-        cls,
-        invite: VoiceCallInvite,
-        role: str,
-        event: dict[str, Any],
-        *,
-        finalized: bool = False,
-    ) -> None:
-        upstream_id = cls._transcript_upstream_id(event)
-        latest = invite.transcript_turns[-1] if invite.transcript_turns else None
-        if latest and latest.role != role and not latest.finalized:
-            latest.interrupted = latest.role == "assistant"
-            latest.finalized = True
-        turn = cls._find_transcript_turn(
-            invite,
-            role,
-            upstream_id,
-            allow_finalized=finalized,
-        )
-        if turn is None:
-            turn = VoiceCallTranscriptTurn(role=role, upstream_id=upstream_id)
-            invite.transcript_turns.append(turn)
-        elif upstream_id and not turn.upstream_id:
-            turn.upstream_id = upstream_id
-        if finalized:
-            # 完成事件可能同时携带最后一小段 delta 与完整 text/transcript。
-            # 结束时必须优先采用完整字段，否则会把整轮文本误缩成最后几个字。
-            incoming = event.get("text") or event.get("transcript") or event.get("delta")
-        else:
-            incoming = event.get("delta") or event.get("text") or event.get("transcript")
-        if finalized and str(incoming or "").strip():
-            # completed/done 是上游确认后的整段文本，不能把流式重放残留继续拼进去。
-            turn.text = cls._deduplicate_transcript_text(incoming)
-            # 上游确实发送完成事件时，说明这一轮并非停在半句。
-            turn.interrupted = False
-        else:
-            turn.text = cls._deduplicate_transcript_text(
-                cls._merge_transcript_text(turn.text, incoming)
-            )
-        if finalized:
-            turn.finalized = True
-        cls._sync_legacy_transcripts(invite)
-
-    @staticmethod
-    def _find_transcript_turn(
-        invite: VoiceCallInvite,
-        role: str,
-        upstream_id: str,
-        *,
-        allow_finalized: bool,
-    ) -> VoiceCallTranscriptTurn | None:
-        for turn in reversed(invite.transcript_turns):
-            if turn.role != role:
-                continue
-            if upstream_id and turn.upstream_id and turn.upstream_id != upstream_id:
-                continue
-            if not turn.finalized or (allow_finalized and upstream_id):
-                return turn
-        return None
-
-    @staticmethod
-    def _transcript_upstream_id(event: dict[str, Any]) -> str:
-        for key in ("item_id", "response_id", "conversation_item_id"):
-            value = str(event.get(key) or "").strip()
-            if value:
-                return value[:160]
-        for container_key in ("item", "response"):
-            container = event.get(container_key)
-            if not isinstance(container, dict):
-                continue
-            value = str(container.get("id") or "").strip()
-            if value:
-                return value[:160]
-        return ""
-
-    @classmethod
-    def _merge_transcript_text(cls, current: Any, value: Any) -> str:
-        """兼容真实增量与“截至当前全文”两类上游转写事件。"""
-
-        previous = str(current or "").strip()
-        incoming = str(value or "").strip()
-        if not incoming:
-            return previous
-        if not previous:
-            return incoming
-        previous_normalized = cls._normalized_transcript_text(previous)
-        incoming_normalized = cls._normalized_transcript_text(incoming)
-        if previous_normalized and incoming_normalized:
-            if incoming_normalized == previous_normalized:
-                return previous
-            if previous_normalized.startswith(incoming_normalized):
-                return previous
-            if incoming_normalized.startswith(previous_normalized):
-                repeated_tail = incoming_normalized[len(previous_normalized) :]
-                if repeated_tail.startswith(previous_normalized):
-                    # ASR 有时会把截至当前的全文重新附在末尾，标点不同也会触发。
-                    while incoming_normalized.startswith(previous_normalized):
-                        incoming_normalized = incoming_normalized[len(previous_normalized) :]
-                    return previous + incoming_normalized
-                return incoming
-            shared_prefix = cls._shared_prefix_length(
-                previous_normalized,
-                incoming_normalized,
-            )
-            shortest = min(len(previous_normalized), len(incoming_normalized))
-            if shared_prefix >= 12 and shared_prefix * 2 >= shortest:
-                # 某些实时模型会在同一 response 中从句首重新发一遍“截至当前”
-                # 的文本，且修正尾部几个字。它不是新的增量；最新快照才是正确
-                # 文本，继续追加会得到“前半句 + 整句”的重复结果。
-                return incoming
-        if incoming == previous or previous.endswith(incoming):
-            return previous
-        if incoming.startswith(previous):
-            return incoming
-        if previous.startswith(incoming) or incoming in previous:
-            return previous
-        overlap = min(len(previous), len(incoming))
-        while overlap and not previous.endswith(incoming[:overlap]):
-            overlap -= 1
-        return previous + incoming[overlap:]
-
-    @staticmethod
-    def _normalized_transcript_text(value: Any) -> str:
-        """供 ASR 去重使用，忽略空白和标点造成的同句差异。"""
-
-        return "".join(char for char in str(value or "") if char.isalnum())
-
-    @staticmethod
-    def _shared_prefix_length(left: str, right: str) -> int:
-        """返回两段规范化文本的公共前缀长度。"""
-
-        length = min(len(left), len(right))
-        index = 0
-        while index < length and left[index] == right[index]:
-            index += 1
-        return index
-
-    @classmethod
-    def _deduplicate_transcript_text(cls, value: Any) -> str:
-        """清除上游对同一轮文本的长片段重放。"""
-
-        text = str(value or "").strip()
-        while True:
-            normalized, source_positions = cls._normalized_text_positions(text)
-            replay_start = cls._replayed_snapshot_start(normalized)
-            if replay_start is not None:
-                # 后半段是模型重新开始输出后的较新版本，优先保留它；这样既能
-                # 去掉完整重放，也能保留重放时修正过的末尾措辞。
-                text = text[source_positions[replay_start] :].strip()
-                continue
-            repeated_length = 0
-            # 仅折叠至少 8 个有效字符的完整重放，保留正常的“好好”“哈哈”等表达。
-            for length in range(len(normalized) // 2, 7, -1):
-                if normalized[-2 * length : -length] == normalized[-length:]:
-                    repeated_length = length
-                    break
-            if not repeated_length:
-                return text
-            repeat_start = source_positions[-repeated_length]
-            collapsed = text[:repeat_start].rstrip()
-            if collapsed == text:
-                return text
-            text = collapsed
-
-    @staticmethod
-    def _normalized_text_positions(value: str) -> tuple[str, list[int]]:
-        normalized_chars: list[str] = []
-        source_positions: list[int] = []
-        for index, char in enumerate(value):
-            if char.isalnum():
-                normalized_chars.append(char)
-                source_positions.append(index)
-        return "".join(normalized_chars), source_positions
-
-    @classmethod
-    def _replayed_snapshot_start(cls, normalized: str) -> int | None:
-        """找出从句首重放的后一份完整快照起点。
-
-        流式返回偶尔会形成 ``前一版 + 从句首重放后的修正版``。只在公共前缀
-        至少 12 个有效字符、且后一版本身也足够长时归并，避免吃掉正常的语气
-        重复或短词强调。
-        """
-
-        minimum = 12
-        total = len(normalized)
-        if total < minimum * 2:
-            return None
-        maximum = min(96, total // 2)
-        for prefix_length in range(maximum, minimum - 1, -1):
-            second_start = normalized.find(normalized[:prefix_length], prefix_length)
-            if second_start < prefix_length:
-                continue
-            if total - second_start < prefix_length:
-                continue
-            return second_start
-        return None
-
-    @staticmethod
-    def _sync_legacy_transcripts(invite: VoiceCallInvite) -> None:
-        for role, text_field, finalized_field in (
-            ("user", "user_transcript", "user_transcript_finalized"),
-            ("assistant", "bot_transcript", "bot_transcript_finalized"),
-        ):
-            turns = [turn for turn in invite.transcript_turns if turn.role == role]
-            setattr(invite, text_field, "\n".join(turn.text for turn in turns if turn.text))
-            setattr(invite, finalized_field, bool(turns and turns[-1].finalized))
 
     @staticmethod
     def _event_call(event: Any, name: str) -> str:

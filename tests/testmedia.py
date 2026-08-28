@@ -26,7 +26,7 @@ from core.media.video.keyframe import (
 )
 from core.media.video.tasks import task_status_url
 from core.media.video.tasks import poll_video_url
-from core.media.video.errors import VideoTaskError
+from core.media.video.errors import VideoAPIError, VideoTaskError
 from core.runtime.proactive.send import ProactiveSendMixin
 from PIL import Image
 
@@ -276,7 +276,7 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("size", calls[0][1])
 
     async def test_grok_generation_downloads_url_response(self):
-        output_bytes = b"\x89PNG\r\n\x1a\ngrok-output"
+        output_bytes = _real_png_bytes(2, 2)
         calls = []
 
         class _Content:
@@ -757,6 +757,7 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
                             "model": "gpt-image-2",
                             "resolution": "2K",
                             "aspect_ratio": "16:9",
+                            "quality": "high",
                             "timeout_seconds": 180,
                         }
                     ],
@@ -781,12 +782,188 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[0][1]["Authorization"], "Bearer relay-key")
         self.assertEqual(calls[0][2]["model"], "gpt-image-2")
         self.assertEqual(calls[0][2]["size"], "2048x1136")
+        self.assertEqual(calls[0][2]["quality"], "high")
         self.assertIn("雨夜生活照", calls[0][2]["prompt"])
         self.assertIsNone(calls[0][3])
         self.assertEqual(_timeout_total(calls[0][4]), 180)
 
+    def test_siciyuanweilai_text_request_uses_documented_extra_fields(self):
+        route = ImageRoute(
+            api_url="https://siciyuanweilai.com",
+            api_key="relay-key",
+            model="gpt-image-2",
+            label="GPT Image",
+            protocol="openai",
+            resolution="1K",
+            aspect_ratio="1:1",
+            timeout_seconds=120,
+            origin="https://siciyuanweilai.com",
+            quality="high",
+        )
+
+        request = openai_image.build_request(
+            route,
+            [{"text": "雨夜街头生活照"}],
+            resolution="1K",
+            aspect_ratio="1:1",
+        )
+
+        self.assertEqual(
+            request.payload,
+            {
+                "model": "gpt-image-2",
+                "prompt": "雨夜街头生活照",
+                "size": "1024x1024",
+                "n": 1,
+                "response_format": "url",
+                "extra_fields": {"quality": "HIGH"},
+            },
+        )
+        self.assertNotIn("quality", request.payload)
+        self.assertTrue(
+            str(request.headers.get("X-Client-Request-ID") or "").startswith(
+                "daily-life-"
+            )
+        )
+
+    def test_openai_edit_request_includes_quality_multipart_field(self):
+        route = ImageRoute(
+            api_url="https://openai-relay.example/v1",
+            api_key="relay-key",
+            model="gpt-image-2",
+            label="GPT Image",
+            protocol="openai",
+            resolution="1K",
+            aspect_ratio="1:1",
+            timeout_seconds=120,
+            origin="https://openai-relay.example",
+            quality="low",
+        )
+        request = openai_image.build_request(
+            route,
+            [
+                {"text": "改成雨夜街景"},
+                {
+                    "inlineData": {
+                        "mimeType": "image/png",
+                        "data": base64.b64encode(b"reference").decode("ascii"),
+                    }
+                },
+            ],
+            resolution="1K",
+            aspect_ratio="1:1",
+        )
+
+        self.assertIsNotNone(request.form)
+        self.assertEqual(_form_field(request.form, "quality"), "low")
+        self.assertEqual(_form_field(request.form, "image"), b"reference")
+        self.assertEqual(request.reference_image_count, 1)
+
+    def test_siciyuanweilai_edit_request_uses_documented_json_payload(self):
+        route = ImageRoute(
+            api_url="https://siciyuanweilai.com",
+            api_key="relay-key",
+            model="gpt-image-2",
+            label="GPT Image",
+            protocol="openai",
+            resolution="1K",
+            aspect_ratio="1:1",
+            timeout_seconds=120,
+            origin="https://siciyuanweilai.com",
+        )
+        request = openai_image.build_request(
+            route,
+            [
+                {"text": "改成雨夜街景"},
+                {
+                    "inlineData": {
+                        "mimeType": "image/png",
+                        "data": base64.b64encode(b"reference").decode("ascii"),
+                    }
+                },
+                {
+                    "inlineData": {
+                        "mimeType": "image/png",
+                        "data": base64.b64encode(b"second-reference").decode(
+                            "ascii"
+                        ),
+                    }
+                },
+            ],
+            resolution="1K",
+            aspect_ratio="1:1",
+        )
+
+        self.assertEqual(request.url, "https://siciyuanweilai.com/v1/images/edits")
+        self.assertIsNone(request.form)
+        self.assertEqual(request.reference_image_count, 2)
+        self.assertEqual(
+            request.payload,
+            {
+                "model": "gpt-image-2",
+                "prompt": (
+                    "改成雨夜街景\n"
+                    "参考随请求提供的图片线索，保持画面要求自然一致。"
+                ),
+                "size": "1024x1024",
+                "n": 1,
+                "extra_fields": {
+                    "quality": "MEDIUM",
+                    "guidances": {
+                        "image_reference": [
+                            {"image": {"id": "{{upload:0}}"}},
+                            {"image": {"id": "{{upload:1}}"}},
+                        ]
+                    },
+                },
+                "image": [
+                    "data:image/png;base64,"
+                    + base64.b64encode(b"reference").decode("ascii"),
+                    "data:image/png;base64,"
+                    + base64.b64encode(b"second-reference").decode("ascii"),
+                ],
+            },
+        )
+
+    def test_siciyuanweilai_edit_channel_can_use_gaisc_multipart(self):
+        route = ImageRoute(
+            api_url="https://siciyuanweilai.com",
+            api_key="relay-key",
+            model="gpt-image-2",
+            label="GPT Image 2 低价",
+            protocol="openai",
+            resolution="1K",
+            aspect_ratio="1:1",
+            timeout_seconds=120,
+            origin="https://siciyuanweilai.com",
+            quality="medium",
+            edit_request_format="multipart",
+        )
+        request = openai_image.build_request(
+            route,
+            [
+                {"text": "改成雨夜街景"},
+                {
+                    "inlineData": {
+                        "mimeType": "image/png",
+                        "data": base64.b64encode(b"reference").decode("ascii"),
+                    }
+                },
+            ],
+            resolution="1K",
+            aspect_ratio="1:1",
+        )
+
+        self.assertEqual(request.url, "https://siciyuanweilai.com/v1/images/edits")
+        self.assertIsNone(request.payload)
+        self.assertIsNotNone(request.form)
+        self.assertEqual(_form_field(request.form, "model"), "gpt-image-2")
+        self.assertEqual(_form_field(request.form, "image"), b"reference")
+        self.assertEqual(_form_field(request.form, "response_format"), "url")
+        self.assertEqual(request.reference_image_count, 1)
+
     async def test_generate_image_downloads_openai_url_response(self):
-        output_bytes = b"\x89PNG\r\n\x1a\nopenai-url-output"
+        output_bytes = _real_png_bytes(2, 2)
         calls = []
 
         class _Content:
@@ -841,6 +1018,186 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(generated.path.read_bytes(), output_bytes)
         self.assertEqual(calls[0][0:2], ("POST", "https://openai-relay.example/v1/images/generations"))
         self.assertEqual(calls[1][0:2], ("GET", "https://cdn.example/openai.png"))
+
+    async def test_generated_url_retries_incomplete_cdn_body(self):
+        output_bytes = _real_png_bytes(2, 2)
+        calls = []
+        attempts = 0
+
+        class _Content:
+            def __init__(self, data):
+                self.data = data
+
+            async def read(self, _limit):
+                return self.data
+
+        class _DownloadResponse(_Response):
+            headers = {
+                "Content-Type": "image/png",
+                "Content-Length": str(len(output_bytes)),
+            }
+
+            def __init__(self, data):
+                super().__init__()
+                self.content = _Content(data)
+
+        class _ImageSession:
+            closed = False
+
+            def get(self, url, timeout=None, headers=None):
+                nonlocal attempts
+                attempts += 1
+                calls.append((url, headers or {}))
+                data = output_bytes[: len(output_bytes) // 2] if attempts == 1 else output_bytes
+                return _DownloadResponse(data)
+
+        settings = LifeSettings.from_dict(
+            {"image_generation_config": {"enabled": True}}
+        ).image_generation
+        service = GeminiImageService(settings, Path(tempfile.mkdtemp()))
+
+        async def get_session():
+            return _ImageSession()
+
+        service._get_session = get_session
+        with (
+            patch.object(
+                picture_canvas,
+                "is_http_url_allowed_async",
+                new=AsyncMock(return_value=True),
+            ),
+            patch.object(picture_canvas.asyncio, "sleep", new=AsyncMock()),
+        ):
+            result = await service._download_generated_image(
+                "https://cdn.example/eventual.png",
+                timeout=picture_canvas.aiohttp.ClientTimeout(total=10),
+            )
+
+        self.assertEqual(result, output_bytes)
+        self.assertEqual(attempts, 2)
+        self.assertEqual(calls[0][1], {})
+        self.assertEqual(calls[1][0], "https://cdn.example/eventual.png")
+        self.assertEqual(
+            calls[1][1],
+            {
+                "Cache-Control": "no-cache, no-store",
+                "Pragma": "no-cache",
+                "Accept-Encoding": "identity",
+                "Connection": "close",
+            },
+        )
+
+    async def test_generated_url_retries_original_after_http_400(self):
+        output_bytes = _real_png_bytes(2, 2)
+        calls = []
+        attempts = 0
+
+        class _Content:
+            def __init__(self, data):
+                self.data = data
+
+            async def read(self, _limit):
+                return self.data
+
+        class _DownloadResponse(_Response):
+            headers = {
+                "Content-Type": "image/png",
+                "Content-Length": str(len(output_bytes)),
+            }
+
+            def __init__(self, data):
+                super().__init__()
+                self.content = _Content(data)
+
+        class _ImageSession:
+            closed = False
+
+            def get(self, url, timeout=None, headers=None):
+                nonlocal attempts
+                attempts += 1
+                calls.append((url, headers or {}))
+                if attempts == 1:
+                    return _DownloadResponse(output_bytes[: len(output_bytes) // 2])
+                if attempts == 2:
+                    return _Response(status=400)
+                return _DownloadResponse(output_bytes)
+
+        settings = LifeSettings.from_dict(
+            {"image_generation_config": {"enabled": True}}
+        ).image_generation
+        service = GeminiImageService(settings, Path(tempfile.mkdtemp()))
+
+        async def get_session():
+            return _ImageSession()
+
+        service._get_session = get_session
+        with (
+            patch.object(
+                picture_canvas,
+                "is_http_url_allowed_async",
+                new=AsyncMock(return_value=True),
+            ),
+            patch.object(picture_canvas.asyncio, "sleep", new=AsyncMock()),
+        ):
+            result = await service._download_generated_image(
+                "https://cdn.example/eventual.png",
+                timeout=picture_canvas.aiohttp.ClientTimeout(total=10),
+            )
+
+        self.assertEqual(result, output_bytes)
+        self.assertEqual(attempts, 3)
+        self.assertEqual(calls[1][0], "https://cdn.example/eventual.png")
+        self.assertEqual(calls[2][0], "https://cdn.example/eventual.png")
+        self.assertEqual(calls[2][1].get("Range"), "bytes=0-")
+
+    async def test_generated_url_reads_all_response_chunks_until_eof(self):
+        output_bytes = _real_png_bytes(2, 2)
+
+        class _Content:
+            def iter_chunked(self, _size):
+                async def chunks():
+                    yield output_bytes[:11]
+                    yield output_bytes[11:]
+
+                return chunks()
+
+            async def read(self, _limit):
+                self.unexpected_read = True
+                return output_bytes[:11]
+
+        class _DownloadResponse(_Response):
+            headers = {
+                "Content-Type": "image/png",
+                "Content-Length": str(len(output_bytes)),
+            }
+            content = _Content()
+
+        class _ImageSession:
+            closed = False
+
+            def get(self, url, timeout=None, headers=None):
+                return _DownloadResponse()
+
+        settings = LifeSettings.from_dict(
+            {"image_generation_config": {"enabled": True}}
+        ).image_generation
+        service = GeminiImageService(settings, Path(tempfile.mkdtemp()))
+
+        async def get_session():
+            return _ImageSession()
+
+        service._get_session = get_session
+        with patch.object(
+            picture_canvas,
+            "is_http_url_allowed_async",
+            new=AsyncMock(return_value=True),
+        ):
+            result = await service._download_generated_image(
+                "https://cdn.example/streamed.png",
+                timeout=picture_canvas.aiohttp.ClientTimeout(total=10),
+            )
+
+        self.assertEqual(result, output_bytes)
 
     async def test_openai_text_to_image_ignores_character_reference_images(self):
         output_bytes = b"\x89PNG\r\n\x1a\nopenai-output"
@@ -1404,8 +1761,63 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(calls[0][2])
         self.assertIsNotNone(calls[0][3])
 
+    async def test_siciyuanweilai_edit_image_posts_application_json(self):
+        output_bytes = b"\x89PNG\r\n\x1a\nleo-edit"
+        reference = Path(tempfile.mkdtemp()) / "reference.png"
+        reference.write_bytes(b"\x89PNG\r\n\x1a\nreference")
+        calls = []
+
+        class _ImageSession:
+            closed = False
+
+            def post(self, url, json=None, data=None, headers=None, timeout=None):
+                calls.append((url, headers or {}, json, data, timeout))
+                return _Response(
+                    payload={
+                        "data": [
+                            {
+                                "b64_json": base64.b64encode(output_bytes).decode(
+                                    "ascii"
+                                ),
+                            }
+                        ]
+                    }
+                )
+
+        settings = LifeSettings.from_dict(
+            {
+                "image_generation_config": {
+                    "enabled": True,
+                    "edit_channels": [
+                        {
+                            "__template_key": "openai",
+                            "api_url": "https://siciyuanweilai.com/v1",
+                            "api_key": "relay-key",
+                            "model": "gpt-image-2",
+                        }
+                    ],
+                }
+            }
+        ).image_generation
+        service = GeminiImageService(settings, Path(tempfile.mkdtemp()))
+        session = _ImageSession()
+
+        async def get_session():
+            return session
+
+        service._get_session = get_session
+
+        generated = await service.edit_image("换成雨夜窗边", str(reference))
+
+        self.assertTrue(generated.path.exists())
+        self.assertEqual(calls[0][0], "https://siciyuanweilai.com/v1/images/edits")
+        self.assertIsNotNone(calls[0][2])
+        self.assertIsNone(calls[0][3])
+        self.assertEqual(calls[0][2]["extra_fields"]["quality"], "MEDIUM")
+        self.assertTrue(calls[0][2]["image"][0].startswith("data:image/png;base64,"))
+
     async def test_edit_image_downloads_openai_url_response(self):
-        output_bytes = b"\x89PNG\r\n\x1a\nopenai-edit-url-output"
+        output_bytes = _real_png_bytes(2, 2)
         reference = Path(tempfile.mkdtemp()) / "reference.png"
         reference.write_bytes(b"\x89PNG\r\n\x1a\nreference")
         calls = []
@@ -1698,7 +2110,7 @@ class GrokVideoServiceTest(unittest.IsolatedAsyncioTestCase):
                 "video_generation_config": {
                     "enabled": True,
                     "base_url": "https://relay.example",
-                    "api_keys": ["key-a"],
+                    "api_key": "key-a",
                     "timeout_seconds": 30,
                     "request_timeout_seconds": 60,
                     "poll_interval_seconds": 5,
@@ -1739,7 +2151,7 @@ class GrokVideoServiceTest(unittest.IsolatedAsyncioTestCase):
                 "video_generation_config": {
                     "enabled": True,
                     "base_url": "https://relay.example",
-                    "api_keys": ["key-a"],
+                    "api_key": "key-a",
                     "timeout_seconds": 30,
                     "poll_interval_seconds": 5,
                 }
@@ -1780,7 +2192,7 @@ class GrokVideoServiceTest(unittest.IsolatedAsyncioTestCase):
                 "video_generation_config": {
                     "enabled": True,
                     "base_url": "https://relay.example",
-                    "api_keys": ["key-a"],
+                    "api_key": "key-a",
                     "duration": 8,
                     "poll_interval_seconds": 1,
                 }
@@ -1815,7 +2227,7 @@ class GrokVideoServiceTest(unittest.IsolatedAsyncioTestCase):
                 "video_generation_config": {
                     "enabled": True,
                     "base_url": "https://relay.example",
-                    "api_keys": ["key-a"],
+                    "api_key": "key-a",
                     "duration": 8,
                     "poll_interval_seconds": 1,
                 }
@@ -1846,7 +2258,7 @@ class GrokVideoServiceTest(unittest.IsolatedAsyncioTestCase):
                 "video_generation_config": {
                     "enabled": True,
                     "base_url": "",
-                    "api_keys": ["key-a"],
+                    "api_key": "key-a",
                 }
             }
         ).video_generation
@@ -1861,7 +2273,7 @@ class GrokVideoServiceTest(unittest.IsolatedAsyncioTestCase):
                 "video_generation_config": {
                     "enabled": True,
                     "base_url": "https://relay.example",
-                    "api_keys": ["key-a"],
+                    "api_key": "key-a",
                     "timeout_seconds": 1,
                     "poll_interval_seconds": 1,
                 }
@@ -1911,7 +2323,7 @@ class GrokVideoServiceTest(unittest.IsolatedAsyncioTestCase):
                 "video_generation_config": {
                     "enabled": True,
                     "base_url": "https://relay.example",
-                    "api_keys": ["key-a"],
+                    "api_key": "key-a",
                     "resolution": "1080p",
                     "poll_interval_seconds": 1,
                 },
@@ -1992,7 +2404,7 @@ class GrokVideoServiceTest(unittest.IsolatedAsyncioTestCase):
                 "video_generation_config": {
                     "enabled": True,
                     "base_url": "https://relay.example",
-                    "api_keys": ["key-a"],
+                    "api_key": "key-a",
                 }
             }
         ).video_generation
@@ -2006,13 +2418,13 @@ class GrokVideoServiceTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(calls, [])
 
-    async def test_video_retries_legacy_payload_and_reuses_successful_format(self):
+    async def test_video_does_not_retry_removed_legacy_payload(self):
         settings = LifeSettings.from_dict(
             {
                 "video_generation_config": {
                     "enabled": True,
                     "base_url": "https://legacy.example",
-                    "api_keys": ["key-a"],
+                    "api_key": "key-a",
                     "poll_interval_seconds": 1,
                 }
             }
@@ -2020,51 +2432,25 @@ class GrokVideoServiceTest(unittest.IsolatedAsyncioTestCase):
         service = GrokVideoService(settings, Path(tempfile.mkdtemp()))
         calls = []
 
-        class _LegacySession(_Session):
+        class _LatestOnlySession(_Session):
             def request(
                 self, method, url, headers=None, json=None, data=None, timeout=None
             ):
                 self.calls.append((method, url, headers or {}, json, data, timeout))
                 if method == "POST" and url.endswith("/v1/videos"):
-                    if "size" not in (json or {}):
-                        return _Response(422, text="unsupported request fields")
-                    task_number = sum(
-                        call[0] == "POST" and "size" in (call[3] or {})
-                        for call in self.calls
-                    )
-                    return _Response(payload={"task_id": f"legacy-{task_number}"})
-                if method == "GET":
-                    return _Response(
-                        payload={
-                            "status": "completed",
-                            "video_url": "https://cdn.example/legacy.mp4",
-                        }
-                    )
+                    return _Response(422, text="unsupported request fields")
                 return _Response(500, text="unexpected")
 
-        session = _LegacySession(calls)
+        session = _LatestOnlySession(calls)
 
-        async def fake_sleep(_seconds):
-            return None
+        with self.assertRaises(VideoAPIError):
+            await service._generate_video_task(
+                session, service._headers(), "最新格式生成", None
+            )
 
-        original_sleep = video_module.asyncio.sleep
-        video_module.asyncio.sleep = fake_sleep
-        self.addCleanup(lambda: setattr(video_module.asyncio, "sleep", original_sleep))
-
-        first = await service._generate_video_task(
-            session, service._headers(), "第一次生成", None
-        )
-        second = await service._generate_video_task(
-            session, service._headers(), "第二次生成", None
-        )
-
-        self.assertEqual(first.url, "https://cdn.example/legacy.mp4")
-        self.assertEqual(second.url, "https://cdn.example/legacy.mp4")
         post_payloads = [call[3] for call in calls if call[0] == "POST"]
-        self.assertEqual(len(post_payloads), 3)
+        self.assertEqual(len(post_payloads), 1)
         self.assertNotIn("size", post_payloads[0])
-        self.assertIn("size", post_payloads[1])
-        self.assertIn("size", post_payloads[2])
 
     async def test_official_generation_endpoint_uses_duration_and_poll_base(self):
         settings = LifeSettings.from_dict(
@@ -2072,7 +2458,7 @@ class GrokVideoServiceTest(unittest.IsolatedAsyncioTestCase):
                 "video_generation_config": {
                     "enabled": True,
                     "base_url": "https://api.x.ai/v1/videos/generations",
-                    "api_keys": ["key-a"],
+                    "api_key": "key-a",
                     "duration": 10,
                     "resolution": "720p",
                     "poll_interval_seconds": 1,
@@ -2138,7 +2524,7 @@ class GrokVideoServiceTest(unittest.IsolatedAsyncioTestCase):
                 "video_generation_config": {
                     "enabled": True,
                     "base_url": "https://relay.example",
-                    "api_keys": ["key-a"],
+                    "api_key": "key-a",
                     "request_timeout_seconds": 10,
                     "timeout_seconds": 120,
                     "poll_interval_seconds": 1,
@@ -2194,7 +2580,7 @@ class GrokVideoServiceTest(unittest.IsolatedAsyncioTestCase):
                 "video_generation_config": {
                     "enabled": True,
                     "base_url": "https://relay.example",
-                    "api_keys": ["key-a"],
+                    "api_key": "key-a",
                     "timeout_seconds": 120,
                     "poll_interval_seconds": 1,
                 }
@@ -2260,7 +2646,7 @@ class GrokVideoServiceTest(unittest.IsolatedAsyncioTestCase):
                 "video_generation_config": {
                     "enabled": True,
                     "base_url": "https://relay.example",
-                    "api_keys": ["key-a"],
+                    "api_key": "key-a",
                     "timeout_seconds": 120,
                     "poll_interval_seconds": 1,
                 }

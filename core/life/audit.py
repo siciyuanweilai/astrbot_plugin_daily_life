@@ -47,6 +47,7 @@ class DailyLocationAuditMixin:
         payload: dict[str, Any],
         *,
         allow_safe_corrections: bool = False,
+        allow_place_substitutions: bool = False,
         preselected_places: list[dict[str, Any]] | None = None,
         weather_info: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], str]:
@@ -55,6 +56,8 @@ class DailyLocationAuditMixin:
         Args:
             payload: 已通过基础结构校验的日程结果。
             allow_safe_corrections: 是否自动收敛地点、路线和时间轴中的可修正问题。
+            allow_place_substitutions: 是否允许把未确认的地点替换为地图候选；
+                重审已有日程时应关闭，避免地点随搜索排序漂移。
             preselected_places: 本轮生成前已由地图确认的候选地点；匹配时直接复用其坐标。
             weather_info: 当前日程对应的结构化天气，用于判断步行和骑行是否合理。
 
@@ -117,6 +120,7 @@ class DailyLocationAuditMixin:
             preselected_places=preselected_places,
             search_results=search_results,
             allow_safe_corrections=allow_safe_corrections,
+            allow_place_substitutions=allow_place_substitutions,
             state=audit_state,
         )
         if issue:
@@ -199,6 +203,7 @@ class DailyLocationAuditMixin:
         preselected_places: list[dict[str, Any]],
         search_results: dict[tuple[str, str], Any],
         allow_safe_corrections: bool,
+        allow_place_substitutions: bool,
         state: _LocationAuditState,
     ) -> str:
         """把归一化节点写成稳定的地图地点字段。"""
@@ -220,6 +225,7 @@ class DailyLocationAuditMixin:
                     preselected_places=preselected_places,
                     search_results=search_results,
                     allow_safe_corrections=allow_safe_corrections,
+                    allow_place_substitutions=allow_place_substitutions,
                     state=state,
                 )
                 if issue:
@@ -280,6 +286,7 @@ class DailyLocationAuditMixin:
         preselected_places: list[dict[str, Any]],
         search_results: dict[tuple[str, str], Any],
         allow_safe_corrections: bool,
+        allow_place_substitutions: bool,
         state: _LocationAuditState,
     ) -> str:
         candidate, issue, downgraded = self._resolve_poi_candidate(
@@ -287,6 +294,7 @@ class DailyLocationAuditMixin:
             preselected_places=preselected_places,
             search_results=search_results,
             allow_safe_corrections=allow_safe_corrections,
+            allow_place_substitutions=allow_place_substitutions,
             state=state,
         )
         if issue or downgraded:
@@ -301,6 +309,7 @@ class DailyLocationAuditMixin:
         preselected_places: list[dict[str, Any]],
         search_results: dict[tuple[str, str], Any],
         allow_safe_corrections: bool,
+        allow_place_substitutions: bool,
         state: _LocationAuditState,
     ) -> tuple[dict[str, Any], str, bool]:
         item = entry["item"]
@@ -337,6 +346,7 @@ class DailyLocationAuditMixin:
                 entry,
                 candidates=candidates,
                 allow_safe_corrections=allow_safe_corrections,
+                allow_place_substitutions=allow_place_substitutions,
                 state=state,
             )
             if issue or downgraded:
@@ -345,9 +355,23 @@ class DailyLocationAuditMixin:
         candidate, issue = self._disambiguate_poi_candidate(
             entry,
             candidate_values,
-            allow_safe_corrections=allow_safe_corrections,
+            allow_safe_corrections=(
+                allow_safe_corrections and allow_place_substitutions
+            ),
         )
         if issue:
+            if allow_safe_corrections and not allow_place_substitutions:
+                self._downgrade_unverified_place(
+                    item,
+                    entry,
+                    canonical_places=state.canonical_places,
+                    seen_places=state.seen_places,
+                )
+                state.downgraded_places.append(place)
+                logger.warning(
+                    f"[日程生成] {issue} 已保留为泛化场景，不采用排序候选。"
+                )
+                return {}, "", True
             return {}, issue, False
         candidate_city = str(candidate.get("city") or "").strip()
         if target_city and not self._cities_match(candidate_city, target_city):
@@ -377,6 +401,7 @@ class DailyLocationAuditMixin:
         *,
         candidates: list[dict[str, Any]],
         allow_safe_corrections: bool,
+        allow_place_substitutions: bool,
         state: _LocationAuditState,
     ) -> tuple[list[dict[str, Any]], str, bool]:
         place = entry["place"]
@@ -397,7 +422,7 @@ class DailyLocationAuditMixin:
         )
         if not allow_safe_corrections:
             return [], issue, False
-        if same_city_candidates:
+        if same_city_candidates and allow_place_substitutions:
             candidate = same_city_candidates[0]
             canonical_name = str(candidate.get("name") or "").strip()
             state.substituted_places.append(

@@ -73,6 +73,7 @@ JSON 输出要求：
   "trigger_time": "HH:MM 或空字符串",
   "time_window": "morning|daytime|night|weekend|next_chat|next_time 或空字符串",
   "owner": "当前角色|说话人|共同|未定",
+  "media_kind": "none|photo|video",
   "people": ["相关人物名"],
   "place": "相关地点或空",
   "confidence": 0.0
@@ -83,10 +84,13 @@ JSON 输出要求：
 - “周末一起...” kind=plan，trigger_date 优先填本周六，time_window=weekend。
 - “下次再聊这个/回头继续说” kind=followup，trigger_date 为空，time_window=next_chat。
 - confidence 低于 0.7 时也可以输出，但系统不会自动保存。
+- 若承诺明确由当前角色拍照并发送图片，media_kind=photo；明确拍摄/录制视频，media_kind=video；视频通话和非媒体承诺均为 none。不能靠系统在后续重读原话判断媒体类型。
+- 媒体承诺只有明确到 YYYY-MM-DD HH:MM 才能自动执行；日期或时段不明确时保留空 trigger_time，后续作为待确认承诺，不得擅自补时间。
 - 没有未来承诺时输出 {{"has_commitment": false}}。
 - 字段中涉及人物称谓时按人物边界判断。
 - 这是极短内部裁定，不需要展开分析；如果服务端仍记录隐藏推理，只能保留一句第一人称内心判断。
 - 隐藏推理只写我此刻的感受和判断；普通情绪表达不是未来约定。
+- 群聊中的明确拍照或拍视频承诺属于当前群的分群承诺：若 owner=当前角色，后续只回原群投递，不是跨群广播；不要因为来源是群聊就一概丢弃。
 """
         dynamic = f"""当前角色：{current_role_label}
 记录视角：当前角色第一人称
@@ -233,6 +237,26 @@ JSON 输出要求：
                 final_commitment = await get_commitment(saved.id)
                 if final_commitment is not None:
                     saved = final_commitment
+            photo_scheduler = getattr(self, "schedule_commitment_photo", None)
+            if callable(photo_scheduler):
+                try:
+                    await photo_scheduler(
+                        saved,
+                        owner=str(payload.get("owner") or "").strip(),
+                        observed_at=now,
+                    )
+                except Exception as exc:
+                    logger.warning(f"{LOG_PREFIX} 承诺拍照任务登记失败：{exc}")
+            video_scheduler = getattr(self, "schedule_commitment_video", None)
+            if callable(video_scheduler):
+                try:
+                    await video_scheduler(
+                        saved,
+                        owner=str(payload.get("owner") or "").strip(),
+                        observed_at=now,
+                    )
+                except Exception as exc:
+                    logger.warning(f"{LOG_PREFIX} 承诺拍视频任务登记失败：{exc}")
             domain_settings = getattr(self.config, "domains", None)
             save_action_item = getattr(
                 self.archive, "save_conversation_action_item", None

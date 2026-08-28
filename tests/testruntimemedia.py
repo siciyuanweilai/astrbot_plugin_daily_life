@@ -140,7 +140,7 @@ class RuntimeMediaTest(unittest.TestCase):
                 "image_generation_config": image_generation_config(),
                 "video_generation_config": {
                     "enabled": True,
-                    "api_keys": ["video-key"],
+                    "api_key": "video-key",
                 },
             }
         )

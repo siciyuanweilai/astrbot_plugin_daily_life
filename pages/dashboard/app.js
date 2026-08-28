@@ -52,6 +52,7 @@ import {
   memoryEntityTypeLabel,
   moodColorText,
   outfitDecisionText,
+  quantityText,
   recordLines,
   readableReferenceLabel,
   scheduleTypeText,
@@ -130,6 +131,7 @@ const TIMELINE_TIME_EMPTY_TEXT = "未定";
 const TIMELINE_EXECUTION_LABELS = {
   planned: "待进行",
   active: "进行中",
+  elapsed: "已过时段",
   completed: "已完成",
   skipped: "已跳过",
   cancelled: "已取消",
@@ -1052,18 +1054,46 @@ function domainRecord(title, meta = "", lines = []) {
   return record;
 }
 
-function renderDomainTimeline(domains = {}) {
+function domainTimelineGroupKey(item, kind, title, status, source) {
+  const date = clean(item.date, "") || clean(item.occurred_at, "").slice(0, 10);
+  return JSON.stringify([date, kind, title, status, source]);
+}
+
+export function domainTimelineGroups(domains = {}) {
   const items = Array.isArray(domains.timeline) ? domains.timeline : [];
-  return items.map((item) => {
+  const groups = new Map();
+  items.forEach((item) => {
     const kind = enumLabelOrReadableText(item.kind, LIFE_DOMAIN_KIND_LABELS, "生活");
     const status = enumLabelOrReadableText(item.status, LIFE_DOMAIN_STATUS_LABELS, "状态未知");
+    const title = clean(item.title, kind);
+    const source = text(item.source).trim().toLowerCase();
+    const key = domainTimelineGroupKey(item, kind, title, status, source);
+    const group = groups.get(key);
+    if (group) {
+      group.count += 1;
+      return;
+    }
+    groups.set(key, {
+      kind,
+      title,
+      status,
+      source,
+      occurredAt: clean(item.occurred_at || item.date, ""),
+      count: 1,
+    });
+  });
+  return [...groups.values()];
+}
+
+function renderDomainTimeline(domains = {}) {
+  return domainTimelineGroups(domains).map((group) => {
+    const sourceLabel = group.source === "daily_plan"
+      ? ""
+      : enumLabelOrReadableText(group.source, LIFE_DOMAIN_SOURCE_LABELS, group.source ? "其他来源" : "");
     return domainRecord(
-      clean(item.title, kind),
-      [kind, status].filter(Boolean).join(" · "),
-      [
-        clean(item.occurred_at, ""),
-        enumLabelOrReadableText(item.source, LIFE_DOMAIN_SOURCE_LABELS, item.source ? "其他来源" : ""),
-      ]
+      group.title,
+      [group.kind, group.status, group.count > 1 ? `${group.count}次` : ""].filter(Boolean).join(" · "),
+      [group.occurredAt, sourceLabel]
     );
   });
 }
@@ -1084,9 +1114,9 @@ function renderDomainFood(domains = {}) {
       .map((ingredient) => {
         const name = clean(ingredient?.name, "");
         if (!name) return "";
-        const quantity = Number(ingredient?.quantity || 0);
+        const quantity = quantityText(ingredient?.quantity);
         const unit = enumLabelOrReadableText(ingredient?.unit, QUANTITY_UNIT_LABELS, "");
-        return quantity > 0 ? `${name} ${quantity}${unit}` : name;
+        return quantity !== "0" ? `${name} ${quantity}${unit}` : name;
       })
       .filter(Boolean);
     const tags = (Array.isArray(item.tags) ? item.tags : []).map((tag) => clean(tag, "")).filter(Boolean);
@@ -1099,38 +1129,98 @@ function renderDomainFood(domains = {}) {
       ]
     );
   });
-  const pantry = (Array.isArray(domains.pantry) ? domains.pantry : []).map((item) => (
-    domainRecord(
-      clean(item.name, "食材"),
-      "现有食材库存",
-      [
-        `数量：${Number(item.quantity || 0)}${enumLabelOrReadableText(item.unit, QUANTITY_UNIT_LABELS, "")}`,
-        item.expires_at ? `到期：${clean(item.expires_at)}` : "",
-      ]
-    )
-  ));
+  const pantry = (Array.isArray(domains.pantry) ? domains.pantry : [])
+    .filter((item) => quantityText(item?.quantity) !== "0")
+    .map((item) => (
+      domainRecord(
+        clean(item.name, "食材"),
+        "现有食材库存",
+        [
+          `数量：${quantityText(item.quantity)}${enumLabelOrReadableText(item.unit, QUANTITY_UNIT_LABELS, "")}`,
+          item.expires_at ? `到期：${clean(item.expires_at)}` : "",
+        ]
+      )
+    ));
   return [...meals, ...recipes, ...pantry];
 }
 
-function renderDomainChores(domains = {}) {
+function domainChoreNameKey(item = {}) {
+  return text(item.name).trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function domainChoreRecordKey(item = {}) {
+  return JSON.stringify([
+    domainChoreNameKey(item),
+    clean(item.occurred_at, "").slice(0, 10),
+    text(item.status).trim().toLowerCase(),
+  ]);
+}
+
+export function domainChoreGroups(domains = {}) {
   const definitions = Array.isArray(domains.chores) ? domains.chores : [];
   const records = Array.isArray(domains.chore_records) ? domains.chore_records : [];
-  return [
-    ...definitions.map((item) => domainRecord(
+  const definitionMap = new Map();
+  definitions.forEach((item) => {
+    const key = domainChoreNameKey(item) || `id:${text(item.id)}`;
+    if (!definitionMap.has(key)) definitionMap.set(key, item);
+  });
+  const recordMap = new Map();
+  records.forEach((item) => {
+    const nameKey = domainChoreNameKey(item) || `id:${text(item.chore_id)}`;
+    const key = domainChoreRecordKey(item);
+    const group = recordMap.get(key);
+    if (group) {
+      group.count += 1;
+      return;
+    }
+    recordMap.set(key, { nameKey, item, count: 1 });
+  });
+  return {
+    definitions: [...definitionMap.entries()].map(([key, item]) => ({
+      key,
+      item,
+      records: [...recordMap.values()].filter((group) => group.nameKey === key),
+    })),
+    records: [...recordMap.values()].filter((group) => !definitionMap.has(group.nameKey)),
+  };
+}
+
+function renderDomainChores(domains = {}) {
+  const groups = domainChoreGroups(domains);
+  const definitionRecords = groups.definitions.map(({ item, records }) => {
+    const latest = records[0];
+    const recordCount = records.reduce((total, group) => total + group.count, 0);
+    const latestStatus = latest
+      ? enumLabelOrReadableText(latest.item.status, LIFE_DOMAIN_STATUS_LABELS, "状态未知")
+      : "";
+    const latestOccurrence = latest ? clean(latest.item.occurred_at, "") : "";
+    const lastCompleted = clean(item.last_completed_at, "");
+    return domainRecord(
       clean(item.name, "家务"),
-      item.enabled ? "轮换中" : "已停用",
       [
-        item.last_completed_at ? `上次：${clean(item.last_completed_at)}` : "",
+        item.enabled ? "轮换中" : "已停用",
+        latestStatus,
+        recordCount > 1 ? `${recordCount}次` : "",
+      ].filter(Boolean).join(" · "),
+      [
+        item.last_completed_at ? `上次：${lastCompleted}` : "",
         item.next_due_at ? `下次：${clean(item.next_due_at)}` : "",
         item.cadence_days ? `周期：${Number(item.cadence_days)} 天` : "",
+        latestOccurrence && latestOccurrence !== lastCompleted
+          ? `最近执行：${latestOccurrence}`
+          : "",
       ]
-    )),
-    ...records.map((item) => domainRecord(
-      clean(item.name, "家务"),
+    );
+  });
+  const standaloneRecords = groups.records.map(({ item, count }) => domainRecord(
+    clean(item.name, "家务"),
+    [
       enumLabelOrReadableText(item.status, LIFE_DOMAIN_STATUS_LABELS, "状态未知"),
-      [clean(item.occurred_at, ""), item.duration_minutes ? `${Number(item.duration_minutes)} 分钟` : ""]
-    )),
-  ];
+      count > 1 ? `${count}次` : "",
+    ].filter(Boolean).join(" · "),
+    [clean(item.occurred_at, ""), item.duration_minutes ? `${Number(item.duration_minutes)} 分钟` : ""]
+  ));
+  return [...definitionRecords, ...standaloneRecords];
 }
 
 function renderDomainFitness(domains = {}) {
@@ -1319,7 +1409,7 @@ export function currentTimelinePair(day = {}, clock = currentClockDate(), option
     .sort((left, right) => left.minutes - right.minutes);
   const available = items.filter((entry) => {
     const executionState = clean(entry.item?.execution_state, "planned");
-    return !["cancelled", "skipped", "expired"].includes(executionState);
+    return !["cancelled", "skipped", "expired", "elapsed"].includes(executionState);
   });
   const activeIndex = available.findIndex(
     (entry) => clean(entry.item?.execution_state, "planned") === "active"

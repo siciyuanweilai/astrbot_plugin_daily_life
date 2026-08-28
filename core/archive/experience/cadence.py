@@ -6,6 +6,8 @@ from dataclasses import replace
 from typing import Any
 
 from ...models import PhysiologicalRhythmLogRecord
+from ...models.primitive import optional_bool
+from ...models.vitals import normalize_body_burden_intensity
 
 
 class PhysiologicalRhythmArchiveMixin:
@@ -91,13 +93,26 @@ class PhysiologicalRhythmArchiveMixin:
     def _compose_physiological_rhythm_log(
         self, row: sqlite3.Row
     ) -> PhysiologicalRhythmLogRecord:
+        body_intensity = normalize_body_burden_intensity(
+            row["body_intensity"],
+            burden_present=row["body_burden_present"],
+        )
+        lifecycle_kind = self._text(row["lifecycle_kind"]) or "transient"
+        if (
+            lifecycle_kind in self._RHYTHM_SINGLE_ACTIVE_LIFECYCLES
+            and body_intensity < 20
+            and self._rhythm_score(row["social_battery"], 50) > 40
+            and not bool(row["optional_cycle_enabled"])
+        ):
+            lifecycle_kind = "transient"
         return PhysiologicalRhythmLogRecord(
             id=int(row["id"] or 0),
             date=self._text(row["date"]),
             source=self._text(row["source"]) or "state",
             energy_curve=self._text(row["energy_curve"]),
             body_label=self._text(row["body_label"]),
-            body_intensity=self._rhythm_score(row["body_intensity"]),
+            body_intensity=body_intensity,
+            body_burden_present=optional_bool(row["body_burden_present"]),
             body_source=self._text(row["body_source"]),
             body_expires_at=self._text(row["body_expires_at"]),
             recovery_actions=self._loads_texts(row["recovery_actions"]),
@@ -110,7 +125,7 @@ class PhysiologicalRhythmArchiveMixin:
             ),
             optional_cycle_source=self._text(row["optional_cycle_source"]),
             summary=self._text(row["summary"]),
-            lifecycle_kind=self._text(row["lifecycle_kind"]) or "transient",
+            lifecycle_kind=lifecycle_kind,
             weight=max(0.0, min(float(row["weight"] or 0.0), 3.0)),
             status=self._text(row["status"]) or "active",
             created_at=self._text(row["created_at"]),
@@ -297,6 +312,13 @@ class PhysiologicalRhythmArchiveMixin:
                 self._text(item.energy_curve),
                 self._text(item.body_label),
                 self._rhythm_score(item.body_intensity),
+                (
+                    1
+                    if item.body_burden_present is True
+                    else 0
+                    if item.body_burden_present is False
+                    else None
+                ),
                 self._text(item.body_source),
                 self._text(item.body_expires_at),
                 json.dumps(list(item.recovery_actions or [])[:6], ensure_ascii=False),
@@ -317,7 +339,8 @@ class PhysiologicalRhythmArchiveMixin:
                     """
                     UPDATE physiological_rhythm_logs
                     SET date = ?, source = ?, energy_curve = ?, body_label = ?,
-                        body_intensity = ?, body_source = ?, body_expires_at = ?,
+                        body_intensity = ?, body_burden_present = ?,
+                        body_source = ?, body_expires_at = ?,
                         recovery_actions = ?, social_battery = ?, attention_state = ?,
                         optional_cycle_enabled = ?, optional_cycle_label = ?,
                         optional_cycle_intensity = ?, optional_cycle_source = ?,
@@ -340,12 +363,13 @@ class PhysiologicalRhythmArchiveMixin:
                 """
                 INSERT INTO physiological_rhythm_logs(
                     date, source, energy_curve, body_label, body_intensity,
-                    body_source, body_expires_at, recovery_actions, social_battery,
+                    body_burden_present, body_source, body_expires_at,
+                    recovery_actions, social_battery,
                     attention_state, optional_cycle_enabled, optional_cycle_label,
                     optional_cycle_intensity, optional_cycle_source, summary,
                     lifecycle_kind, weight, status, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """,
                 values,
             )
@@ -475,7 +499,7 @@ class PhysiologicalRhythmArchiveMixin:
             body_labels: dict[str, int] = {}
             cycle_labels: dict[str, int] = {}
             for item in logs:
-                if item.body_label:
+                if item.body_burden_present is True and item.body_label:
                     body_labels[item.body_label] = (
                         body_labels.get(item.body_label, 0) + 1
                     )

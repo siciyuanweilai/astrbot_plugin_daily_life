@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import datetime
-import hashlib
 from typing import Any
 
 from astrbot.api import logger
@@ -308,18 +307,6 @@ class ResponseGateScoreMixin:
         except ValueError:
             return None
         return max(0, (now.date() - seen).days)
-
-    def _response_gate_roll(self, event: Any) -> float:
-        marker = "|".join(
-            [
-                self._event_session_id(event),
-                self._event_message_id(event),
-                self._safe_event_call(event, "get_sender_id"),
-                self._response_gate_visible_text(event)[:80],
-            ]
-        )
-        digest = hashlib.sha256(marker.encode("utf-8", errors="ignore")).hexdigest()
-        return int(digest[:8], 16) / 0xFFFFFFFF
 
     @staticmethod
     def _response_gate_int(value: Any, default: int) -> int:

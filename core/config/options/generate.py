@@ -10,7 +10,6 @@ from .cast import (
     as_int,
     as_reference_image_items,
     as_str,
-    as_str_list,
 )
 
 DEFAULT_VOLCENGINE_TTS_MODEL = "seed-tts-2.0-standard"
@@ -18,6 +17,14 @@ DEFAULT_VOLCENGINE_SAMPLE_RATE = 24000
 DEFAULT_VOLCENGINE_FORMAT = "mp3"
 IMAGE_PROTOCOLS = {"gemini", "openai", "grok"}
 IMAGE_RESOLUTIONS = {"1K", "2K", "4K"}
+IMAGE_QUALITIES = {"low", "medium", "high"}
+OPENAI_IMAGE_EDIT_REQUEST_FORMATS = {"auto", "leo_json", "multipart"}
+REALTIME_OFFICIAL_SEARCH_TYPES = {
+    "web",
+    "web_summary",
+    "web_agent",
+    "web_global_api",
+}
 IMAGE_ASPECT_RATIOS = (
     "1:1",
     "1:4",
@@ -61,6 +68,8 @@ class ImageApiChannel:
     resolution: str = "4K"
     aspect_ratio: str = "1:1"
     timeout_seconds: int = 120
+    quality: str = "medium"
+    edit_request_format: str = "auto"
 
 
 @dataclass(slots=True)
@@ -95,11 +104,32 @@ def _image_aspect_ratio(value: Any) -> str:
     return aspect_ratio if aspect_ratio in IMAGE_ASPECT_RATIOS else "1:1"
 
 
+def _image_quality(value: Any) -> str:
+    quality = as_str(value, "medium").strip().lower() or "medium"
+    return quality if quality in IMAGE_QUALITIES else "medium"
+
+
+def _openai_image_edit_request_format(value: Any) -> str:
+    request_format = as_str(value, "auto").strip().lower() or "auto"
+    aliases = {
+        "json": "leo_json",
+        "leo": "leo_json",
+        "form": "multipart",
+        "form_data": "multipart",
+    }
+    request_format = aliases.get(request_format, request_format)
+    return (
+        request_format
+        if request_format in OPENAI_IMAGE_EDIT_REQUEST_FORMATS
+        else "auto"
+    )
+
+
 def _image_channels(value: Any) -> list[ImageApiChannel]:
     if not isinstance(value, list):
         return []
     result: list[ImageApiChannel] = []
-    seen: set[tuple[str, str, str, str, str, str, int]] = set()
+    seen: set[tuple[str, str, str, str, str, str, str, str, int]] = set()
     for raw in value:
         if not isinstance(raw, dict):
             continue
@@ -124,6 +154,10 @@ def _image_channels(value: Any) -> list[ImageApiChannel]:
         )
         resolution = _image_resolution(raw.get("resolution"), protocol)
         aspect_ratio = _image_aspect_ratio(raw.get("aspect_ratio", "1:1"))
+        quality = _image_quality(raw.get("quality", "medium"))
+        edit_request_format = _openai_image_edit_request_format(
+            raw.get("edit_request_format", "auto")
+        )
         timeout_seconds = as_int(raw.get("timeout_seconds", 120), 120, 10, 600)
         if not api_url or not api_key:
             continue
@@ -134,6 +168,8 @@ def _image_channels(value: Any) -> list[ImageApiChannel]:
             protocol,
             resolution,
             aspect_ratio,
+            quality,
+            edit_request_format,
             timeout_seconds,
         )
         if key in seen:
@@ -149,6 +185,8 @@ def _image_channels(value: Any) -> list[ImageApiChannel]:
                 resolution=resolution,
                 aspect_ratio=aspect_ratio,
                 timeout_seconds=timeout_seconds,
+                quality=quality,
+                edit_request_format=edit_request_format,
             )
         )
     return result
@@ -217,7 +255,7 @@ class ImageGenerationSettings:
 class VideoGenerationSettings:
     enabled: bool = False
     base_url: str = ""
-    api_keys: list[str] = field(default_factory=list)
+    api_key: str = ""
     model: str = "grok-imagine-video-1.5"
     duration: int = 8
     aspect_ratio: str = "1:1"
@@ -233,7 +271,7 @@ class VideoGenerationSettings:
         return VideoGenerationSettings(
             enabled=as_bool(data.get("enabled", False), False),
             base_url=as_str(data.get("base_url", ""), "").strip(),
-            api_keys=as_str_list(data.get("api_keys", [])),
+            api_key=as_str(data.get("api_key", ""), "").strip(),
             model=as_str(
                 data.get("model", "grok-imagine-video-1.5"),
                 "grok-imagine-video-1.5",
@@ -300,15 +338,37 @@ class RealtimeVoiceCallSettings:
     listen_port: int = 6186
     public_url: str = ""
     endpoint_url: str = "wss://openspeech.bytedance.com/api/v3/duplex/realtime/dialogue"
-    model: str = "1.2.6.1"
+    model: str = "doubao-seed-2-0-lite-260428"
     max_duration_seconds: int = 1800
     idle_timeout_seconds: int = 90
     invite_expire_seconds: int = 120
     max_concurrent_calls: int = 1
     context_turns: int = 8
     allow_function_calls: bool = False
+    official_internet_enabled: bool = False
+    official_internet_type: str = "web_global_api"
+    official_internet_api_key: str = ""
+    official_internet_bot_id: str = ""
+    official_internet_result_count: int = 10
+    official_music_enabled: bool = False
     tool_call_timeout_seconds: int = 60
     short_url_enabled: bool = True
+    rtc_model_name: str = "Doubao-Seed-1.6｜250615"
+    rtc_app_id: str = ""
+    rtc_app_key: str = ""
+    rtc_access_key: str = ""
+    rtc_secret_key: str = ""
+    rtc_region: str = "cn-north-1"
+    rtc_callback_url: str = ""
+    rtc_callback_signature: str = ""
+    rtc_token_ttl_seconds: int = 3600
+    rtc_sdk_url: str = "https://unpkg.com/@volcengine/rtc@4.69.0/index.min.js"
+    rtc_video_enabled: bool = False
+    rtc_vision_image_detail: str = "low"
+    rtc_vision_height: int = 480
+    rtc_vision_interval_ms: int = 1000
+    rtc_vision_images_limit: int = 2
+    rtc_vision_auto_select: bool = False
 
     @staticmethod
     def from_dict(data: Any) -> RealtimeVoiceCallSettings:
@@ -325,7 +385,9 @@ class RealtimeVoiceCallSettings:
                 data.get("public_url", data.get("gateway_url", ""))
             ).strip().rstrip("/"),
             endpoint_url=endpoint_url,
-            model=as_str(data.get("model", "1.2.6.1")).strip() or "1.2.6.1",
+            model=as_str(
+                data.get("model", "doubao-seed-2-0-lite-260428")
+            ).strip() or "doubao-seed-2-0-lite-260428",
             max_duration_seconds=as_int(
                 data.get("max_duration_seconds", 1800), 1800, 30, 7200
             ),
@@ -342,8 +404,77 @@ class RealtimeVoiceCallSettings:
             allow_function_calls=as_bool(
                 data.get("allow_function_calls", False), False
             ),
+            official_internet_enabled=as_bool(
+                data.get("official_internet_enabled", False), False
+            ),
+            official_internet_type=(
+                as_str(data.get("official_internet_type", "web_global_api"))
+                .strip()
+                .lower()
+                if as_str(data.get("official_internet_type", "web_global_api"))
+                .strip()
+                .lower()
+                in REALTIME_OFFICIAL_SEARCH_TYPES
+                else "web_global_api"
+            ),
+            official_internet_api_key=as_str(
+                data.get("official_internet_api_key", "")
+            ).strip(),
+            official_internet_bot_id=as_str(
+                data.get("official_internet_bot_id", "")
+            ).strip(),
+            official_internet_result_count=as_int(
+                data.get("official_internet_result_count", 10), 10, 1, 10
+            ),
+            official_music_enabled=as_bool(
+                data.get("official_music_enabled", False), False
+            ),
             tool_call_timeout_seconds=as_int(
                 data.get("tool_call_timeout_seconds", 60), 60, 1, 300
             ),
             short_url_enabled=as_bool(data.get("short_url_enabled", True), True),
+            rtc_model_name=as_str(
+                data.get("rtc_model_name", "Doubao-Seed-1.6｜250615")
+            ).strip() or "Doubao-Seed-1.6｜250615",
+            rtc_app_id=as_str(data.get("rtc_app_id", "")).strip(),
+            rtc_app_key=as_str(data.get("rtc_app_key", "")).strip(),
+            rtc_access_key=as_str(data.get("rtc_access_key", "")).strip(),
+            rtc_secret_key=as_str(data.get("rtc_secret_key", "")).strip(),
+            rtc_region=as_str(data.get("rtc_region", "cn-north-1")).strip()
+            or "cn-north-1",
+            rtc_callback_url=as_str(data.get("rtc_callback_url", "")).strip().rstrip("/"),
+            rtc_callback_signature=as_str(data.get("rtc_callback_signature", "")).strip(),
+            rtc_token_ttl_seconds=as_int(
+                data.get("rtc_token_ttl_seconds", 3600), 3600, 300, 86400
+            ),
+            rtc_sdk_url=as_str(
+                data.get(
+                    "rtc_sdk_url",
+                    "https://unpkg.com/@volcengine/rtc@4.69.0/index.min.js",
+                )
+            ).strip()
+            or "https://unpkg.com/@volcengine/rtc@4.69.0/index.min.js",
+            rtc_video_enabled=as_bool(data.get("rtc_video_enabled", False), False),
+            rtc_vision_image_detail=(
+                as_str(data.get("rtc_vision_image_detail", "low"), "low")
+                .strip()
+                .lower()
+                if as_str(data.get("rtc_vision_image_detail", "low"), "low")
+                .strip()
+                .lower()
+                in {"low", "high"}
+                else "low"
+            ),
+            rtc_vision_height=as_int(
+                data.get("rtc_vision_height", 480), 480, 0, 1792
+            ),
+            rtc_vision_interval_ms=as_int(
+                data.get("rtc_vision_interval_ms", 1000), 1000, 200, 10000
+            ),
+            rtc_vision_images_limit=as_int(
+                data.get("rtc_vision_images_limit", 2), 2, 1, 10
+            ),
+            rtc_vision_auto_select=as_bool(
+                data.get("rtc_vision_auto_select", False), False
+            ),
         )

@@ -12,19 +12,11 @@ from astrbot.api import logger
 from ...config.options import VideoGenerationSettings
 from ..base import (
     GeneratedVideo,
-    extract_request_id,
-    extract_video_url,
-    origin_from_url,
     videos_endpoint,
 )
-from .errors import VideoAPIError
 from .http import request_json, seconds_label, timeout_from_seconds
-from .protocol import (
-    LEGACY_REQUEST_FORMAT,
-    XAI_REQUEST_FORMAT,
-    create_video_task,
-)
 from .keyframe import VIDEO_REFERENCE_MAX_BYTES, prepare_video_reference_image
+from .protocol import create_video_task
 from .tasks import download_video, poll_video_url, resolve_video_task
 
 
@@ -35,8 +27,6 @@ class GrokVideoService:
         self.output_dir = (
             Path(data_dir or tempfile.gettempdir()) / "generated" / "videos"
         )
-        self._key_index = 0
-        self._request_format = ""
 
     async def generate_video(
         self,
@@ -68,7 +58,7 @@ class GrokVideoService:
             raise ValueError("缺少视频提示词")
         if not self.video_endpoint:
             raise RuntimeError("Grok 视频生成缺少中转接口地址")
-        if not self.settings.api_keys:
+        if not self.settings.api_key:
             raise RuntimeError("Grok 视频生成缺少接口密钥")
         return text
 
@@ -105,67 +95,24 @@ class GrokVideoService:
                     f"{VIDEO_REFERENCE_MAX_BYTES // (1024 * 1024)} MB）"
                 )
             image_bytes = prepared.data
-        request_formats = self._request_formats()
-        last_data: Any = None
-        for index, request_format in enumerate(request_formats):
-            has_fallback = index + 1 < len(request_formats)
-            try:
-                data = await create_video_task(
-                    settings=self.settings,
-                    session=session,
-                    headers=headers,
-                    endpoint=self.video_endpoint,
-                    prompt=prompt,
-                    image_bytes=image_bytes,
-                    aspect_ratio=aspect_ratio,
-                    duration=duration,
-                    request_format=request_format,
-                    request=self._request_json,
-                    log_info=logger.info,
-                )
-            except VideoAPIError as exc:
-                if not has_fallback or exc.status not in {400, 422}:
-                    raise
-                self._request_format = ""
-                logger.debug(
-                    "[日常生活] 当前视频请求格式未被接口接受，自动尝试兼容格式"
-                )
-                continue
-            last_data = data
-            if self._has_video_task_result(data):
-                self._request_format = request_format
-                return await self._resolve_task(
-                    session=session,
-                    headers=headers,
-                    endpoint=self.video_endpoint,
-                    data=data,
-                    id_label="任务",
-                )
-            if has_fallback:
-                self._request_format = ""
-                logger.debug("[日常生活] 视频接口未返回任务标识，自动尝试兼容格式")
-                continue
+        data = await create_video_task(
+            settings=self.settings,
+            session=session,
+            headers=headers,
+            endpoint=self.video_endpoint,
+            prompt=prompt,
+            image_bytes=image_bytes,
+            aspect_ratio=aspect_ratio,
+            duration=duration,
+            request=self._request_json,
+            log_info=logger.info,
+        )
         return await self._resolve_task(
             session=session,
             headers=headers,
             endpoint=self.video_endpoint,
-            data=last_data,
+            data=data,
             id_label="任务",
-        )
-
-    def _request_formats(self) -> tuple[str, str]:
-        preferred = self._request_format or XAI_REQUEST_FORMAT
-        fallback = (
-            LEGACY_REQUEST_FORMAT
-            if preferred == XAI_REQUEST_FORMAT
-            else XAI_REQUEST_FORMAT
-        )
-        return preferred, fallback
-
-    def _has_video_task_result(self, data: Any) -> bool:
-        return bool(
-            extract_request_id(data)
-            or extract_video_url(data, origin_from_url(self.video_endpoint))
         )
 
     async def _resolve_task(
@@ -187,9 +134,10 @@ class GrokVideoService:
         )
 
     def _headers(self) -> dict[str, str]:
-        key = self.settings.api_keys[self._key_index % len(self.settings.api_keys)]
-        self._key_index = (self._key_index + 1) % len(self.settings.api_keys)
-        return {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+        return {
+            "Authorization": f"Bearer {self.settings.api_key}",
+            "Content-Type": "application/json",
+        }
 
     @staticmethod
     def _timeout(seconds: float | int | None) -> aiohttp.ClientTimeout | None:

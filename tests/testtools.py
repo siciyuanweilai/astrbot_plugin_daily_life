@@ -106,7 +106,8 @@ class LifeToolsTest(unittest.TestCase):
             datetime.datetime(2026, 5, 24, 13, 0),
             "2026-05-24",
         )
-        self.assertEqual(timeline[0].execution_state, "completed")
+        self.assertEqual(timeline[0].execution_state, "elapsed")
+        self.assertIn("尚未收到执行证据", timeline[0].execution_reason)
         self.assertEqual(timeline[1].execution_state, "active")
         self.assertEqual(timeline[2].execution_state, "skipped")
 

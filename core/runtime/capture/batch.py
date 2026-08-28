@@ -471,6 +471,7 @@ class ChatMemoryBatchMixin:
                     "trigger_time": "",
                     "time_window": "",
                     "owner": "当前角色|说话人|共同|未定",
+                    "media_kind": "none|photo|video",
                     "follow_up": {
                         "action": "none|contact_person|remind_person",
                         "message_goal": "",
@@ -514,6 +515,9 @@ class ChatMemoryBatchMixin:
             "对方说以后联系我、提醒我或叫我时，owner 必须是说话人且 follow_up.action 必须是 none，绝不能反向创建我的主动联系任务。"
             "普通共同计划不等于主动联系承诺；证据没有明确要求我未来发起联系时使用 none。"
             "群聊中无法确认应该向谁履行联系动作时 follow_up.action 使用 none，不把对某个人的承诺误发给整个群。"
+            "群聊中的明确拍照或拍视频承诺属于当前群的分群承诺：若 owner=当前角色，后续只回原群投递，不是跨群广播；不要因为来源是群聊就一概丢弃。"
+            "明确由我拍照并发送图片时 media_kind=photo，明确由我拍摄或录制视频时 media_kind=video；视频通话及其他承诺为 none。"
+            "媒体承诺必须有证据支持完整 trigger_date 和 trigger_time 才能自动执行；只有日期或模糊时段时保留 trigger_time 为空，等待后续确认，不猜默认钟点。"
             "需要主动联系时 execute_at 必须依据明确时间证据或 current_day_timeline 中已确认的相关节点给出完整本地日期时间；无法可靠确定执行时间时使用 none，不猜时间。"
             "若联系承诺明确依赖未来条件但无法换算出钟点，保留 action，execute_at 留空，并填写可由后续聊天或生活状态复核的 condition；check_after_minutes 给出首次复核间隔，范围 5 到 60。"
             "visibility、group_environment、action_decision 只记录批次中有明确依据的实际感知，不生成空壳；私聊不填写 group_environment。"
@@ -768,6 +772,26 @@ class ChatMemoryBatchMixin:
                     )
                 except Exception as exc:
                     logger.warning(f"{LOG_PREFIX} 主动承诺任务登记失败：{exc}")
+            photo_scheduler = getattr(self, "schedule_commitment_photo", None)
+            if callable(photo_scheduler):
+                try:
+                    await photo_scheduler(
+                        stored,
+                        owner=str(raw.get("owner") or "").strip(),
+                        observed_at=observed_at,
+                    )
+                except Exception as exc:
+                    logger.warning(f"{LOG_PREFIX} 承诺拍照任务登记失败：{exc}")
+            video_scheduler = getattr(self, "schedule_commitment_video", None)
+            if callable(video_scheduler):
+                try:
+                    await video_scheduler(
+                        stored,
+                        owner=str(raw.get("owner") or "").strip(),
+                        observed_at=observed_at,
+                    )
+                except Exception as exc:
+                    logger.warning(f"{LOG_PREFIX} 承诺拍视频任务登记失败：{exc}")
             domain_settings = getattr(self.config, "domains", None)
             save_action_item = getattr(
                 self.archive, "save_conversation_action_item", None

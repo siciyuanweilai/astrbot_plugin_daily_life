@@ -12,14 +12,14 @@ from contextlib import asynccontextmanager
 from io import BytesIO
 from pathlib import Path
 
+from core.interface.portal import entry as portal_entry
+from core.interface.portal.entry import PortalBaseMixin
 from core.models import (
     ActionDecisionRecord,
     EmojiAssetRecord,
     MessageVisibilityRecord,
     StyleCatalogItemRecord,
 )
-from core.interface.portal import entry as portal_entry
-from core.interface.portal.entry import PortalBaseMixin
 from core.outcome import ToolResultText
 from core.paths import STYLE_CATALOG_DIR_NAME
 from core.runtime.generation import DailyGenerationMixin
@@ -329,6 +329,7 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
                                 "body_condition": {
                                     "label": "轻微疲惫",
                                     "intensity": 28,
+                                    "burden_present": True,
                                     "source": "每日生成",
                                 },
                                 "recovery_actions": ["少量散步", "早点收尾"],
@@ -827,7 +828,7 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
                         }
                     ]
                 },
-                "video_generation_config": {"api_keys": ["video-one", "video-two"]},
+                "video_generation_config": {"api_key": "video-one"},
             }
         )
 
@@ -840,8 +841,8 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
             "image-secret",
         )
         self.assertEqual(
-            config["video_generation_config"]["api_keys"],
-            ["video-one", "video-two"],
+            config["video_generation_config"]["api_key"],
+            "video-one",
         )
 
         config["rhythm_config"]["schedule_time"] = "08:20"
@@ -861,8 +862,8 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
             "image-secret",
         )
         self.assertEqual(
-            self.plugin.runtime.raw_config["video_generation_config"]["api_keys"],
-            ["video-one", "video-two"],
+            self.plugin.runtime.raw_config["video_generation_config"]["api_key"],
+            "video-one",
         )
 
     async def test_page_config_post_applies_runtime_config(self):
@@ -1726,7 +1727,11 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
                     {"date": "2026-06-10", "title": "昨天的活动"},
                     {"date": "2026-06-11", "title": "今天的活动"},
                 ],
-                "pantry": [{"name": "测试库存"}],
+                "pantry": [
+                    {"name": "测试库存", "quantity": 1},
+                    {"name": "耗尽库存", "quantity": 0},
+                    {"name": "浮点残值", "quantity": 2.7755575615628914e-17},
+                ],
                 "recipes": [{"name": "测试食谱"}],
                 "meals": [
                     {"date": "2026-06-10", "name": "昨天的餐食"},
@@ -1800,6 +1805,7 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
             ["仍待完成的行动项", "今天已完成的行动项"],
         )
         self.assertEqual(snapshot["pantry"][0]["name"], "测试库存")
+        self.assertEqual(len(snapshot["pantry"]), 1)
         self.assertEqual(snapshot["recipes"][0]["name"], "测试食谱")
         self.assertEqual(snapshot["chores"][0]["name"], "测试家务轮换")
 
@@ -2398,6 +2404,92 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertIn("item.source_session_label", app)
         self.assertNotIn("clean(item.source_session)", app)
 
+    def test_domain_timeline_collapses_repeated_default_plan_records(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        app = (root / "pages" / "dashboard" / "app.js").read_text(encoding="utf-8")
+        archive = (root / "core" / "archive" / "activity.py").read_text(encoding="utf-8")
+        view = (root / "core" / "interface" / "view.py").read_text(encoding="utf-8")
+
+        self.assertIn("domainTimelineGroupKey", app)
+        self.assertIn('group.count > 1 ? `${group.count}次` : ""', app)
+        self.assertIn('group.source === "daily_plan"', app)
+        self.assertIn('"occurred_at": item.get("started_at") or item.get("ended_at")', archive)
+        self.assertIn('("timeline", ("date", "occurred_at"))', view)
+
+    def test_domain_timeline_groups_same_day_records_without_crossing_dates(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        script = (
+            self._dashboard_dom_mock_script()
+            + """
+const mod = await import("./pages/dashboard/app.js");
+const groups = mod.domainTimelineGroups({
+  timeline: [
+    { date: "2026-08-26", kind: "activity", title: "同一活动", status: "completed", source: "daily_plan", occurred_at: "2026-08-26 21:00:00" },
+    { date: "2026-08-26", kind: "activity", title: "同一活动", status: "completed", source: "daily_plan", occurred_at: "2026-08-26 08:00:00" },
+    { date: "2026-08-25", kind: "activity", title: "同一活动", status: "completed", source: "daily_plan", occurred_at: "2026-08-25 21:00:00" },
+  ],
+});
+if (groups.length !== 2 || groups[0].count !== 2 || groups[1].count !== 1) {
+  throw new Error(`总览合并范围不正确：${JSON.stringify(groups)}`);
+}
+if (groups[0].source !== "daily_plan") {
+  throw new Error("默认日程来源没有保留供渲染判断");
+}
+"""
+        )
+        result = subprocess.run(
+            ["node", "--input-type=module"],
+            cwd=root,
+            input=script,
+            text=True,
+            encoding="utf-8",
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+
+    def test_domain_chore_groups_merge_definition_and_execution_records(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        script = (
+            self._dashboard_dom_mock_script()
+            + """
+const mod = await import("./pages/dashboard/app.js");
+const groups = mod.domainChoreGroups({
+  chores: [
+    { id: "old", name: "  擦拭测试桌面 ", enabled: true },
+    { id: "new", name: "擦拭测试桌面", enabled: true },
+  ],
+  chore_records: [
+    { name: "擦拭测试桌面", status: "completed", occurred_at: "2026-08-26 10:00:00" },
+    { name: "擦拭测试桌面", status: "completed", occurred_at: "2026-08-26 10:00:00" },
+    { name: "没有定义的家务", status: "completed", occurred_at: "2026-08-26 11:00:00" },
+  ],
+});
+if (groups.definitions.length !== 1 || groups.definitions[0].records[0].count !== 2) {
+  throw new Error(`家务定义与执行记录没有合并：${JSON.stringify(groups)}`);
+}
+if (groups.records.length !== 1 || groups.records[0].item.name !== "没有定义的家务") {
+  throw new Error("没有对应定义的历史家务记录不应被隐藏");
+}
+"""
+        )
+        result = subprocess.run(
+            ["node", "--input-type=module"],
+            cwd=root,
+            input=script,
+            text=True,
+            encoding="utf-8",
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+
     def test_page_evidence_hides_internal_references(self):
         self.assertEqual(
             PagePlugin._page_readable_evidence("251880291"),
@@ -2625,7 +2717,7 @@ class DailyLifeDashboardStaticTest(unittest.TestCase):
         self.assertNotIn(".secret-control", style)
         self.assertNotIn("secret", schema["weather_awareness"]["items"]["api_key"])
         self.assertNotIn(
-            "secret", schema["video_generation_config"]["items"]["api_keys"]
+            "secret", schema["video_generation_config"]["items"]["api_key"]
         )
 
     def test_page_status_world_sections_use_twenty_item_limit(self):
@@ -3723,11 +3815,12 @@ if (number.value !== "60" || state.config.test_config.level !== 60) {
         self.assertIn('["memos_config", "memory_config"]', config)
         self.assertIn('["response_gate_config", "chat_style_config"]', config)
         self.assertIn('["proactive_config", "chat_style_config"]', config)
+        self.assertIn('["realtime_voice_call_config", "voice_generation_config"]', config)
         self.assertIn('["sight_config", "video_generation_config"]', config)
         self.assertIn('["relationship_aliases", "identity_aliases"]', config)
         self.assertIn('["bot_identity_aliases", "identity_aliases"]', config)
         self.assertIn(
-            'const CONFIG_GROUPED_DISPLAY_SECTIONS = new Set(["rhythm_config", "memory_config", "chat_style_config", "video_generation_config", "story_engine_config"]);',
+            'const CONFIG_GROUPED_DISPLAY_SECTIONS = new Set(["rhythm_config", "memory_config", "chat_style_config", "voice_generation_config", "video_generation_config", "story_engine_config"]);',
             config,
         )
         self.assertIn('description: "基础生成"', config)
@@ -3743,14 +3836,31 @@ if (number.value !== "60" || state.config.test_config.level !== 60) {
         self.assertIn('description: "闲时回复"', config)
         self.assertIn('description: "视频生成"', config)
         self.assertIn('description: "视频理解"', config)
+        for label in ("普通语音", "语音通话", "视频通话"):
+            self.assertIn(f'label: "{label}"', config)
+        for field in (
+            "voice_generation_config.enabled",
+            "realtime_voice_call_config.enabled",
+            "realtime_voice_call_config.rtc_model_name",
+        ):
+            self.assertIn(field, config)
         for label in (
             "生活状态与日程",
-            "地点与事件",
-            "聊天人物",
-            "聊天表达",
+            "聊天人物与表达",
             "联网灵感",
         ):
             self.assertIn(f'label: "{label}"', config)
+        self.assertIn(
+            'hint: "控制每日状态、时间轴、地点和事件如何生成，保持全天生活过程完整且自然。"',
+            config,
+        )
+        self.assertIn(
+            'hint: "控制最近聊天历史中的称呼、性别与关系判断，以及普通聊天的短句表达偏好。"',
+            config,
+        )
+        self.assertNotIn('label: "地点与事件"', config)
+        self.assertNotIn('label: "聊天表达"', config)
+        self.assertNotIn('label: "聊天人物"', config)
         self.assertIn("function renderConfigGroup(field)", config)
         self.assertIn("configSectionDisplaySection(sectionKey)", config)
         self.assertIn("isProviderConfigField(fieldSpec)", config)
@@ -4031,9 +4141,7 @@ if (number.value !== "60" || state.config.test_config.level !== 60) {
         ]
         expected_groups = [
             "生活状态与日程",
-            "地点与事件",
-            "聊天人物",
-            "聊天表达",
+            "聊天人物与表达",
             "联网灵感",
         ]
         group_positions = [
@@ -4050,6 +4158,17 @@ if (number.value !== "60" || state.config.test_config.level !== 60) {
         ]
         for path in expected_fields:
             self.assertEqual(group_source.count(f'"{path}"'), 1)
+        generation_start = group_source.index('key: "life_generation"')
+        generation_end = group_source.index('key: "chat_people"', generation_start)
+        generation_source = group_source[generation_start:generation_end]
+        self.assertIn('"story_engine_config.world_rules"', generation_source)
+        people_start = group_source.index('key: "chat_people"')
+        people_end = group_source.index('key: "search_prompt"', people_start)
+        people_source = group_source[people_start:people_end]
+        self.assertIn('"story_engine_config.chat_rules"', people_source)
+        self.assertIn('"chat_style_config.casual_short_prompt"', people_source)
+        self.assertNotIn('key: "chat_prompt"', group_source)
+        self.assertNotIn('key: "world_events"', group_source)
 
     def test_dashboard_removes_legacy_outfit_prompt_settings(self):
         import json
@@ -4134,6 +4253,31 @@ if (number.value !== "60" || state.config.test_config.level !== 60) {
         )
         self.assertNotIn("natural_segment_pattern", config)
         self.assertIn("spec.multiline === false", config)
+
+    def test_realtime_voice_model_uses_single_line_input(self):
+        import json
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        schema = json.loads(
+            (root / "_conf_schema.json").read_text(encoding="utf-8-sig")
+        )
+
+        model = schema["realtime_voice_call_config"]["items"]["model"]
+        self.assertEqual(model["type"], "string")
+        self.assertFalse(model["multiline"])
+
+    def test_official_internet_no_result_message_is_not_configurable(self):
+        import json
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        schema = json.loads(
+            (root / "_conf_schema.json").read_text(encoding="utf-8-sig")
+        )
+
+        realtime_items = schema["realtime_voice_call_config"]["items"]
+        self.assertNotIn("official_internet_no_result_message", realtime_items)
 
     def test_dashboard_no_longer_exposes_weekly_theme_config(self):
         import json
@@ -6211,6 +6355,32 @@ if (!intentPair.current || intentPair.current.time !== "20:50") {
         self.assertIn("Array.isArray(domains.recipes)", app)
         self.assertIn('ingredients.length ? `食材：${ingredients.join("、")}`', app)
         self.assertIn('"现有食材库存"', app)
+
+    def test_dashboard_quantity_text_hides_float_residuals(self):
+        root = Path(__file__).resolve().parents[1]
+        script = """
+const { quantityText } = await import("./pages/dashboard/shared/format.js");
+const cases = new Map([
+  [2.7755575615628914e-17, "0"],
+  [0.30000000000000004, "0.3"],
+  [1.23456789, "1.234568"],
+  [2, "2"],
+]);
+for (const [value, expected] of cases) {
+  const actual = quantityText(value);
+  if (actual !== expected) throw new Error(`${value}: ${actual} !== ${expected}`);
+}
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module"],
+            cwd=root,
+            input=script,
+            text=True,
+            encoding="utf-8",
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
 
     def test_current_outfit_display_separates_clothing_and_hair(self):
         root = Path(__file__).resolve().parents[1]

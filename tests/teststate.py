@@ -1,15 +1,18 @@
 import datetime
 import unittest
 
-from support import LifeState
+from core.clock import TIMEZONE, TIMEZONE_NAME
+from core.clock import now as life_now
+from core.clock import today as life_today
 from core.labels import page_status_reason_label, preference_category_label
 from core.life.condition import (
     classify_message_interrupt,
+    daily_variability_signal,
     message_can_interrupt,
     normalize_physiological_rhythm,
     normalize_state,
 )
-from core.clock import TIMEZONE, TIMEZONE_NAME, now as life_now, today as life_today
+from support import LifeState
 
 
 class LifeStateSubjectiveTest(unittest.TestCase):
@@ -78,6 +81,124 @@ class LifeStateSubjectiveTest(unittest.TestCase):
         self.assertEqual(rhythm["attention_state"], "低刺激更舒服")
         self.assertTrue(rhythm["optional_cycle"]["enabled"])
         self.assertEqual(rhythm["optional_cycle"]["label"], "周期波动")
+
+    def test_body_condition_uses_explicit_burden_flag_not_label_text(self):
+        healthy = normalize_physiological_rhythm(
+            {
+                "body_condition": {
+                    "label": "嗓子发干并有些乏力",
+                    "intensity": 85,
+                    "burden_present": False,
+                    "source": "自然醒后的感受",
+                }
+            }
+        )
+        unwell = normalize_physiological_rhythm(
+            {
+                "body_condition": {
+                    "label": "清醒舒爽",
+                    "intensity": 36,
+                    "burden_present": True,
+                    "source": "起床后的身体感受",
+                }
+            }
+        )
+
+        self.assertEqual(healthy["body_condition"]["intensity"], 0)
+        self.assertFalse(healthy["body_condition"]["burden_present"])
+        self.assertEqual(unwell["body_condition"]["intensity"], 36)
+        self.assertTrue(unwell["body_condition"]["burden_present"])
+
+    def test_short_body_discomfort_survives_ordinary_refresh_until_expiry(self):
+        previous = {
+            "body_condition": {
+                "label": "鼻子有点堵，头也发沉",
+                "intensity": 32,
+                "burden_present": True,
+                "source": "晨起身体感受",
+                "expires_at": "2026-05-24 13:00",
+            }
+        }
+        raw = {"body_condition": {"label": "普通状态刷新"}}
+
+        active = normalize_physiological_rhythm(
+            raw,
+            previous=previous,
+            now=datetime.datetime(2026, 5, 24, 12, 30),
+        )
+        recovered = normalize_physiological_rhythm(
+            {
+                "body_condition": {
+                    "label": "清醒舒适",
+                    "intensity": 80,
+                    "burden_present": False,
+                    "source": "恢复后的身体感受",
+                }
+            },
+            previous=previous,
+            now=datetime.datetime(2026, 5, 24, 13, 1),
+        )
+
+        self.assertEqual(active["body_condition"]["label"], "鼻子有点堵，头也发沉")
+        self.assertEqual(active["body_condition"]["intensity"], 32)
+        self.assertEqual(recovered["body_condition"]["label"], "清醒舒适")
+        self.assertEqual(recovered["body_condition"]["intensity"], 0)
+        self.assertFalse(recovered["body_condition"]["burden_present"])
+
+    def test_omitted_burden_flag_never_inherits_semantics_from_text_or_score(self):
+        rhythm = normalize_physiological_rhythm(
+            {
+                "body_condition": {
+                    "label": "任意新状态",
+                    "intensity": 80,
+                }
+            },
+            previous={
+                "body_condition": {
+                    "label": "任意旧状态",
+                    "intensity": 32,
+                    "burden_present": True,
+                }
+            },
+        )
+
+        self.assertEqual(rhythm["body_condition"]["intensity"], 0)
+        self.assertFalse(rhythm["body_condition"]["burden_present"])
+
+    def test_daily_variability_signal_uses_state_not_calendar_lottery(self):
+        ordinary = daily_variability_signal(
+            "2026-09-01", state={"mood_score": 70, "stress": 20}
+        )
+        same_state_next_day = daily_variability_signal(
+            "2026-09-02", state={"mood_score": 70, "stress": 20}
+        )
+        burdened = daily_variability_signal(
+            "2026-09-01",
+            state={
+                "stress": 72,
+                "physiological_rhythm": {
+                    "body_condition": {
+                        "burden_present": True,
+                        "intensity": 35,
+                    }
+                },
+            },
+        )
+
+        self.assertEqual(ordinary, same_state_next_day)
+        self.assertEqual(ordinary, {"body": "ordinary", "mood": "ordinary"})
+        self.assertEqual(burdened, {"body": "watch", "mood": "watch"})
+
+    def test_realtime_state_refresh_clamps_unexplained_score_jumps(self):
+        state = normalize_state(
+            {"energy": 10, "mood_score": 98, "stress": 95},
+            previous={"energy": 60, "mood_score": 60, "stress": 35},
+            max_score_delta=12,
+        )
+
+        self.assertEqual(state["energy"], 48)
+        self.assertEqual(state["mood_score"], 72)
+        self.assertEqual(state["stress"], 47)
 
     def test_optional_cycle_defaults_closed_without_current_structural_value(self):
         rhythm = normalize_physiological_rhythm(
@@ -163,6 +284,7 @@ class LifeStateSubjectiveTest(unittest.TestCase):
                     "body_condition": {
                         "label": "轻微疲惫",
                         "intensity": 35,
+                        "burden_present": True,
                         "source": "状态刷新",
                     },
                     "recovery_actions": ["早点收尾"],
@@ -189,6 +311,7 @@ class LifeStateSubjectiveTest(unittest.TestCase):
                     "body_condition": {
                         "label": "轻微疲惫",
                         "intensity": 35,
+                        "burden_present": True,
                         "source": "状态刷新",
                     },
                     "recovery_actions": ["早点收尾"],

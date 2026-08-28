@@ -245,9 +245,20 @@ class VolcengineVoiceService:
         if code in (20000000, "20000000") or data.get("event") == "FinishConnection":
             return
         message = data.get("message") or data.get("msg") or data.get("detail") or code
+        detail = str(message)[:240]
+        normalized = detail.lower()
+        if (
+            "speaker related resource" in normalized
+            or "resource id is mismatched" in normalized
+            or "invalidspeaker" in normalized
+        ):
+            detail += (
+                "；音色与 TTS 资源不匹配。请检查语音配置中的音色来源（预置/复刻）"
+                "是否与音色 ID 一致，并确认 API Key 已开通该音色资源。"
+            )
         transient = str(code) in {"429", "500", "502", "503", "504"}
         raise VolcengineVoiceError(
-            f"接口错误 {code}: {str(message)[:240]}", transient=transient
+            f"接口错误 {code}: {detail}", transient=transient
         )
 
     async def _get_session(self) -> aiohttp.ClientSession:

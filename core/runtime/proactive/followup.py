@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import datetime
 import json
 import uuid
+from types import SimpleNamespace
 from typing import Any
 
 from astrbot.api import logger
@@ -107,6 +109,363 @@ class ProactiveFollowupMixin:
         if point.tzinfo is not None:
             point = point.astimezone().replace(tzinfo=None)
         return point
+
+    @classmethod
+    def _commitment_requests_photo(cls, commitment: CommitmentRecord) -> bool:
+        """媒体执行只信任提取阶段持久化的结构化类型。"""
+
+        return str(getattr(commitment, "media_kind", "") or "").strip().lower() == "photo"
+
+    @classmethod
+    def _commitment_requests_video(cls, commitment: CommitmentRecord) -> bool:
+        """视频任务与图片任务一样，只接受明确的结构化媒体类型。"""
+
+        return str(getattr(commitment, "media_kind", "") or "").strip().lower() == "video"
+
+    @classmethod
+    def _photo_commitment_owner_allowed(
+        cls, commitment: CommitmentRecord, owner: str = ""
+    ) -> bool:
+        """只由存档承担人决定是否是当前角色的执行义务。"""
+
+        resolved_owner = str(getattr(commitment, "owner", "") or owner or "").strip()
+        return resolved_owner in {"当前角色", "共同"}
+
+    @staticmethod
+    def _photo_commitment_execute_at(
+        commitment: CommitmentRecord, observed_at: datetime.datetime
+    ) -> datetime.datetime | None:
+        """只接受承诺中明确给出的精确执行时间。"""
+
+        trigger_date = str(getattr(commitment, "trigger_date", "") or "").strip()
+        trigger_time = str(getattr(commitment, "trigger_time", "") or "").strip()
+        del observed_at
+        if trigger_date and trigger_time:
+            try:
+                return datetime.datetime.strptime(
+                    f"{trigger_date} {trigger_time}", "%Y-%m-%d %H:%M"
+                )
+            except ValueError:
+                try:
+                    return datetime.datetime.fromisoformat(
+                        f"{trigger_date} {trigger_time}"
+                    )
+                except ValueError:
+                    return None
+        return None
+
+    async def schedule_commitment_photo(
+        self,
+        commitment: CommitmentRecord,
+        *,
+        owner: str = "",
+        observed_at: datetime.datetime | None = None,
+    ) -> bool:
+        """为当前角色明确许下的拍照承诺登记生图任务。
+
+        source_session 同时就是后续投递目标，因此群聊承诺只回到原群。
+        """
+
+        scope = str(getattr(commitment, "source_session", "") or "").strip()
+        if (
+            not commitment.id
+            or not scope
+            or not self._commitment_requests_photo(commitment)
+            or not self._photo_commitment_owner_allowed(commitment, owner)
+        ):
+            return False
+        observed_at = observed_at or life_now()
+        execute_at = self._photo_commitment_execute_at(commitment, observed_at)
+        if execute_at is None:
+            await self.archive.set_commitment_status(
+                commitment.id, "pending", observed_at.isoformat(timespec="seconds")
+            )
+            return False
+        if execute_at < observed_at:
+            execute_at = observed_at
+        task_key = f"commitment_photo:{commitment.id}"
+        refresh = getattr(self.archive, "reschedule_durable_task", None)
+        if callable(refresh) and await refresh(
+            task_key, execute_at.strftime("%Y-%m-%d %H:%M:%S")
+        ):
+            return True
+        await self.archive.enqueue_durable_task(
+            task_key,
+            "commitment_photo",
+            {
+                "scope": scope,
+                "commitment_id": commitment.id,
+                "prompt": str(commitment.content or "").strip(),
+                "execute_at": execute_at.strftime("%Y-%m-%d %H:%M:%S"),
+                "source_message_id": str(commitment.source_message_id or ""),
+            },
+            priority=88,
+            available_at=execute_at.strftime("%Y-%m-%d %H:%M:%S"),
+            max_attempts=4,
+        )
+        return True
+
+    async def reconcile_commitment_photo_tasks(
+        self, now: datetime.datetime | None = None
+    ) -> int:
+        """补建尚未进入生图队列的拍照承诺，按原会话可靠恢复。"""
+
+        getter = getattr(self.archive, "get_commitments", None)
+        if not callable(getter):
+            return 0
+        now = now or life_now()
+        commitments = await getter(status="", limit=200)
+        existing_tasks = await self.archive.get_durable_tasks(
+            kind="commitment_photo", limit=500
+        )
+        existing_keys = {str(item.task_key or "") for item in existing_tasks}
+        created = 0
+        for commitment in commitments:
+            if str(getattr(commitment, "status", "") or "") not in {
+                "active",
+                "scheduled",
+            }:
+                continue
+            key = f"commitment_photo:{getattr(commitment, 'id', 0)}"
+            if key in existing_keys:
+                continue
+            if await self.schedule_commitment_photo(
+                commitment, observed_at=now
+            ):
+                existing_keys.add(key)
+                created += 1
+        return created
+
+    async def schedule_commitment_video(
+        self,
+        commitment: CommitmentRecord,
+        *,
+        owner: str = "",
+        observed_at: datetime.datetime | None = None,
+    ) -> bool:
+        """为当前角色明确许下的拍视频承诺登记持久视频任务。
+
+        source_session 同时就是后续投递目标，因此群聊承诺只回到原群。
+        """
+
+        scope = str(getattr(commitment, "source_session", "") or "").strip()
+        if (
+            not commitment.id
+            or not scope
+            or not self._commitment_requests_video(commitment)
+            or not self._photo_commitment_owner_allowed(commitment, owner)
+        ):
+            return False
+        observed_at = observed_at or life_now()
+        execute_at = self._photo_commitment_execute_at(commitment, observed_at)
+        if execute_at is None:
+            await self.archive.set_commitment_status(
+                commitment.id, "pending", observed_at.isoformat(timespec="seconds")
+            )
+            return False
+        if execute_at < observed_at:
+            execute_at = observed_at
+        task_key = f"commitment_video:{commitment.id}"
+        refresh = getattr(self.archive, "reschedule_durable_task", None)
+        if callable(refresh) and await refresh(
+            task_key, execute_at.strftime("%Y-%m-%d %H:%M:%S")
+        ):
+            return True
+        await self.archive.enqueue_durable_task(
+            task_key,
+            "commitment_video",
+            {
+                "scope": scope,
+                "commitment_id": commitment.id,
+                "prompt": str(commitment.content or "").strip(),
+                "execute_at": execute_at.strftime("%Y-%m-%d %H:%M:%S"),
+                "source_message_id": str(commitment.source_message_id or ""),
+            },
+            priority=87,
+            available_at=execute_at.strftime("%Y-%m-%d %H:%M:%S"),
+            max_attempts=4,
+        )
+        return True
+
+    async def reconcile_commitment_video_tasks(
+        self, now: datetime.datetime | None = None
+    ) -> int:
+        """补建尚未进入视频队列的拍视频承诺，按原会话可靠恢复。"""
+
+        getter = getattr(self.archive, "get_commitments", None)
+        if not callable(getter):
+            return 0
+        now = now or life_now()
+        commitments = await getter(status="", limit=200)
+        existing_tasks = await self.archive.get_durable_tasks(
+            kind="commitment_video", limit=500
+        )
+        existing_keys = {str(item.task_key or "") for item in existing_tasks}
+        created = 0
+        for commitment in commitments:
+            if str(getattr(commitment, "status", "") or "") not in {
+                "active",
+                "scheduled",
+            }:
+                continue
+            key = f"commitment_video:{getattr(commitment, 'id', 0)}"
+            if key in existing_keys:
+                continue
+            if await self.schedule_commitment_video(commitment, observed_at=now):
+                existing_keys.add(key)
+                created += 1
+        return created
+
+    async def run_commitment_photo_task(self, task: Any) -> dict[str, Any]:
+        """执行一条承诺拍照生图，并在真实投递后结算承诺。"""
+
+        payload = dict(getattr(task, "payload", {}) or {})
+        scope = str(payload.get("scope") or "").strip()
+        commitment_id = int(payload.get("commitment_id") or 0)
+        if not scope or not commitment_id:
+            return {"outcome": "invalid", "reason": "任务载荷不完整"}
+        commitment = await self.archive.get_commitment(commitment_id)
+        if commitment is None:
+            return {"outcome": "invalid", "reason": "承诺记录不存在"}
+        if commitment.status in {"done", "cancelled", "expired", "delivery_failed"}:
+            return {"outcome": commitment.status, "reason": "承诺已经进入终态"}
+        image_config = getattr(getattr(self, "config", None), "image_generation", None)
+        if not bool(getattr(image_config, "enabled", False)):
+            retry_at = life_now() + datetime.timedelta(minutes=60)
+            return {
+                "retry_at": retry_at.strftime("%Y-%m-%d %H:%M:%S"),
+                "reason": "图片生成功能未启用，等待配置开启",
+            }
+        prompt = str(payload.get("prompt") or commitment.content or "").strip()
+        if not prompt or not self._commitment_requests_photo(commitment):
+            await self.archive.set_commitment_status(
+                commitment.id, "cancelled", life_now().isoformat(timespec="seconds")
+            )
+            return {"outcome": "invalid", "reason": "承诺没有结构化图片执行类型"}
+        event = SimpleNamespace(
+            unified_msg_origin=scope,
+            session_id=scope,
+            message_id=str(payload.get("source_message_id") or f"commitment-photo:{commitment.id}"),
+            message_str=prompt,
+        )
+        generator = getattr(self, "life_image_generate", None)
+        if not callable(generator):
+            raise RuntimeError("当前运行时没有可用的图片生成工具")
+        result = await generator(
+            event,
+            f"按这项已到期的拍照承诺，生成并发送一张真实自然的生活照片：{prompt}",
+            subject_route="free",
+        )
+        try:
+            result_payload = json.loads(str(result or ""))
+        except (TypeError, ValueError):
+            result_payload = {}
+        if not isinstance(result_payload, dict) or result_payload.get("status") != "sent":
+            error = str(result or "图片生成或发送未成功").strip()
+            if int(getattr(task, "attempts", 0) or 0) >= int(
+                getattr(task, "max_attempts", 0) or 0
+            ):
+                await self.archive.set_commitment_status(
+                    commitment.id, "delivery_failed", life_now().isoformat(timespec="seconds")
+                )
+            raise RuntimeError(f"承诺拍照执行失败：{error}")
+        await self.archive.set_commitment_status(
+            commitment.id, "done", life_now().isoformat(timespec="seconds")
+        )
+        logger.info(f"{LOG_PREFIX} 已履行承诺拍照：编号={commitment.id}")
+        return {"outcome": "sent", "commitment_id": commitment.id}
+
+    async def run_commitment_video_task(self, task: Any) -> dict[str, Any]:
+        """执行一条承诺拍视频，并等待真实视频投递完成后结算。"""
+
+        payload = dict(getattr(task, "payload", {}) or {})
+        scope = str(payload.get("scope") or "").strip()
+        commitment_id = int(payload.get("commitment_id") or 0)
+        if not scope or not commitment_id:
+            return {"outcome": "invalid", "reason": "任务载荷不完整"}
+        commitment = await self.archive.get_commitment(commitment_id)
+        if commitment is None:
+            return {"outcome": "invalid", "reason": "承诺记录不存在"}
+        if commitment.status in {"done", "cancelled", "expired", "delivery_failed"}:
+            return {"outcome": commitment.status, "reason": "承诺已经进入终态"}
+        video_config = getattr(getattr(self, "config", None), "video_generation", None)
+        if not bool(getattr(video_config, "enabled", False)):
+            retry_at = life_now() + datetime.timedelta(minutes=60)
+            return {
+                "retry_at": retry_at.strftime("%Y-%m-%d %H:%M:%S"),
+                "reason": "视频生成功能未启用，等待配置开启",
+            }
+        prompt = str(payload.get("prompt") or commitment.content or "").strip()
+        if not prompt or not self._commitment_requests_video(commitment):
+            await self.archive.set_commitment_status(
+                commitment.id, "cancelled", life_now().isoformat(timespec="seconds")
+            )
+            return {"outcome": "invalid", "reason": "承诺不包含明确拍视频动作"}
+        completion = asyncio.get_running_loop().create_future()
+        event = SimpleNamespace(
+            unified_msg_origin=scope,
+            session_id=scope,
+            message_id=str(payload.get("source_message_id") or f"commitment-video:{commitment.id}"),
+            message_str=prompt,
+            _daily_life_commitment_video_future=completion,
+        )
+        generator = getattr(self, "life_video_generate", None)
+        if not callable(generator):
+            raise RuntimeError("当前运行时没有可用的视频生成工具")
+
+        async def mark_delivery_failed_on_last_attempt() -> None:
+            if int(getattr(task, "attempts", 0) or 0) >= int(
+                getattr(task, "max_attempts", 0) or 0
+            ):
+                await self.archive.set_commitment_status(
+                    commitment.id,
+                    "delivery_failed",
+                    life_now().isoformat(timespec="seconds"),
+                )
+
+        try:
+            result = await generator(
+                event,
+                f"按这项已到期的拍视频承诺，生成并发送一段真实自然的生活视频：{prompt}",
+                subject_route="free",
+            )
+        except Exception:
+            await mark_delivery_failed_on_last_attempt()
+            raise
+        try:
+            result_payload = json.loads(str(result or ""))
+        except (TypeError, ValueError):
+            result_payload = {}
+        status = result_payload.get("status") if isinstance(result_payload, dict) else ""
+        if status == "sent" and result_payload.get("media") == "video":
+            outcome = "sent"
+        elif status == "pending" and result_payload.get("media") == "video":
+            timeout_seconds = int(getattr(video_config, "timeout_seconds", 300) or 300)
+            wait_seconds = max(60, min(timeout_seconds + 120, 1680))
+            try:
+                outcome = await asyncio.wait_for(
+                    asyncio.shield(completion), timeout=wait_seconds
+                )
+            except asyncio.TimeoutError as exc:
+                await mark_delivery_failed_on_last_attempt()
+                raise RuntimeError("承诺拍视频等待生成或投递超时") from exc
+        else:
+            error = str(result or "视频生成或发送未成功").strip()
+            await mark_delivery_failed_on_last_attempt()
+            raise RuntimeError(f"承诺拍视频执行失败：{error}")
+        if outcome == "cancelled":
+            await self.archive.set_commitment_status(
+                commitment.id, "cancelled", life_now().isoformat(timespec="seconds")
+            )
+            return {"outcome": "cancelled", "commitment_id": commitment.id}
+        if outcome != "sent":
+            await mark_delivery_failed_on_last_attempt()
+            raise RuntimeError(f"承诺拍视频执行失败：{outcome}")
+        await self.archive.set_commitment_status(
+            commitment.id, "done", life_now().isoformat(timespec="seconds")
+        )
+        logger.info(f"{LOG_PREFIX} 已履行承诺拍视频：编号={commitment.id}")
+        return {"outcome": "sent", "commitment_id": commitment.id}
 
     async def schedule_proactive_commitment(
         self,

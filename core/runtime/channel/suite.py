@@ -25,6 +25,8 @@ PHOTO_SUITE_MIN_COUNT = 2
 PHOTO_SUITE_MAX_COUNT = 6
 PHOTO_SUITE_GENERATION_LIMIT = 2
 PHOTO_SUITE_SLOT_ATTEMPTS = 2
+PHOTO_SUITE_SHARED_FIELDS = ("setting", "subject", "style", "continuity")
+PHOTO_SUITE_SHOT_FIELDS = ("title", "action", "camera", "composition")
 
 _PERSON_FALLBACK_SHOTS = (
     ("环境同行", "稍远景生活抓拍，人物自然融入完整环境，画面留有呼吸感"),
@@ -47,6 +49,54 @@ _GENERIC_FALLBACK_SHOTS = (
 
 class RuntimePhotoSuiteMediaMixin:
     """规划、生成并交付画面连续的独立生活套图。"""
+
+    @staticmethod
+    def _photo_suite_single_shot_prompt(
+        prompt: Any, *, index: int, title: str, detail: str = ""
+    ) -> str:
+        """把套图镜头收束为一次只执行一个瞬间的生图提示词。"""
+
+        shared = " ".join(str(prompt or "").split()).strip()
+        title_text = " ".join(str(title or f"镜头 {index}").split()).strip()
+        detail_text = " ".join(str(detail or "").split()).strip()
+        current = detail_text or f"严格执行“{title_text}”这一瞬间"
+        parts = []
+        if shared:
+            parts.append(f"套图共同背景（只用于保持场景和主体连续）：{shared}")
+        parts.append(f"当前唯一镜头要求：{current}。")
+        parts.append(
+            "这次只生成一张独立完整照片，只呈现一个时刻、一个机位和一个主要动作；"
+            "不要把其他镜头带入当前画面，不要同时呈现多个姿势、多个景别或多个时刻。"
+            "不要拼图或多宫格；严禁四宫格、九宫格、分镜图、胶片排版、漫画格、长图拼接、"
+            "画面内标题/说明文字；直接输出这一张照片。"
+        )
+        return "\n".join(parts)
+
+    @classmethod
+    def _disable_photo_suite_tool_for_active_turn(cls, event: Any) -> None:
+        """套图任务受理后收束当前轮次，避免 Agent 重复排队同一组任务。"""
+
+        runner_getter = getattr(cls, "_active_agent_runner", None)
+        runner = runner_getter(event) if callable(runner_getter) else None
+        if runner is None:
+            return
+        setattr(runner, "_daily_life_photo_suite_started", True)
+        removed = False
+        request = getattr(runner, "req", None)
+        tool_sets = [getattr(request, "func_tool", None)]
+        tool_sets.extend(
+            getattr(runner, attr, None)
+            for attr in ("_skill_like_raw_tool_set", "_tool_schema_param_set")
+        )
+        for tool_set in tool_sets:
+            remover = getattr(tool_set, "remove_tool", None)
+            if not callable(remover):
+                continue
+            before = len(getattr(tool_set, "tools", ()) or ())
+            remover("life_photo_suite_generate")
+            removed = removed or len(getattr(tool_set, "tools", ()) or ()) < before
+        if removed:
+            logger.debug(f"{LOG_PREFIX} 套图工具已完成本轮收束，阻止重复排队。")
 
     @staticmethod
     def _photo_suite_count(value: Any) -> int:
@@ -255,9 +305,22 @@ class RuntimePhotoSuiteMediaMixin:
         scope = self._event_session_id(event)
         if not scope:
             return "当前会话不可发送套图。"
+        retry_values = list(retry_indexes or [])
+        active_request = self._photo_suite_request_from_event(event)
+        if (
+            active_request
+            and str(active_request.get("status") or "") in {"pending", "generating"}
+            and not retry_values
+        ):
+            self._disable_photo_suite_tool_for_active_turn(event)
+            logger.debug(f"{LOG_PREFIX} 套图工具跳过同轮重复调用：任务仍在准备中。")
+            return ToolResultText(
+                "这组照片已经在准备了。",
+                status="pending",
+                media="photo_suite",
+            )
         participant_ids = self._normalize_image_participants(participants)
         route = self._normalize_image_subject_route(subject_route)
-        retry_values = list(retry_indexes or [])
         resolution = str(resolution or "").strip().upper()
         if not resolution:
             resolution = self._image_prompt_resolution(
@@ -388,6 +451,7 @@ class RuntimePhotoSuiteMediaMixin:
                 status="pending",
                 media="photo_suite",
             )
+        self._disable_photo_suite_tool_for_active_turn(event)
         return json.dumps(
             {
                 "status": "pending",
@@ -876,10 +940,11 @@ class RuntimePhotoSuiteMediaMixin:
                 f"上限={timeout_seconds}秒；数量={count}"
             )
             fixed = """你是生活照片套图的镜头规划器。严格只输出一个 JSON 对象，不要使用 Markdown 代码块：
-{"shots":[{"title":"简短镜头名","prompt":"可独立用于图片生成的完整中文画面提示词"}]}
-shots 数量必须与要求一致。每个 prompt 都必须独立完整，不能写“同上”“保持不变”或依赖上一张。
-整组固定主体身份或外观、数量、关键特征、地点、时间、光线方向、色彩和画面风格；人物入镜时还必须固定脸部、发型、身形、服装与配饰。只改变景别、机位、构图、姿势、动作与视觉重点。
-镜头之间要有明确语义差异，像同一时段连续拍摄的一组照片，不要生成拼图、网格、分镜图或多宫格。"""
+{"shared":{"setting":"共同地点、时间和光线","subject":"共同主体身份、数量和外观","style":"共同摄影风格和色彩","continuity":"整组必须保持不变的连续性要求"},"shots":[{"title":"简短镜头名","action":"当前镜头唯一动作","camera":"当前镜头唯一机位和景别","composition":"当前镜头唯一构图和视觉重点"}]}
+JSON 顶层只能包含 shared、shots；shared 只能包含 setting、subject、style、continuity；每个 shots 元素只能包含 title、action、camera、composition。
+shots 数量必须与要求一致。shared 只写整组共同内容，不得写任何镜头动作或镜头列表；每个镜头字段只描述当前这一张照片，不能写多个动作、多个机位、多个时刻，不能依赖其他镜头。
+整组固定主体身份或外观、数量、关键特征、地点、时间、光线方向、色彩和画面风格；人物入镜时还必须固定脸部、发型、身形、服装与配饰。只改变当前镜头的景别、机位、构图、姿势、动作与视觉重点。
+每个镜头最终都要生成一张独立照片，不要生成拼图、网格、分镜图或多宫格。"""
             group_rules = (
                 "\n这是双人合影套图：人物 A 是当前角色，人物 B 是好友。"
                 f"{GROUP_IDENTITY_CONTINUITY_RULE}每个 prompt 都必须独立写清双方身份与各自属性。"
@@ -973,20 +1038,55 @@ shots 数量必须与要求一致。每个 prompt 都必须独立完整，不能
             payload = json.loads(text)
         except (TypeError, ValueError):
             return []
-        if not isinstance(payload, dict) or set(payload) != {"shots"}:
+        if not isinstance(payload, dict) or set(payload) != {"shared", "shots"}:
+            return []
+        shared = payload.get("shared")
+        if not isinstance(shared, dict) or set(shared) != set(PHOTO_SUITE_SHARED_FIELDS):
+            return []
+        shared_values = {
+            key: " ".join(str(shared.get(key) or "").split()).strip()
+            for key in PHOTO_SUITE_SHARED_FIELDS
+        }
+        if not all(
+            isinstance(shared.get(key), str) and shared_values[key]
+            for key in PHOTO_SUITE_SHARED_FIELDS
+        ):
             return []
         shots = payload.get("shots")
         if not isinstance(shots, list) or len(shots) != count:
             return []
         result: list[dict[str, str]] = []
         for index, item in enumerate(shots, start=1):
-            if not isinstance(item, dict):
+            if not isinstance(item, dict) or set(item) != set(PHOTO_SUITE_SHOT_FIELDS):
                 return []
-            prompt = str(item.get("prompt") or "").strip()
-            title = str(item.get("title") or f"镜头 {index}").strip()
-            if not prompt:
+            values = {
+                key: " ".join(str(item.get(key) or "").split()).strip()
+                for key in PHOTO_SUITE_SHOT_FIELDS
+            }
+            title = values["title"] or f"镜头 {index}"
+            if not all(
+                isinstance(item.get(key), str) and values[key]
+                for key in PHOTO_SUITE_SHOT_FIELDS
+            ):
                 return []
-            result.append({"title": title[:40], "prompt": prompt})
+            shared_text = "；".join(
+                f"{key}：{shared_values[key]}" for key in PHOTO_SUITE_SHARED_FIELDS
+            )
+            detail = "；".join(
+                f"{key}：{values[key]}"
+                for key in ("action", "camera", "composition")
+            )
+            result.append(
+                {
+                    "title": title[:40],
+                    "prompt": RuntimePhotoSuiteMediaMixin._photo_suite_single_shot_prompt(
+                        shared_text,
+                        index=index,
+                        title=title,
+                        detail=detail,
+                    ),
+                }
+            )
         return result
 
     @staticmethod
@@ -1008,10 +1108,14 @@ shots 数量必须与要求一致。每个 prompt 都必须独立完整，不能
         return [
             {
                 "title": title,
-                "prompt": (
-                    f"{prompt}。{continuity}输出一张独立完整照片，不要拼图或多宫格。"
-                    f"本张优先采用原始画面要求中第 {index} 个明确的镜头、机位、姿势或动作变化；"
-                    f"若原始要求没有第 {index} 个明确变化，再采用以下通用镜头：{detail}。"
+                "prompt": RuntimePhotoSuiteMediaMixin._photo_suite_single_shot_prompt(
+                    f"{prompt}。{continuity}",
+                    index=index,
+                    title=title,
+                    detail=(
+                        f"原始画面要求中第 {index} 个明确的镜头、机位、姿势或动作变化；"
+                        f"若没有第 {index} 个明确变化，则采用以下通用镜头：{detail}"
+                    ),
                 ),
             }
             for index, (title, detail) in enumerate(shots[:count], start=1)
@@ -1053,22 +1157,13 @@ shots 数量必须与要求一致。每个 prompt 都必须独立完整，不能
         ordered = sorted(shots, key=lambda item: int(item.get("index") or 0))
         if not ordered:
             return set()
-        paths = [Path(str(item.get("path") or "")) for item in ordered]
-        indexes = [int(item.get("index") or 0) for item in ordered]
-        try:
-            sent = await self.send_message_if_not_recalled(
-                scope,
-                self.images_message_chain(paths),
-                source_event=event,
-            )
-            return set(indexes) if sent else set()
-        except Exception as exc:
-            logger.debug(
-                f"{LOG_PREFIX} 平台不支持整组图片一次发送，改为逐张发送："
-                f"{self._media_error_summary(exc)}"
-            )
         sent_indexes: set[int] = set()
-        for index, path in zip(indexes, paths):
+        # 一次发送多个图片消息链时，QQ/OneBot 等平台可能在客户端合成为
+        # 2x2 相册或长图。套图的每个镜头必须作为独立消息发送，避免把多张
+        # 图片渲染成一张“包含全部镜头”的合图。
+        for shot in ordered:
+            index = int(shot.get("index") or 0)
+            path = Path(str(shot.get("path") or ""))
             try:
                 if not await self.send_message_if_not_recalled(
                     scope, self.image_message_chain(path), source_event=event

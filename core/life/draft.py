@@ -88,7 +88,8 @@ class DailyDraftMixin:
     "outfit": {{"decision": "keep | change | partial_change | sleepwear | outdoor", "scene_category": "{OUTFIT_SCENE_CATEGORY_ENUM}", "style_pool": "{OUTFIT_STYLE_POOL_ENUM}", "style": "简短的最终穿搭风格", "hair_style": "简短发型名称", "hair": "当前可见的详细发型", "makeup_style": "简短妆容名称", "makeup": "当前实际妆容细节或空字符串", "nails_style": "简短美甲名称", "nails": "当前实际美甲细节或空字符串", "catalog_reference_ids": ["实际采用的视觉衣橱候选编号"], "reason": "为什么这样决定"}},
     "day_plan": {{"schedule_type": "概括今天节奏和活动主题的日程类型标签", "schedule_intent": "home | work | study | social | rest | outing | travel | mixed", "energy_bias": "rest | normal | active", "social_bias": "avoid | light | social"}},
     "theme": "今天自然形成的主题",
-    "mood": "心情色彩标签，必须是“颜色名·情绪词”格式"
+    "mood": "心情色彩标签，必须是“颜色名·情绪词”格式",
+    "life_event": {{"title": "可延续数日的短期生活事件或空对象", "detail": "当前实际感受或处境", "effect": "未来几天怎样影响日程、社交或恢复", "status": "open"}}
   }},
   "state": {{
     "energy": 0-100,
@@ -111,7 +112,7 @@ class DailyDraftMixin:
     "sleep": {{"quality": 0-100, "depth": "awake | light_rest | light_sleep | deep_sleep", "summary": "昨晚睡眠概况"}},
     "physiological_rhythm": {{
       "energy_curve": "今天精力起伏的短句概括",
-      "body_condition": {{"label": "身体状态", "intensity": 0-100, "source": "依据来源", "expires_at": "YYYY-MM-DD 或空字符串"}},
+      "body_condition": {{"label": "身体状态", "intensity": "burden_present=true 时填写身体负荷强度 0-100，否则填 0", "burden_present": "布尔值，true 表示当前确有身体负荷，false 表示当前无身体负荷", "source": "依据来源", "expires_at": "YYYY-MM-DD、YYYY-MM-DD HH:MM 或空字符串"}},
       "recovery_actions": ["今天自然采用的恢复动作"],
       "social_battery": 0-100,
       "attention_state": "注意力/感官负荷状态",
@@ -175,6 +176,9 @@ class DailyDraftMixin:
 - 这些主观注意力字段由我结合生活决策、日程密度、体力、困意、社交意愿和记忆自主判断，不要套固定时间规则。
 - sleep.depth 是今天此刻/该日主状态的休息层级：awake=清醒，light_rest=浅休息，light_sleep=浅睡眠，deep_sleep=深度睡眠。由 life_decision、体力、困意、昨日睡眠债、时间轴和可打断等级共同决定；不要因为出现某个具体时段就机械套用。
 - physiological_rhythm 是通用身体节律：包括精力曲线、身体状态、恢复动作、社交电量、注意力状态和可选周期字段。
+- body_condition.burden_present 是身体负荷的唯一语义开关：有负荷填 true 并让 intensity、source、recovery_actions 与期限相互一致；无负荷填 false、intensity=0。不要让消费端从 label、source、summary 或其他自然语言反推身体负荷。
+- 下方“状态因果线索”只根据已有体力、睡眠、压力和身体负荷提示需要留意的连续变化。没有事实依据时保持稳定，不得按日期、时段或随机性制造不适、疾病或情绪低潮。
+- 如果自主决定出现会延续到之后的轻微不适或生活情绪事件，填写 life_decision.life_event，并让 state、timeline 和恢复动作一致；普通瞬时心情无需强行创建事件。
 3. outfit 要求：
 - outfit 必须体现 life_decision.outfit 的决定；顶层 outfit 只表示当前/目标时刻已经穿在身上的衣服，未来换装不能提前覆盖。
 {OUTFIT_CONTINUITY_RULES}
@@ -202,7 +206,9 @@ class DailyDraftMixin:
 - 只为确实需要状态结算的 timeline 节点输出，可为空数组，不要为了填满而制造动作。
 - action_type、timeline_index、前置条件和影响必须显式填写；不得要求系统从 activity 文案猜动作。
 - timeline 只要明确发生了换装，就必须为对应节点输出 action_type=change_outfit，target 写换装后实际穿搭；不能只在 activity 文案中描述换衣。
+- 不得因为进入新时段或从一个普通活动转到另一个普通活动就安排 change_outfit；适合后续活动的日间主体服装应自然连续。完整换装必须对应起床、睡前/洗澡、运动出汗、淋湿弄脏、明显冷热不适或正式程度确实变化等新发生事件。
 - 换鞋、挎上或放下随身包、穿脱外层都会改变当前穿搭组成，同样必须在实际发生的节点输出 change_outfit；不得把下午/晚些时候出门才使用的鞋包提前并入早晨或居家的 change_outfit target。
+- 仅换鞋、增减外层、拿起或放下随身包属于局部穿戴调整，target 必须保留原主体服装，不得借局部调整重写成整套新衣服。
 - 本轮提供视觉衣橱候选时，change_outfit 的 payload.catalog_reference_ids 必须填写该次换装实际采用的衣橱服装编号；如果组合上装和下装，至少同时填写对应的上装与下装编号。系统会用衣橱详细描述校正 target，不能只把衣橱当作灵感后另写一套衣服。
 - action_id 在不同日期和节点间必须唯一；effects 只写该动作真实会改变的数值状态。
 - payload 只用于明确的领域数据：cook 的 ingredients、purchase 的 items 使用 {{"name":"名称","quantity":1,"unit":"可选单位"}} 数组；只有明确属于家庭食材、会用于后续烹饪的采购项才放入 purchase.payload.pantry_items，格式同上；普通物品、纪念品、家居用品和杂货仍放在 items，不得写入 pantry_items；meal/cook/order_food 可填 meal_type 和 place；move/travel 可填 origin、destination、travel_mode；chore 的 cadence_days 使用非负整数、effort 使用 1-5 整数；exercise 的 intensity 使用 1-5 整数。

@@ -267,7 +267,6 @@ VOICE_CALL_PAGE = r'''<!doctype html>
       border: 1px solid #f1b6cd;
       border-radius: 18px 18px 18px 7px;
       background: #fff8fb;
-      box-shadow: 0 8px 18px rgb(43 15 34 / 18%);
       color: #553448;
       font-size: 16px;
       line-height: 1.58;
@@ -714,6 +713,9 @@ VOICE_CALL_PAGE = r'''<!doctype html>
   const setMuted = (value) => {
     muted = Boolean(value);
     if (inputStream) inputStream.getAudioTracks().forEach(track => { track.enabled = !muted; });
+    // 普通 JSON 全双工链路使用显式静音事件；O2.0 分支由网关转换为
+    // 持续的二进制 PCM TaskRequest，不会把这些事件转发给上游。
+    send({ type: 'event', event: { type: muted ? 'input_audio_mute.commit' : 'input_audio_unmute.commit', event_id: `browser_mute_${Date.now()}` } });
     muteButton.setAttribute('aria-pressed', muted ? 'true' : 'false');
     muteButton.setAttribute('aria-label', muted ? '取消静音' : '静音');
     muteLabel.textContent = muted ? '取消静音' : '静音';
@@ -870,7 +872,9 @@ VOICE_CALL_PAGE = r'''<!doctype html>
         }
         else if (payload.kind === 'status') {
           const status = String(payload.message || '');
-          if (/失效|过期|其他页面/.test(status)) terminalStatus = status;
+          // 只有明确的邀请终态或上游失败才阻止自动恢复；“正在恢复”本身不是终态。
+          const retryable = payload.retryable === true || /正在恢复|恢复中/.test(status);
+          if (/失效|过期|其他页面|返回错误|上游|服务异常|失败|无法/.test(status) && !retryable) terminalStatus = status;
           setStatus(status);
         }
       } catch (error) {

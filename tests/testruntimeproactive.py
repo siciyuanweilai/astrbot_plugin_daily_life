@@ -1,7 +1,5 @@
 import unittest
 
-from astrbot.core.agent.message import TextPart
-
 from core.runtime.reply import SegmentPart, SemanticSegmentPlan
 from runtimehelpers import (
     BehaviorPatternRecord,
@@ -39,6 +37,8 @@ from runtimehelpers import (
     tempfile,
     types,
 )
+
+from astrbot.core.agent.message import TextPart
 
 
 class RuntimeProactiveTest(ResponseGateRuntimeMixin, unittest.TestCase):
@@ -733,7 +733,11 @@ class RuntimeProactiveTest(ResponseGateRuntimeMixin, unittest.TestCase):
                 "stress": 20,
                 "physiological_rhythm": {
                     "social_battery": 18,
-                    "body_condition": {"label": "身体发沉", "intensity": 76},
+                    "body_condition": {
+                        "label": "身体发沉",
+                        "intensity": 76,
+                        "burden_present": True,
+                    },
                 },
             }
         )
@@ -1281,7 +1285,7 @@ class RuntimeProactiveAsyncTest(
         self.assertEqual(trace_records[0]["reason_code"], "utility_below_threshold")
         self.assertFalse(trace_records[0]["scores"]["sent"])
 
-    async def test_proactive_reply_absorbs_used_short_term_focus(self):
+    async def test_proactive_reply_does_not_guess_short_term_focus_progress(self):
         runtime, _ = self._make_proactive_runtime(
             [
                 '{"should_reply": true, "confidence": 0.91, "decision": "reply", '
@@ -1343,16 +1347,16 @@ class RuntimeProactiveAsyncTest(
         focus_slots = await runtime.archive.get_focus_slots(10, active_only=False)
         global_slot = [item for item in focus_slots if item.scope == ""][0]
         other_slot = [item for item in focus_slots if item.scope == "other_group"][0]
-        self.assertLess(global_slot.priority, 90)
-        self.assertEqual(global_slot.expires_at, "2026-05-24")
-        self.assertIn("已参与 2026-05-24 的proactive_reply决策", global_slot.reason)
+        self.assertEqual(global_slot.priority, 90)
+        self.assertEqual(global_slot.progress, 0)
+        self.assertEqual(global_slot.status, "active")
+        self.assertEqual(global_slot.reason, "用户希望最近早点休息")
         self.assertEqual(other_slot.priority, 95)
         self.assertEqual(other_slot.reason, "其它群的同名短期目标")
         focus_evidence = await runtime.archive.get_memory_evidence(
             target_type="focus", limit=10
         )
-        self.assertEqual(focus_evidence[0].evidence_type, "decision")
-        self.assertIn("早睡恢复", focus_evidence[0].summary)
+        self.assertEqual(focus_evidence, [])
 
     async def test_proactive_prompt_includes_recent_conversation_context(self):
         runtime, provider = self._make_proactive_runtime(

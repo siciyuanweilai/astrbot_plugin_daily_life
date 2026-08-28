@@ -403,7 +403,7 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
         return str((location or {}).get("city") or "").strip()
 
     def should_simulate(self, action: LifeActionIntent) -> bool:
-        """判断明确计划动作是否允许由虚拟生活时钟产生模拟回执。"""
+        """判断有执行证据的内部生活动作是否允许生成模拟回执。"""
 
         return bool(
             self.settings.enabled
@@ -445,13 +445,20 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
             started_at = self._timeline_datetime(day.date, item.time)
             duration_seconds = max(0, action.duration_minutes) * 60
             ended_at = ""
-            if item.execution_state in {"completed", "expired", "cancelled", "skipped"}:
+            if item.execution_state in {
+                "completed",
+                "elapsed",
+                "expired",
+                "cancelled",
+                "skipped",
+            }:
                 ended_at = item.execution_updated_at or now.strftime(
                     "%Y-%m-%d %H:%M:%S"
                 )
             status = {
                 "planned": "planned",
                 "active": "active",
+                "elapsed": "elapsed",
                 "completed": "completed",
                 "expired": "expired",
                 "cancelled": "cancelled",

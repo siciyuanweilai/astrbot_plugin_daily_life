@@ -588,7 +588,7 @@ def reconcile_timeline_execution(
     *,
     evidence: str = "时间轴时钟",
 ) -> bool:
-    """依据权威时间轴时钟推进模拟生活活动的执行状态。"""
+    """推进时间轴观察态；时钟经过只代表计划已过，不代表动作已完成。"""
     date = coerce_date(timeline_date)
     if not timeline or date is None:
         return False
@@ -618,14 +618,14 @@ def reconcile_timeline_execution(
         if previous in {"skipped", "cancelled", "expired"}:
             continue
         if date < current_time.date():
-            target = "completed"
-            reason = "历史时间轴已结束"
+            target = "elapsed"
+            reason = "计划日期已过，尚未收到执行证据"
         elif date > current_time.date() or current_index < 0 or index > current_index:
             target = "planned"
             reason = "等待计划开始"
         elif index < current_index:
-            target = "completed"
-            reason = "时间轴已推进到后续活动"
+            target = "elapsed"
+            reason = "计划时段已过，尚未收到执行证据"
         else:
             target = "active"
             reason = "已到达计划开始时间"

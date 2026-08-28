@@ -6,11 +6,8 @@ import aiohttp
 
 from ....config.options import VideoGenerationSettings
 from ...base import LOG_PREFIX, image_data_url
-from .size import video_aspect_ratio, video_size
+from .size import video_aspect_ratio
 from .wire import JsonRequester, LogWriter
-
-XAI_REQUEST_FORMAT = "xai"
-LEGACY_REQUEST_FORMAT = "legacy"
 
 
 def video_task_timeout_seconds(settings: VideoGenerationSettings) -> int:
@@ -27,7 +24,6 @@ async def create_video_task(
     image_bytes: bytes | None,
     aspect_ratio: str = "",
     duration: int = 0,
-    request_format: str = XAI_REQUEST_FORMAT,
     request: JsonRequester,
     log_info: LogWriter,
 ) -> Any:
@@ -40,7 +36,6 @@ async def create_video_task(
         image_bytes=image_bytes,
         aspect_ratio=ratio,
         seconds=seconds,
-        request_format=request_format,
     )
 
     log_info(f"{LOG_PREFIX} 正在创建视频任务：{settings.model}")
@@ -63,20 +58,7 @@ def video_task_payload(
     image_bytes: bytes | None,
     aspect_ratio: str,
     seconds: int,
-    request_format: str,
 ) -> dict[str, Any]:
-    if request_format == LEGACY_REQUEST_FORMAT:
-        payload: dict[str, Any] = {
-            "model": settings.model,
-            "prompt": prompt,
-            "seconds": str(seconds),
-            "size": video_size(aspect_ratio, settings.resolution),
-            "n": 1,
-        }
-        if image_bytes:
-            payload["image"] = image_data_url(image_bytes)
-        return payload
-
     resolution = str(settings.resolution or "720p").strip().lower() or "720p"
     payload = {
         "model": settings.model,

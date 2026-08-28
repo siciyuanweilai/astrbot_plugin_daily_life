@@ -248,6 +248,7 @@ class LifeSettingsTest(unittest.TestCase):
                             "model": "",
                             "resolution": "2k",
                             "aspect_ratio": "16:9",
+                            "edit_request_format": "multipart",
                             "timeout_seconds": "9999",
                         },
                         {
@@ -287,7 +288,7 @@ class LifeSettingsTest(unittest.TestCase):
                 "video_generation_config": {
                     "enabled": "true",
                     "base_url": "",
-                    "api_keys": "xai-key",
+                    "api_key": "xai-key",
                     "model": "",
                     "duration": "99",
                     "aspect_ratio": "",
@@ -452,6 +453,10 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertEqual(config.image_generation.edit_channels[0].protocol, "openai")
         self.assertEqual(config.image_generation.edit_channels[0].resolution, "2K")
         self.assertEqual(config.image_generation.edit_channels[0].aspect_ratio, "16:9")
+        self.assertEqual(
+            config.image_generation.edit_channels[0].edit_request_format,
+            "multipart",
+        )
         self.assertEqual(config.image_generation.edit_channels[0].timeout_seconds, 600)
         self.assertEqual(
             config.image_generation.character_reference_images[0]["path"],
@@ -472,7 +477,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertFalse(hasattr(config.image_generation, "reference_max_count"))
         self.assertTrue(config.video_generation.enabled)
         self.assertEqual(config.video_generation.base_url, "")
-        self.assertEqual(config.video_generation.api_keys, ["xai-key"])
+        self.assertEqual(config.video_generation.api_key, "xai-key")
         self.assertEqual(config.video_generation.model, "grok-imagine-video-1.5")
         self.assertEqual(config.video_generation.duration, 15)
         self.assertEqual(config.video_generation.aspect_ratio, "1:1")
@@ -800,6 +805,34 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertEqual(edit_channel.protocol, "grok")
         self.assertEqual(edit_channel.model, "grok-imagine-image")
         self.assertEqual(edit_channel.resolution, "2K")
+
+    def test_image_channel_quality_is_normalized(self):
+        config = LifeSettings.from_dict(
+            {
+                "image_generation_config": {
+                    "enabled": True,
+                    "text_channels": [
+                        {
+                            "__template_key": "openai",
+                            "api_url": "https://quality.example",
+                            "api_key": "quality-key",
+                            "quality": "HIGH",
+                        }
+                    ],
+                    "edit_channels": [
+                        {
+                            "__template_key": "openai",
+                            "api_url": "https://fallback.example",
+                            "api_key": "fallback-key",
+                            "quality": "unsupported",
+                        }
+                    ],
+                }
+            }
+        )
+
+        self.assertEqual(config.image_generation.text_channels[0].quality, "high")
+        self.assertEqual(config.image_generation.edit_channels[0].quality, "medium")
 
     def test_creative_wardrobe_settings_parse_direct_request_options(self):
         config = LifeSettings.from_dict(
@@ -1203,6 +1236,13 @@ class LifeSettingsTest(unittest.TestCase):
         )
         self.assertNotIn("1:4", openai_channel_items["aspect_ratio"]["options"])
         self.assertIn("固定合法尺寸", openai_channel_items["aspect_ratio"]["hint"])
+        self.assertEqual(
+            openai_channel_items["edit_request_format"]["default"], "auto"
+        )
+        self.assertEqual(
+            openai_channel_items["edit_request_format"]["options"],
+            ["auto", "leo_json", "multipart"],
+        )
         self.assertEqual(openai_channel_items["timeout_seconds"]["default"], 120)
         grok_text_items = image_items["text_channels"]["templates"]["grok"]["items"]
         grok_edit_items = image_items["edit_channels"]["templates"]["grok"]["items"]
@@ -1312,10 +1352,13 @@ class LifeSettingsTest(unittest.TestCase):
         )
         video_items = schema["video_generation_config"]["items"]
         self.assertNotIn("aspect_ratio", video_items)
+        self.assertIn("api_key", video_items)
+        self.assertNotIn("api_keys", video_items)
+        self.assertEqual(video_items["api_key"]["type"], "string")
         self.assertEqual(video_items["model"]["default"], "grok-imagine-video-1.5")
         self.assertEqual(
             schema["voice_generation_config"]["items"]["speaker_source"]["default"],
-            "cloned",
+            "preset",
         )
         self.assertIn(
             "smart_switch_enabled", schema["voice_generation_config"]["items"]
@@ -1585,9 +1628,9 @@ class LifeSettingsTest(unittest.TestCase):
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertIn("version: 1.3.2", metadata)
+        self.assertIn("version: 1.3.3", metadata)
         self.assertIn('astrbot_version: ">=4.26,<5"', metadata)
-        self.assertIn("version-1.3.2", readme)
+        self.assertIn("version-1.3.3", readme)
         self.assertIn("创意衣橱生成", readme)
         self.assertIn("文生图不使用角色参考图", readme)
         self.assertIn("不读取联网灵感或固定风格池", readme)
@@ -1599,6 +1642,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertNotIn("用户明确要求联网寻找灵感时", readme)
         self.assertNotIn("图片 → 创意衣橱", readme)
         self.assertNotIn("SiliconFlow", readme)
+        self.assertIn("v1.3.3 · 2026-08-28", changelog)
         self.assertIn("v1.3.2 · 2026-08-22", changelog)
         self.assertIn("v1.3.1 · 2026-08-20", changelog)
         self.assertIn("v1.3.0 · 2026-08-19", changelog)
@@ -1610,6 +1654,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertIn("v1.2.4 · 2026-08-12", changelog)
         self.assertIn("v1.2.3 · 2026-08-11", changelog)
         self.assertIn("v1.2.2 · 2026-08-09", changelog)
+        self.assertLess(changelog.index("v1.3.3"), changelog.index("v1.3.2"))
         self.assertLess(changelog.index("v1.3.2"), changelog.index("v1.3.1"))
         self.assertLess(changelog.index("v1.3.1"), changelog.index("v1.3.0"))
         self.assertLess(changelog.index("v1.3.0"), changelog.index("v1.2.9"))
@@ -1621,6 +1666,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertLess(changelog.index("v1.2.4"), changelog.index("v1.2.3"))
         self.assertLess(changelog.index("v1.2.3"), changelog.index("v1.2.2"))
         self.assertLess(changelog.index("v1.2.2"), changelog.index("v1.2.1"))
+        release_133 = changelog.split("## 🌸 v1.3.3", 1)[1].split("## 🌸 v1.3.2", 1)[0]
         release_132 = changelog.split("## 🌸 v1.3.2", 1)[1].split("## 🌸 v1.3.1", 1)[0]
         release_131 = changelog.split("## 🌸 v1.3.1", 1)[1].split("## 🌸 v1.3.0", 1)[0]
         release_130 = changelog.split("## 🌸 v1.3.0", 1)[1].split("## 🌸 v1.2.9", 1)[0]
@@ -1633,6 +1679,12 @@ class LifeSettingsTest(unittest.TestCase):
         release_123 = changelog.split("## 🌸 v1.2.3", 1)[1].split("## 🌸 v1.2.2", 1)[0]
         release_122 = changelog.split("## 🌸 v1.2.2", 1)[1].split("## 🌸 v1.2.1", 1)[0]
         release_121 = changelog.split("## 🌸 v1.2.1", 1)[1].split("## 🌸 v1.2.0", 1)[0]
+        self.assertIn("AI 音视频通话", release_133)
+        self.assertIn("O2.0", release_133)
+        self.assertIn("OpenAI multipart", release_133)
+        self.assertIn("shared + shots", release_133)
+        self.assertIn("过去节点", release_133)
+        self.assertIn("媒体承诺", release_133)
         self.assertIn("实时语音通话", release_132)
         self.assertIn("受控的结束当前通话能力", release_132)
         self.assertIn("conversation.item.created", release_132)

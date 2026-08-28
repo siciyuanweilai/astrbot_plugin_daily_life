@@ -1080,7 +1080,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             for script in iter_schema_sql():
                 conn.executescript(script)
             self.assertEqual(schema_fingerprint(conn), CURRENT_SCHEMA_FINGERPRINT)
-            self.assertEqual(infer_schema_version(conn), 12)
+            self.assertEqual(infer_schema_version(conn), SCHEMA_VERSION)
             conn.commit()
             conn.close()
 
@@ -1136,7 +1136,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 archive.close()
 
-    def test_unversioned_current_schema_only_runs_required_calibration(self):
+    def test_unversioned_current_schema_requires_no_migration(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = f"{tmpdir}/daily_life.db"
             conn = sqlite3.connect(db_path)
@@ -1147,15 +1147,9 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
 
             migration_order = []
             migrations = {}
-            for version in range(2, 14):
+            for version in range(2, SCHEMA_VERSION + 1):
                 def migrate(connection, target=version):
                     migration_order.append(target)
-                    if target == 13:
-                        connection.execute(
-                            "INSERT INTO meta(key, value) "
-                            "VALUES('migration_marker', 'done')"
-                        )
-
                 migrations[version] = migrate
 
             with (
@@ -1169,8 +1163,8 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                     archive._conn.execute("SELECT key, value FROM meta").fetchall()
                 )
                 self.assertEqual(metadata["schema_version"], str(SCHEMA_VERSION))
-                self.assertEqual(metadata["migration_marker"], "done")
-                self.assertEqual(migration_order, [13])
+                self.assertNotIn("migration_marker", metadata)
+                self.assertEqual(migration_order, [])
             finally:
                 archive.close()
 
@@ -1813,6 +1807,36 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             )
             reopened.close()
 
+    async def test_unflagged_legacy_body_intensity_is_excluded_from_burden_trend(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = f"{tmpdir}/daily_life.db"
+            archive = LifeArchive(db_path)
+            today_text = datetime.datetime.now().strftime("%Y-%m-%d")
+            await archive.save_physiological_rhythm_log(
+                PhysiologicalRhythmLogRecord(
+                    date=today_text,
+                    source="state",
+                    body_label="任意旧标签",
+                    body_intensity=85,
+                    body_burden_present=None,
+                    social_battery=72,
+                    summary="旧记录未声明身体负荷",
+                    lifecycle_kind="sustained",
+                )
+            )
+            archive.close()
+
+            reopened = LifeArchive(db_path)
+            logs = await reopened.get_physiological_rhythm_logs(limit=10)
+            trend = await reopened.get_physiological_rhythm_trend(days=7, limit=10)
+
+            self.assertEqual(len(logs), 1)
+            self.assertEqual(logs[0].body_intensity, 0)
+            self.assertEqual(logs[0].lifecycle_kind, "transient")
+            self.assertEqual(trend["average_body_intensity"], 0.0)
+            self.assertEqual(trend["body_labels"], [])
+            reopened.close()
+
     async def test_physiological_rhythm_keeps_only_latest_short_term_and_sustained_active(
         self,
     ):
@@ -2209,6 +2233,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                                     "body_condition": {
                                         "label": "轻微疲惫",
                                         "intensity": 32,
+                                        "burden_present": True,
                                         "source": "状态刷新",
                                     },
                                     "recovery_actions": ["喝温水", "早点收尾"],
@@ -2457,6 +2482,24 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                     expires_at="2026-05-25",
                 )
             )
+            focus = (
+                await archive.get_focus_slots(
+                    scope="group:20001", active_only=False
+                )
+            )[0]
+            progressed = await archive.update_focus_slot_progress(
+                focus.id,
+                progress_delta=40,
+                status="completed",
+                evidence="event:42",
+                date="2026-05-24",
+            )
+            self.assertEqual(progressed.progress, 100)
+            self.assertEqual(progressed.status, "completed")
+            self.assertEqual(progressed.last_evidence, "event:42")
+            self.assertEqual(
+                await archive.get_focus_slots(scope="group:20001"), []
+            )
             await archive.save_expression_intent(
                 ExpressionIntentRecord(
                     scope="group:20001",
@@ -2630,6 +2673,9 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(behavior_scenes[0].scene, "群里等后续")
             self.assertEqual(focus[0].label, "看展话题")
             self.assertEqual(focus_slots[0].label, "Bob 的后续")
+            self.assertEqual(focus_slots[0].progress, 100)
+            self.assertEqual(focus_slots[0].status, "completed")
+            self.assertEqual(focus_slots[0].last_evidence, "event:42")
             self.assertEqual(expression_intents[0].emotion, "好奇但克制")
             self.assertEqual(expression_intents[0].emotion_category, "happy")
             self.assertEqual(emoji_assets[0].label, "探头")
@@ -3076,6 +3122,62 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(await archive.get_day(recent_date))
             self.assertIsNone(await archive.get_daily_review(old_date))
             self.assertEqual(await archive.get_recent_chat_summaries(10), [])
+            archive.close()
+
+    async def test_domain_cleanup_reclaims_only_unreferenced_expired_auto_recipes(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(f"{tmpdir}/daily_life.db")
+            old_time = (datetime.datetime.now() - datetime.timedelta(days=90)).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            recent_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            recipes = (
+                ("recipe:auto:old-unlinked", "过期未引用食谱", "life_action_simulation"),
+                ("recipe:auto:old-meal", "仅有过期用餐的食谱", "life_action_simulation"),
+                ("recipe:auto:recent-meal", "仍被近期用餐引用的食谱", "life_action"),
+                ("manual:old", "手工长期食谱", "manual"),
+            )
+            for recipe_id, name, source in recipes:
+                await archive.upsert_recipe(
+                    {"id": recipe_id, "name": name, "source": source}
+                )
+            archive._conn.execute(
+                "UPDATE recipes SET updated_at = ?",
+                (old_time,),
+            )
+            archive._conn.commit()
+            await archive.save_meal_record(
+                {
+                    "action_id": "old-meal",
+                    "date": old_time[:10],
+                    "name": "旧餐食",
+                    "recipe_id": "recipe:auto:old-meal",
+                    "occurred_at": old_time,
+                }
+            )
+            await archive.save_meal_record(
+                {
+                    "action_id": "recent-meal",
+                    "date": recent_time[:10],
+                    "name": "近期餐食",
+                    "recipe_id": "recipe:auto:recent-meal",
+                    "occurred_at": recent_time,
+                }
+            )
+
+            result = await archive.cleanup_storage_category("domains", keep_days=30)
+
+            self.assertEqual(result["deleted_rows"], 3)
+            self.assertEqual(
+                {item["id"] for item in await archive.get_recipes(limit=0)},
+                {"recipe:auto:recent-meal", "manual:old"},
+            )
+            self.assertEqual(
+                [item["action_id"] for item in await archive.get_meal_records(limit=0)],
+                ["recent-meal"],
+            )
             archive.close()
 
     async def test_conversation_cleanup_preserves_pending_memory_messages(self):

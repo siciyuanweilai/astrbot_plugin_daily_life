@@ -75,7 +75,7 @@ class DailyRecordMixin:
                 callable(should_simulate) and should_simulate(action)
             )
             waiting_reason = (
-                "由当日分层日程提出，等待时间轴模拟回执结算"
+                "由当日分层日程提出，等待执行证据或复盘确认"
                 if waits_for_simulation
                 else "由当日分层日程提出，等待真实执行证据结算"
             )
@@ -108,7 +108,7 @@ class DailyRecordMixin:
                         "decision": "proposed",
                         "evidence": [action.evidence] if action.evidence else [],
                         "outcome": (
-                            "等待时间轴模拟回执"
+                            "等待执行证据"
                             if waits_for_simulation
                             else "等待真实执行证据"
                         ),

@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from ..models import LifeState, PhysiologicalRhythmLogRecord
+from ..models.primitive import optional_bool
+from ..models.vitals import normalize_body_burden_intensity
 
 
 def _score(value: Any, default: int = 0) -> int:
@@ -49,6 +51,7 @@ def physiological_rhythm_log_from_state(
         else []
     )
     body_label = _text(body.get("label"), 80)
+    burden_present = optional_bool(body.get("burden_present"))
     energy_curve = _text(rhythm.get("energy_curve"), 120)
     attention_state = _text(rhythm.get("attention_state"), 80)
     summary = _text(rhythm.get("summary"), 160)
@@ -70,7 +73,11 @@ def physiological_rhythm_log_from_state(
         source=_text(source or "state", 40) or "state",
         energy_curve=energy_curve,
         body_label=body_label,
-        body_intensity=_score(body.get("intensity"), 0),
+        body_intensity=normalize_body_burden_intensity(
+            body.get("intensity"),
+            burden_present=burden_present,
+        ),
+        body_burden_present=burden_present,
         body_source=_text(body.get("source"), 80),
         body_expires_at=_text(body.get("expires_at"), 40),
         recovery_actions=[

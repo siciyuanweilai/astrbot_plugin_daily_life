@@ -78,6 +78,7 @@ const CONFIG_SECTION_DISPLAY_SECTIONS = new Map([
   ["memos_config", "memory_config"],
   ["response_gate_config", "chat_style_config"],
   ["proactive_config", "chat_style_config"],
+  ["realtime_voice_call_config", "voice_generation_config"],
   ["sight_config", "video_generation_config"],
 ]);
 const CONFIG_SECTION_FIELD_GROUPS = new Map([
@@ -85,33 +86,19 @@ const CONFIG_SECTION_FIELD_GROUPS = new Map([
     {
       key: "life_generation",
       label: "生活状态与日程",
-      hint: "控制每日状态和时间轴如何生成，保持全天生活过程完整且自然。",
+      hint: "控制每日状态、时间轴、地点和事件如何生成，保持全天生活过程完整且自然。",
       fields: [
         "story_engine_config.state_rules",
         "story_engine_config.timeline_rules",
-      ],
-    },
-    {
-      key: "world_events",
-      label: "地点与事件",
-      hint: "控制地点候选、生活事件和未来可引用内容如何沉淀。",
-      fields: [
         "story_engine_config.world_rules",
       ],
     },
     {
       key: "chat_people",
-      label: "聊天人物",
-      hint: "控制最近聊天历史中的称呼、性别与关系判断边界。",
+      label: "聊天人物与表达",
+      hint: "控制最近聊天历史中的称呼、性别与关系判断，以及普通聊天的短句表达偏好。",
       fields: [
         "story_engine_config.chat_rules",
-      ],
-    },
-    {
-      key: "chat_prompt",
-      label: "聊天表达",
-      hint: "控制普通聊天短回复的语气和展开尺度。",
-      fields: [
         "chat_style_config.casual_short_prompt",
       ],
     },
@@ -344,6 +331,71 @@ const CONFIG_SECTION_FIELD_GROUPS = new Map([
       ],
     },
   ]],
+  ["voice_generation_config", [
+    {
+      key: "ordinary_voice",
+      label: "普通语音",
+      hint: "控制日常语音消息生成、智能切换和语音音色。",
+      fields: [
+        "voice_generation_config.enabled",
+        "voice_generation_config.smart_switch_enabled",
+        "voice_generation_config.smart_switch_probability",
+        "voice_generation_config.proactive_enabled",
+        "voice_generation_config.proactive_probability",
+        "voice_generation_config.api_key",
+        "voice_generation_config.speaker_source",
+        "voice_generation_config.speaker_id",
+        "voice_generation_config.speech_rate",
+        "voice_generation_config.loudness_rate",
+        "voice_generation_config.timeout_seconds",
+        "voice_generation_config.max_retries",
+      ],
+    },
+    {
+      key: "voice_call",
+      label: "语音通话",
+      hint: "配置实时语音通话网关、邀请链接和 WebSocket 通话参数。",
+      fields: [
+        "realtime_voice_call_config.enabled",
+        "realtime_voice_call_config.listen_host",
+        "realtime_voice_call_config.listen_port",
+        "realtime_voice_call_config.public_url",
+        "realtime_voice_call_config.endpoint_url",
+        "realtime_voice_call_config.model",
+        "realtime_voice_call_config.max_duration_seconds",
+        "realtime_voice_call_config.idle_timeout_seconds",
+        "realtime_voice_call_config.invite_expire_seconds",
+        "realtime_voice_call_config.max_concurrent_calls",
+        "realtime_voice_call_config.context_turns",
+        "realtime_voice_call_config.allow_function_calls",
+        "realtime_voice_call_config.tool_call_timeout_seconds",
+        "realtime_voice_call_config.short_url_enabled",
+      ],
+    },
+    {
+      key: "video_call",
+      label: "视频通话",
+      hint: "配置 AI 音视频互动方案、RTC 凭据和摄像头视觉理解。",
+      fields: [
+        "realtime_voice_call_config.rtc_model_name",
+        "realtime_voice_call_config.rtc_app_id",
+        "realtime_voice_call_config.rtc_app_key",
+        "realtime_voice_call_config.rtc_access_key",
+        "realtime_voice_call_config.rtc_secret_key",
+        "realtime_voice_call_config.rtc_region",
+        "realtime_voice_call_config.rtc_callback_url",
+        "realtime_voice_call_config.rtc_callback_signature",
+        "realtime_voice_call_config.rtc_token_ttl_seconds",
+        "realtime_voice_call_config.rtc_sdk_url",
+        "realtime_voice_call_config.rtc_video_enabled",
+        "realtime_voice_call_config.rtc_vision_image_detail",
+        "realtime_voice_call_config.rtc_vision_height",
+        "realtime_voice_call_config.rtc_vision_interval_ms",
+        "realtime_voice_call_config.rtc_vision_images_limit",
+        "realtime_voice_call_config.rtc_vision_auto_select",
+      ],
+    },
+  ]],
   ["storage_config", [
     {
       key: "life",
@@ -391,7 +443,7 @@ const CONFIG_SECTION_FIELD_GROUPS = new Map([
     },
   ]],
 ]);
-const CONFIG_GROUPED_DISPLAY_SECTIONS = new Set(["rhythm_config", "memory_config", "chat_style_config", "video_generation_config", "story_engine_config"]);
+const CONFIG_GROUPED_DISPLAY_SECTIONS = new Set(["rhythm_config", "memory_config", "chat_style_config", "voice_generation_config", "video_generation_config", "story_engine_config"]);
 const CONFIG_SOURCE_GROUP_KEYS = new Map([
   ["relationship_aliases", "identity_aliases"],
   ["bot_identity_aliases", "identity_aliases"],

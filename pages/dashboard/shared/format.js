@@ -220,6 +220,14 @@ function clean(value, fallback = "--") {
   return translateStructuredText(body) || fallback;
 }
 
+function quantityText(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "0";
+  const normalized = Math.round(number * 1e6) / 1e6;
+  if (Math.abs(normalized) <= 1e-9) return "0";
+  return normalized.toFixed(6).replace(/\.?0+$/, "");
+}
+
 function timelineTravelText(item = {}, previousItem = {}) {
   const mode = text(item.travel_mode).trim().toLowerCase();
   const detail = text(item.travel_detail).trim();
@@ -1070,6 +1078,7 @@ export {
   memoryEntityTypeLabel,
   moodColorText,
   outfitDecisionText,
+  quantityText,
   recordLines,
   readableReferenceLabel,
   scheduleTypeText,

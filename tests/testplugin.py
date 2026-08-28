@@ -63,7 +63,7 @@ class PluginLifecycleTest(unittest.IsolatedAsyncioTestCase):
     async def test_voice_call_invite_tool_sends_notice_and_link_separately(self):
         async def create_voice_call_invite(event, *, greeting=""):
             self.assertEqual(greeting, "接通后先问候")
-            return "实时语音通话邀请已生成（120秒内有效）：\nhttps://voice.example.invalid/call/<token>"
+            return "语音通话邀请已生成（120秒内有效）：\nhttps://voice.example.invalid/call/<token>"
 
         plugin = DailyLifePlugin.__new__(DailyLifePlugin)
         plugin.runtime = types.SimpleNamespace(
@@ -71,19 +71,16 @@ class PluginLifecycleTest(unittest.IsolatedAsyncioTestCase):
         )
         event = Event()
 
-        replies = [
-            item
-            async for item in plugin.tool_life_voice_call_invite(
-                event,
-                greeting="接通后先问候",
-            )
-        ]
+        await plugin.tool_life_voice_call_invite(
+            event,
+            greeting="接通后先问候",
+        )
 
         self.assertIsNone(event.get_result())
         self.assertEqual(
-            replies,
+            event.sent_messages,
             [
-                "实时语音通话邀请已生成（120秒内有效）：",
+                "语音通话邀请已生成（120秒内有效）：",
                 "https://voice.example.invalid/call/<token>",
             ],
         )
@@ -91,7 +88,7 @@ class PluginLifecycleTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_voice_call_command_yields_notice_and_link_separately(self):
         async def create_voice_call_invite(event, *, greeting=""):
-            return "实时语音通话邀请已生成（120秒内有效）：\nhttps://voice.example.invalid/call/<token>"
+            return "语音通话邀请已生成（120秒内有效）：\nhttps://voice.example.invalid/call/<token>"
 
         plugin = DailyLifePlugin.__new__(DailyLifePlugin)
         plugin.runtime = types.SimpleNamespace(
@@ -99,14 +96,12 @@ class PluginLifecycleTest(unittest.IsolatedAsyncioTestCase):
         )
         event = Event()
 
-        replies = [
-            item async for item in plugin.command_voice_call(event)
-        ]
+        await plugin.command_voice_call(event)
 
         self.assertEqual(
-            replies,
+            event.sent_messages,
             [
-                "实时语音通话邀请已生成（120秒内有效）：",
+                "语音通话邀请已生成（120秒内有效）：",
                 "https://voice.example.invalid/call/<token>",
             ],
         )

@@ -67,7 +67,7 @@ class LifeAutonomyMixin:
         focus_slots = await self.archive.get_focus_slots(limit=6)
         if focus_slots:
             lines = [
-                f"- {item.label or item.focus_key}：优先级 {item.priority}/100；{item.reason or '近期需要留意'}"
+                f"- [{item.id}] {item.label or item.focus_key}：进度 {item.progress}/100；优先级 {item.priority}/100；{item.reason or '近期需要留意'}"
                 + (f"；到期 {item.expires_at}" if item.expires_at else "")
                 for item in focus_slots
             ]
@@ -173,84 +173,6 @@ class LifeAutonomyMixin:
         ]
         return "\n\n".join(section for section in sections if section)
 
-    @staticmethod
-    def _focus_slot_used_by_decision(slot, decision_text: str) -> bool:
-        combined = _compact(decision_text, 1200)
-        if not combined:
-            return False
-        markers = [
-            _compact(getattr(slot, "label", ""), 120),
-            _compact(getattr(slot, "focus_key", ""), 120),
-        ]
-        return any(marker and marker in combined for marker in markers)
-
-    async def _absorb_used_focus_slots(
-        self,
-        *,
-        date: str,
-        kind: str,
-        decision: str = "",
-        reason: str = "",
-        evidence: str = "",
-        outcome: str = "",
-        source_id: str = "",
-        focus_scope: str = "",
-    ) -> None:
-        get_focus_slots = getattr(self.archive, "get_focus_slots", None)
-        upsert_focus_slot = getattr(self.archive, "upsert_focus_slot", None)
-        save_memory_evidence = getattr(self.archive, "save_memory_evidence", None)
-        if not (callable(get_focus_slots) and callable(upsert_focus_slot)):
-            return
-        decision_text = "；".join(
-            item for item in (decision, reason, evidence, outcome) if item
-        )
-        focus_scope = _compact(focus_scope, 180)
-        slots = (
-            await get_focus_slots(limit=12, scope=focus_scope)
-            if focus_scope
-            else await get_focus_slots(limit=12)
-        )
-        if not slots:
-            return
-        from ..models import FocusSlotRecord, MemoryEvidenceRecord
-
-        for slot in slots:
-            if not self._focus_slot_used_by_decision(slot, decision_text):
-                continue
-            next_priority = max(10, int(getattr(slot, "priority", 50) or 50) - 24)
-            expires_at = getattr(slot, "expires_at", "") or date
-            label = _compact(
-                getattr(slot, "label", "") or getattr(slot, "focus_key", ""), 120
-            )
-            summary = _compact(
-                f"{label} 已参与 {date} 的{kind or '生活'}决策：{decision or reason or evidence}",
-                240,
-            )
-            saved_slot = await upsert_focus_slot(
-                FocusSlotRecord(
-                    id=getattr(slot, "id", 0),
-                    scope=getattr(slot, "scope", ""),
-                    focus_key=getattr(slot, "focus_key", ""),
-                    label=getattr(slot, "label", "") or getattr(slot, "focus_key", ""),
-                    priority=next_priority,
-                    reason=summary,
-                    last_active_at=date,
-                    expires_at=expires_at,
-                )
-            )
-            if saved_slot and callable(save_memory_evidence):
-                await save_memory_evidence(
-                    MemoryEvidenceRecord(
-                        target_type="focus",
-                        target_id=str(getattr(saved_slot, "id", "")),
-                        evidence_type="decision",
-                        source_table="life_decisions",
-                        source_id=source_id,
-                        date=date,
-                        summary=summary,
-                    )
-                )
-
     async def _save_life_decision_record(
         self,
         *,
@@ -281,16 +203,6 @@ class LifeAutonomyMixin:
                     confidence=confidence,
                     source=source,
                 )
-            )
-            await self._absorb_used_focus_slots(
-                date=date,
-                kind=kind,
-                decision=decision,
-                reason=reason,
-                evidence=evidence,
-                outcome=outcome,
-                source_id=str(getattr(saved, "id", "")) if saved else "",
-                focus_scope=focus_scope,
             )
             evidence_saver = getattr(self.archive, "save_memory_evidence", None)
             if saved and callable(evidence_saver):

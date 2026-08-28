@@ -16,6 +16,8 @@ class ImageRoute:
     timeout_seconds: int
     origin: str
     resolution_source: str = "通道配置"
+    quality: str = "medium"
+    edit_request_format: str = "auto"
 
 
 @dataclass(slots=True)
@@ -24,3 +26,4 @@ class ImageRequest:
     headers: dict[str, str]
     payload: dict[str, Any] | None = None
     form: Any = None
+    reference_image_count: int = 0

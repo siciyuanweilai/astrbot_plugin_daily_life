@@ -44,13 +44,12 @@ class SocialCommandMixin:
     async def _commitments(self, event: Any, req: CommandRequest) -> AsyncIterator[Any]:
         action = req.param1
         if not action or action == "列表":
-            items = await self.runtime.archive.get_commitments(
-                status="active", limit=20
-            )
+            items = await self.runtime.archive.get_commitments(status="", limit=50)
             items = [
                 item
                 for item in items
-                if self.policy.owns(event, item.source_session)
+                if item.status in {"active", "scheduled", "pending"}
+                and self.policy.owns(event, item.source_session)
             ]
             if not items:
                 yield event.plain_result("当前没有未完成承诺。")
@@ -60,6 +59,8 @@ class SocialCommandMixin:
                 when = (
                     item.trigger_date or time_window_label(item.time_window) or "待触发"
                 )
+                if item.media_kind in {"photo", "video"} and not item.trigger_time:
+                    when = "待确认执行时间"
                 people = f"｜{'、'.join(item.people)}" if item.people else ""
                 lines.append(
                     f"#{item.id} [{commitment_kind_label(item.kind)}] {when}{people}\n- {item.content}"
@@ -110,6 +111,12 @@ class SocialCommandMixin:
                     now=req.now,
                     owner_hint="未定",
                 )
+            photo_scheduler = getattr(self.runtime, "schedule_commitment_photo", None)
+            if callable(photo_scheduler):
+                await photo_scheduler(commitment, owner="", observed_at=req.now)
+            video_scheduler = getattr(self.runtime, "schedule_commitment_video", None)
+            if callable(video_scheduler):
+                await video_scheduler(commitment, owner="", observed_at=req.now)
             yield event.plain_result(
                 f"已记录承诺 #{commitment.id}：{commitment.content}"
                 + ("\n已同步到今天尚未发生的日程。" if applied else "")
@@ -152,6 +159,7 @@ class SocialCommandMixin:
                 )
                 return
             date_str = self._infer_manual_commitment_date(target, req.now)
+            time_str = self._infer_manual_commitment_time(target)
             if not date_str:
                 yield event.plain_result("无法识别日期，请使用 明天/周末/YYYY-MM-DD")
                 return
@@ -170,8 +178,24 @@ class SocialCommandMixin:
                 yield event.plain_result(denial)
                 return
             ok = await self.runtime.archive.reschedule_commitment(
-                commitment_id, date_str, "weekend" if "周末" in target else ""
+                commitment_id,
+                date_str,
+                "weekend" if "周末" in target else "",
+                trigger_time=time_str,
             )
+            if ok:
+                refreshed = await self.runtime.archive.get_commitment(commitment_id)
+                if refreshed is not None:
+                    photo_scheduler = getattr(
+                        self.runtime, "schedule_commitment_photo", None
+                    )
+                    if callable(photo_scheduler):
+                        await photo_scheduler(refreshed, observed_at=req.now)
+                    video_scheduler = getattr(
+                        self.runtime, "schedule_commitment_video", None
+                    )
+                    if callable(video_scheduler):
+                        await video_scheduler(refreshed, observed_at=req.now)
             yield event.plain_result(
                 "已延期承诺。" if ok else f"未找到承诺：{commitment_id}"
             )
@@ -206,6 +230,16 @@ class SocialCommandMixin:
             )
         except ValueError:
             return ""
+
+    @staticmethod
+    def _infer_manual_commitment_time(text: str) -> str:
+        for token in str(text or "").replace("，", " ").split():
+            candidate = token.strip("。,.；;")
+            try:
+                return datetime.datetime.strptime(candidate, "%H:%M").strftime("%H:%M")
+            except ValueError:
+                continue
+        return ""
 
     async def _invite(self, event: Any, req: CommandRequest) -> AsyncIterator[Any]:
         if not req.param_full:

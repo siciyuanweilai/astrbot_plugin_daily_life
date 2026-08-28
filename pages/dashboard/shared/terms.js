@@ -88,6 +88,7 @@ export const LIFE_DOMAIN_KIND_LABELS = {
 export const LIFE_DOMAIN_STATUS_LABELS = {
   planned: "待进行",
   active: "进行中",
+  elapsed: "已过时段",
   simulated: "模拟完成",
   completed: "已完成",
   confirmed: "已确认",
@@ -724,6 +725,7 @@ export const RHYTHM_LIFECYCLE_LABELS = {
   short_term: "短期",
   sustained: "持续",
   active: "进行中",
+  elapsed: "已过时段",
   expired: "已过期",
 };
 

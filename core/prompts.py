@@ -8,7 +8,13 @@ CORE_AUTONOMY_RULES = """- 时间、天气、历史记录、状态、记忆和�
 
 CORE_STATE_BEHAVIOR_RULES = """- 体力、困意、压力、忙碌度、社交意愿和互动余力会影响活动强度、外出倾向、邀约接受度和回复意愿。
 - 状态只影响倾向，不是绝对禁令；低状态可以选择低强度、短时、改约或观察，而不是机械停摆。
-- 状态变化要克制、连续，避免忽高忽低或每天从零开始。"""
+- 状态变化要克制、连续，避免忽高忽低或每天从零开始；已经出现的低落、烦躁、疲惫或身体不适不会因为一次普通愉快活动就瞬间消失。
+- 数值以 50 为普通中性基线，0 和 100 是极端状态。70 已是明显偏高，85 以上必须有异常充分的积极依据；没有坏消息只表示缺少负面证据，不等于心情、睡眠、稳定度自动接近满分或压力恒为 0。
+- 人会有无明确外部大事的日常波动：偶尔提不起劲、闷、烦、想独处或身体有轻微短期不适都可以成立。波动应低频、有生活逻辑并影响当天选择，不能为了拟人化每天强造负面情绪。
+- body_condition.burden_present 是身体负荷的唯一语义开关：true 才表示当前有身体负荷，intensity 才有意义；false 表示无身体负荷且 intensity 必须为 0。不要从 label、source、summary 或其他自然语言内容推断该字段。
+- body_condition.intensity 只表示已确认身体负荷的强度：20-39=轻微，40-69=明显，70 以上=严重；绝不能把“健康、清爽、精力充沛”的程度填入 intensity。
+- 新出现的身体不适必须给出可观察来源、合理恢复动作和 expires_at，并优先使用“嗓子发干、鼻子不舒服、胃口欠佳、头有点发沉”等生活感受，不擅自作医学诊断，不随机制造重病；期限未到时保持连续，到期后再根据恢复事实减轻或结束。
+- 情绪不好不等于情绪失控：mood_score 可以偏低但 emotional_stability 仍较高；情绪、压力、身体负荷与忙碌度必须分别判断。"""
 
 LIFE_PREFERENCE_CATEGORY_ENUM = (
     "activity|outfit|top|bottom|footwear|accessory|hair|makeup|nails|"
@@ -95,7 +101,8 @@ CORE_HIDDEN_CONTEXT_RULES = """- 隐藏上下文只用于保持角色处境、�
 
 DEFAULT_STATE_PROMPT = """- energy 表示体力，busyness 表示忙碌度，social 表示社交意愿，sleep.quality 表示睡眠质量，均为 0-100。
 - state 写今天整体身体、情绪、忙碌和睡眠底色；summary 用自然生活语言概括。
-- state 要影响 timeline 的活动强度、外出倾向、社交负担和收束节奏。"""
+- state 要影响 timeline 的活动强度、外出倾向、社交负担和收束节奏。
+- 不要把普通一天写成持续高分的完美状态；允许低频、可延续、会恢复的负面情绪与轻微身体不适。"""
 
 DEFAULT_TIMELINE_PROMPT = """- timeline 先服从 generation_contract，系统会根据 timeline 自动检查覆盖范围、起点、终点和收束状态。
 - 节点数量由 life_decision 与当天复杂度决定；只有发生真实生活变化时才增加节点。
