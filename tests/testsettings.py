@@ -737,6 +737,9 @@ class LifeSettingsTest(unittest.TestCase):
         items = schema["life_domain_config"]["items"]
 
         self.assertEqual(items["home_address"]["description"], "居住地")
+        self.assertFalse(
+            schema["weather_awareness"]["items"]["weather_city"]["multiline"]
+        )
         self.assertEqual(items["map_provider"]["options"], ["amap", "tencent", "baidu"])
         self.assertEqual(
             items["map_provider"]["option_labels"],

@@ -50,6 +50,7 @@ def format_chat_style_prompt(value: Any) -> str:
 @dataclass(slots=True)
 class WeatherSettings:
     api_key: str = ""
+    weather_city: str = ""
     aware_outfit: bool = True
     aware_activity: bool = True
 
@@ -59,6 +60,7 @@ class WeatherSettings:
             return WeatherSettings()
         return WeatherSettings(
             api_key=as_str(data.get("api_key", "")),
+            weather_city=as_str(data.get("weather_city", "")).strip(),
             aware_outfit=as_bool(data.get("aware_outfit", True), True),
             aware_activity=as_bool(data.get("aware_activity", True), True),
         )

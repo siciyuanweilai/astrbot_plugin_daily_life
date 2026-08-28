@@ -116,6 +116,13 @@
         "default": "",
         "hint": "从 https://api.nycnm.cn 获取接口密钥。"
       },
+      "weather_city": {
+        "description": "天气城市",
+        "type": "string",
+        "multiline": false,
+        "default": "",
+        "hint": "指定天气查询城市；留空时使用可确认的现实居住城市。"
+      },
       "aware_outfit": {
         "description": "影响穿搭",
         "type": "bool",
@@ -2629,7 +2636,7 @@
         "description": "居住地",
         "type": "string",
         "default": "",
-        "hint": "填写省、市、区、道路和门牌等居住地信息。天气城市、地点搜索范围和“家”的出行坐标均以所选地图服务的解析结果为准。"
+        "hint": "填写省、市、区、道路和门牌等现实居住地信息，用于地点搜索范围和“家”的出行坐标。留空时会从默认人设提取；虚拟、未知或只有城市级信息时不会启用地图。"
       },
       "map_provider": {
         "description": "地图服务商",

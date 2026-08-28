@@ -97,7 +97,7 @@ class DailyLocationPlanningMixin:
         候选仅用于本次生成提示，不会在最终日程采用前写入地点或路线记录。
         """
 
-        if not self.map_tools_available():
+        if not await self.ensure_map_context():
             return {"available": False, "candidates": [], "warnings": []}
         home = await self.resolve_home_location()
         if not home:

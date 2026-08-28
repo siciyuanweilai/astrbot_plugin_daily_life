@@ -32,11 +32,21 @@ class SettingsCommandMixin:
     async def _config(self, event: Any, req: CommandRequest) -> AsyncIterator[Any]:
         config = self.runtime.config
         weather_status = "已配置" if config.weather.api_key else "未配置"
-        home_address_status = "已配置" if config.domains.home_address else "未配置"
+        domains = getattr(self.runtime, "domains", None)
+        map_context_resolver = getattr(domains, "ensure_map_context", None)
+        if callable(map_context_resolver):
+            await map_context_resolver()
+        residence_status_getter = getattr(domains, "residence_status", None)
+        home_address_status = (
+            residence_status_getter()
+            if callable(residence_status_getter)
+            else ("已配置" if config.domains.home_address else "未配置")
+        )
         city_resolver = getattr(
-            getattr(self.runtime, "domains", None), "resolve_weather_city", None
+            domains, "resolve_weather_city", None
         )
         weather_city = await city_resolver() if callable(city_resolver) else ""
+        weather_city_source = "独立配置" if config.weather.weather_city else "自动解析"
         outfit_aware = "开启" if config.weather.aware_outfit else "关闭"
         activity_aware = "开启" if config.weather.aware_activity else "关闭"
         state_status = "开启" if config.state.enabled else "关闭"
@@ -74,7 +84,7 @@ class SettingsCommandMixin:
             f"""⚙️ 配置状态
 🌤️ 天气API: {weather_status}
 🏠 居住地: {home_address_status}
-📍 天气城市: {weather_city or "尚未解析"}
+📍 天气城市: {weather_city or "尚未解析"}（{weather_city_source}）
 👔 穿搭感知: {outfit_aware}
 🏃 活动感知: {activity_aware}
 🫧 实时状态: {state_status}（{config.state.refresh_minutes} 分钟巡检状态与穿搭{quiet_hours}）

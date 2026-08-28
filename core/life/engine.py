@@ -92,7 +92,7 @@ class DailyEngineMixin:
         weather_data = (
             await self.weather_client.get_weather(city)
             if city
-            else "未配置可由当前地图服务解析的居住地，当前天气不可用"
+            else "未配置天气城市，居住地或默认人设也没有可确认的现实城市"
         )
         weather_info = analyze_weather(weather_data)
         weather_section, constraint_section = self._build_weather_sections(weather_info)
@@ -599,9 +599,22 @@ class DailyEngineMixin:
                 map_tools_available = getattr(
                     domain_service, "map_tools_available", None
                 )
+                map_context_resolver = getattr(
+                    domain_service, "ensure_map_context", None
+                )
+                map_context_ready = (
+                    await map_context_resolver()
+                    if callable(map_context_resolver)
+                    else (
+                        map_tools_available()
+                        if callable(map_tools_available)
+                        else False
+                    )
+                )
                 location_validation_enabled = bool(
                     callable(location_auditor)
                     and callable(map_tools_available)
+                    and map_context_ready
                     and map_tools_available()
                 )
                 location_context = ""

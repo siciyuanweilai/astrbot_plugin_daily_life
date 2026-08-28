@@ -3797,6 +3797,9 @@ if (number.value !== "60" || state.config.test_config.level !== 60) {
         self.assertEqual(schema["chat_style_config"]["description"], "聊天表达")
         self.assertEqual(schema["video_generation_config"]["description"], "视频")
         self.assertNotIn("default_city", schema["weather_awareness"]["items"])
+        self.assertFalse(
+            schema["weather_awareness"]["items"]["weather_city"]["multiline"]
+        )
         self.assertIn("home_address", schema["life_domain_config"]["items"])
         self.assertIn("天气环境", schema["rhythm_config"]["hint"])
         self.assertIn("实时状态", schema["rhythm_config"]["hint"])

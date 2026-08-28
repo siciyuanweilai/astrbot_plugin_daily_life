@@ -66,12 +66,7 @@ class DailyLocationAuditMixin:
         """
         if not isinstance(payload, dict):
             return payload, ""
-        if not (
-            self.settings.enabled
-            and self.settings.location_enabled
-            and self.settings.home_address
-            and self._map.available
-        ):
+        if not await self.ensure_map_context():
             return payload, ""
 
         home_location = await self.resolve_home_location()

@@ -152,19 +152,19 @@ class OperateCommandMixin:
         city_resolver = getattr(
             getattr(self.runtime, "domains", None), "resolve_weather_city", None
         )
-        home_city = await city_resolver() if callable(city_resolver) else ""
+        weather_city = await city_resolver() if callable(city_resolver) else ""
 
-        query_city = req.param1.strip() if req.param1 else home_city
+        query_city = req.param1.strip() if req.param1 else weather_city
         if not query_city:
             yield event.plain_result(
-                "请先在生活实况中配置居住地、地图服务商和对应的服务端 Key，"
+                "请先在天气设置中配置天气城市，或在居住地/默认人设中提供现实城市，"
                 "或直接告诉我要查询哪个城市的天气。"
             )
             return
 
         weather_raw = await self.runtime.weather_client.get_weather(query_city)
         analyzed = analyze_weather(weather_raw)
-        should_sync = (not req.param1) or (query_city == home_city)
+        should_sync = (not req.param1) or (query_city == weather_city)
         if should_sync and analyzed.get("temp") is not None:
             await self._sync_weather_to_day(req, analyzed)
 
@@ -191,4 +191,4 @@ class OperateCommandMixin:
             latest.weather_last_update = updated_at
 
         await self.runtime.archive.mutate_day(sync_date_str, apply_weather)
-        logger.debug("[手动天气] 已更新居住地天气数据")
+        logger.debug("[手动天气] 已更新默认天气城市数据")

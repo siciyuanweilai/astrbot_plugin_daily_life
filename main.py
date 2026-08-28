@@ -720,12 +720,12 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         city: str = "",
     ):
         """
-        查询当前天气；查询默认居住地天气时会同步到当前生活日。
+        查询当前天气；查询默认天气城市时会同步到当前生活日。
         只适合当前实时天气，不负责明天或未来预报；用户询问明天/未来天气时，
         应改用 life_web_search，并提交包含城市和日期的完整问题。
 
         Args:
-            city(string): 可选城市名；留空使用当前地图服务从居住地解析出的城市。
+            city(string): 可选城市名；留空使用天气设置中的独立城市，未设置时使用可确认的现实居住城市。
         """
         return await self.commands.query_weather(event, str(city or "").strip())
 
@@ -1908,6 +1908,9 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
                 for name in ("life_voice_call_invite", "life_video_call_invite"):
                     toolset.remove_tool(name)
             domains = getattr(self.runtime, "domains", None)
+            ensure_map_context = getattr(domains, "ensure_map_context", None)
+            if callable(ensure_map_context):
+                await ensure_map_context()
             map_available = getattr(domains, "map_tools_available", None)
             if not callable(map_available) or not map_available():
                 for name in MAP_LLM_TOOL_NAMES:

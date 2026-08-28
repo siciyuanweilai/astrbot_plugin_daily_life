@@ -18,7 +18,12 @@ from ...config.options.basis import (
     is_legacy_chat_style_prompt,
 )
 from ...config.options import LifeSettings
-from ...life import LifeBackgroundComposer, LifeDomainService, WeatherClient
+from ...life import (
+    LifeBackgroundComposer,
+    LifeDomainService,
+    PersonaResidenceResolver,
+    WeatherClient,
+)
 from ...life.reliability import NonRetryableProviderError
 from ...media import LifeMediaService
 from ...paths import runtime_data_path
@@ -352,6 +357,7 @@ class SpineBootMixin:
         domains = LifeDomainService(
             config.domains,
             self.archive,
+            weather_city=config.weather.weather_city,
         )
         composer = LifeBackgroundComposer(
             self.context,
@@ -361,6 +367,9 @@ class SpineBootMixin:
             contact_resolver,
             search,
             domains,
+        )
+        domains.attach_residence_resolver(
+            PersonaResidenceResolver(composer, provider_id=config.llm_provider)
         )
         return RuntimeServices(
             config=config,
