@@ -10,7 +10,7 @@ from .tables.mind import COGNITION_INDEX_SQL, COGNITION_SQL
 
 SCHEMA_VERSION_KEY = "schema_version"
 BASELINE_SCHEMA_VERSION = 1
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 LEGACY_BASELINE_SCHEMA_FINGERPRINT = (
     "9e6243276bf6bd509f6019502e30192310da4197838bd0f7d478f0100f8750a5"
 )
@@ -50,8 +50,11 @@ PREVIOUS_V14_SCHEMA_FINGERPRINT = (
 PREVIOUS_V15_SCHEMA_FINGERPRINT = (
     "d4ae34f6ec613ffacf13dcac7a86a5f419a6f7cbea632ebef45b69fcc4eda498"
 )
-CURRENT_SCHEMA_FINGERPRINT = (
+PREVIOUS_V16_SCHEMA_FINGERPRINT = (
     "b6ec5c00a0b6eff3e54503eb390c3a39f740c2a602d934cc29188730d1f204fe"
+)
+CURRENT_SCHEMA_FINGERPRINT = (
+    "2fa6357aa4589b6c1c7322977140312408994ef67d41804a6ab65fac00ca01df"
 )
 
 MigrationStep = Callable[[sqlite3.Connection], None]
@@ -119,7 +122,8 @@ KNOWN_SCHEMA_VERSIONS: dict[str, int] = {
     PREVIOUS_V12_SCHEMA_FINGERPRINT: 12,
     PREVIOUS_V14_SCHEMA_FINGERPRINT: 14,
     PREVIOUS_V15_SCHEMA_FINGERPRINT: 15,
-    CURRENT_SCHEMA_FINGERPRINT: 16,
+    PREVIOUS_V16_SCHEMA_FINGERPRINT: 16,
+    CURRENT_SCHEMA_FINGERPRINT: 17,
 }
 
 
@@ -555,6 +559,19 @@ def _migrate_focus_slot_progress(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_timeline_duration(conn: sqlite3.Connection) -> None:
+    """保存活动持续时长，区分连续生活与未记录的时间空白。"""
+
+    columns = {
+        str(row[1]) for row in conn.execute("PRAGMA table_info(timelines)").fetchall()
+    }
+    if "duration_minutes" not in columns:
+        conn.execute(
+            "ALTER TABLE timelines "
+            "ADD COLUMN duration_minutes INTEGER NOT NULL DEFAULT 0"
+        )
+
+
 # 键是迁移完成后的目标版本；每个步骤只负责从前一版本升级一次。
 MIGRATIONS: dict[int, MigrationStep] = {
     2: _migrate_timeline_execution_state,
@@ -572,6 +589,7 @@ MIGRATIONS: dict[int, MigrationStep] = {
     14: _migrate_physiological_rhythm_burden_flag,
     15: _migrate_commitment_media_contract,
     16: _migrate_focus_slot_progress,
+    17: _migrate_timeline_duration,
 }
 
 

@@ -148,6 +148,57 @@ class LifeActionTest(unittest.TestCase):
         self.assertEqual(day.meta["outfit_fact_evidence"], "outfit-1")
         self.assertEqual(day.meta["style_catalog_reference_ids"], "17,18")
 
+    def test_change_outfit_settles_component_ledger_without_item_specific_rules(self):
+        day = DayRecord(
+            date="2026-08-01",
+            outfit="白色短袖和浅蓝长裤；运动鞋；帆布包",
+            state=LifeState(mood_score=55),
+            meta={
+                "outfit_components": json.dumps(
+                    {
+                        "main_clothing": {
+                            "state": "worn",
+                            "description": "白色短袖和浅蓝长裤",
+                        },
+                        "footwear": {
+                            "state": "worn",
+                            "description": "运动鞋",
+                        },
+                        "carried_accessories": {
+                            "state": "carried",
+                            "description": "帆布包",
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+            },
+        )
+
+        outcome = self.engine.settle_life_action(
+            day,
+            {
+                "action_id": "outfit-home-1",
+                "action_type": "change_outfit",
+                "target": "白色短袖和浅蓝长裤",
+                "payload": {
+                    "outfit_components": {
+                        "footwear": {"state": "removed", "description": "运动鞋"},
+                        "carried_accessories": {
+                            "state": "removed",
+                            "description": "帆布包",
+                        },
+                    }
+                },
+            },
+            now=datetime.datetime(2026, 8, 1, 16, 5),
+        )
+
+        self.assertEqual(outcome.status, "committed")
+        self.assertEqual(day.outfit, "白色短袖和浅蓝长裤")
+        components = json.loads(day.meta["outfit_components"])
+        self.assertEqual(components["footwear"]["state"], "removed")
+        self.assertEqual(components["carried_accessories"]["state"], "removed")
+
     def test_daily_plan_change_outfit_uses_action_target_as_current_fact(self):
         day = DayRecord(
             date="2026-08-01",

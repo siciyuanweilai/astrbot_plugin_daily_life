@@ -263,6 +263,36 @@ class RuntimeStateTest(unittest.TestCase):
         self.assertNotEqual(before, during)
         self.assertEqual(during, after)
 
+    def test_outfit_context_does_not_infer_change_from_activity_words(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        data = DayRecord(
+            date="2026-08-21",
+            weather_info=WeatherInfo(temp=24, condition="晴"),
+            timeline=[
+                TimelineItem(
+                    time="08:00",
+                    activity="整理衣橱里准备换上的衣服",
+                    place="家",
+                    place_kind="home",
+                ),
+                TimelineItem(
+                    time="09:00",
+                    activity="坐在窗边阅读",
+                    place="家",
+                    place_kind="home",
+                ),
+            ],
+        )
+
+        before = runtime._outfit_context_signature(
+            data, datetime.datetime(2026, 8, 21, 8, 30), "上午"
+        )
+        after = runtime._outfit_context_signature(
+            data, datetime.datetime(2026, 8, 21, 9, 30), "上午"
+        )
+
+        self.assertEqual(before, after)
+
     def test_residence_refresh_hides_stale_current_life_facts(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.config = LifeSettings.from_dict({})
@@ -1540,7 +1570,8 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(reply_payload["activity"], "下午一起出门闲逛")
         outfit_tasks = [item for item in scheduled if item[0] == "邀约穿搭判断"]
         self.assertEqual(len(outfit_tasks), 1)
-        self.assertEqual(outfit_tasks[0][:2], ("邀约穿搭判断", ""))
+        self.assertEqual(outfit_tasks[0][0], "邀约穿搭判断")
+        self.assertTrue(outfit_tasks[0][1].startswith(f"invite_outfit:{today}:"))
         stored = await archive.get_day(today)
         self.assertEqual(stored.timeline[-1].activity, "和阿林去书店闲逛")
         commitments = await archive.get_commitments(status="scheduled")

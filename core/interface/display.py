@@ -13,6 +13,12 @@ from ..life.tools import (
     resolve_daily_suggested,
 )
 from ..life.surroundings import format_world_display
+from ..life.wardrobe import (
+    format_outfit_components,
+    normalize_outfit_scene_category,
+    project_outfit_components_for_scene,
+    scene_category_for_place_kind,
+)
 from ..models import TimelineItem
 from ..clock import now as life_now
 from .request import CommandRequest
@@ -86,10 +92,24 @@ class DisplayCommandMixin:
                 meta = data.meta
                 w_info = data.weather_info
                 w_str = f"{data.weather or '未知'} ({w_info.temp_desc})"
+                current, _ = get_current_timeline_status(
+                    data.timeline, req.now, data.date
+                )
+                scene_category = scene_category_for_place_kind(
+                    current.place_kind if current else "",
+                    default=normalize_outfit_scene_category(
+                        meta.get("outfit_scene_category"), default=""
+                    ),
+                )
+                visible_outfit = format_outfit_components(
+                    project_outfit_components_for_scene(
+                        meta.get("outfit_components"), scene_category
+                    )
+                )
                 yield event.plain_result(
                     f"📅 今日安排 ({meta.get('theme', '日常')})\n"
                     f"🌤️ {w_str}\n"
-                    f"👔 {data.outfit or '无'}\n\n"
+                    f"👔 {visible_outfit or data.outfit or '无'}\n\n"
                     f"📍 全天时间轴：\n{tl_text}"
                 )
             else:

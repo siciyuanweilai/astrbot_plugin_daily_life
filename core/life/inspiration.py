@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from ..models import (
@@ -95,9 +96,40 @@ class StyleCatalogMixin:
                 )
         return profiles
 
+    @staticmethod
+    def _style_catalog_component_state(
+        kind: str,
+        role: str,
+        carry_mode: str,
+        *,
+        home_scene: bool,
+    ) -> str:
+        """将衣橱候选的结构化角色映射为当前场景中的通用状态。"""
+
+        normalized_kind = str(kind or "").strip().lower()
+        normalized_role = str(role or "").strip().lower()
+        normalized_carry = str(carry_mode or "").strip().lower()
+        if normalized_carry == "none":
+            return "removed"
+        if normalized_carry == "staged":
+            return "staged"
+        if home_scene and normalized_role == "outdoor":
+            return "staged"
+        if normalized_carry == "carried":
+            return "carried"
+        if normalized_carry == "worn":
+            return "worn"
+        if normalized_role == "home":
+            return "worn"
+        if normalized_kind == "accessory" and normalized_role == "both":
+            return "worn"
+        return "unknown"
+
     @classmethod
-    def _home_outfit_components(cls, item: Any, description: str) -> tuple[str, str]:
-        """把套装中的外出鞋和随身物品从居家当前穿着中分离。"""
+    def _style_catalog_scene_components(
+        cls, item: Any, description: str
+    ) -> tuple[str, str]:
+        """按候选的结构化场景角色分离当前组成与延后组成。"""
 
         attributes = cls._style_catalog_attributes(item)
         home_description = " ".join(
@@ -108,24 +140,7 @@ class StyleCatalogMixin:
         )[:800]
         if home_description or reserve_description:
             return home_description, reserve_description
-
-        profiles = cls._style_catalog_component_profiles(item)
-        reserved_components = [
-            profile["name"]
-            for profile in profiles
-            if profile["role"] in {"outdoor", "unknown"}
-        ]
-        if not reserved_components:
-            return description, ""
-
-        pieces = cls._style_catalog_list(attributes.get("pieces"), 12)
-        reserved_set = set(reserved_components)
-        current_pieces = [
-            piece for piece in pieces if piece not in reserved_set
-        ]
-        if current_pieces:
-            return "；".join(current_pieces), "；".join(reserved_components)
-        return "", description
+        return description, ""
 
     @classmethod
     def _style_catalog_item_line(cls, item: Any) -> str:
@@ -248,7 +263,7 @@ class StyleCatalogMixin:
 
     async def _style_catalog_new_outfit_selection(
         self, value: object, *, scene_category: object = ""
-    ) -> tuple[dict[str, str], str]:
+    ) -> tuple[dict[str, Any], str]:
         """校验新穿搭是否真正采用了启用中的衣橱服装。"""
 
         item_ids = self._style_catalog_reference_ids(value)
@@ -320,7 +335,7 @@ class StyleCatalogMixin:
             "以下来自用户明确学习的商品图或造型图，只是新造型灵感，不是当前已经穿上的事实。",
             "保持当前穿搭时不采用候选；自主产生新穿搭且存在合适服装候选时，具体服装必须从本轮候选中选择，长期偏好只用于排序，不能直接变成衣服。",
             "新穿搭可以采用一条完整套装，也可以同时组合上装与下装，再按需选择鞋袜和配饰；不要只选半套，也不要同时选取语义重复的整套与单品。",
-            "完整套装候选中的外出鞋和随身包只在实际出门时加入当前穿搭；居家时主体衣物可以继续采用同一候选，但鞋包应作为外出备选，不得描述成仍穿着或携带。",
+            "完整候选中的可拆卸组成按结构化场景角色进入当前或延后状态；当前场景只写已经穿着或携带的组成，不把待用组成混入可见穿搭。",
             "近期使用过的候选已由系统降权；场景与天气适配和近期轮换优先于偏好分，避免把高偏好候选穿成固定制服。",
             "发型、妆容和美甲必须分别选择，不能把候选图片中的人物身份、体貌、姿势、场景或品牌当作角色事实。",
             "候选中的“视觉提示词”是该类别的详细外观事实；实际采用后应忠实保留，不得自行简化款式、层次、颜色或装饰细节。",
@@ -331,7 +346,7 @@ class StyleCatalogMixin:
 
     async def _style_catalog_reference_appearance(
         self, value: object, *, scene_category: object = ""
-    ) -> dict[str, str]:
+    ) -> dict[str, Any]:
         """读取已明确采用候选中的各个独立外观组成。"""
 
         getter = getattr(self.archive, "get_style_catalog_items", None)
@@ -348,7 +363,7 @@ class StyleCatalogMixin:
             int(getattr(item, "id", 0) or 0): item for item in items or []
         }
         items = [item_map[item_id] for item_id in item_ids if item_id in item_map]
-        result: dict[str, list[str]] = {
+        result: dict[str, Any] = {
             "outfit": [],
             "outing_reserve": [],
             "hair_style": [],
@@ -358,6 +373,7 @@ class StyleCatalogMixin:
             "nails_style": [],
             "nails": [],
         }
+        component_values: dict[str, dict[str, str]] = {}
         for item in items or []:
             kind = str(getattr(item, "kind", "")).strip().lower()
             description = self._style_catalog_description(item)
@@ -373,7 +389,7 @@ class StyleCatalogMixin:
                 reserve_description = ""
                 if home_scene and kind == "outfit":
                     current_description, reserve_description = (
-                        self._home_outfit_components(item, description)
+                        self._style_catalog_scene_components(item, description)
                     )
                 elif home_scene and kind in {"footwear", "accessory"} and (
                     self._style_catalog_scene_role(item) not in {"home", "both"}
@@ -383,6 +399,71 @@ class StyleCatalogMixin:
                     result["outfit"].append(current_description)
                 if reserve_description:
                     result["outing_reserve"].append(reserve_description)
+                if kind == "outfit":
+                    profiles = self._style_catalog_component_profiles(item)
+                    has_structured_home_split = bool(
+                        not home_scene
+                        or self._style_catalog_attributes(item).get(
+                            "home_description"
+                        )
+                        or profiles
+                    )
+                    if has_structured_home_split:
+                        component_values["main_clothing"] = {
+                            "state": "worn" if current_description else "removed",
+                            "description": current_description,
+                        }
+                    for profile in profiles:
+                        component_key = (
+                            "footwear"
+                            if profile["kind"] == "footwear"
+                            else "carried_accessories"
+                        )
+                        state = self._style_catalog_component_state(
+                            profile["kind"],
+                            profile["role"],
+                            profile["carry_mode"],
+                            home_scene=home_scene,
+                        )
+                        component = component_values.setdefault(
+                            component_key,
+                            {"state": state, "description": ""},
+                        )
+                        component["state"] = state
+                        component["description"] = (
+                            f"{component['description']}；{profile['name']}"
+                            if component["description"]
+                            else profile["name"]
+                        )
+                elif kind in {"top", "bottom"}:
+                    main = component_values.setdefault(
+                        "main_clothing",
+                        {"state": "worn", "description": ""},
+                    )
+                    main["state"] = "worn" if current_description else "removed"
+                    main["description"] = (
+                        f"{main['description']}；{current_description}"
+                        if main["description"] and current_description
+                        else current_description or main["description"]
+                    )
+                elif kind in {"footwear", "accessory"}:
+                    component_key = (
+                        "footwear" if kind == "footwear" else "carried_accessories"
+                    )
+                    role = self._style_catalog_scene_role(item)
+                    carry_mode = str(
+                        self._style_catalog_attributes(item).get("carry_mode") or ""
+                    ).strip().lower()
+                    state = self._style_catalog_component_state(
+                        kind,
+                        role,
+                        carry_mode,
+                        home_scene=home_scene,
+                    )
+                    component_values[component_key] = {
+                        "state": state,
+                        "description": description,
+                    }
             elif kind == "hair" and description:
                 if title:
                     result["hair_style"].append(title)
@@ -391,11 +472,18 @@ class StyleCatalogMixin:
                 if title:
                     result[f"{kind}_style"].append(title)
                 result[kind].append(description)
-        return {
+        output = {
             key: "；".join(dict.fromkeys(values))
             for key, values in result.items()
             if values
         }
+        if component_values:
+            output["outfit_components"] = json.dumps(
+                component_values,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        return output
 
     async def _mark_style_catalog_references(self, value: object) -> int:
         marker = getattr(self.archive, "mark_style_catalog_used", None)

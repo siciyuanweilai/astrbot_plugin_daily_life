@@ -13,6 +13,14 @@ from ..life.tools import (
     reconcile_timeline_execution,
     timeline_item_datetime,
 )
+from ..life.wardrobe import (
+    format_outfit_components,
+    normalize_outfit_components,
+    normalize_outfit_scene_category,
+    scene_category_for_place_kind,
+    serialize_outfit_components,
+    synchronize_outfit_components_for_scene,
+)
 from ..models import DayRecord
 from .locks import operation_lock
 from .markers import LOG_PREFIX
@@ -207,25 +215,34 @@ class RefreshMixin:
                 -1,
             )
 
+        scene_category = self._schedule_outfit_scene(data, now)
+        scene = {
+            "home": "home",
+            "sleep": "sleep",
+            "outdoor": "away",
+            "public": "away",
+        }.get(scene_category, "")
         # online/none 只说明活动没有实体地点，不应让在家网聊之类的活动
         # 看起来像换了穿衣场景；沿用最近一个明确的实体生活场景。
-        scene = ""
-        for item in data.timeline[: current_index + 1]:
-            place_kind = item_field(item, "place_kind").lower()
-            if place_kind == "home":
-                scene = "home"
-            elif place_kind in {"poi", "generic", "transit"}:
-                scene = "away"
         if not scene:
-            stored_scene = str(
-                (data.meta or {}).get("outfit_scene_category") or ""
-            ).strip().lower()
-            if stored_scene in {"home", "sleep"}:
-                scene = "home"
-            elif stored_scene in {"outdoor", "public"}:
-                scene = "away"
-            else:
-                scene = "unknown"
+            for item in data.timeline[: current_index + 1]:
+                place_kind = item_field(item, "place_kind").lower()
+                scene_category = scene_category_for_place_kind(place_kind, default="")
+                if scene_category == "home":
+                    scene = "home"
+                elif scene_category in {"public", "outdoor"}:
+                    scene = "away"
+        if not scene:
+            scene = "unknown"
+
+        component_states = normalize_outfit_components(
+            (data.meta or {}).get("outfit_components")
+        )
+        component_signature = ";".join(
+            f"{key}:{item.get('state', 'unknown')}"
+            for key, item in component_states.items()
+            if key in {"footwear", "carried_accessories"}
+        ) or "none"
 
         action_events: dict[int, str] = {}
         raw_actions = str((data.meta or {}).get("planned_life_actions") or "")
@@ -246,13 +263,6 @@ class RefreshMixin:
             if 0 <= timeline_index <= current_index:
                 action_events[timeline_index] = action_type
 
-        relevant_tokens = (
-            ("outfit", ("换衣", "换装", "换上", "换下", "穿上", "脱下", "换鞋", "睡衣")),
-            ("hygiene", ("洗澡", "淋浴", "沐浴")),
-            ("exercise", ("运动", "锻炼", "跑步", "健身", "瑜伽", "游泳")),
-            ("sleep", ("起床", "入睡", "睡觉", "就寝")),
-            ("comfort", ("淋雨", "湿透", "汗湿", "弄脏衣服")),
-        )
         latest_event = "none"
         for index, item in enumerate(data.timeline[: current_index + 1]):
             if item_field(item, "execution_state").lower() in {
@@ -262,16 +272,6 @@ class RefreshMixin:
             }:
                 continue
             event_kind = action_events.get(index, "")
-            if not event_kind:
-                activity = item_field(item, "activity")
-                event_kind = next(
-                    (
-                        kind
-                        for kind, tokens in relevant_tokens
-                        if any(token in activity for token in tokens)
-                    ),
-                    "",
-                )
             if event_kind:
                 latest_event = f"{index}:{event_kind}"
 
@@ -301,8 +301,82 @@ class RefreshMixin:
             weather_kind,
             str(temperature_bucket),
             pending_outfit,
+            component_signature,
         )
         return "|".join(values)
+
+    @staticmethod
+    def _schedule_outfit_scene(data: DayRecord, now: datetime.datetime) -> str:
+        sleep = getattr(getattr(data, "state", None), "sleep", None)
+        sleep_depth = str(getattr(sleep, "depth", "") or "").strip().lower()
+        if sleep_depth in {"light_sleep", "deep_sleep"}:
+            return "sleep"
+        current, _ = get_current_timeline_status(data.timeline, now, data.date)
+        place_kind = ""
+        if current is not None:
+            place_kind = (
+                str(current.get("place_kind") or "")
+                if isinstance(current, dict)
+                else str(getattr(current, "place_kind", "") or "")
+            )
+        scheduled_scene = scene_category_for_place_kind(place_kind, default="")
+        if scheduled_scene:
+            return scheduled_scene
+        return normalize_outfit_scene_category(
+            (data.meta or {}).get("outfit_scene_category"), default=""
+        )
+
+    @classmethod
+    def _schedule_outfit_scene_sync_needed(
+        cls, data: DayRecord, now: datetime.datetime
+    ) -> bool:
+        target = cls._schedule_outfit_scene(data, now)
+        if not target:
+            return False
+        meta = data.meta or {}
+        previous = normalize_outfit_scene_category(
+            meta.get("outfit_scene_category"), default=""
+        )
+        current = normalize_outfit_components(meta.get("outfit_components"))
+        synced = synchronize_outfit_components_for_scene(
+            current, target, previous_scene_category=previous
+        )
+        visible = format_outfit_components(synced)
+        return (
+            target != previous
+            or synced != current
+            or bool(visible and visible != str(data.outfit or "").strip())
+        )
+
+    @classmethod
+    def _synchronize_outfit_with_schedule(
+        cls, data: DayRecord, now: datetime.datetime
+    ) -> bool:
+        target = cls._schedule_outfit_scene(data, now)
+        if not target:
+            return False
+        meta = data.meta or {}
+        previous = normalize_outfit_scene_category(
+            meta.get("outfit_scene_category"), default=""
+        )
+        current = normalize_outfit_components(meta.get("outfit_components"))
+        synced = synchronize_outfit_components_for_scene(
+            current, target, previous_scene_category=previous
+        )
+        visible = format_outfit_components(synced)
+        changed = target != previous or synced != current
+        if synced:
+            serialized = serialize_outfit_components(synced)
+            if serialized != str(meta.get("outfit_components") or "").strip():
+                meta["outfit_components"] = serialized
+                changed = True
+        if visible and visible != str(data.outfit or "").strip():
+            data.outfit = visible
+            changed = True
+        if target != previous:
+            meta["outfit_scene_category"] = target
+            changed = True
+        return changed
 
     def _next_auto_life_check_at(
         self,
@@ -397,9 +471,14 @@ class RefreshMixin:
             "chat": "聊天触发",
         }.get(source, source or "生活巡检")
         execution_changed = reconcile_timeline_execution(
-            data.timeline, now, data.date, evidence=f"{execution_source}：时间轴时钟"
+            data.timeline,
+            now,
+            data.date,
+            evidence=f"{execution_source}：时间轴时钟",
+            timeline_end=(data.meta or {}).get("life_window_end"),
         )
         current_period = self._get_curr_period(now)
+        schedule_outfit_sync_needed = self._schedule_outfit_scene_sync_needed(data, now)
         outfit_context_changed = str(
             (data.meta or {}).get("auto_outfit_context", "") or ""
         ) != self._outfit_context_signature(data, now, current_period)
@@ -408,6 +487,7 @@ class RefreshMixin:
             and not commitment_changed
             and not execution_changed
             and not outfit_context_changed
+            and not schedule_outfit_sync_needed
             and not self._has_legacy_outfit_expiration(data)
         ):
             return data
@@ -425,6 +505,7 @@ class RefreshMixin:
                 now,
                 data.date,
                 evidence=f"{execution_source}：时间轴时钟",
+                timeline_end=(data.meta or {}).get("life_window_end"),
             )
             planning_changed = await self._settle_timeline_planning(data, now)
             if execution_changed or planning_changed:
@@ -450,6 +531,10 @@ class RefreshMixin:
                 )
                 data = refreshed or data
                 state_changed = self._state_stability_signature(data) != state_before
+            schedule_outfit_changed = self._synchronize_outfit_with_schedule(data, now)
+            if schedule_outfit_changed:
+                await self.archive.save_day(data)
+            outfit_context_changed = outfit_context_changed or schedule_outfit_changed
             if source_event is not None and self.event_was_recalled(
                 source_event, log_skip=True
             ):
@@ -500,6 +585,7 @@ class RefreshMixin:
                                 outfit_kwargs["instruction"] = (
                                     pending_outfit_instruction
                                 )
+                                outfit_kwargs["instruction_source"] = "commitment"
                             if source_event is not None and self._event_message_id(
                                 source_event
                             ):

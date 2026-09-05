@@ -8,6 +8,12 @@ from typing import Any
 from astrbot.api import logger
 
 from ..models import PreferenceRecord
+from .wardrobe import (
+    format_outfit_component_ledger,
+    format_outfit_components,
+    normalize_outfit_scene_category,
+    project_outfit_components_for_scene,
+)
 from ..prompts import CORE_JSON_OUTPUT_RULES, cache_friendly_prompt
 from .tools import extract_json_from_text
 
@@ -310,10 +316,26 @@ def current_appearance_values(day: Any) -> dict[str, str]:
     }
 
 
-def format_current_appearance_context(day: Any) -> str:
+def format_current_appearance_context(day: Any, *, scene_category: object = "") -> str:
     values = current_appearance_values(day)
+    meta = getattr(day, "meta", {}) or {}
+    scene = normalize_outfit_scene_category(scene_category, default="")
+    if not scene:
+        scene = normalize_outfit_scene_category(
+            meta.get("outfit_scene_category"), default=""
+        )
+    components = project_outfit_components_for_scene(
+        meta.get("outfit_components"), scene
+    )
+    component_ledger = format_outfit_component_ledger(components)
+    visible_outfit = format_outfit_components(components)
+    if scene in {"home", "sleep"} and visible_outfit:
+        outfit = visible_outfit
+    else:
+        outfit = values["outfit"]
     lines = [
-        f"当前穿搭：{values['outfit']}" if values["outfit"] else "",
+        f"当前穿搭：{outfit}" if outfit else "",
+        f"穿搭组成状态：{component_ledger}" if component_ledger else "",
         f"当前穿搭风格：{values['style']}" if values["style"] else "",
         f"当前发型名称：{values['hair_style']}" if values["hair_style"] else "",
         f"当前发型细节：{values['hair']}" if values["hair"] else "",
@@ -323,6 +345,41 @@ def format_current_appearance_context(day: Any) -> str:
         f"当前美甲细节：{values['nails']}" if values["nails"] else "",
     ]
     return "\n".join(line for line in lines if line)
+
+
+def format_image_appearance_context(day: Any, *, scene_category: object = "") -> str:
+    """Render the current appearance with explicit visual presence constraints."""
+
+    context = format_current_appearance_context(day, scene_category=scene_category)
+    meta = getattr(day, "meta", {}) or {}
+    if not isinstance(meta, dict):
+        meta = {}
+    scene = normalize_outfit_scene_category(scene_category, default="")
+    if not scene:
+        scene = normalize_outfit_scene_category(
+            meta.get("outfit_scene_category"), default=""
+        )
+    if scene not in {"home", "sleep"}:
+        return context
+
+    components = project_outfit_components_for_scene(
+        meta.get("outfit_components"), scene
+    )
+    hidden_labels = []
+    footwear = components.get("footwear") or {}
+    accessories = components.get("carried_accessories") or {}
+    if footwear.get("state") not in {"worn", "carried"}:
+        hidden_labels.append("鞋履不在脚上")
+    if accessories.get("state") not in {"worn", "carried"}:
+        hidden_labels.append("随身包/外出配饰不在身上")
+    if not hidden_labels:
+        return context
+    constraint = (
+        "画面可见约束：当前为居家/睡眠场景；"
+        + "；".join(hidden_labels)
+        + "，不得将其画成穿着、背着或手提状态。"
+    )
+    return f"{context}\n{constraint}" if context else constraint
 
 
 def _preference_key(item: PreferenceRecord) -> tuple[str, str]:

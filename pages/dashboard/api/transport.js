@@ -17,7 +17,11 @@ export function userErrorMessage(error, fallback = "操作失败") {
 export function withTimeout(promise, message = "请求超时", timeoutMs = REQUEST_TIMEOUT_MS) {
   let timeoutId = 0;
   const timeout = new Promise((_, reject) => {
-    timeoutId = window.setTimeout(() => reject(publicError(message)), timeoutMs);
+    timeoutId = window.setTimeout(() => {
+      const error = publicError(message);
+      error.isTimeout = true;
+      reject(error);
+    }, timeoutMs);
   });
   return Promise.race([promise, timeout]).finally(() => window.clearTimeout(timeoutId));
 }

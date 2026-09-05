@@ -252,6 +252,37 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
             ["walking", "transit"],
         )
 
+    async def test_daily_location_preselection_rejects_far_same_city_fallback(self):
+        service = self._location_audit_service()
+        service._map.search_places = AsyncMock(
+            return_value=[
+                {
+                    "poi_id": "poi-far-local",
+                    "name": "测试远郊糖水铺",
+                    "address": "测试市远郊路1号",
+                    "district": "远郊区",
+                    "category": "餐饮",
+                    "city": "测试市",
+                    "coordinate": (24.5, 113.0),
+                }
+            ]
+        )
+        service._map.route = AsyncMock(return_value=None)
+
+        result = await service.prepare_daily_location_candidates(
+            [
+                {
+                    "purpose": "傍晚吃糖水",
+                    "query": "糖水铺",
+                    "place_scope": "local",
+                    "travel_mode": "auto",
+                }
+            ]
+        )
+
+        self.assertEqual(result["candidates"], [])
+        self.assertIn("未找到适合", result["warnings"][0])
+
     async def test_daily_location_audit_reuses_preselected_candidate(self):
         service = self._location_audit_service()
         service._map.search_places = AsyncMock(
@@ -679,6 +710,61 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(revised["timeline"][1]["time"], "09:00")
         self.assertEqual(revised["timeline"][1]["travel_minutes"], 60)
         self.assertEqual(revised["planned_actions"][0]["duration_minutes"], 60)
+
+    async def test_daily_location_audit_reserves_time_after_origin_activity(self):
+        service = self._location_audit_service()
+        service._map.search_places = AsyncMock(
+            return_value=[
+                {
+                    "poi_id": "poi-near",
+                    "name": "测试书店",
+                    "address": "测试区近路1号",
+                    "city": "测试市",
+                    "coordinate": (23.01, 113.01),
+                }
+            ]
+        )
+        service._map.route = AsyncMock(
+            return_value={
+                "distance_meters": 1800,
+                "duration_seconds": 1800,
+                "provider": "amap",
+            }
+        )
+        payload = self._location_payload(destination_time="08:30")
+        payload["timeline"][0]["duration_minutes"] = 45
+
+        revised, reason = await service.audit_daily_locations(
+            payload,
+            allow_safe_corrections=True,
+        )
+
+        self.assertEqual(reason, "")
+        self.assertEqual(revised["timeline"][1]["time"], "09:15")
+        self.assertEqual(revised["timeline"][1]["travel_minutes"], 30)
+
+    async def test_daily_location_audit_rejects_far_same_city_route(self):
+        service = self._location_audit_service()
+        service._map.search_places = AsyncMock(
+            return_value=[
+                {
+                    "poi_id": "poi-far-local",
+                    "name": "测试书店",
+                    "address": "测试市远郊路1号",
+                    "city": "测试市",
+                    "coordinate": (24.5, 113.0),
+                }
+            ]
+        )
+        service._map.route = AsyncMock(return_value=None)
+
+        _, reason = await service.audit_daily_locations(
+            self._location_payload(destination_time="18:30", mode="transit"),
+            allow_safe_corrections=True,
+        )
+
+        self.assertIn("超出本地日程范围", reason)
+        self.assertIn("travel", reason)
 
     async def test_daily_location_audit_final_correction_normalizes_safe_defaults(
         self,

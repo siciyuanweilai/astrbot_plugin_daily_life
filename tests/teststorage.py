@@ -703,6 +703,13 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                     "SELECT value FROM meta WHERE key = 'schema_version'"
                 ).fetchone()
                 self.assertEqual(version[0], str(SCHEMA_VERSION))
+                columns = {
+                    row[1]
+                    for row in archive._conn.execute(
+                        "PRAGMA table_info(timelines)"
+                    ).fetchall()
+                }
+                self.assertIn("duration_minutes", columns)
             finally:
                 archive.close()
 
@@ -3437,7 +3444,12 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                 DayRecord(
                     date="2026-05-24",
                     timeline=[
-                        TimelineItem(time="09:00", activity="整理手帐", status="平静")
+                        TimelineItem(
+                            time="09:00",
+                            activity="整理手帐",
+                            status="平静",
+                            duration_minutes=95,
+                        )
                     ],
                 )
             )
@@ -3495,6 +3507,29 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(preferences[0].content, "雨天偏好室内低强度活动")
             self.assertEqual(life_events[0].title, "买了新的手帐贴纸")
             self.assertEqual(day.timeline[0].time, "10:30")
+            reopened.close()
+
+    async def test_timeline_duration_persists_in_sqlite(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = f"{tmpdir}/daily_life.db"
+            archive = LifeArchive(db_path)
+            await archive.save_day(
+                DayRecord(
+                    date="2026-05-25",
+                    timeline=[
+                        TimelineItem(
+                            time="14:20",
+                            activity="安静读完一本书",
+                            duration_minutes=160,
+                        )
+                    ],
+                )
+            )
+            archive.close()
+
+            reopened = LifeArchive(db_path)
+            day = await reopened.get_day("2026-05-25")
+            self.assertEqual(day.timeline[0].duration_minutes, 160)
             reopened.close()
 
     async def test_semantic_preference_merge_keeps_one_canonical_record(self):

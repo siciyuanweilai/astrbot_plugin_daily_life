@@ -4,7 +4,7 @@ import datetime
 from collections import deque
 from typing import Any
 
-from ...life.tools import resolve_business_now
+from ...life.tools import build_time_context
 
 
 class ResponseGateStateMixin:
@@ -162,9 +162,9 @@ class ResponseGateStateMixin:
             return None
         try:
             today = now.strftime("%Y-%m-%d")
-            target_date = resolve_business_now(
-                getattr(self.config, "schedule_time", "07:00"), now
-            ).strftime("%Y-%m-%d")
+            target_date = build_time_context(
+                now, getattr(self.config, "schedule_time", "07:00")
+            ).business_date_text
             day = await archive.get_day(target_date)
             if day is None and target_date != today:
                 day = await archive.get_day(today)

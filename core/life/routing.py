@@ -7,6 +7,7 @@ from typing import Any
 
 ROUTE_MODES = frozenset({"walking", "cycling", "driving", "transit"})
 AUTO_ROUTE_MODE = "auto"
+LOCAL_SCOPE_MAX_TRAVEL_MINUTES = 180
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,6 +229,7 @@ def _optional_number(value: Any) -> float | None:
 
 __all__ = [
     "AUTO_ROUTE_MODE",
+    "LOCAL_SCOPE_MAX_TRAVEL_MINUTES",
     "ROUTE_MODES",
     "RouteChoiceContext",
     "choose_practical_route",

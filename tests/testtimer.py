@@ -23,6 +23,7 @@ class LifeRhythmClockTest(unittest.TestCase):
             config,
             self._task,
             self._task,
+            weekly_task=self._task,
             proactive_revisit_task=self._task,
             proactive_idle_task=self._task,
         )
@@ -68,6 +69,25 @@ class LifeRhythmClockTest(unittest.TestCase):
     def test_durable_worker_job_runs_independently(self):
         jobs = asyncio.run(self._durable_job_ids())
         self.assertIn("durable_life_tasks", jobs)
+
+    def test_weekly_refresh_job_is_scheduled_on_monday(self):
+        jobs = asyncio.run(self._weekly_job_ids())
+        self.assertIn("weekly_refresh", jobs)
+
+    async def _weekly_job_ids(self):
+        config = LifeSettings.from_dict({"state_config": {"enabled": False}})
+        clock = LifeRhythmClock(
+            config,
+            self._task,
+            self._task,
+            weekly_task=self._task,
+        )
+
+        clock.start()
+        jobs = getattr(clock.scheduler, "jobs", None)
+        if isinstance(jobs, dict):
+            return set(jobs)
+        return {job.id for job in clock.scheduler.get_jobs()}
 
     async def _durable_job_ids(self):
         config = LifeSettings.from_dict({"state_config": {"enabled": False}})

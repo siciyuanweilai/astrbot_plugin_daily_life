@@ -3,7 +3,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from ..clock import now as life_now
-from ..life.tools import get_time_period_cn
+from ..life.tools import build_time_context
 from ..runtime import DailyLifeRuntime
 from ..runtime.generation import DailyGenerationBusy
 from .display import DisplayCommandMixin
@@ -112,7 +112,10 @@ class DailyLifeCommandCenter(
         self, parts: list[str], *, target_date: str = ""
     ) -> CommandRequest:
         now = life_now()
-        period = self.runtime._get_curr_period()
+        time_context = build_time_context(
+            now, getattr(self.runtime.config, "schedule_time", "07:00")
+        )
+        period = time_context.period
         target_date_str, _ = await self.runtime._resolve_command_target_date(now)
         if target_date:
             target_date_str = str(target_date).strip()[:10]
@@ -123,10 +126,10 @@ class DailyLifeCommandCenter(
             param2=parts[3] if len(parts) > 3 else "",
             param_full=" ".join(parts[2:]) if len(parts) > 2 else "",
             now=now,
-            today_str=now.strftime("%Y-%m-%d"),
+            today_str=time_context.now.strftime("%Y-%m-%d"),
             yesterday_str=(now - datetime.timedelta(days=1)).strftime("%Y-%m-%d"),
             period=period,
-            period_cn=get_time_period_cn(period),
+            period_cn=time_context.period_cn,
             target_date_str=target_date_str,
         )
 

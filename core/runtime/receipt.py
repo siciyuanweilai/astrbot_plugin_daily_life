@@ -106,6 +106,8 @@ class RuntimeActionReceiptMixin:
         *,
         action_type: str,
         evidence: str,
+        commitment_id: int = 0,
+        reply_context: dict[str, str] | None = None,
     ) -> Any:
         """在发送前登记已生成媒体，供重启后的投递恢复使用。
 
@@ -118,9 +120,7 @@ class RuntimeActionReceiptMixin:
         kind = str(media_kind or "").strip().lower()
         normalized_scope = str(scope or "").strip()
         normalized_artifacts = [
-            str(item or "").strip()
-            for item in artifacts
-            if str(item or "").strip()
+            str(item or "").strip() for item in artifacts if str(item or "").strip()
         ]
         if (
             not callable(enqueue)
@@ -144,9 +144,13 @@ class RuntimeActionReceiptMixin:
                     "artifacts": normalized_artifacts,
                     "action_type": str(action_type or "").strip(),
                     "evidence": str(evidence or "").strip()[:500],
-                    "created_at": datetime.datetime.now().strftime(
-                        "%Y-%m-%d %H:%M:%S"
-                    ),
+                    "commitment_id": max(0, int(commitment_id or 0)),
+                    "reply_context": {
+                        str(key): str(value or "").strip()[:1000]
+                        for key, value in dict(reply_context or {}).items()
+                        if str(key).strip()
+                    },
+                    "created_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 },
                 priority=90,
                 max_attempts=3,
@@ -163,14 +167,16 @@ class RuntimeActionReceiptMixin:
         """标记当前请求已经完成或取消了已登记的媒体投递。"""
 
         task_id = int(getattr(task, "id", 0) or 0)
-        finalizer = getattr(getattr(self, "archive", None), "finalize_durable_task", None)
+        finalizer = getattr(
+            getattr(self, "archive", None), "finalize_durable_task", None
+        )
         if task_id <= 0 or not callable(finalizer):
             return False
         try:
             owner = str(
                 getattr(self, "_durable_task_owner", f"runtime:{id(self)}") or ""
             ).strip()
-            return await finalizer(
+            finalized = await finalizer(
                 task_id,
                 {
                     "delivery": str(outcome or "sent").strip(),
@@ -181,6 +187,20 @@ class RuntimeActionReceiptMixin:
                 },
                 owner=owner,
             )
+            payload = getattr(task, "payload", {})
+            payload = payload if isinstance(payload, dict) else {}
+            commitment_id = int(payload.get("commitment_id") or 0)
+            if finalized and str(outcome or "").strip() == "sent" and commitment_id > 0:
+                setter = getattr(
+                    getattr(self, "archive", None), "set_commitment_status", None
+                )
+                if callable(setter):
+                    await setter(
+                        commitment_id,
+                        "done",
+                        life_now().isoformat(timespec="seconds"),
+                    )
+            return bool(finalized)
         except Exception as exc:
             logger.warning(f"[日常生活] 媒体投递任务收束失败：{exc}")
             return False
@@ -239,11 +259,37 @@ class RuntimeActionReceiptMixin:
                 source="media_delivery_recovery",
                 artifact_path=artifacts[0],
             )
+        commitment_id = int(payload.get("commitment_id") or 0)
+        if commitment_id > 0:
+            setter = getattr(
+                getattr(self, "archive", None), "set_commitment_status", None
+            )
+            if callable(setter):
+                await setter(
+                    commitment_id,
+                    "done",
+                    life_now().isoformat(timespec="seconds"),
+                )
+        reply_sent = False
+        reply_context = payload.get("reply_context")
+        followup = getattr(self, "_send_delivered_media_followup", None)
+        if callable(followup) and isinstance(reply_context, dict) and reply_context:
+            reply_sent = await followup(
+                scope,
+                media_name=str(reply_context.get("media_name") or "生活媒体"),
+                request_text=str(reply_context.get("request_text") or ""),
+                delivery_text=str(
+                    reply_context.get("delivery_text") or "媒体已恢复并成功送达"
+                ),
+                guidance=str(reply_context.get("guidance") or ""),
+                source="media_recovery_followup",
+            )
         return {
             "delivery": "recovered",
             "scope": scope,
             "media_kind": media_kind,
             "artifacts": artifacts,
+            "reply_sent": reply_sent,
         }
 
 

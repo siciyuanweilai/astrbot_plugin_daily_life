@@ -68,6 +68,69 @@ class ContinuousTurnTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request.prompt, "明天下雨\n记得带伞出门")
         self.assertIn("同一个话轮", request.system_prompt)
 
+    async def test_single_message_keeps_the_short_base_wait(self):
+        runtime = self._runtime()
+        event = self._event("只说这一句", "m-single")
+
+        self.assertTrue(runtime.note_continuous_turn_incoming(event))
+        batch = runtime._continuous_turn_batch(
+            event.unified_msg_origin,
+            "private",
+        )
+
+        self.assertIsNotNone(batch)
+        self.assertAlmostEqual(batch.wait_seconds, 0.05, places=2)
+
+    async def test_follow_up_wait_tracks_actual_message_cadence(self):
+        runtime = self._runtime()
+        first = self._event("先说半句", "m-first")
+        second = self._event("再补半句", "m-second")
+
+        self.assertTrue(runtime.note_continuous_turn_incoming(first))
+        first_batch = runtime._continuous_turn_batch(
+            first.unified_msg_origin,
+            "private",
+        )
+        self.assertIsNotNone(first_batch)
+        first_batch.last_at = time.monotonic() - 0.1
+
+        self.assertTrue(runtime.note_continuous_turn_incoming(second))
+        second_batch = runtime._continuous_turn_batch(
+            second.unified_msg_origin,
+            "private",
+        )
+
+        self.assertIsNotNone(second_batch)
+        self.assertGreater(second_batch.wait_seconds, 0.05)
+        self.assertLessEqual(second_batch.wait_seconds, 0.18)
+
+    async def test_next_turn_reuses_the_session_cadence_without_merging_messages(self):
+        runtime = self._runtime()
+        first = self._event("第一轮先说", "m-first")
+        second = self._event("第一轮补充", "m-second")
+        next_turn = self._event("下一轮继续", "m-next")
+
+        self.assertTrue(runtime.note_continuous_turn_incoming(first))
+        first_batch = runtime._continuous_turn_batch(
+            first.unified_msg_origin,
+            "private",
+        )
+        self.assertIsNotNone(first_batch)
+        first_batch.last_at = time.monotonic() - 0.1
+        self.assertTrue(runtime.note_continuous_turn_incoming(second))
+        self.assertTrue(await runtime.settle_continuous_turn(second))
+        self.assertTrue(runtime.complete_continuous_turn(second))
+
+        self.assertTrue(runtime.note_continuous_turn_incoming(next_turn))
+        next_batch = runtime._continuous_turn_batch(
+            next_turn.unified_msg_origin,
+            "private",
+        )
+
+        self.assertIsNotNone(next_batch)
+        self.assertGreater(next_batch.wait_seconds, 0.05)
+        self.assertEqual(next_batch.messages, ["下一轮继续"])
+
     async def test_new_message_joins_an_event_that_started_generating(self):
         runtime = self._runtime(continuous_turn_wait_seconds=0)
         first = self._event("第一条", "m-first")

@@ -8,10 +8,17 @@ from astrbot.api import logger
 from ...clock import now as life_now
 from ...life.appearance import current_appearance_values
 from ...life.condition import format_state_prompt
+from ...life.wardrobe import (
+    format_outfit_component_ledger,
+    format_outfit_components,
+    project_outfit_components_for_scene,
+    scene_category_for_place_kind,
+    outfit_scene_category_label,
+)
 from ...life.tools import (
+    build_time_context,
     format_timeline_to_text,
     get_current_timeline_status,
-    resolve_business_now,
 )
 from ...sources.history import SavedHistoryReader
 from ..markers import LOG_PREFIX
@@ -22,11 +29,11 @@ class StageFrameMixin:
         self,
     ) -> tuple[Any | None, datetime.datetime, bool]:
         now = life_now()
-        business_now = resolve_business_now(
-            getattr(self.config, "schedule_time", "07:00"), now
+        time_context = build_time_context(
+            now, getattr(self.config, "schedule_time", "07:00")
         )
-        target_date = business_now.strftime("%Y-%m-%d")
-        using_extended_night = business_now.date() < now.date()
+        target_date = time_context.business_date_text
+        using_extended_night = time_context.extended_night
         day = (
             await self.archive.get_day(target_date)
             if getattr(self, "archive", None)
@@ -49,6 +56,11 @@ class StageFrameMixin:
             now,
             getattr(day, "date", None),
         )
+        current_place_kind = (
+            getattr(current_item, "place_kind", "")
+            if hasattr(current_item, "place_kind")
+            else (current_item or {}).get("place_kind", "")
+        )
         state = getattr(day, "state", None)
         state_dict = (
             state.as_dict()
@@ -60,11 +72,23 @@ class StageFrameMixin:
         meta = getattr(day, "meta", {}) or {}
         weather = str(getattr(day, "weather", "") or "").strip()
         appearance = current_appearance_values(day)
+        scene_category = scene_category_for_place_kind(current_place_kind, default="")
+        projected_components = project_outfit_components_for_scene(
+            meta.get("outfit_components"), scene_category
+        )
+        component_ledger = format_outfit_component_ledger(projected_components)
+        visible_outfit = format_outfit_components(projected_components)
+        if scene_category in {"home", "sleep"} and visible_outfit:
+            outfit = visible_outfit
+        else:
+            outfit = appearance["outfit"]
 
         parts = [
             f"生活记录范围：{'延续昨日生活记录' if using_extended_night else '今日生活记录'}",
             f"天气：{weather or '未知'}",
-            f"当前穿搭：{appearance['outfit'] or meta.get('outfit_decision') or '未知'}",
+            f"当前实际场景：{outfit_scene_category_label(scene_category) if scene_category else '未知'}",
+            f"当前穿搭：{outfit or meta.get('outfit_decision') or '未知'}",
+            f"穿搭组成状态：{component_ledger}" if component_ledger else "",
             f"当前穿搭风格：{appearance['style'] or '未知'}",
             f"当前发型名称：{appearance['hair_style'] or '未知'}",
             f"当前发型细节：{appearance['hair'] or '未知'}",
@@ -75,8 +99,16 @@ class StageFrameMixin:
             f"心情色彩：{meta.get('mood') or '未知'}",
             f"日程类型：{meta.get('theme') or meta.get('schedule_intent') or '未知'}",
             f"日程基调：{meta.get('life_mode') or '未知'}",
+            "当前实际场景以当前时间轴节点的地点为准；社交状态和日程基调只影响情绪与互动，不代表一定在外出。",
         ]
         if current_item:
+            place = (
+                getattr(current_item, "place", "")
+                if hasattr(current_item, "place")
+                else current_item.get("place", "")
+            )
+            if place:
+                parts.append(f"当前地点：{place}")
             activity = (
                 getattr(current_item, "activity", "")
                 if hasattr(current_item, "activity")

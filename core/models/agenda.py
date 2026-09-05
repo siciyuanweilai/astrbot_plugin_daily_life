@@ -28,6 +28,7 @@ class TimelineItem:
     time: str = ""
     activity: str = ""
     status: str = ""
+    duration_minutes: int = 0
     place: str = ""
     place_kind: str = "none"
     place_scope: str = "local"
@@ -60,6 +61,9 @@ class TimelineItem:
             time=str(raw.get("time") or "").strip(),
             activity=str(raw.get("activity") or "").strip(),
             status=str(raw.get("status") or "").strip(),
+            duration_minutes=min(
+                1440, _non_negative_int(raw.get("duration_minutes"))
+            ),
             place=str(raw.get("place") or "").strip(),
             place_kind=str(raw.get("place_kind") or "none").strip().lower(),
             place_scope=str(raw.get("place_scope") or "local").strip().lower(),
@@ -90,6 +94,7 @@ class TimelineItem:
             "time": self.time,
             "activity": self.activity,
             "status": self.status,
+            "duration_minutes": self.duration_minutes,
             "place": self.place,
             "place_kind": self.place_kind,
             "place_scope": self.place_scope,
@@ -126,6 +131,7 @@ def _timeline_duplicate_key(item: TimelineItem) -> tuple[str, ...]:
     return (
         item.activity.strip(),
         item.status.strip(),
+        str(item.duration_minutes),
         item.place.strip(),
         item.place_kind.strip().lower(),
         item.place_scope.strip().lower(),

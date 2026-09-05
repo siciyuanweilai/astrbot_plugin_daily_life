@@ -30,6 +30,7 @@ class RuntimeScopeState:
         "_response_gate_continuation",
         "_continuous_turn_batches",
         "_continuous_turn_revisions",
+        "_continuous_turn_cadence",
         "_structured_messages",
         "_structured_sequence_counters",
         "_semantic_segment_revisions",

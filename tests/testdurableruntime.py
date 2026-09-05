@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from core.archive import LifeArchive
 from core.life.reliability import NonRetryableProviderError
 from core.models import CommitmentRecord
+from core.runtime.channel.summary import RuntimeMediaCommonMixin
 from core.runtime.proactive.followup import ProactiveFollowupMixin
 from core.runtime.receipt import RuntimeActionReceiptMixin
 from core.runtime.spine.boot import SpineBootMixin
@@ -75,6 +76,45 @@ class DurableRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repeated, 0)
         self.assertEqual(calls, ["done"])
         self.assertEqual(tasks[0].status, "completed")
+
+    async def test_delivered_media_followup_uses_llm_and_sends_reply(self):
+        runtime = RuntimeMediaCommonMixin.__new__(RuntimeMediaCommonMixin)
+        prompts = []
+        sent = []
+
+        async def get_provider(provider_id=""):
+            return object()
+
+        async def call_text_model(provider, prompt, session_id, **kwargs):
+            prompts.append(prompt)
+            return '{"reply_text":"答应你的照片拍好啦。"}'
+
+        async def get_persona_text(scope=""):
+            return "说话自然简短。"
+
+        async def send_background_text(scope, text, **kwargs):
+            sent.append((scope, text, kwargs))
+            return True
+
+        async def append_history(scope, text):
+            return None
+
+        runtime.get_text_provider = get_provider
+        runtime.call_text_model = call_text_model
+        runtime.get_persona_text = get_persona_text
+        runtime.send_background_text = send_background_text
+        runtime._append_assistant_history = append_history
+
+        result = await runtime._send_delivered_media_followup(
+            "private:test",
+            media_name="承诺的生活照片",
+            request_text="到家后拍张照片给我",
+            delivery_text="照片已成功送达",
+        )
+
+        self.assertTrue(result)
+        self.assertIn("到家后拍张照片给我", prompts[0])
+        self.assertEqual(sent[0][1], "答应你的照片拍好啦。")
 
     async def test_unknown_task_is_retried_without_executing_payload(self):
         await self.archive.enqueue_durable_task(
@@ -175,10 +215,27 @@ class DurableRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tasks[0].status, "pending")
         self.assertEqual(tasks[0].lease_owner, "")
 
-    async def test_media_delivery_recovery_sends_saved_artifact_and_records_receipt(self):
+    async def test_media_delivery_recovery_sends_saved_artifact_and_records_receipt(
+        self,
+    ):
         image_path = Path(self.directory.name) / "generated.png"
         image_path.write_bytes(b"fake-image")
         runtime = _MediaRuntime(self.archive, image_path)
+        commitment = await self.archive.save_commitment(
+            CommitmentRecord(
+                content="拍张照片给对方",
+                owner="当前角色",
+                media_kind="photo",
+                source_session="private:test",
+            )
+        )
+        followups = []
+
+        async def followup(scope, **kwargs):
+            followups.append((scope, kwargs))
+            return True
+
+        runtime._send_delivered_media_followup = followup
         task = await self.archive.enqueue_durable_task(
             "media_delivery:recovery-1",
             "media_delivery",
@@ -188,6 +245,12 @@ class DurableRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 "artifacts": [str(image_path)],
                 "action_type": "photo",
                 "evidence": "重启后恢复投递",
+                "commitment_id": commitment.id,
+                "reply_context": {
+                    "media_name": "承诺的生活照片",
+                    "request_text": commitment.content,
+                    "delivery_text": "照片已恢复并成功送达",
+                },
             },
         )
 
@@ -196,6 +259,12 @@ class DurableRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["delivery"], "recovered")
         self.assertEqual(runtime.sent[0][0], "private:test")
         self.assertEqual(runtime.receipts[0][1], "photo")
+        self.assertTrue(result["reply_sent"])
+        self.assertEqual(followups[0][0], "private:test")
+        self.assertEqual(
+            (await self.archive.get_commitment(commitment.id)).status,
+            "done",
+        )
 
     async def test_media_delivery_recovery_retries_when_platform_is_not_ready(self):
         image_path = Path(self.directory.name) / "pending.png"
@@ -416,7 +485,9 @@ class ProactiveCommitmentScheduleTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tasks[0].available_at, "2026-08-27 08:00:00")
         self.assertEqual(tasks[0].payload["scope"], "test:FriendMessage:1")
 
-    async def test_photo_commitment_targets_original_group_scope_and_rejects_other_owned_promise(self):
+    async def test_photo_commitment_targets_original_group_scope_and_rejects_other_owned_promise(
+        self,
+    ):
         group_commitment = await self.archive.save_commitment(
             CommitmentRecord(
                 content="拍张照片给对方",
@@ -455,12 +526,16 @@ class ProactiveCommitmentScheduleTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [
                 task.payload["scope"]
-                for task in await self.archive.get_durable_tasks(kind="commitment_photo")
+                for task in await self.archive.get_durable_tasks(
+                    kind="commitment_photo"
+                )
             ],
             [group_commitment.source_session],
         )
 
-    async def test_photo_reconcile_recovers_due_group_commitments_to_original_group(self):
+    async def test_photo_reconcile_recovers_due_group_commitments_to_original_group(
+        self,
+    ):
         stale = await self.archive.save_commitment(
             CommitmentRecord(
                 content="昨天拍张照片给对方",
@@ -535,7 +610,9 @@ class ProactiveCommitmentScheduleTest(unittest.IsolatedAsyncioTestCase):
             )
         )
         tasks = await self.archive.get_durable_tasks(kind="commitment_photo")
-        self.assertEqual([task.payload["commitment_id"] for task in tasks], [food_commitment.id])
+        self.assertEqual(
+            [task.payload["commitment_id"] for task in tasks], [food_commitment.id]
+        )
 
     async def test_photo_task_marks_commitment_done_after_image_is_sent(self):
         commitment = await self.archive.save_commitment(
@@ -550,12 +627,18 @@ class ProactiveCommitmentScheduleTest(unittest.IsolatedAsyncioTestCase):
             image_generation=SimpleNamespace(enabled=True)
         )
         calls = []
+        followups = []
 
         async def generate(event, prompt, **kwargs):
             calls.append((event, prompt, kwargs))
             return '{"status":"sent","media":"image"}'
 
+        async def followup(scope, **kwargs):
+            followups.append((scope, kwargs))
+            return True
+
         self.runtime.life_image_generate = generate
+        self.runtime._send_delivered_media_followup = followup
         task = SimpleNamespace(
             payload={
                 "scope": commitment.source_session,
@@ -569,8 +652,13 @@ class ProactiveCommitmentScheduleTest(unittest.IsolatedAsyncioTestCase):
         result = await self.runtime.run_commitment_photo_task(task)
 
         self.assertEqual(result["outcome"], "sent")
-        self.assertEqual((await self.archive.get_commitment(commitment.id)).status, "done")
+        self.assertEqual(
+            (await self.archive.get_commitment(commitment.id)).status, "done"
+        )
         self.assertEqual(calls[0][0].unified_msg_origin, commitment.source_session)
+        self.assertEqual(calls[0][0]._daily_life_commitment_id, commitment.id)
+        self.assertTrue(result["reply_sent"])
+        self.assertEqual(followups[0][1]["media_name"], "承诺的生活照片")
 
     async def test_photo_task_can_deliver_to_original_group_scope(self):
         commitment = await self.archive.save_commitment(
@@ -649,7 +737,9 @@ class ProactiveCommitmentScheduleTest(unittest.IsolatedAsyncioTestCase):
             observed_at=datetime.datetime(2026, 8, 26, 23, 0),
         )
         self.assertEqual(
-            (await self.archive.get_durable_tasks(kind="commitment_video"))[0].available_at,
+            (await self.archive.get_durable_tasks(kind="commitment_video"))[
+                0
+            ].available_at,
             "2026-08-27 09:00:00",
         )
 
@@ -665,7 +755,9 @@ class ProactiveCommitmentScheduleTest(unittest.IsolatedAsyncioTestCase):
             observed_at=datetime.datetime(2026, 8, 26, 23, 0),
         )
         self.assertEqual(
-            (await self.archive.get_durable_tasks(kind="commitment_video"))[0].available_at,
+            (await self.archive.get_durable_tasks(kind="commitment_video"))[
+                0
+            ].available_at,
             "2026-08-29 09:00:00",
         )
 
@@ -689,7 +781,9 @@ class ProactiveCommitmentScheduleTest(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-    async def test_video_commitment_rejects_calls_and_mixed_media_but_targets_original_group_scope(self):
+    async def test_video_commitment_rejects_calls_and_mixed_media_but_targets_original_group_scope(
+        self,
+    ):
         call_commitment = await self.archive.save_commitment(
             CommitmentRecord(
                 content="下次和对方视频通话",
@@ -746,7 +840,9 @@ class ProactiveCommitmentScheduleTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(tasks), 1)
         self.assertEqual(tasks[0].payload["scope"], group_commitment.source_session)
 
-    async def test_video_reconcile_recovers_due_group_commitments_to_original_group(self):
+    async def test_video_reconcile_recovers_due_group_commitments_to_original_group(
+        self,
+    ):
         stale = await self.archive.save_commitment(
             CommitmentRecord(
                 content="昨天拍视频给对方",
@@ -811,7 +907,9 @@ class ProactiveCommitmentScheduleTest(unittest.IsolatedAsyncioTestCase):
         result = await self.runtime.run_commitment_video_task(task)
 
         self.assertEqual(result["outcome"], "sent")
-        self.assertEqual((await self.archive.get_commitment(commitment.id)).status, "done")
+        self.assertEqual(
+            (await self.archive.get_commitment(commitment.id)).status, "done"
+        )
 
     async def test_invite_contact_does_not_settle_shared_commitment(self):
         commitment = await self.archive.save_commitment(

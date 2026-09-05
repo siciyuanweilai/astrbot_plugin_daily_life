@@ -19,6 +19,7 @@ class ContinuousTurnBatch:
     phase: str = "collecting"
     messages: list[str] = field(default_factory=list)
     message_ids: list[str] = field(default_factory=list)
+    wait_seconds: float = 0.0
 
 
 class ContinuousTurnMixin:
@@ -35,10 +36,13 @@ class ContinuousTurnMixin:
     _CONTINUOUS_TURN_MAX_MESSAGES = 12
     _CONTINUOUS_TURN_MAX_CHARS = 4000
     _CONTINUOUS_TURN_ACTIVE_SECONDS = 90.0
+    _CONTINUOUS_TURN_CADENCE_MULTIPLIER = 1.5
+    _CONTINUOUS_TURN_MAX_TAIL_RATIO = 0.6
 
     def _init_continuous_turn_state(self) -> None:
         self._continuous_turn_batches: dict[str, dict[str, ContinuousTurnBatch]] = {}
         self._continuous_turn_revisions: dict[str, dict[str, int]] = {}
+        self._continuous_turn_cadence: dict[str, dict[str, float]] = {}
         self._continuous_turn_metrics: dict[str, int] = {
             "registered": 0,
             "merged": 0,
@@ -187,6 +191,33 @@ class ContinuousTurnMixin:
             messages[0] = messages[0][-self._CONTINUOUS_TURN_MAX_CHARS :]
         return messages, message_ids
 
+    def _continuous_turn_adaptive_wait(
+        self,
+        previous: ContinuousTurnBatch | None,
+        now: float,
+        base_wait: float,
+        max_wait: float,
+        learned_cadence: float = 0.0,
+    ) -> float:
+        """根据当前和近期发送节奏决定尾部安静窗口。"""
+        base_wait = max(0.0, float(base_wait or 0.0))
+        max_wait = max(base_wait, float(max_wait or 0.0))
+        cadence = max(0.0, float(learned_cadence or 0.0))
+        if previous is not None:
+            interval = max(0.0, float(now) - float(previous.last_at))
+            if cadence > 0:
+                cadence = cadence * 0.35 + interval * 0.65
+            else:
+                cadence = interval
+        if cadence <= 0:
+            return min(base_wait, max_wait)
+        cadence_wait = cadence * self._CONTINUOUS_TURN_CADENCE_MULTIPLIER
+        max_tail_wait = min(
+            max_wait,
+            max(base_wait, max_wait * self._CONTINUOUS_TURN_MAX_TAIL_RATIO),
+        )
+        return min(max_tail_wait, max(base_wait, cadence_wait))
+
     def note_continuous_turn_incoming(self, event: Any) -> bool:
         if not self._continuous_turn_eligible(event):
             return False
@@ -196,16 +227,24 @@ class ContinuousTurnMixin:
         style = self._continuous_turn_style()
         now = time.monotonic()
         max_wait = max(
-            0.0, float(getattr(style, "continuous_turn_max_wait_seconds", 4.0) or 0.0)
+            0.0, float(getattr(style, "continuous_turn_max_wait_seconds", 12.0) or 0.0)
         )
         revisions = getattr(self, "_continuous_turn_revisions", None)
         batches = getattr(self, "_continuous_turn_batches", None)
-        if not isinstance(revisions, dict) or not isinstance(batches, dict):
+        cadences = getattr(self, "_continuous_turn_cadence", None)
+        if (
+            not isinstance(revisions, dict)
+            or not isinstance(batches, dict)
+            or not isinstance(cadences, dict)
+        ):
             self._init_continuous_turn_state()
             revisions = self._continuous_turn_revisions
             batches = self._continuous_turn_batches
+            cadences = self._continuous_turn_cadence
         batch_bucket = batches.setdefault(scope, {})
+        cadence_bucket = cadences.setdefault(scope, {})
         previous = batch_bucket.get(participant)
+        learned_cadence = max(0.0, float(cadence_bucket.get(participant, 0.0) or 0.0))
         active = bool(
             isinstance(previous, ContinuousTurnBatch)
             and previous.phase in {"collecting", "ready", "generating", "waiting"}
@@ -229,12 +268,34 @@ class ContinuousTurnMixin:
             messages, message_ids
         )
         first_at = previous.first_at if active else now
+        base_wait = max(
+            0.0,
+            float(getattr(style, "continuous_turn_wait_seconds", 3.5) or 0.0),
+        )
+        wait_seconds = self._continuous_turn_adaptive_wait(
+            previous if active else None,
+            now,
+            base_wait,
+            max_wait,
+            learned_cadence=learned_cadence,
+        )
+        if active and isinstance(previous, ContinuousTurnBatch):
+            interval = max(0.0, now - previous.last_at)
+            if 0 < interval <= self._CONTINUOUS_TURN_ACTIVE_SECONDS:
+                cadence_bucket[participant] = (
+                    learned_cadence * 0.35 + interval * 0.65
+                    if learned_cadence > 0
+                    else interval
+                )
         batch = ContinuousTurnBatch(
             revision=revision,
             first_at=first_at,
             last_at=now,
             deadline=(
                 previous.deadline if joins_active_generation else first_at + max_wait
+            ),
+            wait_seconds=(
+                previous.wait_seconds if joins_active_generation else wait_seconds
             ),
             phase=(previous.phase if joins_active_generation else "collecting"),
             messages=messages,
@@ -318,10 +379,7 @@ class ContinuousTurnMixin:
         if batch is None or batch.revision != revision:
             self.stop_stale_continuous_turn_event(event)
             return False
-        style = self._continuous_turn_style()
-        wait_seconds = max(
-            0.0, float(getattr(style, "continuous_turn_wait_seconds", 1.5) or 0.0)
-        )
+        wait_seconds = max(0.0, float(batch.wait_seconds or 0.0))
         remaining = max(0.0, batch.deadline - time.monotonic())
         delay = min(wait_seconds, remaining)
         if delay > 0:

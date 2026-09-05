@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import hashlib
 import json
 from typing import Any
 
@@ -21,19 +22,21 @@ class SpineInviteMixin:
     ) -> DayRecord | None:
         try:
             current_time = current_time or life_now()
-            current_period = self._get_curr_period(current_time)
-            kwargs: dict[str, Any] = {"current_time": current_time}
-            if instruction:
-                kwargs["instruction"] = instruction
-            updated = await self.composer.update_outfit(
-                date_str, current_period, **kwargs
-            )
-            if updated:
+            async with operation_lock(self, f"outfit:{date_str}"):
+                current_period = self._get_curr_period(current_time)
+                kwargs: dict[str, Any] = {"current_time": current_time}
                 if instruction:
-                    updated.meta.pop("pending_commitment_outfit", None)
-                    await self.archive.save_day(updated)
-                await self.mark_page_status_changed("invite_outfit_update")
-            return updated
+                    kwargs["instruction"] = instruction
+                    kwargs["instruction_source"] = "commitment"
+                updated = await self.composer.update_outfit(
+                    date_str, current_period, **kwargs
+                )
+                if updated:
+                    if instruction:
+                        updated.meta.pop("pending_commitment_outfit", None)
+                        await self.archive.save_day(updated)
+                    await self.mark_page_status_changed("invite_outfit_update")
+                return updated
         except Exception as exc:
             logger.warning(f"{LOG_PREFIX} 邀约后的穿搭判断失败：{exc}")
             return None
@@ -53,11 +56,15 @@ class SpineInviteMixin:
         instruction: str = "",
     ) -> bool:
         current_time = current_time or life_now()
+        instruction_digest = hashlib.sha1(
+            str(instruction or "").strip().encode("utf-8")
+        ).hexdigest()[:12]
         return self._schedule_background_task(
             self._sync_outfit_after_invite_background(
                 date_str, current_time, instruction
             ),
             label="邀约穿搭判断",
+            key=f"invite_outfit:{date_str}:{instruction_digest}",
         )
 
     @staticmethod

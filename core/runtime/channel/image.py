@@ -11,15 +11,20 @@ from typing import Any
 from astrbot.api import logger
 
 from ...config.options import IMAGE_ASPECT_RATIOS
-from ...life.appearance import format_current_appearance_context
+from ...life.appearance import (
+    format_current_appearance_context,
+    format_image_appearance_context,
+)
 from ...life.wardrobe import (
     normalize_outfit_decision,
     normalize_outfit_scene_category,
     normalize_outfit_style_pool,
     outfit_scene_category_label,
     outfit_style_pool_label,
+    scene_category_for_place_kind,
     style_pool_for_scene_category,
 )
+from ...life.tools import get_current_timeline_status
 from ...media.base import GROUP_IDENTITY_CONTINUITY_RULE
 from ...media.picture.routes import (
     image_provider_label,
@@ -234,8 +239,7 @@ JSON 字段：
 JSON 字段：
 {{"prompt":"与用户原始请求一致、且不和当前生活造型冲突的中文画面提示词"}}"""
         dynamic = (
-            f"用户原始请求：{user_request or '无'}\n"
-            f"工具生成的画面提示：{original}"
+            f"用户原始请求：{user_request or '无'}\n工具生成的画面提示：{original}"
         )
         try:
             image_config = getattr(
@@ -295,14 +299,25 @@ JSON 字段：
         if not callable(resolver):
             return ""
         try:
-            day, _now, _using_extended_night = await resolver()
+            day, now, _using_extended_night = await resolver()
         except Exception as exc:
             logger.debug(
                 f"{LOG_PREFIX} 读取当前造型快照失败，继续使用原始画面要求："
                 f"{type(exc).__name__}"
             )
             return ""
-        return format_current_appearance_context(day)
+        current_item, _next_item = get_current_timeline_status(
+            getattr(day, "timeline", []) or [],
+            now,
+            getattr(day, "date", None),
+        )
+        place_kind = (
+            getattr(current_item, "place_kind", "")
+            if hasattr(current_item, "place_kind")
+            else (current_item or {}).get("place_kind", "")
+        )
+        scene_category = scene_category_for_place_kind(place_kind, default="")
+        return format_image_appearance_context(day, scene_category=scene_category)
 
     def _apply_current_appearance_snapshot(
         self,
@@ -1513,7 +1528,20 @@ JSON 字段：
                 logger.warning(f"{LOG_PREFIX} 当前角色穿搭更新失败，已取消图片生成。")
                 return "这次换装状态没有更新成功，已取消图片生成。"
 
-            current_appearance = format_current_appearance_context(updated_day)
+            current_item, _next_item = get_current_timeline_status(
+                getattr(updated_day, "timeline", []) or [],
+                current_time,
+                getattr(updated_day, "date", None),
+            )
+            place_kind = (
+                getattr(current_item, "place_kind", "")
+                if hasattr(current_item, "place_kind")
+                else (current_item or {}).get("place_kind", "")
+            )
+            scene_category = scene_category_for_place_kind(place_kind, default="")
+            current_appearance = format_image_appearance_context(
+                updated_day, scene_category=scene_category
+            )
             if not current_appearance:
                 logger.warning(
                     f"{LOG_PREFIX} 当前角色穿搭更新后没有可用造型，已取消图片生成。"
@@ -1589,6 +1617,13 @@ JSON 字段：
                 return execution.error
             generated = execution.generated
             directed_prompt = execution.directed_prompt
+            commitment_id = int(getattr(event, "_daily_life_commitment_id", 0) or 0)
+            media_name = str(
+                getattr(event, "_daily_life_media_reply_name", "") or "生活照片"
+            ).strip()
+            reply_request = str(
+                getattr(event, "message_str", "") or plan.prompt
+            ).strip()
             logger.debug(
                 f"{LOG_PREFIX} 图片生成模式：{plan.generation_mode}；长度：{len(directed_prompt)}"
             )
@@ -1598,6 +1633,13 @@ JSON 字段：
                 [str(generated.path)],
                 action_type="photo",
                 evidence="图片已生成，等待投递确认",
+                commitment_id=commitment_id,
+                reply_context={
+                    "media_name": media_name,
+                    "request_text": reply_request,
+                    "delivery_text": "图片已成功送达",
+                    "guidance": "自然回应这次拍照或图片请求。",
+                },
             )
             if not await self.send_message_if_not_recalled(
                 scope,
@@ -1634,12 +1676,23 @@ JSON 字段：
                     source="image_delivery",
                     artifact_path=str(generated.path),
                 )
+            summary = await self._media_result_summary(generated.path, started_at)
+            if commitment_id > 0:
+                reply_sent = await self._send_delivered_media_followup(
+                    scope,
+                    media_name=media_name,
+                    request_text=reply_request,
+                    delivery_text="图片已成功送达",
+                    guidance="这是角色先前答应发送、现在已经履行的照片。",
+                    source_event=event,
+                    source="commitment_photo_followup",
+                )
+                setattr(event, "_daily_life_media_reply_sent", reply_sent)
             await self.finalize_durable_media_delivery(
                 delivery_task,
                 outcome="sent",
                 detail="图片已发送",
             )
-            summary = await self._media_result_summary(generated.path, started_at)
             logger.info(f"{LOG_PREFIX} 图片已发送：{summary}")
             return self._image_delivery_result("generate")
         except Exception as exc:
@@ -1734,6 +1787,7 @@ JSON 字段：
         self,
         event: Any,
         scope: str,
+        prompt: str,
         generated: Any,
         started_at: float,
     ) -> str:
@@ -1743,6 +1797,12 @@ JSON 字段：
             [str(generated.path)],
             action_type="photo",
             evidence="参考图图片已生成，等待投递确认",
+            reply_context={
+                "media_name": "编辑后的生活照片",
+                "request_text": prompt,
+                "delivery_text": "编辑后的图片已成功送达",
+                "guidance": "自然回应这次图片修改请求。",
+            },
         )
         if not await self.send_message_if_not_recalled(
             scope,
@@ -1792,7 +1852,9 @@ JSON 字段：
         provider: str = "",
     ) -> str | None:
         if self._direct_image_tool_already_sent(event):
-            logger.debug(f"{LOG_PREFIX} 图片编辑工具跳过重复调用：本轮已经发送过单张图片。")
+            logger.debug(
+                f"{LOG_PREFIX} 图片编辑工具跳过重复调用：本轮已经发送过单张图片。"
+            )
             return self._duplicate_direct_image_result()
         provider = requested_image_provider(provider)
         if provider:
@@ -1865,6 +1927,7 @@ JSON 字段：
             return await self._deliver_edited_life_image(
                 event,
                 scope,
+                prompt,
                 execution.generated,
                 started_at,
             )

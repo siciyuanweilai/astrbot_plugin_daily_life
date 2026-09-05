@@ -85,8 +85,8 @@ class DailyDraftMixin:
   "life_decision": {{
     "life_mode": "awake | sleeping | late_night | all_nighter | resting | going_out | mixed",
     "sleep": {{"mode": "normal | late_night | all_nighter | nap | early_sleep", "quality": 0-100, "depth": "awake | light_rest | light_sleep | deep_sleep", "summary": "昨晚或当前睡眠状态"}},
-    "outfit": {{"decision": "keep | change | partial_change | sleepwear | outdoor", "scene_category": "{OUTFIT_SCENE_CATEGORY_ENUM}", "style_pool": "{OUTFIT_STYLE_POOL_ENUM}", "style": "简短的最终穿搭风格", "hair_style": "简短发型名称", "hair": "当前可见的详细发型", "makeup_style": "简短妆容名称", "makeup": "当前实际妆容细节或空字符串", "nails_style": "简短美甲名称", "nails": "当前实际美甲细节或空字符串", "catalog_reference_ids": ["实际采用的视觉衣橱候选编号"], "reason": "为什么这样决定"}},
-    "day_plan": {{"schedule_type": "概括今天节奏和活动主题的日程类型标签", "schedule_intent": "home | work | study | social | rest | outing | travel | mixed", "energy_bias": "rest | normal | active", "social_bias": "avoid | light | social"}},
+    "outfit": {{"decision": "keep | change | partial_change | sleepwear | outdoor", "scene_category": "{OUTFIT_SCENE_CATEGORY_ENUM}", "style_pool": "{OUTFIT_STYLE_POOL_ENUM}", "style": "简短的最终穿搭风格", "outfit_components": {{"main_clothing": {{"state": "worn | removed | unknown", "description": "当前主体服装"}}, "footwear": {{"state": "worn | removed | unknown", "description": "当前鞋袜或空字符串"}}, "outer_layer": {{"state": "worn | removed | staged | unknown", "description": "当前外层或空字符串"}}, "carried_accessories": {{"state": "worn | carried | removed | staged | unknown", "description": "当前佩戴/携带的配饰或空字符串"}}}}, "hair_style": "简短发型名称", "hair": "当前可见的详细发型", "makeup_style": "简短妆容名称", "makeup": "当前实际妆容细节或空字符串", "nails_style": "简短美甲名称", "nails": "当前实际美甲细节或空字符串", "catalog_reference_ids": ["实际采用的视觉衣橱候选编号"], "reason": "为什么这样决定"}},
+    "day_plan": {{"schedule_type": "概括今天节奏和活动主题的日程类型标签", "schedule_intent": "home | work | study | social | rest | outing | travel | mixed", "energy_bias": "rest | normal | active", "social_bias": "avoid | light | social", "life_window": {{"start": "08:30", "end": "23:20", "end_state": "sleep | wind_down | awake | all_nighter", "reason": "为什么今天采用这个自然生活跨度"}}}},
     "theme": "今天自然形成的主题",
     "mood": "心情色彩标签，必须是“颜色名·情绪词”格式",
     "life_event": {{"title": "可延续数日的短期生活事件或空对象", "detail": "当前实际感受或处境", "effect": "未来几天怎样影响日程、社交或恢复", "status": "open"}}
@@ -121,10 +121,10 @@ class DailyDraftMixin:
     }},
     "summary": "一句话概括今天整体状态"
   }},
-  "outfit": "当前实际穿着的详细视觉描述，只写此刻身上的服装、实际鞋袜和已佩戴/携带的必要配饰；放在玄关或为稍后出门准备的鞋包属于外出备选，不写入这里，不混入发型、妆容、美甲、动作或剧情",
+  "outfit": "当前实际穿着的详细视觉描述，只写此刻身上的服装和已穿戴/携带的组成；为稍后场景准备但尚未使用的组成属于待用状态，不写入这里，不混入发型、妆容、美甲、动作或剧情",
   "timeline": [
-    {{"time": "08:15", "activity": "具体的行为描写，富有沉浸感", "status": "当前情绪/状态词", "place": "家", "place_kind": "home | poi | generic | transit | online | none", "place_scope": "local | travel", "place_city": "跨城安排的目标城市，否则为空字符串", "place_hint": "同名地点消歧所需的区县、商圈或地址，否则为空字符串", "travel_mode": "walking | cycling | driving | transit 或空字符串"}},
-    {{"time": "09:30", "activity": "...", "status": "...", "place": "...", "place_kind": "...", "place_scope": "...", "place_city": "...", "place_hint": "...", "travel_mode": "..."}}
+    {{"time": "08:15", "activity": "具体的行为描写，富有沉浸感", "status": "当前情绪/状态词", "duration_minutes": 20, "place": "家", "place_kind": "home | poi | generic | transit | online | none", "place_scope": "local | travel", "place_city": "跨城安排的目标城市，否则为空字符串", "place_hint": "同名地点消歧所需的区县、商圈或地址，否则为空字符串", "travel_mode": "walking | cycling | driving | transit 或空字符串"}},
+    {{"time": "09:30", "activity": "...", "status": "...", "duration_minutes": 120, "place": "...", "place_kind": "...", "place_scope": "...", "place_city": "...", "place_hint": "...", "travel_mode": "..."}}
   ],
   "planned_actions": [
     {{
@@ -135,7 +135,7 @@ class DailyDraftMixin:
       "duration_minutes": 30,
       "preconditions": [{{"field": "state.energy", "operator": "gte", "expected": 20}}],
       "effects": [{{"field": "energy", "operation": "add", "value": -5}}],
-      "payload": {{"结构化领域参数": "只填写该动作实际需要的数据"}},
+      "payload": {{"结构化领域参数": "只填写该动作实际需要的数据；change_outfit 必须附 outfit_components，记录本次实际变化后的组成状态账本"}},
       "evidence": "对应的日程节点和生活决策依据",
       "source": "daily_plan"
     }}
@@ -162,6 +162,7 @@ class DailyDraftMixin:
 - 如果提供了连续体力、睡眠债、偏好或生活事件池，必须把它们当作生活惯性参考；但仍由 life_decision 自主决定今天如何表现。
 - life_decision.mood 是心情色彩标签，只写“颜色名·情绪词”，不要写成“元气满满，准备……”这类心情句子；自然语言心情放到 state.mood。
 - day_plan.schedule_type 是日程类型标签，用短语概括今天的节奏、活动主题或生活重心；不要写穿搭风格、睡衣风、发型或笼统倾向。
+- day_plan.life_window 由睡眠、体力、承诺、工作学习和当天状态自主决定：start 是生活时间轴自然起点，end 是本次完整记录应覆盖到的收束时刻；end 早于 start 表示跨日。end_state 写届时真实状态，不得为了迎合普通作息固定成某个钟点。
 - 日程安排保持开放：近期地点只是连续性参考，不是固定路线；在休息日、外出意愿较高、周计划/聊天/承诺支持时，可以低频安排周边游、短途旅行或新的本地探索，schedule_intent 可使用 travel。旅行不是每天必须出现的轮换任务；没有可靠目标城市时使用本地游览或泛化场景，不虚构跨城事实。
 - decision_summary 是后台观察用的内部决策摘要，不是给用户看的旁白；只写真实参与判断的依据，不要为了填字段罗列所有资料。
 2. state 要求：
@@ -182,9 +183,10 @@ class DailyDraftMixin:
 3. outfit 要求：
 - outfit 必须体现 life_decision.outfit 的决定；顶层 outfit 只表示当前/目标时刻已经穿在身上的衣服，未来换装不能提前覆盖。
 {OUTFIT_CONTINUITY_RULES}
+- outfit_components 是当前穿搭的组成状态账本，必须分别填写主体服装、鞋履、外层和随身配饰；场景变化时更新对应组成，不能只改整句 outfit。
 - 单纯“回家”不能默认补写换衣；timeline 只有在真实发生换衣动作时才写换装。
 - 当前/目标时刻仍在外出、路上、购物、吃饭或约会中时，穿搭必须适合当下场景和天气。
-- 当前/目标时刻在家或睡眠/休息状态时，外出鞋、单肩包、雨伞、相机等只作为未来离家节点的外出备选；不得因为下午安排出门就提前写入顶层 outfit 或早晨居家 change_outfit 的 target。
+- 当前/目标时刻在家或睡眠/休息状态时，不适配眼前场景的组成只记录为 staged 或 removed；未来安排只能作为账本中的待用状态，不能提前写入顶层 outfit 或当前 change_outfit 的 target。
 - 保持视觉一致性：outfit 的颜色、材质和配饰要与 life_decision.mood、天气、活动和状态自然协调；style 只写穿搭风格，色彩细节放在顶层 outfit。
 - 当前外观描述规则：
 {CURRENT_APPEARANCE_GENERATION_RULES}
@@ -197,6 +199,8 @@ class DailyDraftMixin:
 {self.config.timeline_prompt}
 - 系统会根据 timeline 自动检查时间覆盖，不需要输出额外时间覆盖说明。
 - 正常整日生成需要形成从较早生活起点到晚间或睡前收束的自然跨度；目标时段生成只写目标时段。
+- duration_minutes 只表示该节点主要活动的自然持续时间，不等于到下一节点的全部间隔；持续期间若发生吃饭、移动、换装、休息或场景变化，仍要单独写节点。
+- 每个节点只描述同一地点内的一段连续生活；地点或场景发生转换时，要以实际转换时刻另起节点。不能把购物、用餐、移动、回家等连续场景压缩成一个节点，移动耗时必须从离开上一节点后的空闲时间中扣除。
 - 每个节点都必须填写 place_kind。home 表示居住地，poi 表示需要地图确认的具体场所，generic 表示不绑定具体商家的泛化场景，transit 表示途中，online 表示线上空间，none 表示没有地点含义。
 - place_kind 为 home 时 place 固定写“家”；为 poi 或 generic 时必须填写 place；为 transit、online 或 none 时不要虚构精确地点。
 - 普通本地生活使用 place_scope=local，place_city 留空；明确的出差、旅行、返乡或跨城安排使用 place_scope=travel 并填写 place_city；同城景点游览仍使用 local，不要把“从家前往某个公园”的交通路线误标成 travel。
@@ -207,7 +211,7 @@ class DailyDraftMixin:
 - action_type、timeline_index、前置条件和影响必须显式填写；不得要求系统从 activity 文案猜动作。
 - timeline 只要明确发生了换装，就必须为对应节点输出 action_type=change_outfit，target 写换装后实际穿搭；不能只在 activity 文案中描述换衣。
 - 不得因为进入新时段或从一个普通活动转到另一个普通活动就安排 change_outfit；适合后续活动的日间主体服装应自然连续。完整换装必须对应起床、睡前/洗澡、运动出汗、淋湿弄脏、明显冷热不适或正式程度确实变化等新发生事件。
-- 换鞋、挎上或放下随身包、穿脱外层都会改变当前穿搭组成，同样必须在实际发生的节点输出 change_outfit；不得把下午/晚些时候出门才使用的鞋包提前并入早晨或居家的 change_outfit target。
+- 任何穿戴组成从 worn、carried、staged 到 removed 的实际变化，都必须在发生的节点输出 change_outfit 并更新 outfit_components；尚未发生的未来组成只能保留为 staged，不能提前并入当前 target。
 - 仅换鞋、增减外层、拿起或放下随身包属于局部穿戴调整，target 必须保留原主体服装，不得借局部调整重写成整套新衣服。
 - 本轮提供视觉衣橱候选时，change_outfit 的 payload.catalog_reference_ids 必须填写该次换装实际采用的衣橱服装编号；如果组合上装和下装，至少同时填写对应的上装与下装编号。系统会用衣橱详细描述校正 target，不能只把衣橱当作灵感后另写一套衣服。
 - action_id 在不同日期和节点间必须唯一；effects 只写该动作真实会改变的数值状态。
@@ -245,6 +249,7 @@ class DailyDraftMixin:
         person_fact_context: str,
         replacement_context: str,
         current_time_text: str,
+        temporal_context_text: str = "",
         calendar_context: str = "",
         season_context: str = "",
     ) -> list[str]:
@@ -259,6 +264,7 @@ class DailyDraftMixin:
             f"目标日期：{date_str}",
             f"当前/目标时间线索：{period_cn}",
             f"当前/目标实际时间：{current_time_text}" if current_time_text else "",
+            f"生活时间上下文：{temporal_context_text}" if temporal_context_text else "",
             f"日历：{calendar_context.strip()}" if calendar_context else "",
             f"季节：{season_context.strip()}" if season_context else "",
             weather_section.strip(),
@@ -298,6 +304,7 @@ class DailyDraftMixin:
         replacement_context: str = "",
         expected_coverage: str = "full_day",
         current_time_text: str = "",
+        temporal_context_text: str = "",
         calendar_context: str = "",
         season_context: str = "",
     ) -> str:
@@ -323,6 +330,7 @@ class DailyDraftMixin:
             person_fact_context=person_fact_context,
             replacement_context=replacement_context,
             current_time_text=current_time_text,
+            temporal_context_text=temporal_context_text,
             calendar_context=calendar_context,
             season_context=season_context,
         )

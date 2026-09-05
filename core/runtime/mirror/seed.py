@@ -57,6 +57,19 @@ class SnapshotSeedMixin:
             await self._refresh_after_residence_change(target)
             return
         if current_day:
+            sync_outfit = getattr(
+                self, "_synchronize_outfit_with_schedule", None
+            )
+            if callable(sync_outfit):
+                try:
+                    if sync_outfit(current_day, now):
+                        await self.archive.save_day(current_day)
+                except Exception as exc:
+                    logger.warning(
+                        "[首次启动] 日程穿搭场景同步失败：%s: %s",
+                        type(exc).__name__,
+                        exc,
+                    )
             return
         await self._generate_missing_day_background(
             target_date_str,

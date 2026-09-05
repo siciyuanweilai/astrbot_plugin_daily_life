@@ -270,6 +270,7 @@ class PortalClosetMixin:
         return {
             "items": payload,
             "default_generation_mode": default_generation_mode,
+            "generation_timeout_seconds": self._page_closet_generation_timeouts(),
             "stats": {
                 "total": len(payload),
                 "source_groups": len(source_groups),
@@ -292,6 +293,24 @@ class PortalClosetMixin:
                 "liked": sum(float(item["preference_score"] or 0.0) > 0 for item in payload),
                 "used": sum(int(item["used_count"] or 0) > 0 for item in payload),
             },
+        }
+
+    def _page_closet_generation_timeouts(self) -> dict[str, int]:
+        config = getattr(self.runtime, "config", None)
+        image = getattr(config, "image_generation", None)
+        llm_timeout = max(10, int(getattr(config, "llm_timeout_seconds", 120) or 120))
+
+        def total(channels) -> int:
+            route_seconds = sum(
+                max(10, int(getattr(channel, "timeout_seconds", 300) or 300))
+                for channel in (channels or [])
+            )
+            # One image may traverse fallback routes, then use vision/LLM recognition.
+            return max(300, route_seconds + (llm_timeout * 2) + 60)
+
+        return {
+            "text_to_image": total(getattr(image, "text_channels", [])),
+            "image_to_image": total(getattr(image, "edit_channels", [])),
         }
 
     def _page_closet_item(self, item: StyleCatalogItemRecord) -> dict:

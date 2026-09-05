@@ -8,6 +8,7 @@ from astrbot.api import logger
 from ..prompts import CORE_JSON_OUTPUT_RULES, cache_friendly_prompt
 from .routing import (
     AUTO_ROUTE_MODE,
+    LOCAL_SCOPE_MAX_TRAVEL_MINUTES,
     ROUTE_MODES,
     RouteChoiceContext,
     choose_practical_route,
@@ -284,16 +285,24 @@ class DailyLocationPlanningMixin:
 
         values = await asyncio.gather(*(fetch(mode) for mode in modes))
         options = [(mode, route) for mode, route in values if route is not None]
+        explicit_max_minutes = max(
+            0, int(request.get("max_travel_minutes") or 0)
+        )
+        effective_max_minutes = explicit_max_minutes or (
+            LOCAL_SCOPE_MAX_TRAVEL_MINUTES
+            if request.get("place_scope") == "local"
+            else 0
+        )
         choice = choose_practical_route(
             options,
             requested_mode=requested_mode,
             locked=locked,
             context=context,
-            max_minutes=max(0, int(request.get("max_travel_minutes") or 0)),
+            max_minutes=effective_max_minutes,
         )
         if choice is not None:
             return choice
-        if options and int(request.get("max_travel_minutes") or 0) > 0:
+        if options and effective_max_minutes > 0:
             return None
 
         distance = self._haversine(origin, destination)
@@ -302,7 +311,21 @@ class DailyLocationPlanningMixin:
             if locked and requested_mode in ROUTE_MODES
             else default_route_mode(distance, context)
         )
-        return fallback_mode, {}, 0
+        speed = {
+            "walking": 1.25,
+            "cycling": 4.2,
+            "driving": 8.5,
+            "transit": 6.0,
+        }[fallback_mode]
+        fallback_route = {
+            "distance_meters": round(distance, 1),
+            "duration_seconds": max(60, int(distance / speed)),
+            "provider": "coordinate_estimate",
+        }
+        fallback_minutes = route_minutes(fallback_route)
+        if effective_max_minutes > 0 and fallback_minutes > effective_max_minutes:
+            return None
+        return fallback_mode, fallback_route, fallback_minutes
 
 
 class DailyLocationGenerationMixin:

@@ -9,14 +9,16 @@ from astrbot.api import logger
 
 from ...clock import now as life_now
 from ...config.options import LifeSettings
-from ...life.tools import get_time_period, get_week_id, resolve_business_now
+from ...life.tools import build_time_context, get_week_id
 from ...models import WeatherInfo
 from ..markers import LOG_PREFIX
 
 
 class SpineAdaptMixin:
     def _get_curr_period(self, target_dt: datetime.datetime | None = None) -> str:
-        return get_time_period(target_dt)
+        return build_time_context(
+            target_dt, getattr(self.config, "schedule_time", "07:00")
+        ).period
 
     @staticmethod
     def _runtime_now() -> datetime.datetime:
@@ -216,7 +218,9 @@ class SpineAdaptMixin:
 
             await self._close_runtime_services(previous_services)
 
-        target = resolve_business_now(self.config.schedule_time, life_now())
+        target = build_time_context(
+            life_now(), self.config.schedule_time
+        ).business_now
         if residence_changed:
             await self._prepare_residence_change(target)
             self._schedule_background_task(
@@ -242,7 +246,7 @@ class SpineAdaptMixin:
     ) -> tuple[str, bool]:
         today_str = now.strftime("%Y-%m-%d")
         yesterday_str = (now - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-        business_now = resolve_business_now(self.config.schedule_time, now)
+        business_now = build_time_context(now, self.config.schedule_time).business_now
         using_extended_night = business_now.date() < now.date()
 
         if using_extended_night:

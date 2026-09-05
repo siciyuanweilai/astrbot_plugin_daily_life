@@ -21,7 +21,7 @@ from astrbot.api import logger
 
 from ...clock import TIMEZONE_NAME, now as life_now
 from ...life.calendar import format_calendar_context, format_season_context
-from ...life.tools import get_time_period, get_time_period_cn
+from ...life.tools import build_time_context
 from ...models import LifeEventRecord
 from ...sources.events import event_attr, event_call, iter_event_sources
 from ...sources.platforms import is_onebot_event
@@ -424,6 +424,7 @@ class RtcVoiceCallManager(VoiceCallTranscriptMixin):
         """生成一次通话建立时的实时钟表事实，避免上游使用旧历史时间。"""
 
         now = life_now()
+        time_context = build_time_context(now)
         weekday_names = (
             "星期一",
             "星期二",
@@ -437,9 +438,10 @@ class RtcVoiceCallManager(VoiceCallTranscriptMixin):
             "datetime": now.strftime("%Y-%m-%d %H:%M:%S"),
             "timezone": TIMEZONE_NAME,
             "utc_offset": "UTC+08:00",
-            "date": now.date().isoformat(),
+            "date": time_context.now.date().isoformat(),
+            "business_date": time_context.business_date_text,
             "weekday": weekday_names[now.weekday()],
-            "time_period": get_time_period_cn(get_time_period(now)),
+            "time_period": time_context.period_cn,
             "calendar": format_calendar_context(now),
             "season": format_season_context(now),
         }
@@ -599,7 +601,6 @@ class RtcVoiceCallManager(VoiceCallTranscriptMixin):
         speech_rate = int(getattr(voice, "speech_rate", 0) or 0)
         speaker_source = str(getattr(voice, "speaker_source", "") or "").strip().lower()
         resource_id = "seed-icl-2.0" if speaker_source in {"cloned", "clone", "voice_clone"} or self.speaker_id.startswith(("S_", "ICL_")) else "seed-tts-2.0"
-        loudness_rate = int(getattr(voice, "loudness_rate", 0) or 0)
         callback = self._rtc_callback_url(invite)
         instructions = str(invite.context or "").strip()
         if invite.greeting:

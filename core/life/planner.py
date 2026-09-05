@@ -29,7 +29,7 @@ from .reliability import (
 from .rhythm import LifecycleMixin
 from .settlement import LifeActionMixin
 from .sourcebook import ReferenceMixin
-from .tools import extract_json_from_text, get_time_period
+from .tools import build_time_context, extract_json_from_text
 from .weather import WeatherClient
 from .weekly import WeekMixin
 
@@ -71,7 +71,8 @@ class LifeBackgroundComposer(
         self._provider_circuit = ProviderCircuit()
 
     def _get_curr_period(self, target_dt=None) -> str:
-        return get_time_period(target_dt)
+        schedule_time = getattr(self.config, "schedule_time", "07:00")
+        return build_time_context(target_dt, schedule_time).period
 
     async def _provider_by_id(self, provider_id: str):
         provider_id = str(provider_id or "").strip()

@@ -111,6 +111,30 @@ class LifeToolsTest(unittest.TestCase):
         self.assertEqual(timeline[1].execution_state, "active")
         self.assertEqual(timeline[2].execution_state, "skipped")
 
+    def test_timeline_execution_respects_activity_window_and_daily_end(self):
+        timeline = [
+            TimelineItem(time="21:30", activity="收拾餐桌", duration_minutes=20),
+            TimelineItem(time="22:00", activity="洗漱后准备休息"),
+        ]
+
+        reconcile_timeline_execution(
+            timeline,
+            datetime.datetime(2026, 5, 24, 23, 10),
+            "2026-05-24",
+            timeline_end="23:00",
+        )
+
+        self.assertEqual(timeline[0].execution_state, "elapsed")
+        self.assertEqual(timeline[1].execution_state, "elapsed")
+        self.assertIn("尚未收到执行证据", timeline[1].execution_reason)
+        current, next_item = get_current_timeline_status(
+            timeline,
+            datetime.datetime(2026, 5, 24, 23, 10),
+            "2026-05-24",
+        )
+        self.assertIsNone(current)
+        self.assertIsNone(next_item)
+
     def test_home_scene_does_not_force_sleep_style_pool(self):
         self.assertEqual(style_pool_for_scene_category("home"), "mixed")
         self.assertEqual(style_pool_for_scene_category("sleep"), "sleep_styles")

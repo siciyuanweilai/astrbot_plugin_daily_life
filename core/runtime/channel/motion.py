@@ -473,12 +473,23 @@ class RuntimeVideoMediaMixin:
         started_at: float,
     ) -> bool:
         generated_url = str(getattr(execution.generated, "url", "") or "").strip()
+        commitment_id = int(getattr(request.event, "_daily_life_commitment_id", 0) or 0)
+        media_name = str(
+            getattr(request.event, "_daily_life_media_reply_name", "") or "生活视频"
+        ).strip()
         delivery_task = await self.stage_durable_media_delivery(
             request.scope,
             "video",
             [generated_url],
             action_type="video",
             evidence="视频已生成，等待投递确认",
+            commitment_id=commitment_id,
+            reply_context={
+                "media_name": media_name,
+                "request_text": request.prompt,
+                "delivery_text": "视频已成功送达",
+                "guidance": "自然回应这次视频请求。",
+            },
         )
         if not await self.send_message_if_not_recalled(
             request.scope,
@@ -532,17 +543,17 @@ class RuntimeVideoMediaMixin:
                 source="video_delivery",
                 artifact_path=generated_url,
             )
-        await self.finalize_durable_media_delivery(
-            delivery_task,
-            outcome="sent",
-            detail="视频已发送",
-        )
         await self._send_life_video_followup(
             request.scope,
             request.prompt,
             summary,
             request.event,
             request.request_id,
+        )
+        await self.finalize_durable_media_delivery(
+            delivery_task,
+            outcome="sent",
+            detail="视频已发送",
         )
         await self.finish_tool_reaction(
             request.event, "life_video_generate", success=True
@@ -852,6 +863,8 @@ class RuntimeVideoMediaMixin:
             scope, text, source_event=event, source="video_followup"
         )
         if text_sent:
+            if event is not None:
+                setattr(event, "_daily_life_media_reply_sent", True)
             await self._append_assistant_history(scope, text)
         return text_sent
 

@@ -124,6 +124,12 @@ class _Session:
 
 
 class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
+    def test_image_timeout_error_explains_late_upstream_completion(self):
+        message = GeminiImageService._error_text(TimeoutError(), 300)
+
+        self.assertIn("等待超过 300 秒", message)
+        self.assertIn("上游可能仍在生成", message)
+
     def test_grok_text_request_uses_documented_json_fields(self):
         route = ImageRoute(
             api_url="https://grok-relay.example/v1/images/generations",

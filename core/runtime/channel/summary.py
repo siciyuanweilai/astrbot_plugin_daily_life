@@ -2,17 +2,143 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import json
 import time
+import uuid
 from typing import Any
 
 from astrbot.api import logger
 
 from ...paths import expand_path, path_is_file, path_size
+from ...prompts import CORE_MEDIA_REPLY_RULES, cache_friendly_prompt
+from ..delivery import BackgroundTextMode
 from ..markers import LOG_PREFIX
 
 
 class RuntimeMediaCommonMixin:
     _MEDIA_CADENCE_TTL_SECONDS = 6 * 60 * 60
+
+    @staticmethod
+    def _parse_delivered_media_reply(value: Any) -> str:
+        text = str(value or "").strip()
+        if text.startswith("```"):
+            lines = text.splitlines()
+            fence = lines[0].strip().lower() if lines else ""
+            if len(lines) < 3 or fence not in {"```", "```json"}:
+                return ""
+            if lines[-1].strip() != "```":
+                return ""
+            text = "\n".join(lines[1:-1]).strip()
+        if not text.startswith("{") or not text.endswith("}"):
+            return ""
+        try:
+            payload = json.loads(text)
+        except (TypeError, ValueError):
+            return ""
+        if not isinstance(payload, dict) or set(payload) != {"reply_text"}:
+            return ""
+        reply_text = payload.get("reply_text")
+        return reply_text.strip() if isinstance(reply_text, str) else ""
+
+    async def _generate_delivered_media_reply(
+        self,
+        scope: str,
+        *,
+        media_name: str,
+        request_text: str,
+        delivery_text: str,
+        guidance: str = "",
+    ) -> str:
+        get_provider = getattr(self, "get_text_provider", None)
+        call_llm = getattr(self, "call_text_model", None)
+        if not callable(get_provider) or not callable(call_llm):
+            return ""
+        try:
+            provider = await get_provider("")
+            if provider is None:
+                return ""
+            persona = ""
+            persona_getter = getattr(self, "get_persona_text", None)
+            if callable(persona_getter):
+                try:
+                    persona = str(await persona_getter(scope) or "").strip()
+                except TypeError:
+                    persona = str(await persona_getter() or "").strip()
+            fixed = """你正在给刚刚真实送达的一份生活媒体补一句自然回复。
+严格只输出一个 JSON 对象，不要使用 Markdown 代码块或解释：
+{"reply_text":"角色真正说出口的一句中文短回复"}
+JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
+回复要像角色本人顺手接话，结合用户原本的要求和实际送达结果自然承接。
+不要复述内部流程、文件信息、耗时或技术状态；没有看见成品内容时，不得编造具体画面细节。""".replace(
+                "{CORE_MEDIA_REPLY_RULES}", CORE_MEDIA_REPLY_RULES
+            )
+            dynamic = (
+                f"角色口吻参考：{persona[:800] if persona else '按当前角色口吻自然回复。'}\n"
+                f"送达内容：{str(media_name or '生活媒体').strip()}\n"
+                f"用户原本的要求：{str(request_text or '').strip()}\n"
+                f"实际送达结果：{str(delivery_text or '').strip()}\n"
+                f"补充语境：{str(guidance or '').strip()}"
+            )
+            raw = await call_llm(
+                provider,
+                cache_friendly_prompt(fixed, dynamic, dynamic_title="媒体已经送达"),
+                f"daily_life_media_followup_{uuid.uuid4().hex[:8]}",
+                empty_retries=0,
+                primary_provider_id="",
+            )
+            reply_text = self._parse_delivered_media_reply(raw)
+            if not reply_text:
+                logger.debug(f"{LOG_PREFIX} 媒体送达补话生成失败：返回内容不符合协议")
+            return reply_text
+        except Exception as exc:
+            logger.debug(
+                f"{LOG_PREFIX} 媒体送达补话生成失败：{self._media_error_summary(exc)}"
+            )
+            return ""
+
+    async def _send_delivered_media_followup(
+        self,
+        scope: str,
+        *,
+        media_name: str,
+        request_text: str,
+        delivery_text: str,
+        guidance: str = "",
+        source_event: Any = None,
+        source: str = "media_followup",
+    ) -> bool:
+        text = await self._generate_delivered_media_reply(
+            scope,
+            media_name=media_name,
+            request_text=request_text,
+            delivery_text=delivery_text,
+            guidance=guidance,
+        )
+        if not text:
+            return False
+        try:
+            sent = await self.send_background_text(
+                scope,
+                text,
+                mode=BackgroundTextMode.EXPRESSIVE,
+                source_event=source_event,
+                source=source,
+            )
+        except Exception as exc:
+            logger.warning(
+                f"{LOG_PREFIX} 媒体送达补话发送失败：{self._media_error_summary(exc)}"
+            )
+            return False
+        if not sent:
+            return False
+        try:
+            await self._append_assistant_history(scope, text)
+        except Exception as exc:
+            logger.debug(
+                f"{LOG_PREFIX} 媒体送达补话历史记录失败："
+                f"{self._media_error_summary(exc)}"
+            )
+        return True
 
     @staticmethod
     def _localized_error_name(name: str) -> str:

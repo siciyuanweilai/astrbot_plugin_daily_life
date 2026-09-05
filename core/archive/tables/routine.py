@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS timelines (
             time TEXT NOT NULL DEFAULT '',
             activity TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL DEFAULT '',
+            duration_minutes INTEGER NOT NULL DEFAULT 0,
             place TEXT NOT NULL DEFAULT '',
             place_kind TEXT NOT NULL DEFAULT 'none',
             place_scope TEXT NOT NULL DEFAULT 'local',

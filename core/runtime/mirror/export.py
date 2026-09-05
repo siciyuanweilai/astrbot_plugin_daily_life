@@ -10,10 +10,8 @@ from ...clock import now as life_now
 from ...life.condition import classify_message_interrupt, message_can_interrupt
 from ...life.calendar import format_calendar_context, format_season_context
 from ...life.tools import (
+    build_time_context,
     format_timeline_to_text,
-    get_time_period,
-    get_time_period_cn,
-    resolve_business_now,
     resolve_daily_hint,
 )
 from ...sources.platforms import parse_unified_origin
@@ -38,10 +36,12 @@ class SnapshotExportMixin:
     async def _resolve_life_context_day(
         self, now: datetime.datetime
     ) -> tuple[Any | None, str, bool, str]:
-        today_str = now.strftime("%Y-%m-%d")
-        yesterday_str = (now - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-        business_now = resolve_business_now(self.config.schedule_time, now)
-        is_extended_night = business_now.date() < now.date()
+        time_context = build_time_context(now, self.config.schedule_time)
+        today_str = time_context.now.strftime("%Y-%m-%d")
+        yesterday_str = (time_context.now - datetime.timedelta(days=1)).strftime(
+            "%Y-%m-%d"
+        )
+        is_extended_night = time_context.extended_night
 
         if is_extended_night:
             data = await self.archive.get_day(yesterday_str)
@@ -638,6 +638,7 @@ class SnapshotExportMixin:
     async def _build_share_base_context(self, target_umo: str = "") -> dict[str, Any]:
         """组装分享专用上下文的基础生活状态。"""
         now = life_now()
+        time_context = build_time_context(now, self.config.schedule_time)
         (
             data,
             target_date_str,
@@ -671,9 +672,10 @@ class SnapshotExportMixin:
             "datetime": now.strftime("%Y-%m-%d %H:%M:%S"),
             "timezone": "Asia/Shanghai",
             "utc_offset": "UTC+08:00",
-            "date": now.date().isoformat(),
+            "date": time_context.now.date().isoformat(),
+            "business_date": time_context.business_date_text,
             "weekday": weekday_names[now.weekday()],
-            "time_period": get_time_period_cn(get_time_period(now)),
+            "time_period": time_context.period_cn,
             "calendar": format_calendar_context(now),
             "season": format_season_context(now),
         }

@@ -295,6 +295,7 @@ const state = {
   closetItems: [],
   closetStats: {},
   closetDefaultGenerationMode: "text_to_image",
+  closetGenerationTimeoutSeconds: {},
   closetFilter: "all",
   closetPage: 1,
   closetLoaded: false,
@@ -700,6 +701,11 @@ function objectItems(items) {
   return (Array.isArray(items) ? items : []).filter((item) => item && typeof item === "object");
 }
 
+function normalizeClosetFilter(value) {
+  const normalized = text(value, "all").trim().toLowerCase();
+  return normalized || "all";
+}
+
 function typedLabel(value, labels, fallbackLabels = []) {
   const raw = text(value).trim();
   if (!raw) return "";
@@ -921,6 +927,7 @@ function cloneTimeline(timeline = []) {
       time: clean(source.time, ""),
       activity: clean(source.activity, ""),
       status: clean(source.status, ""),
+      duration_minutes: Math.max(0, Number(source.duration_minutes || 0)),
       execution_state: clean(source.execution_state, "planned"),
       execution_reason: clean(source.execution_reason, ""),
       execution_evidence: clean(source.execution_evidence, ""),
@@ -947,6 +954,9 @@ function renderTimelineDisplay(timeline) {
       li.append(node("div", "time", clean(item.time, TIMELINE_TIME_EMPTY_TEXT)));
       const body = node("div");
       body.append(node("div", "timeline-activity", clean(item.activity)));
+      if (Number(item.duration_minutes || 0) > 0) {
+        body.append(node("div", "timeline-duration", `约 ${Number(item.duration_minutes)} 分钟`));
+      }
       const travel = timelineTravelText(item, timeline[index - 1]);
       if (travel) body.append(node("div", "timeline-travel", travel));
       if (item.status) body.append(node("div", "status", clean(item.status)));
@@ -984,6 +994,16 @@ function timelineEditorRow(item, index) {
   activity.placeholder = "活动";
   activity.dataset.timelineField = "activity";
   activity.dataset.index = String(index);
+  const duration = document.createElement("input");
+  duration.type = "number";
+  duration.min = "0";
+  duration.max = "1440";
+  duration.step = "5";
+  duration.value = String(Math.max(0, Number(item.duration_minutes || 0)));
+  duration.placeholder = "分钟";
+  duration.title = "持续分钟数";
+  duration.dataset.timelineField = "duration_minutes";
+  duration.dataset.index = String(index);
   const status = document.createElement("input");
   status.type = "text";
   status.value = clean(item.status, "");
@@ -999,7 +1019,7 @@ function timelineEditorRow(item, index) {
     state.timelineDraft.splice(index, 1);
     renderTimelineEditor();
   });
-  body.append(activity, status, remove);
+  body.append(activity, duration, status, remove);
   li.append(time, body);
   return li;
 }
@@ -1010,7 +1030,9 @@ function updateTimelineDraftFromInputs() {
     const index = Number(input.dataset.index);
     const field = input.dataset.timelineField;
     if (!Number.isInteger(index) || !next[index] || !field) return;
-    next[index][field] = input.value.trim();
+    next[index][field] = field === "duration_minutes"
+      ? Math.max(0, Math.min(1440, Number(input.value || 0)))
+      : input.value.trim();
   });
   state.timelineDraft = next;
 }
@@ -2973,8 +2995,9 @@ function pruneClosetSelection() {
 }
 
 function filteredClosetItems() {
-  const filter = text(state.closetFilter || "all");
+  const filter = normalizeClosetFilter(state.closetFilter);
   const items = objectItems(state.closetItems);
+  if (filter === "all") return items;
   if (["active", "pending", "disabled"].includes(filter)) {
     return items.filter((item) => closetStatus(item) === filter);
   }
@@ -3251,9 +3274,18 @@ function renderClosetManagement() {
 function applyClosetPayload(payload = {}) {
   state.closetItems = objectItems(payload.items);
   state.closetStats = payload.stats && typeof payload.stats === "object" ? payload.stats : {};
+  state.closetFilter = normalizeClosetFilter(state.closetFilter);
+  if (el.closetFilter && el.closetFilter.value !== state.closetFilter) {
+    el.closetFilter.value = state.closetFilter;
+    lifeSelectControls.syncSelect(el.closetFilter);
+  }
   state.closetDefaultGenerationMode = ["text_to_image", "image_to_image"].includes(payload.default_generation_mode)
     ? payload.default_generation_mode
     : "text_to_image";
+  state.closetGenerationTimeoutSeconds = payload.generation_timeout_seconds
+    && typeof payload.generation_timeout_seconds === "object"
+    ? payload.generation_timeout_seconds
+    : {};
   state.closetLoaded = true;
   pruneClosetSelection();
   renderClosetManagement();
@@ -3337,6 +3369,8 @@ function renderClosetDetail() {
     closeClosetDetail();
     return;
   }
+  const groupItems = closetDetailItems(item);
+  const groupIds = closetTargetIds(groupItems.map((entry) => entry.id));
   el.closetDetailTitle.textContent = clean(item.title, "衣橱详情");
   const preview = node("div", "closet-detail-preview");
   if (item.preview_available) {
@@ -3405,11 +3439,11 @@ function renderClosetDetail() {
   ));
   const remove = node("button", "danger", "删除");
   remove.type = "button";
-  remove.addEventListener("click", () => confirmClosetDelete(remove, [item.id], "删除"));
+  remove.addEventListener("click", () => confirmClosetDelete(remove, groupIds, "删除"));
   actions.append(like, dislike, review, toggle, remove);
   const sourceLink = closetSourceLink(item);
   const prompts = node("div", "closet-detail-prompts");
-  closetDetailItems(item).forEach((entry) => {
+  groupItems.forEach((entry) => {
     const prompt = node("section", "closet-detail-prompt");
     prompt.append(
       node("h3", "closet-detail-prompt-title", CLOSET_KIND_LABELS[entry.kind] || "造型"),
@@ -3502,16 +3536,26 @@ async function importClosetFiles(files) {
 async function generateCloset() {
   setBusy(true);
   try {
+    const generationMode = el.closetGenerateMode?.value || "";
+    const count = Math.max(1, Number(el.closetGenerateCount?.value || 1));
+    const perImageSeconds = Math.max(
+      300,
+      Number(state.closetGenerationTimeoutSeconds[generationMode] || 600)
+    );
+    const timeoutMs = Math.min(2_000_000_000, Math.ceil(count * perImageSeconds * 1000));
     const result = await apiPost("page/closet/generate", {
-      generation_mode: el.closetGenerateMode?.value || "",
-      count: Number(el.closetGenerateCount?.value || 1),
+      generation_mode: generationMode,
+      count,
       requirement: clean(el.closetGenerateNote?.value, ""),
-    }, { timeoutMs: 300000, timeoutMessage: "创意生成耗时较久，请稍后查看" });
+    }, { timeoutMs, timeoutMessage: "创意生成仍在后台处理，请稍后刷新衣橱" });
     applyClosetPayload(result);
     closeClosetGenerate();
     setNotice("创意衣橱生成完成", "success");
   } catch (error) {
-    setNotice(userErrorMessage(error, "创意衣橱生成失败"), "error");
+    setNotice(
+      userErrorMessage(error, "创意衣橱生成失败"),
+      error?.isTimeout ? "warning" : "error"
+    );
   } finally {
     setBusy(false);
   }
@@ -3570,7 +3614,7 @@ function confirmClosetDelete(button, ids, label = "删除选中") {
   }
   button.dataset.confirmDelete = "true";
   button.classList.add("is-confirming");
-  button.textContent = targets.length > 1 ? `确认删除 ${targets.length} 条` : "确认删除";
+  button.textContent = "确认删除";
   button.dataset.confirmTimer = String(window.setTimeout(() => resetClosetDeleteButton(button, label), 3200));
   setNotice("再次点击确认删除衣橱素材");
 }
@@ -3803,7 +3847,7 @@ function cancelTimelineEdit() {
 
 function addTimelineItem() {
   updateTimelineDraftFromInputs();
-  state.timelineDraft.push({ time: "12:00", activity: "", status: "", execution_state: "planned" });
+  state.timelineDraft.push({ time: "12:00", activity: "", status: "", duration_minutes: 0, execution_state: "planned" });
   renderTimelineEditor();
   el.timelineList.scrollTop = el.timelineList.scrollHeight;
 }
@@ -3889,7 +3933,7 @@ function bindEvents() {
     if (event.target === el.emojiDetailDialog) closeEmojiDetail();
   });
   el.closetFilter?.addEventListener("change", () => {
-    state.closetFilter = el.closetFilter.value || "all";
+    state.closetFilter = normalizeClosetFilter(el.closetFilter.value);
     state.closetPage = 1;
     renderClosetManagement();
   });

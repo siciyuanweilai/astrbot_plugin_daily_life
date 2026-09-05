@@ -1,6 +1,7 @@
 import datetime
 import json
 import random
+from dataclasses import dataclass
 from typing import Any
 
 import chinese_calendar
@@ -218,6 +219,61 @@ def get_time_period(current_time=None) -> str:
     if now_minutes < 22 * 60:
         return "night"
     return "late_night"
+
+
+@dataclass(frozen=True, slots=True)
+class LifeTimeContext:
+    """一次生活判断中共用的本地时间快照。"""
+
+    now: datetime.datetime
+    period: str
+    period_cn: str
+    minute_of_day: int
+    business_now: datetime.datetime
+    business_date: datetime.date
+    extended_night: bool
+    schedule_time: str = ""
+
+    @property
+    def now_text(self) -> str:
+        return self.now.strftime("%Y-%m-%d %H:%M")
+
+    @property
+    def business_date_text(self) -> str:
+        return self.business_date.strftime("%Y-%m-%d")
+
+    def prompt_text(self) -> str:
+        relation = "延续前一生活日" if self.extended_night else "属于当前生活日"
+        return (
+            f"实际时间={self.now_text}；时段={self.period_cn}；"
+            f"生活日={self.business_date_text}（{relation}）；"
+            "时间轴进度按实际时刻和结构化执行状态判断，时间经过不等于动作已完成"
+        )
+
+
+def build_time_context(
+    current_time: datetime.datetime | None = None,
+    schedule_time: str | None = None,
+) -> LifeTimeContext:
+    """构造单次判断可复用的时间上下文，避免模块各自重新解释时间。"""
+
+    current = current_time or life_now()
+    period = get_time_period(current)
+    business = (
+        resolve_business_now(schedule_time, current)
+        if str(schedule_time or "").strip()
+        else current
+    )
+    return LifeTimeContext(
+        now=current,
+        period=period,
+        period_cn=get_time_period_cn(period),
+        minute_of_day=current.hour * 60 + current.minute,
+        business_now=business,
+        business_date=business.date(),
+        extended_night=business.date() < current.date(),
+        schedule_time=str(schedule_time or "").strip(),
+    )
 
 
 def extract_json_from_text(text):
@@ -539,6 +595,55 @@ def _timeline_field(item: Any, key: str, default: str = "") -> str:
     return default
 
 
+def _timeline_duration_minutes(item: Any) -> int:
+    try:
+        return max(0, int(float(_timeline_field(item, "duration_minutes", "0"))))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _timeline_window_boundary(
+    value: Any,
+    timeline_date: datetime.date,
+    *,
+    after: datetime.datetime,
+) -> datetime.datetime | None:
+    """Resolve a daily window boundary, including an after-midnight endpoint."""
+    parsed = parse_life_datetime(value)
+    if parsed is not None:
+        return parsed
+    try:
+        hour, minute = map(int, str(value or "").strip().split(":", 1))
+    except (TypeError, ValueError):
+        return None
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    boundary = datetime.datetime.combine(timeline_date, datetime.time(hour, minute))
+    if boundary <= after:
+        boundary += datetime.timedelta(days=1)
+    return boundary
+
+
+def _timeline_item_window_end(
+    timed_items: list[tuple[datetime.datetime, Any]],
+    index: int,
+    *,
+    timeline_end: Any = None,
+    timeline_date: datetime.date,
+) -> datetime.datetime | None:
+    item_time, item = timed_items[index]
+    duration_minutes = _timeline_duration_minutes(item)
+    if duration_minutes:
+        return item_time + datetime.timedelta(minutes=duration_minutes)
+    if index + 1 < len(timed_items):
+        return timed_items[index + 1][0]
+    return _timeline_window_boundary(
+        timeline_end,
+        timeline_date,
+        after=item_time,
+    )
+
+
 def get_current_timeline_status(
     timeline: list,
     current_time: datetime.datetime = None,
@@ -578,6 +683,19 @@ def get_current_timeline_status(
             next_item = item
             break
 
+    if current_item is not None:
+        execution_state = _timeline_field(
+            current_item, "execution_state", "planned"
+        ).lower()
+        if execution_state in {
+            "elapsed",
+            "completed",
+            "expired",
+            "skipped",
+            "cancelled",
+        }:
+            current_item = None
+
     return current_item, next_item
 
 
@@ -587,6 +705,7 @@ def reconcile_timeline_execution(
     timeline_date: Any,
     *,
     evidence: str = "时间轴时钟",
+    timeline_end: Any = None,
 ) -> bool:
     """推进时间轴观察态；时钟经过只代表计划已过，不代表动作已完成。"""
     date = coerce_date(timeline_date)
@@ -604,26 +723,25 @@ def reconcile_timeline_execution(
     if not timed_items:
         return False
 
-    current_index = -1
-    for index, (item_time, _item) in enumerate(timed_items):
-        if item_time <= now_key:
-            current_index = index
-        else:
-            break
-
     updated_at = current_time.strftime("%Y-%m-%d %H:%M")
-    for index, (_item_time, item) in enumerate(timed_items):
+    for index, (item_time, item) in enumerate(timed_items):
         previous = _timeline_field(item, "execution_state", "planned").lower()
         previous = previous if previous in TIMELINE_EXECUTION_STATES else "planned"
         if previous in {"skipped", "cancelled", "expired"}:
             continue
+        window_end = _timeline_item_window_end(
+            timed_items,
+            index,
+            timeline_end=timeline_end,
+            timeline_date=date,
+        )
         if date < current_time.date():
             target = "elapsed"
             reason = "计划日期已过，尚未收到执行证据"
-        elif date > current_time.date() or current_index < 0 or index > current_index:
+        elif date > current_time.date() or item_time > now_key:
             target = "planned"
             reason = "等待计划开始"
-        elif index < current_index:
+        elif window_end is not None and now_key >= window_end:
             target = "elapsed"
             reason = "计划时段已过，尚未收到执行证据"
         else:

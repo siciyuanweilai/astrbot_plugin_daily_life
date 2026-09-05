@@ -25,7 +25,7 @@ from .appearance import (
 )
 from .condition import format_physiological_rhythm_prompt
 from .fashion import outfit_style_contamination_reason
-from .future import future_outfit_timing_issue, outfit_descriptions_match
+from .future import future_outfit_timing_issue
 from .tools import (
     extract_json_from_text,
     format_timeline_travel,
@@ -40,12 +40,20 @@ from .wardrobe import (
     OUTFIT_CURRENT_BASIS_ENUM,
     OUTFIT_SCENE_CATEGORY_ENUM,
     decision_for_occurred_outfit,
+    format_outfit_component_ledger,
+    format_outfit_components,
+    merge_outfit_components,
     normalize_outfit_current_basis,
+    normalize_outfit_components,
     normalize_outfit_decision,
     normalize_outfit_scene_category,
     outfit_scene_category_label,
+    project_outfit_components_for_scene,
+    reconcile_outfit_components_for_scene,
+    scene_category_for_place_kind,
     outfit_style_pool_label,
     resolve_outfit_style_pool,
+    serialize_outfit_components,
 )
 
 PERIOD_TIME_RANGES = {
@@ -61,6 +69,7 @@ PERIOD_TIME_RANGES = {
 
 _OUTFIT_FACT_SOURCE_LABELS = {
     "user_instruction": "用户明确确认",
+    "commitment": "已确认约定",
     "life_action": "已结算生活动作",
     "occurred_schedule": "已发生日程",
     "live_state": "实时生活状态",
@@ -68,7 +77,6 @@ _OUTFIT_FACT_SOURCE_LABELS = {
     "daily_generation": "当日日程生成",
     "carried_previous_day": "前一日延续",
 }
-
 
 class OutfitMixin:
     @staticmethod
@@ -231,6 +239,9 @@ class OutfitMixin:
                 state_updated_at is None or state_updated_at <= fact_confirmed_at
             ):
                 return ""
+            state_source = str(context.get("state_source") or "").strip().lower()
+            if not state_source.startswith(("life_action:", "action_receipt:")):
+                return ""
             return "live_state"
         return ""
 
@@ -357,22 +368,32 @@ class OutfitMixin:
         daily_theme: str,
         mood_color: str,
         target_period: str,
+        current_scene_category: str = "",
+        current_outfit: str = "",
+        current_components: object = None,
     ) -> str:
+        scene_value = current_scene_category or old_meta.get("outfit_scene_category")
+        components_value = (
+            current_components
+            if current_components is not None
+            else old_meta.get("outfit_components")
+        )
         lines = [
             f"天气：{weather}",
             f"天气温度：{weather_info.temp if weather_info and weather_info.temp is not None else '未知'}°C",
-            f"当前穿搭：{old_data.outfit or '未知'}",
+            f"当前穿搭：{current_outfit or old_data.outfit or '未知'}",
             f"当前发型名称：{old_meta.get('hair_style') or '未知'}",
             f"当前发型细节：{old_meta.get('hair') or '未知'}",
             f"当前妆容名称：{old_meta.get('makeup_style') or '未知'}",
             f"当前妆容细节：{old_meta.get('makeup') or '未知'}",
             f"当前美甲名称：{old_meta.get('nails_style') or '未知'}",
             f"当前美甲细节：{old_meta.get('nails') or '未知'}",
-            f"当前穿着场景：{outfit_scene_category_label(old_meta.get('outfit_scene_category')) if old_meta.get('outfit_scene_category') else '未知'}",
+            f"当前穿着场景：{outfit_scene_category_label(scene_value) if scene_value else '未知'}",
             f"当前穿着风格池：{outfit_style_pool_label(old_meta.get('outfit_style_pool')) if old_meta.get('outfit_style_pool') else '未知'}",
             f"今日日程基调：{old_meta.get('life_mode', '未知')}",
             f"今日睡眠倾向：{old_meta.get('sleep_mode', '未知')}",
             f"当前穿搭决定：{outfit_decision_label(old_meta.get('outfit_decision')) or '未知'}",
+            f"当前穿搭组成状态：{format_outfit_component_ledger(components_value) or '未知'}",
             f"外出备选组成（当前未穿/未携带）：{old_meta.get('outing_outfit_reserve') or '无'}",
             f"今日主题：{daily_theme}",
             f"今日心情色彩：{mood_color}（仅供氛围参考）",
@@ -393,6 +414,7 @@ class OutfitMixin:
         current_time: datetime.datetime,
         instruction: str = "",
         source_instruction: str | None = None,
+        instruction_source: str | None = None,
     ) -> dict:
         timeline_date = old_data.date or date_str
         current_item, next_item = get_current_timeline_status(
@@ -409,9 +431,33 @@ class OutfitMixin:
             if item_time is not None and item_time <= current_time:
                 occurred_timeline_items.append(item)
         old_meta = old_data.meta
+        current_scene_category = scene_category_for_place_kind(
+            getattr(current_item, "place_kind", "")
+            if current_item is not None and not isinstance(current_item, dict)
+            else (current_item or {}).get("place_kind", ""),
+            default=normalize_outfit_scene_category(
+                old_meta.get("outfit_scene_category"), default=""
+            ),
+        )
+        current_components = project_outfit_components_for_scene(
+            old_meta.get("outfit_components"), current_scene_category
+        )
+        current_outfit = format_outfit_components(current_components)
         persona = await self._get_persona()
         style_catalog_context = await self._style_catalog_context(limit=14)
         catalog_has_clothing = await self._style_catalog_has_clothing_candidates()
+        instruction_text = str(instruction or "").strip()
+        normalized_instruction_source = str(
+            instruction_source
+            if instruction_source is not None
+            else ("user" if instruction_text else "")
+        ).strip().lower()
+        resolved_source_instruction = (
+            instruction_text
+            if source_instruction is None
+            and normalized_instruction_source in {"", "user"}
+            else str(source_instruction or "").strip()
+        )
         return {
             "old_data": old_data,
             "timeline_date": timeline_date,
@@ -421,6 +467,9 @@ class OutfitMixin:
                 if current_item is not None and not isinstance(current_item, dict)
                 else (current_item or {}).get("place_kind", "")
             ).strip(),
+            "current_scene_category": current_scene_category,
+            "current_components": current_components or None,
+            "current_outfit": current_outfit,
             "next_timeline": next_timeline,
             "past_timeline": past_timeline,
             "future_timeline": future_timeline,
@@ -434,12 +483,16 @@ class OutfitMixin:
             "state_updated_at": getattr(
                 getattr(old_data, "state", None), "updated_at", ""
             ),
+            "state_source": getattr(getattr(old_data, "state", None), "source", ""),
             "daily_theme": old_meta.get("theme", "未设定"),
             "mood_color": old_meta.get("mood", "未设定"),
-            "instruction": str(instruction or "").strip(),
-            "source_instruction": str(
-                instruction if source_instruction is None else source_instruction
-            ).strip(),
+            "instruction": instruction_text,
+            "instruction_source": normalized_instruction_source,
+            "source_instruction": resolved_source_instruction,
+            "instruction_source_label": {
+                "user": "用户明确要求",
+                "commitment": "已确认约定",
+            }.get(normalized_instruction_source, "无明确来源"),
             "persona": str(persona or "").strip(),
             "appearance_context": await self._outfit_appearance_context(
                 catalog_backed=catalog_has_clothing
@@ -477,7 +530,7 @@ class OutfitMixin:
 1. 只围绕当前实际时间、当前日程位置、实时生活状态和下一项安排判断；全天日程只作为背景。
 2. 未发生的未来安排只能作为预告，不能提前覆盖当前穿搭；等对应时间/场景实际到达后再换装。
 3. 当前或下一项安排需要外出时，先判断现有穿搭是否适合场景和天气；明显不合适时不能直接 keep。
-3.1 scene_category 为 home 或 sleep 时，outfit 只能写当前实际在身上的主体衣物和室内组成；玄关/桌边备好的外出鞋、单肩包、雨伞、相机等只写入“外出备选组成”，不得因为下午要出门就提前写进当前 outfit。实际离家节点再用 outdoor 或 partial_change 加入，回家后及时移除。
+3.1 scene_category 为 home 或 sleep 时，outfit 只能写组成状态中当前仍穿着或携带的内容；已放下、待用或不适配当前场景的组成写入对应状态，不得混入当前 outfit。实际场景转换时再更新组成状态。
 4. current_outfit_basis 用于说明最终穿搭依据：stored 表示数据库中的当前穿搭仍有效；occurred_schedule 表示当前或已发生日程明确完成了换装；live_state 表示实时状态明确确认已经换装。未发生日程不能作为依据。
 5. keep 只能与 stored 搭配，并原样返回当前 outfit、style、hair_style、hair、makeup_style、makeup、nails_style、nails；已经换装则选择 change、partial_change、sleepwear 或 outdoor，不能用 keep 表示“换装后继续穿着”。
 6. component_review 必须分别审视主体服装、鞋履、外层、随身配饰、发型、妆容和美甲；不存在的组成写 not_present，无法确认写 unknown。任一组成需要调整时，不能返回 keep。
@@ -499,6 +552,7 @@ class OutfitMixin:
   "current_outfit_basis": "{OUTFIT_CURRENT_BASIS_ENUM}",
   "scene_category": "{OUTFIT_SCENE_CATEGORY_ENUM}",
   "style_pool": "sleep_styles | outfit_styles | mixed",
+  "outfit_components": {{"main_clothing": {{"state": "worn | removed | unknown", "description": "当前主体服装"}}, "footwear": {{"state": "worn | removed | unknown", "description": "当前鞋袜或空字符串"}}, "outer_layer": {{"state": "worn | removed | staged | unknown", "description": "当前外层或空字符串"}}, "carried_accessories": {{"state": "worn | carried | removed | staged | unknown", "description": "当前佩戴/携带的配饰或空字符串"}}}},
   "component_review": {{"main_clothing": "keep | adjust | not_present | unknown", "footwear": "keep | adjust | not_present | unknown", "outer_layer": "keep | adjust | not_present | unknown", "carried_accessories": "keep | adjust | not_present | unknown", "hair": "keep | adjust | not_present | unknown", "makeup": "keep | adjust | not_present | unknown", "nails": "keep | adjust | not_present | unknown"}},
   "outfit": "当前实际可见的详细穿搭；keep 时必须原样返回当前穿搭",
   "style": "简短的最终风格",
@@ -527,6 +581,9 @@ class OutfitMixin:
                 daily_theme=context["daily_theme"],
                 mood_color=context["mood_color"],
                 target_period=target_period,
+                current_scene_category=context.get("current_scene_category", ""),
+                current_outfit=context.get("current_outfit", ""),
+                current_components=context.get("current_components"),
             )
         }
 当前穿搭事实：
@@ -542,7 +599,7 @@ class OutfitMixin:
 候选仅在本轮确实生成新造型时使用；keep 时必须返回空数组。可以采用完整套装，也可以组合上装、下装、鞋袜和配饰；发型、妆容、美甲分别选择。实际采用的编号写入 catalog_reference_ids，未采用写空数组。
 当前实际时间：{current_time.strftime("%Y-%m-%d %H:%M")}
 当前时间范围：{PERIOD_TIME_RANGES.get(target_period, "未知")}
-用户本次展开后的穿搭要求：{context["instruction"] or "无"}
+本轮穿搭要求（来源：{context["instruction_source_label"]}）：{context["instruction"] or "无"}
 用户原始穿搭请求（判断是否允许覆盖稳定人设外观，以此为准）：{context["source_instruction"] or "无"}"""
         return cache_friendly_prompt(fixed, dynamic, dynamic_title="穿搭现场")
 
@@ -591,13 +648,9 @@ class OutfitMixin:
         ) or normalize_outfit_scene_category(
             old_meta.get("outfit_scene_category"), default="mixed"
         )
-        actual_place_kind = str(context.get("current_place_kind") or "").strip()
-        if actual_place_kind == "home":
-            scene_category = "home"
-        elif actual_place_kind == "transit":
-            scene_category = "outdoor"
-        elif actual_place_kind in {"poi", "generic"}:
-            scene_category = "public"
+        scene_category = scene_category_for_place_kind(
+            context.get("current_place_kind"), default=scene_category
+        )
         old_outfit = str(old_data.outfit or "").strip()
         old_style = normalize_appearance_fact(old_meta.get("style"), 120)
         old_hair_style = normalize_appearance_fact(old_meta.get("hair_style"), 80)
@@ -610,36 +663,9 @@ class OutfitMixin:
             old_meta.get("nails_style"), 80
         )
         old_nails = normalize_appearance_fact(old_meta.get("nails"), 160)
-        scene_component_cleanup = False
         current_reference_ids = self._style_catalog_reference_ids(
             old_meta.get("style_catalog_reference_ids")
         )
-        if scene_category in {"home", "sleep"} and not context.get("instruction"):
-            current_scene_appearance = await self._style_catalog_reference_appearance(
-                current_reference_ids,
-                scene_category=scene_category,
-            )
-            reserve = str(
-                current_scene_appearance.get("outing_reserve") or ""
-            ).strip()
-            scene_outfit = str(
-                current_scene_appearance.get("outfit") or ""
-            ).strip()
-            if (
-                reserve
-                and scene_outfit
-                and outfit_descriptions_match(old_outfit, reserve)
-            ):
-                generated_outfit = scene_outfit
-                component_review = dict(component_review)
-                component_review["footwear"] = "adjust"
-                component_review["carried_accessories"] = "adjust"
-                scene_component_cleanup = True
-                if decision == "keep":
-                    decision = "partial_change"
-                logger.info(
-                    "[穿搭更新] 居家场景已将外出鞋包从当前穿搭移到外出备选"
-                )
         occurred_outfit_change = (
             decision == "keep"
             and current_basis in {"occurred_schedule", "live_state"}
@@ -711,11 +737,9 @@ class OutfitMixin:
             decision = "partial_change"
             logger.debug("[穿搭更新] 已按组成部分审视结果校正穿搭决定：决定=局部调整")
         reference_ids = (
-            current_reference_ids
-            if scene_component_cleanup
-            else self._style_catalog_reference_ids(result.get("catalog_reference_ids"))
+            self._style_catalog_reference_ids(result.get("catalog_reference_ids"))
             if decision != "keep"
-            else []
+            else current_reference_ids
         )
         requires_catalog_clothing = bool(
             decision in {"change", "sleepwear", "outdoor"}
@@ -755,9 +779,52 @@ class OutfitMixin:
                 reference_ids,
                 scene_category="" if context.get("instruction") else scene_category,
             )
+        old_components = normalize_outfit_components(
+            old_meta.get("outfit_components")
+        )
+        generated_components = normalize_outfit_components(
+            result.get("outfit_components")
+        )
+        catalog_components = normalize_outfit_components(
+            catalog_appearance.get("outfit_components")
+        )
+        effective_components = merge_outfit_components(old_components, generated_components)
+        effective_components = merge_outfit_components(
+            effective_components,
+            catalog_components,
+        )
+        effective_components = reconcile_outfit_components_for_scene(
+            effective_components,
+            scene_category,
+            catalog_components=catalog_components,
+            catalog_selected=bool(
+                reference_ids and catalog_appearance.get("outfit")
+            )
+        )
+        if not generated_components and catalog_components:
+            generated_components = catalog_components
+        visible_outfit = ""
+        if effective_components:
+            visible_outfit = format_outfit_components(effective_components)
+            if visible_outfit:
+                generated_outfit = visible_outfit
+        components_changed = bool(
+            effective_components != old_components
+            if (effective_components or old_components)
+            else generated_components
+        )
+        decision_before_components = decision
+        if decision == "keep" and components_changed:
+            decision = "partial_change"
+            component_review = dict(component_review)
+            for key, value in effective_components.items():
+                if old_components.get(key) != value:
+                    component_review.setdefault(key, "adjust")
         if reference_ids:
             catalog_outfit = catalog_appearance.get("outfit", "")
-            if catalog_outfit:
+            if catalog_outfit and (
+                decision_before_components != "keep" or not components_changed
+            ):
                 generated_outfit = catalog_outfit
             generated_hair_style = generated_hair_style or catalog_appearance.get(
                 "hair_style", ""
@@ -903,9 +970,13 @@ class OutfitMixin:
             str(old_meta.get("outfit_fact_source") or "").strip()
             == "user_instruction"
         )
+        instruction_source = str(context.get("instruction_source") or "").strip()
+        user_instruction = bool(context.get("instruction")) and (
+            instruction_source in {"", "user"}
+        )
         if (
             user_confirmed
-            and not context.get("instruction")
+            and not user_instruction
             and decision != "keep"
             and appearance_changed
             and not verified_change_source
@@ -953,11 +1024,13 @@ class OutfitMixin:
             "nails_style",
             "nails",
             "outfit_reason",
+            "outfit_components",
         }
         for key, value in {
             "outfit_decision": decision,
             "outfit_scene_category": scene_category,
             "outfit_style_pool": style_pool,
+            "outfit_components": serialize_outfit_components(effective_components),
             "style": final_style,
             "hair_style": final_hair_style,
             "hair": final_hair,
@@ -972,7 +1045,7 @@ class OutfitMixin:
                 old_data.meta[key] = text
             elif key in clearable_keys:
                 old_data.meta.pop(key, None)
-        if context.get("instruction"):
+        if user_instruction:
             old_data.meta["outfit_fact_source"] = "user_instruction"
             old_data.meta["outfit_fact_confirmed_at"] = current_time.strftime(
                 "%Y-%m-%d %H:%M:%S"
@@ -980,7 +1053,9 @@ class OutfitMixin:
             old_data.meta["outfit_fact_evidence"] = "用户本轮明确穿搭要求"
         elif decision != "keep" and appearance_changed:
             old_data.meta["outfit_fact_source"] = (
-                verified_change_source or "autonomous"
+                verified_change_source
+                or (instruction_source if instruction_source in {"commitment"} else "")
+                or "autonomous"
             )
             old_data.meta["outfit_fact_confirmed_at"] = current_time.strftime(
                 "%Y-%m-%d %H:%M:%S"
@@ -1035,7 +1110,7 @@ class OutfitMixin:
             reason=self._localize_outfit_reason(result.get("reason")),
             evidence=(
                 f"当前：{context['current_timeline']}；下一项：{context['next_timeline']}；"
-                f"天气：{context['weather']}；用户要求：{context['instruction'] or '无'}"
+                f"天气：{context['weather']}；本轮要求：{context['instruction'] or '无'}"
             ),
             outcome="；".join(outcome_parts),
         )
@@ -1049,6 +1124,7 @@ class OutfitMixin:
         instruction: str = "",
         should_abort: Callable[[], bool] | None = None,
         source_instruction: str | None = None,
+        instruction_source: str | None = None,
     ):
         current_time = current_time or life_now()
         instruction = str(instruction or "").strip()
@@ -1096,6 +1172,7 @@ class OutfitMixin:
                 current_time=current_time,
                 instruction=instruction,
                 source_instruction=source_instruction,
+                instruction_source=instruction_source,
             )
 
             logger.debug(

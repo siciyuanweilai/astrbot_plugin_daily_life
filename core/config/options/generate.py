@@ -67,7 +67,7 @@ class ImageApiChannel:
     protocol: str = "gemini"
     resolution: str = "4K"
     aspect_ratio: str = "1:1"
-    timeout_seconds: int = 120
+    timeout_seconds: int = 300
     quality: str = "medium"
     edit_request_format: str = "auto"
 
@@ -158,7 +158,7 @@ def _image_channels(value: Any) -> list[ImageApiChannel]:
         edit_request_format = _openai_image_edit_request_format(
             raw.get("edit_request_format", "auto")
         )
-        timeout_seconds = as_int(raw.get("timeout_seconds", 120), 120, 10, 600)
+        timeout_seconds = as_int(raw.get("timeout_seconds", 300), 300, 10, 600)
         if not api_url or not api_key:
             continue
         key = (

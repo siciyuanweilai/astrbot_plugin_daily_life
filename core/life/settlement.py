@@ -20,7 +20,12 @@ from ..models import (
     ReflectionSignal,
     ScheduleAnchor,
 )
-from .future import outfit_descriptions_match
+from .wardrobe import (
+    format_outfit_components,
+    merge_outfit_components,
+    normalize_outfit_components,
+    serialize_outfit_components,
+)
 from .tools import parse_life_datetime, timeline_item_datetime
 
 ACTION_SETTLEMENT_META_KEY = "life_action_settlements"
@@ -332,19 +337,26 @@ class LifeActionMixin:
             state.source = f"life_action:{action.action_type}"
 
         if action.action_type == "change_outfit" and not preserve_outfit_fact:
-            current_outfit = str(day.outfit or "").strip()
-            resolved_outfit = (
-                current_outfit
-                if current_outfit
-                and outfit_descriptions_match(current_outfit, action.target)
-                else action.target
+            existing_components = normalize_outfit_components(
+                (day.meta or {}).get("outfit_components")
             )
+            action_components = normalize_outfit_components(
+                (action.payload or {}).get("outfit_components")
+            )
+            components = merge_outfit_components(
+                existing_components,
+                action_components,
+            )
+            component_outfit = format_outfit_components(components)
+            resolved_outfit = component_outfit or action.target
             day.outfit = resolved_outfit
             day.outfit_history[committed_at] = resolved_outfit
             day.meta["outfit_decision"] = "life_action"
             day.meta["outfit_fact_source"] = "life_action"
             day.meta["outfit_fact_confirmed_at"] = committed_at
             day.meta["outfit_fact_evidence"] = action.action_id
+            if action_components:
+                day.meta["outfit_components"] = serialize_outfit_components(components)
             catalog_ids = []
             raw_catalog_ids = action.payload.get("catalog_reference_ids")
             values = (
@@ -574,6 +586,7 @@ class LifeActionMixin:
         receipt: dict[str, Any],
         *,
         now: datetime.datetime | None = None,
+        planned_action: LifeActionIntent | None = None,
     ) -> LifeActionOutcome | None:
         """使用可验证的外部回执结算一项已计划动作。
 
@@ -582,26 +595,32 @@ class LifeActionMixin:
             action_id: 日程生成时分配的动作编号。
             receipt: 已确认、失败或取消的回执。
             now: 结算时间，缺省时使用插件时钟。
+            planned_action: 已解析的计划动作；传入时避免重新读取已在结算中修正的动作。
 
         Returns:
             已持久化的动作结果；找不到对应动作时返回空。
         """
 
         current_time = now or life_now()
-        raw_actions = str((day.meta or {}).get("planned_life_actions") or "")
-        try:
-            planned_actions = json.loads(raw_actions) if raw_actions else []
-        except (TypeError, ValueError, json.JSONDecodeError):
-            planned_actions = []
-        action = next(
-            (
-                LifeActionIntent.from_value(item)
-                for item in planned_actions
-                if isinstance(item, dict)
-                and str(item.get("action_id") or "").strip() == str(action_id).strip()
-            ),
-            None,
-        )
+        action = planned_action
+        if action is None:
+            raw_actions = str((day.meta or {}).get("planned_life_actions") or "")
+            try:
+                planned_actions = json.loads(raw_actions) if raw_actions else []
+            except (TypeError, ValueError, json.JSONDecodeError):
+                planned_actions = []
+            action = next(
+                (
+                    LifeActionIntent.from_value(item)
+                    for item in planned_actions
+                    if isinstance(item, dict)
+                    and str(item.get("action_id") or "").strip()
+                    == str(action_id).strip()
+                ),
+                None,
+            )
+        elif str(action.action_id or "").strip() != str(action_id).strip():
+            return None
         if action is None or action.action_type not in LIFE_ACTION_TYPES:
             return None
         status = str(receipt.get("status") or "confirmed").strip().lower()
@@ -938,6 +957,10 @@ class LifeActionMixin:
                 == "expired"
             )
             if repair_outfit_expiration:
+                # 旧版过期动作只负责补齐执行终态，保留当天已经保存的详细穿搭。
+                current_outfit = str(day.outfit or "").strip()
+                if current_outfit:
+                    action.target = current_outfit
                 expirations.pop(action.action_id, None)
                 timeline_item.execution_state = "completed"
                 timeline_item.execution_reason = "已有当前穿搭事实，修复旧版过期结算"
@@ -977,6 +1000,7 @@ class LifeActionMixin:
                         ],
                     },
                     now=now,
+                    planned_action=action,
                 )
                 if simulated is not None:
                     outcomes.append(simulated)

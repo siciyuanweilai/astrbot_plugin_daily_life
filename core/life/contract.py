@@ -3,6 +3,7 @@ import math
 from collections import Counter
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from statistics import median
 
 from ..prompts import cache_friendly_prompt
 from .fashion import outfit_style_contamination_reason
@@ -14,10 +15,6 @@ FULL_DAY_MIN_SPAN_MINUTES = 6 * 60
 NIGHT_DAY_LATEST_START_MINUTES = 20 * 60
 NIGHT_DAY_EARLIEST_END_MINUTES = 23 * 60
 DAY_MINUTES = 24 * 60
-FULL_DAY_MIN_TIMELINE_NODES = 8
-NIGHT_LIFE_MIN_TIMELINE_NODES = 6
-FULL_DAY_TARGET_GAP_MINUTES = 150
-FULL_DAY_MAX_GAP_MINUTES = 210
 _SUSTAINED_DAY_ACTION_TYPES = {
     "chore",
     "exercise",
@@ -493,6 +490,27 @@ class DailyContractMixin:
             unwrapped.append(candidate)
         return unwrapped
 
+    @staticmethod
+    def _timeline_item_duration(item: object) -> int:
+        if isinstance(item, dict):
+            raw_duration = item.get("duration_minutes")
+        else:
+            raw_duration = getattr(item, "duration_minutes", 0)
+        try:
+            return max(0, min(1440, int(raw_duration or 0)))
+        except (TypeError, ValueError):
+            return 0
+
+    def _timeline_covered_end_minutes(self, timeline: object) -> int | None:
+        items = timeline if isinstance(timeline, list) else []
+        minutes = self._timeline_unwrapped_minutes(items)
+        if not minutes:
+            return None
+        return max(
+            minute + self._timeline_item_duration(item)
+            for minute, item in zip(minutes, items)
+        )
+
     def _timeline_cadence_issue(self, timeline: object) -> str:
         minutes = self._timeline_unwrapped_minutes(timeline)
         if len(minutes) < 5:
@@ -516,42 +534,40 @@ class DailyContractMixin:
         return ""
 
     def _timeline_density_issue(self, payload: dict) -> str:
-        if not (
-            isinstance(payload.get("life_decision"), dict)
-            and isinstance(payload.get("state"), dict)
-            and isinstance(payload.get("planned_actions"), list)
-        ):
-            return ""
         timeline = payload.get("timeline")
         minutes = self._timeline_unwrapped_minutes(timeline)
         if len(minutes) < 2:
             return "完整全天日程缺少足够的生活节点"
-        span = minutes[-1] - minutes[0]
-        profile = self._full_day_coverage_profile(payload)
-        base_nodes = (
-            NIGHT_LIFE_MIN_TIMELINE_NODES
-            if profile == "night_life"
-            else FULL_DAY_MIN_TIMELINE_NODES
+        items = timeline if isinstance(timeline, list) else []
+        has_explicit_duration = any(
+            "duration_minutes" in item
+            if isinstance(item, dict)
+            else hasattr(item, "duration_minutes")
+            for item in items
         )
-        minimum_nodes = max(
-            base_nodes,
-            math.ceil(span / FULL_DAY_TARGET_GAP_MINUTES) + 1,
-        )
-        if len(minutes) < minimum_nodes:
-            return (
-                f"完整全天日程覆盖约 {math.ceil(span / 60)} 小时，但只有 "
-                f"{len(minutes)} 个时间轴节点；请补充到至少 {minimum_nodes} 个"
-                "有意义的生活变化节点，不要用重复动作凑数量"
-            )
-        gaps = [right - left for left, right in zip(minutes, minutes[1:])]
-        largest_gap = max(gaps, default=0)
-        if largest_gap > FULL_DAY_MAX_GAP_MINUTES:
-            gap_index = gaps.index(largest_gap)
+        if not has_explicit_duration:
+            return ""
+        positive_gaps = [
+            right - left for left, right in zip(minutes, minutes[1:]) if right > left
+        ]
+        if not positive_gaps:
+            return ""
+        # Compare each quiet stretch with this timeline's own cadence. A calm day
+        # may be sparse, while one unusually empty stretch inside an active day
+        # should be surfaced for the model to explain or split into real events.
+        adaptive_gap_limit = max(120, int(median(positive_gaps) * 1.6))
+        for gap_index, (left, right) in enumerate(zip(minutes, minutes[1:])):
+            item = items[gap_index] if gap_index < len(items) else {}
+            duration = self._timeline_item_duration(item)
+            unexplained_gap = max(0, right - left - duration)
+            if unexplained_gap <= adaptive_gap_limit:
+                continue
             return (
                 f"timeline 在 {self._minutes_text(minutes[gap_index] % DAY_MINUTES)} "
                 f"至 {self._minutes_text(minutes[gap_index + 1] % DAY_MINUTES)} 之间"
-                f"跨度约 {math.ceil(largest_gap / 60)} 小时；请补充期间真实发生的"
-                "就餐、移动、休息、场景切换或状态变化"
+                f"有约 {math.ceil(unexplained_gap / 60)} 小时没有活动覆盖；"
+                "若前一活动确实持续较久，请填写合理的 duration_minutes，"
+                "否则补充期间真实发生的就餐、移动、休息、场景切换或状态变化"
             )
         return ""
 
@@ -591,6 +607,37 @@ class DailyContractMixin:
             return "delayed_day"
         return "day"
 
+    def _declared_life_window(self, payload: dict) -> dict[str, int | str]:
+        decision = (
+            payload.get("life_decision")
+            if isinstance(payload.get("life_decision"), dict)
+            else {}
+        )
+        day_plan = (
+            decision.get("day_plan")
+            if isinstance(decision.get("day_plan"), dict)
+            else {}
+        )
+        window = (
+            day_plan.get("life_window")
+            if isinstance(day_plan.get("life_window"), dict)
+            else {}
+        )
+        start = self._timeline_minutes(window.get("start"))
+        end = self._timeline_minutes(window.get("end"))
+        if start is None or end is None:
+            return {}
+        end_unwrapped = end + (DAY_MINUTES if end < start else 0)
+        end_state = str(window.get("end_state") or "").strip().lower()
+        if end_state not in {"sleep", "wind_down", "awake", "all_nighter"}:
+            end_state = "awake"
+        return {
+            "start": start,
+            "end": end_unwrapped,
+            "end_clock": end,
+            "end_state": end_state,
+        }
+
     @staticmethod
     def _full_day_coverage_thresholds(profile: str) -> tuple[int, int]:
         if profile == "night_life":
@@ -601,13 +648,19 @@ class DailyContractMixin:
 
     @classmethod
     def _full_day_coverage_ok(
-        cls, coverage: dict[str, int], profile: str = "day"
+        cls,
+        coverage: dict[str, int],
+        profile: str = "day",
+        covered_end_minutes: int | None = None,
     ) -> bool:
         if not coverage:
             return False
         first_minutes = coverage["first_unwrapped"]
-        last_minutes = coverage["last_unwrapped"]
-        span = coverage["span"]
+        last_minutes = max(
+            coverage["last_unwrapped"],
+            int(covered_end_minutes or coverage["last_unwrapped"]),
+        )
+        span = last_minutes - first_minutes
         latest_start, earliest_end = cls._full_day_coverage_thresholds(profile)
         return (
             first_minutes <= latest_start
@@ -639,13 +692,31 @@ class DailyContractMixin:
             }
 
         profile = self._full_day_coverage_profile(payload)
-        covers_full_day = self._full_day_coverage_ok(coverage, profile)
-        if first_minutes > FULL_DAY_LATEST_START_MINUTES:
+        covered_end = self._timeline_covered_end_minutes(timeline)
+        life_window = self._declared_life_window(payload)
+        if life_window:
+            effective_end = int(covered_end or coverage["last_unwrapped"])
+            covers_full_day = (
+                coverage["first_unwrapped"] <= int(life_window["start"]) + 60
+                and effective_end >= int(life_window["end"]) - 30
+            )
+        else:
+            covers_full_day = self._full_day_coverage_ok(
+                coverage, profile, covered_end_minutes=covered_end
+            )
+        if life_window:
+            start_reason = "life_window"
+        elif first_minutes > FULL_DAY_LATEST_START_MINUTES:
             start_reason = "life_decision"
         else:
             start_reason = "normal_day_start"
-        last_unwrapped = coverage["last_unwrapped"]
-        if last_unwrapped >= DAY_MINUTES + 4 * 60:
+        last_unwrapped = max(
+            coverage["last_unwrapped"],
+            int(covered_end or coverage["last_unwrapped"]),
+        )
+        if life_window:
+            end_reason = str(life_window["end_state"])
+        elif last_unwrapped >= DAY_MINUTES + 4 * 60:
             end_reason = "all_nighter"
         elif last_unwrapped >= 22 * 60:
             end_reason = "sleep"
@@ -657,6 +728,7 @@ class DailyContractMixin:
         return {
             "first_timeline_time": self._minutes_text(first_minutes),
             "last_timeline_time": self._minutes_text(last_minutes),
+            "covered_until": self._minutes_text(last_unwrapped % DAY_MINUTES),
             "coverage_mode": "full_day",
             "start_reason": start_reason,
             "end_reason": end_reason,
@@ -693,19 +765,37 @@ class DailyContractMixin:
 
         if expected_coverage == "full_day":
             profile = self._full_day_coverage_profile(payload)
+            life_window = self._declared_life_window(payload)
             first_minutes = coverage["first_unwrapped"]
-            last_minutes = coverage["last_unwrapped"]
-            span = coverage["span"]
-            latest_start, earliest_end = self._full_day_coverage_thresholds(profile)
-            if first_minutes > latest_start:
-                self._set_validation_issue("timeline_coverage_start")
-                return False, "完整全天日程的第一条时间过晚，缺少当天较早的生活起点"
-            if last_minutes < earliest_end:
-                self._set_validation_issue("timeline_coverage_end")
-                return False, "完整全天日程的最后一条时间过早，缺少晚间或睡前收束"
-            if span < FULL_DAY_MIN_SPAN_MINUTES:
-                self._set_validation_issue("timeline_coverage_span")
-                return False, "完整全天日程覆盖范围不足，timeline 仍像局部片段"
+            last_minutes = max(
+                coverage["last_unwrapped"],
+                int(
+                    self._timeline_covered_end_minutes(timeline)
+                    or coverage["last_unwrapped"]
+                ),
+            )
+            span = last_minutes - first_minutes
+            if life_window:
+                if first_minutes > int(life_window["start"]) + 60:
+                    self._set_validation_issue("timeline_coverage_start")
+                    return False, "timeline 没有覆盖 life_window 声明的生活起点"
+                if last_minutes < int(life_window["end"]) - 30:
+                    self._set_validation_issue("timeline_coverage_end")
+                    return False, "timeline 没有覆盖 life_window 声明的自然收束时刻"
+            else:
+                latest_start, earliest_end = self._full_day_coverage_thresholds(profile)
+                if first_minutes > latest_start:
+                    self._set_validation_issue("timeline_coverage_start")
+                    return False, "完整全天日程的第一条时间过晚，缺少当天较早的生活起点"
+                if profile != "night_life" and last_minutes >= DAY_MINUTES + 4 * 60:
+                    self._set_validation_issue("timeline_coverage_end")
+                    return False, "普通作息的时间轴跨日过晚，请在次日 04:00 前自然收束"
+                if last_minutes < earliest_end:
+                    self._set_validation_issue("timeline_coverage_end")
+                    return False, "完整全天日程的最后一条时间过早，缺少晚间或睡前收束"
+                if span < FULL_DAY_MIN_SPAN_MINUTES:
+                    self._set_validation_issue("timeline_coverage_span")
+                    return False, "完整全天日程覆盖范围不足，timeline 仍像局部片段"
             density_issue = self._timeline_density_issue(payload)
             if density_issue:
                 self._set_validation_issue("timeline_density")
@@ -834,7 +924,8 @@ class DailyContractMixin:
                 "保留生活主题、状态、人物、地点和睡醒时的真实穿搭；在首个持续日间"
                 "活动之前增加自然的晨间换装节点和 change_outfit 动作，从再次提供的"
                 "视觉衣橱候选中选择完整套装，或同时选择上装与下装，并把采用编号写入"
-                "该动作的 payload.catalog_reference_ids。未来穿搭不要提前写入顶层 outfit。"
+                "该动作的 payload.catalog_reference_ids，同时写入换装后的 outfit_components。"
+                "未来穿搭不要提前写入顶层 outfit。"
             )
         if code == "location_audit_invalid":
             return (

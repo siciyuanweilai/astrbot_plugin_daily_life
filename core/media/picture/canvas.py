@@ -871,7 +871,7 @@ class GeminiImageService:
                     require_reference=str(mode or "").strip().lower() == "edit",
                 )
             except Exception as exc:
-                message = f"{route_label}：{self._error_text(exc)}"
+                message = f"{route_label}：{self._error_text(exc, route.timeout_seconds)}"
                 errors.append(message)
                 if self._is_policy_violation_error(exc):
                     raise RuntimeError(f"图片生成触发安全拒绝：{message}") from exc
@@ -894,7 +894,7 @@ class GeminiImageService:
                     timeout=timeout,
                 )
             except Exception as exc:
-                message = f"{route_label}：{self._error_text(exc)}"
+                message = f"{route_label}：{self._error_text(exc, route.timeout_seconds)}"
                 errors.append(message)
                 logger.debug(
                     f"{LOG_PREFIX} {self._mode_label(mode)}结果图片获取失败，"
@@ -1322,7 +1322,11 @@ class GeminiImageService:
         ]
 
     @staticmethod
-    def _error_text(exc: Exception) -> str:
+    def _error_text(exc: Exception, timeout_seconds: int = 0) -> str:
+        if isinstance(exc, TimeoutError):
+            seconds = max(0, int(timeout_seconds or 0))
+            duration = f"等待超过 {seconds} 秒" if seconds else "等待超时"
+            return f"{duration}；上游可能仍在生成，但插件未收到结果"
         text = str(exc).strip()
         return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
 

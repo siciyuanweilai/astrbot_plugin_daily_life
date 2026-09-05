@@ -1146,8 +1146,25 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
     async def test_closet_payload_uses_the_configured_default_generation_mode(self):
         self.plugin.runtime.config = LifeSettings.from_dict(
             {
+                "rhythm_config": {"llm_timeout_seconds": 90},
                 "image_generation_config": {
-                    "creative_wardrobe": {"default_mode": "image_to_image"}
+                    "creative_wardrobe": {"default_mode": "image_to_image"},
+                    "text_channels": [
+                        {
+                            "__template_key": "openai",
+                            "api_url": "https://text.example",
+                            "api_key": "text-key",
+                            "timeout_seconds": 330,
+                        }
+                    ],
+                    "edit_channels": [
+                        {
+                            "__template_key": "openai",
+                            "api_url": "https://edit.example",
+                            "api_key": "edit-key",
+                            "timeout_seconds": 420,
+                        }
+                    ],
                 }
             }
         )
@@ -1156,6 +1173,22 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(listed["ok"])
         self.assertEqual(listed["data"]["default_generation_mode"], "image_to_image")
+        self.assertEqual(
+            listed["data"]["generation_timeout_seconds"],
+            {"text_to_image": 570, "image_to_image": 660},
+        )
+
+    def test_dashboard_closet_timeout_tracks_server_budget(self):
+        root = Path(__file__).resolve().parents[1]
+        app = (root / "pages" / "dashboard" / "app.js").read_text(encoding="utf-8")
+        transport = (root / "pages" / "dashboard" / "api" / "transport.js").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("closetGenerationTimeoutSeconds", app)
+        self.assertIn("count * perImageSeconds * 1000", app)
+        self.assertIn('error?.isTimeout ? "warning" : "error"', app)
+        self.assertIn("error.isTimeout = true", transport)
 
     async def test_closet_backup_and_restore_preserve_visual_candidates(self):
         closet_dir = self.plugin.runtime.data_path.parent / STYLE_CATALOG_DIR_NAME
@@ -2209,7 +2242,12 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
         self.plugin.body = {
             "date": "2026-06-11",
             "timeline": [
-                {"time": "15:30", "activity": "整理新的时间轴", "status": "专注"},
+                {
+                    "time": "15:30",
+                    "activity": "整理新的时间轴",
+                    "status": "专注",
+                    "duration_minutes": 90,
+                },
                 {"time": "09:05", "activity": "慢慢吃早餐", "status": "放松"},
             ],
         }
@@ -2220,6 +2258,7 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["ok"])
         self.assertEqual([item.time for item in day.timeline], ["09:05", "15:30"])
         self.assertEqual(day.timeline[0].activity, "慢慢吃早餐")
+        self.assertEqual(day.timeline[1].duration_minutes, 90)
 
     async def test_timeline_save_preserves_existing_travel_context(self):
         day = await self.plugin.runtime.archive.get_day("2026-06-11")
@@ -3289,6 +3328,16 @@ if (groups.records.length !== 1 || groups.records[0].item.name !== "没有定义
         self.assertNotIn('node("strong", "", "视觉提示词")', app)
         self.assertIn("function closetDescription", app)
         self.assertIn("function closetDetailItems", app)
+        self.assertIn(
+            "const groupIds = closetTargetIds(groupItems.map((entry) => entry.id));",
+            app,
+        )
+        self.assertIn(
+            'confirmClosetDelete(remove, groupIds, "删除")',
+            app,
+        )
+        self.assertIn('button.textContent = "确认删除";', app)
+        self.assertNotIn("`确认删除 ${targets.length} 条`", app)
         self.assertIn("const CLOSET_KIND_ORDER", app)
         self.assertIn('node("h3", "closet-detail-prompt-title"', app)
         self.assertIn("closet-detail-prompts", closet_style)

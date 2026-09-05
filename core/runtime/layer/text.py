@@ -6,9 +6,9 @@ from ...life.appearance import format_current_appearance_context
 from ...life.calendar import format_calendar_context, format_season_context
 from ...life.condition import format_physiological_rhythm_prompt
 from ...life.tools import (
+    build_time_context,
     format_timeline_travel,
     get_current_timeline_status,
-    get_time_period_cn,
     parse_time_minutes,
 )
 from ...models import CommitmentRecord, DayRecord
@@ -235,8 +235,10 @@ class LayerTextMixin:
         now: datetime.datetime,
         using_extended_night: bool,
     ) -> tuple[str, str, str]:
-        period = self._get_curr_period(now)
-        period_cn = get_time_period_cn(period)
+        time_context = build_time_context(
+            now, getattr(self.config, "schedule_time", "07:00")
+        )
+        period_cn = time_context.period_cn
         if using_extended_night:
             meta = data.meta or {}
             life_mode = meta.get("life_mode", "")
@@ -291,7 +293,9 @@ class LayerTextMixin:
             str(meta.get("residence_context_stale") or "").strip().lower() == "true"
         )
         if residence_context_stale:
-            period_cn = get_time_period_cn(self._get_curr_period(now))
+            period_cn = build_time_context(
+                now, getattr(self.config, "schedule_time", "07:00")
+            ).period_cn
             status_desc = "居住地已变化，当前生活状态等待新记录确认"
             activity = "当前地点、穿搭、天气和时间轴暂不引用旧记录"
         else:
@@ -421,7 +425,9 @@ class LayerTextMixin:
         memos_context: str = "",
         recent_video: str = "",
     ) -> str:
-        period_cn = get_time_period_cn(self._get_curr_period(now))
+        period_cn = build_time_context(
+            now, getattr(self.config, "schedule_time", "07:00")
+        ).period_cn
         date_hint = "凌晨延续时段" if using_extended_night else "当前日期"
         external = (
             "\n[HiddenExternalMemory] MemOS 外部长期记忆参考，只用于补足长期事实和偏好；"

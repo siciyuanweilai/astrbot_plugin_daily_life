@@ -14,6 +14,13 @@ from ..life.tools import (
     resolve_daily_hint,
     resolve_daily_suggested,
 )
+from ..life.wardrobe import (
+    format_outfit_components,
+    normalize_outfit_scene_category,
+    project_outfit_components_for_scene,
+    scene_category_for_place_kind,
+    serialize_outfit_components,
+)
 from ..models.coerce import compact_explanation_text
 from ..models.coerce import compact_text as _compact_text
 
@@ -1051,13 +1058,29 @@ class PageViewMixin:
         if extended_night:
             current = None
         meta = dict(data.meta)
+        scene_category = scene_category_for_place_kind(
+            current.place_kind if current else "",
+            default=normalize_outfit_scene_category(
+                meta.get("outfit_scene_category"), default=""
+            ),
+        )
+        visible_components = project_outfit_components_for_scene(
+            meta.get("outfit_components"), scene_category
+        )
+        visible_outfit = format_outfit_components(visible_components)
+        if scene_category:
+            meta["outfit_scene_category"] = scene_category
+        if visible_components:
+            meta["outfit_components"] = serialize_outfit_components(
+                visible_components
+            )
         if meta.get("outfit_reason"):
             meta["outfit_reason"] = compact_explanation_text(
                 meta.get("outfit_reason"), 360
             )
         return {
             "date": data.date,
-            "outfit": data.outfit,
+            "outfit": visible_outfit or data.outfit,
             "weather": data.weather,
             "weather_info": data.weather_info.as_dict(),
             "meta": meta,

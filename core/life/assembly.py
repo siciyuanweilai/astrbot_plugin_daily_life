@@ -14,8 +14,11 @@ from .appearance import normalize_appearance_fact, strip_hair_from_outfit
 from .condition import normalize_state, state_log_entry
 from .surroundings import normalize_event_items
 from .wardrobe import (
+    format_outfit_components,
     normalize_outfit_decision,
     normalize_outfit_scene_category,
+    normalize_outfit_components,
+    serialize_outfit_components,
     resolve_outfit_style_pool,
 )
 
@@ -65,6 +68,18 @@ class DailyAssemblyMixin:
             meta.get("hair_style", ""),
             meta.get("hair", ""),
         )
+        component_outfit = format_outfit_components(
+            normalize_outfit_components(
+                result.get("life_decision", {}).get("outfit", {}).get(
+                    "outfit_components"
+                )
+                if isinstance(result.get("life_decision"), dict)
+                and isinstance(result.get("life_decision", {}).get("outfit"), dict)
+                else result.get("outfit_components")
+            )
+        )
+        if component_outfit:
+            outfit = component_outfit
         planned_actions = []
         raw_actions = result.get("planned_actions")
         for raw_action in raw_actions if isinstance(raw_actions, list) else []:
@@ -171,6 +186,9 @@ class DailyAssemblyMixin:
             if isinstance(result.get("decision_summary"), dict)
             else {}
         )
+        life_window = (
+            plan.get("life_window") if isinstance(plan.get("life_window"), dict) else {}
+        )
         decision_value = outfit.get("decision")
         scene_value = outfit.get("scene_category")
         style_pool_value = outfit.get("style_pool")
@@ -211,6 +229,9 @@ class DailyAssemblyMixin:
             "outfit_decision": outfit_decision,
             "outfit_scene_category": outfit_scene_category,
             "outfit_style_pool": outfit_style_pool,
+            "outfit_components": serialize_outfit_components(
+                outfit.get("outfit_components")
+            ),
             "outfit_reason": self._localize_outfit_reason(outfit.get("reason")),
             "style_catalog_reference_ids": ",".join(
                 str(item)
@@ -223,12 +244,19 @@ class DailyAssemblyMixin:
             "schedule_intent": plan.get("schedule_intent"),
             "energy_bias": plan.get("energy_bias"),
             "social_bias": plan.get("social_bias"),
+            "life_window_start": life_window.get("start"),
+            "life_window_end": life_window.get("end"),
+            "life_window_end_state": life_window.get("end_state"),
+            "life_window_reason": life_window.get("reason"),
             "decision_summary": summary.get("decision"),
             "decision_reason": summary.get("reason"),
         }
         meta = {}
         for key, value in pairs.items():
-            text = self._meta_text(value)
+            text = self._meta_text(
+                value,
+                limit=1200 if key == "outfit_components" else 80,
+            )
             if text:
                 meta[key] = text
         location_audit = result.get("location_audit")

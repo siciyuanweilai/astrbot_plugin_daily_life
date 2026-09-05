@@ -1,8 +1,10 @@
 import json
 import unittest
 
-from core.config.options.basis import DEFAULT_CHAT_STYLE_PROMPT
-from core.prompts import DEFAULT_TIMELINE_PROMPT, DEFAULT_WEB_TODAY_PROMPT
+from core.prompts import (
+    DEFAULT_TIMELINE_PROMPT,
+    DEFAULT_WEB_TODAY_PROMPT,
+)
 from support import PLUGIN_ROOT, LifeSettings
 
 
@@ -64,20 +66,21 @@ def _schema_leaf_paths(spec: dict, path: str) -> set[str]:
 
 
 class LifeSettingsTest(unittest.TestCase):
-    def test_legacy_default_chat_style_prompt_upgrades_to_soft_preference(self):
+    def test_chat_style_prompt_does_not_special_case_old_builtin_wording(self):
+        prompt = (
+            "日常闲聊先接住当下的一句话，不为了显得温柔或有趣而多铺陈。"
+            "轻松接话保持短气口，一句只放一个主要意思，能自然停住就停住。"
+            "认真问题、事实解释和情绪支持按内容自然展开，先给判断，再补必要原因。"
+        )
         config = LifeSettings.from_dict(
             {
                 "chat_style_config": {
-                    "casual_short_prompt": (
-                        "日常闲聊先接住当下的一句话，不为了显得温柔或有趣而多铺陈。"
-                        "轻松接话保持短气口，一句只放一个主要意思，能自然停住就停住。"
-                        "认真问题、事实解释和情绪支持按内容自然展开，先给判断，再补必要原因。"
-                    )
+                    "casual_short_prompt": prompt
                 }
             }
         )
 
-        self.assertEqual(config.chat_style.casual_short_prompt, DEFAULT_CHAT_STYLE_PROMPT)
+        self.assertEqual(config.chat_style.casual_short_prompt, prompt)
 
     def test_chat_style_prompt_is_normalized_to_one_line_and_bounded(self):
         config = LifeSettings.from_dict(
@@ -699,8 +702,8 @@ class LifeSettingsTest(unittest.TestCase):
     def test_chat_style_continuous_turn_settings(self):
         defaults = LifeSettings.from_dict({}).chat_style
         self.assertTrue(defaults.continuous_turn_enabled)
-        self.assertEqual(defaults.continuous_turn_wait_seconds, 1.5)
-        self.assertEqual(defaults.continuous_turn_max_wait_seconds, 4.0)
+        self.assertEqual(defaults.continuous_turn_wait_seconds, 3.5)
+        self.assertEqual(defaults.continuous_turn_max_wait_seconds, 12.0)
         self.assertFalse(defaults.continuous_turn_group_enabled)
         self.assertTrue(defaults.continuous_turn_semantic_enabled)
 
@@ -805,9 +808,11 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertEqual(text_channel.protocol, "grok")
         self.assertEqual(text_channel.model, "grok-imagine-image")
         self.assertEqual(text_channel.resolution, "2K")
+        self.assertEqual(text_channel.timeout_seconds, 300)
         self.assertEqual(edit_channel.protocol, "grok")
         self.assertEqual(edit_channel.model, "grok-imagine-image")
         self.assertEqual(edit_channel.resolution, "2K")
+        self.assertEqual(edit_channel.timeout_seconds, 300)
 
     def test_image_channel_quality_is_normalized(self):
         config = LifeSettings.from_dict(
@@ -1208,7 +1213,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertEqual(channel_items["aspect_ratio"]["default"], "1:1")
         self.assertIn("9:16", channel_items["aspect_ratio"]["options"])
         self.assertIn("16:9", channel_items["aspect_ratio"]["options"])
-        self.assertEqual(channel_items["timeout_seconds"]["default"], 120)
+        self.assertEqual(channel_items["timeout_seconds"]["default"], 300)
         self.assertLess(
             list(channel_items).index("group_name"),
             list(channel_items).index("api_url"),
@@ -1246,7 +1251,7 @@ class LifeSettingsTest(unittest.TestCase):
             openai_channel_items["edit_request_format"]["options"],
             ["auto", "leo_json", "multipart"],
         )
-        self.assertEqual(openai_channel_items["timeout_seconds"]["default"], 120)
+        self.assertEqual(openai_channel_items["timeout_seconds"]["default"], 300)
         grok_text_items = image_items["text_channels"]["templates"]["grok"]["items"]
         grok_edit_items = image_items["edit_channels"]["templates"]["grok"]["items"]
         for grok_items in (grok_text_items, grok_edit_items):
@@ -1255,7 +1260,7 @@ class LifeSettingsTest(unittest.TestCase):
             self.assertEqual(grok_items["resolution"]["default"], "2K")
             self.assertEqual(grok_items["resolution"]["options"], ["1K", "2K"])
             self.assertEqual(grok_items["aspect_ratio"]["default"], "1:1")
-            self.assertEqual(grok_items["timeout_seconds"]["default"], 120)
+            self.assertEqual(grok_items["timeout_seconds"]["default"], 300)
         self.assertNotIn(
             "character_reference_enabled", schema["image_generation_config"]["items"]
         )
@@ -1631,9 +1636,9 @@ class LifeSettingsTest(unittest.TestCase):
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertIn("version: 1.3.3", metadata)
+        self.assertIn("version: 1.3.4", metadata)
         self.assertIn('astrbot_version: ">=4.26,<5"', metadata)
-        self.assertIn("version-1.3.3", readme)
+        self.assertIn("version-1.3.4", readme)
         self.assertIn("创意衣橱生成", readme)
         self.assertIn("文生图不使用角色参考图", readme)
         self.assertIn("不读取联网灵感或固定风格池", readme)
@@ -1645,6 +1650,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertNotIn("用户明确要求联网寻找灵感时", readme)
         self.assertNotIn("图片 → 创意衣橱", readme)
         self.assertNotIn("SiliconFlow", readme)
+        self.assertIn("v1.3.4 · 2026-09-05", changelog)
         self.assertIn("v1.3.3 · 2026-08-28", changelog)
         self.assertIn("v1.3.2 · 2026-08-22", changelog)
         self.assertIn("v1.3.1 · 2026-08-20", changelog)
@@ -1657,6 +1663,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertIn("v1.2.4 · 2026-08-12", changelog)
         self.assertIn("v1.2.3 · 2026-08-11", changelog)
         self.assertIn("v1.2.2 · 2026-08-09", changelog)
+        self.assertLess(changelog.index("v1.3.4"), changelog.index("v1.3.3"))
         self.assertLess(changelog.index("v1.3.3"), changelog.index("v1.3.2"))
         self.assertLess(changelog.index("v1.3.2"), changelog.index("v1.3.1"))
         self.assertLess(changelog.index("v1.3.1"), changelog.index("v1.3.0"))
@@ -1669,6 +1676,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertLess(changelog.index("v1.2.4"), changelog.index("v1.2.3"))
         self.assertLess(changelog.index("v1.2.3"), changelog.index("v1.2.2"))
         self.assertLess(changelog.index("v1.2.2"), changelog.index("v1.2.1"))
+        release_134 = changelog.split("## 🌸 v1.3.4", 1)[1].split("## 🌸 v1.3.3", 1)[0]
         release_133 = changelog.split("## 🌸 v1.3.3", 1)[1].split("## 🌸 v1.3.2", 1)[0]
         release_132 = changelog.split("## 🌸 v1.3.2", 1)[1].split("## 🌸 v1.3.1", 1)[0]
         release_131 = changelog.split("## 🌸 v1.3.1", 1)[1].split("## 🌸 v1.3.0", 1)[0]
@@ -1682,6 +1690,11 @@ class LifeSettingsTest(unittest.TestCase):
         release_123 = changelog.split("## 🌸 v1.2.3", 1)[1].split("## 🌸 v1.2.2", 1)[0]
         release_122 = changelog.split("## 🌸 v1.2.2", 1)[1].split("## 🌸 v1.2.1", 1)[0]
         release_121 = changelog.split("## 🌸 v1.2.1", 1)[1].split("## 🌸 v1.2.0", 1)[0]
+        self.assertIn("连续消息与聊天表达", release_134)
+        self.assertIn("实际发送间隔", release_134)
+        self.assertIn("duration_minutes", release_134)
+        self.assertIn("穿搭账本与生图一致性", release_134)
+        self.assertIn("当前可见外观快照", release_134)
         self.assertIn("AI 音视频通话", release_133)
         self.assertIn("O2.0", release_133)
         self.assertIn("OpenAI multipart", release_133)

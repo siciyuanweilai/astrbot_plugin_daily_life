@@ -914,6 +914,12 @@ h2::before {
   overflow-wrap: anywhere;
 }
 
+.timeline-duration {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .status {
   display: inline-flex;
   margin-top: 4px;
@@ -1024,7 +1030,7 @@ h2::before {
 
 .timeline-edit-fields {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(120px, 0.36fr) auto;
+  grid-template-columns: minmax(0, 1fr) minmax(88px, 0.2fr) minmax(120px, 0.32fr) auto;
   gap: 8px;
   min-width: 0;
 }

@@ -11,6 +11,10 @@ from ..life.tools import parse_schedule_time
 
 
 class LifeRhythmClock:
+    # 周计划在新一周开始后先生成，避免和当天的日程生成争用同一轮上下文。
+    WEEKLY_REFRESH_HOUR = 0
+    WEEKLY_REFRESH_MINUTE = 5
+
     def __init__(
         self,
         config: LifeSettings,
@@ -20,6 +24,7 @@ class LifeRhythmClock:
         proactive_revisit_task: Callable[[], Awaitable[None]] | None = None,
         proactive_idle_task: Callable[[], Awaitable[None]] | None = None,
         durable_task: Callable[[], Awaitable[None]] | None = None,
+        weekly_task: Callable[[], Awaitable[None]] | None = None,
     ):
         self.config = config
         self.scheduler = AsyncIOScheduler(
@@ -34,6 +39,7 @@ class LifeRhythmClock:
         self.daily_task = daily_task
         self.auto_update_task = auto_update_task
         self.review_task = review_task
+        self.weekly_task = weekly_task
         self.proactive_revisit_task = proactive_revisit_task
         self.proactive_idle_task = proactive_idle_task
         self.durable_task = durable_task
@@ -56,6 +62,17 @@ class LifeRhythmClock:
                 id="daily",
                 replace_existing=True,
             )
+
+            if self.weekly_task:
+                self.scheduler.add_job(
+                    self.weekly_task,
+                    "cron",
+                    day_of_week="mon",
+                    hour=self.WEEKLY_REFRESH_HOUR,
+                    minute=self.WEEKLY_REFRESH_MINUTE,
+                    id="weekly_refresh",
+                    replace_existing=True,
+                )
 
             if self.config.state.enabled:
                 interval = max(5, int(self.config.state.refresh_minutes or 30))

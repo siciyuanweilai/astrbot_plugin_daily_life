@@ -1,4 +1,5 @@
 import datetime
+import json
 import uuid
 
 from astrbot.api import logger
@@ -9,16 +10,21 @@ from .calendar import format_calendar_context, format_season_context
 from .people import DAILY_PERSON_TEXT_PATHS
 from .tools import (
     analyze_weather,
+    build_time_context,
     extract_json_from_text,
-    get_time_period_cn,
     parse_schedule_time,
     resolve_daily_hint,
     resolve_daily_suggested,
     timeline_item_datetime,
 )
 from .wardrobe import (
+    format_outfit_components,
+    merge_outfit_components,
     normalize_outfit_decision,
     normalize_outfit_scene_category,
+    reconcile_outfit_components_for_scene,
+    scene_category_for_place_kind,
+    serialize_outfit_components,
     resolve_outfit_style_pool,
 )
 
@@ -26,6 +32,7 @@ _CURRENT_APPEARANCE_META_KEYS = (
     "outfit_decision",
     "outfit_scene_category",
     "outfit_style_pool",
+    "outfit_components",
     "style",
     "hair_style",
     "hair",
@@ -39,6 +46,7 @@ _CURRENT_APPEARANCE_META_KEYS = (
 _PLANNED_APPEARANCE_META_KEYS = {
     "outfit_scene_category": "plan_outfit_scene_category",
     "outfit_style_pool": "plan_outfit_style_pool",
+    "outfit_components": "plan_outfit_components",
     "style": "plan_outfit_style",
     "hair_style": "plan_hair_style",
     "hair": "plan_hair",
@@ -82,9 +90,15 @@ class DailyEngineMixin:
     ) -> dict:
         date_str = date.strftime("%Y-%m-%d")
         check_time = self._daily_generation_check_time(date, target_hour=target_hour)
-        current_minutes = check_time.hour * 60 + check_time.minute
-        period = self._get_curr_period(check_time)
-        period_cn = get_time_period_cn(period)
+        time_context = build_time_context(
+            check_time,
+            getattr(self.config, "schedule_time", "07:00")
+            if target_hour is None
+            else "",
+        )
+        current_minutes = time_context.minute_of_day
+        period = time_context.period
+        period_cn = time_context.period_cn
 
         persona = await self._get_persona()
         city_resolver = getattr(self.domains, "resolve_weather_city", None)
@@ -171,6 +185,7 @@ class DailyEngineMixin:
             if target_hour is not None
             else "full_day",
             current_time_text=check_time.strftime("%Y-%m-%d %H:%M"),
+            temporal_context_text=time_context.prompt_text(),
         )
         return {
             "date_str": date_str,
@@ -178,6 +193,7 @@ class DailyEngineMixin:
             "current_minutes": current_minutes,
             "period": period,
             "period_cn": period_cn,
+            "time_context": time_context,
             "weather_info": weather_info,
             "weather_str_for_prompt": weather_info["raw"],
             "calendar_context": calendar_context,
@@ -271,13 +287,9 @@ class DailyEngineMixin:
                 if item_time is not None and item_time <= check_time:
                     occurred.append(item)
             if occurred:
-                place_kind = str(occurred[-1].get("place_kind") or "").strip()
-                if place_kind == "home":
-                    current_scene_category = "home"
-                elif place_kind == "transit":
-                    current_scene_category = "outdoor"
-                elif place_kind in {"poi", "generic"}:
-                    current_scene_category = "public"
+                current_scene_category = scene_category_for_place_kind(
+                    occurred[-1].get("place_kind"), default=current_scene_category
+                )
         current_reference_ids = self._style_catalog_reference_ids(
             outfit_decision.get("catalog_reference_ids")
         )
@@ -333,15 +345,7 @@ class DailyEngineMixin:
                 else {}
             )
             place_kind = str(timeline_item.get("place_kind") or "").strip()
-            action_scene_category = (
-                "home"
-                if place_kind == "home"
-                else "outdoor"
-                if place_kind == "transit"
-                else "public"
-                if place_kind in {"poi", "generic"}
-                else ""
-            )
+            action_scene_category = scene_category_for_place_kind(place_kind)
             if context["manual_extra"]:
                 action_appearance = await self._style_catalog_reference_appearance(
                     action_reference_ids,
@@ -365,8 +369,31 @@ class DailyEngineMixin:
             if action_issue:
                 self._set_validation_issue("style_catalog_required")
                 return None, f"计划换装未采用衣橱候选：{action_issue}"
+            component_ledger = serialize_outfit_components(
+                reconcile_outfit_components_for_scene(
+                    merge_outfit_components(
+                        payload.get("outfit_components"),
+                        action_appearance.get("outfit_components"),
+                    ),
+                    action_scene_category,
+                    catalog_components=action_appearance.get("outfit_components"),
+                    catalog_selected=bool(
+                        action_reference_ids and action_appearance.get("outfit")
+                    ),
+                )
+            )
+            if component_ledger:
+                payload["outfit_components"] = component_ledger
             if action_appearance.get("outfit"):
-                raw_action["target"] = action_appearance["outfit"]
+                action_visible_outfit = format_outfit_components(
+                    json.loads(component_ledger) if component_ledger else {}
+                )
+                raw_action["target"] = (
+                    action_visible_outfit
+                    if action_scene_category in {"home", "sleep"}
+                    and action_visible_outfit
+                    else action_appearance["outfit"]
+                )
                 payload["catalog_reference_ids"] = action_reference_ids
                 reserve = str(action_appearance.get("outing_reserve") or "").strip()
                 if reserve:
@@ -393,6 +420,28 @@ class DailyEngineMixin:
             )
         catalog_outfit = catalog_appearance.pop("outfit", "")
         outing_reserve = catalog_appearance.pop("outing_reserve", "")
+        day_components = merge_outfit_components(
+            day.meta.get("outfit_components"),
+            catalog_appearance.get("outfit_components"),
+        )
+        day_components = reconcile_outfit_components_for_scene(
+            day_components,
+            current_scene_category,
+            catalog_components=catalog_appearance.get("outfit_components"),
+            catalog_selected=bool(
+                current_reference_ids
+                and catalog_outfit
+                and not context["manual_extra"]
+            ),
+        )
+        if day_components:
+            day.meta["outfit_components"] = serialize_outfit_components(
+                day_components
+            )
+            if current_scene_category in {"home", "sleep"}:
+                visible_outfit = format_outfit_components(day_components)
+                if visible_outfit:
+                    day.outfit = visible_outfit
         if catalog_outfit and outfit_choice != "keep":
             day.outfit = catalog_outfit
         if outing_reserve:
@@ -400,7 +449,10 @@ class DailyEngineMixin:
         else:
             day.meta.pop("outing_outfit_reserve", None)
         for key, value in catalog_appearance.items():
-            if not str(day.meta.get(key) or "").strip():
+            if key == "outfit_components":
+                if not str(day.meta.get(key) or "").strip():
+                    day.meta[key] = serialize_outfit_components(value)
+            elif not str(day.meta.get(key) or "").strip():
                 day.meta[key] = value
         repeat_issue = await self._repeat_generation_issue(
             day,
@@ -697,6 +749,13 @@ class DailyEngineMixin:
                                 ok = False
                                 reason = location_reason
                                 self._set_validation_issue("location_audit_invalid")
+                            else:
+                                ok, reason = self._validate_daily_payload(
+                                    result,
+                                    context["manual_extra"],
+                                    expected_coverage=context["expected_coverage"],
+                                    current_minutes=context["current_minutes"],
+                                )
                     if ok:
                         (
                             day,

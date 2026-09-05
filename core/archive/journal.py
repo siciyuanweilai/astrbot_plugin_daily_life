@@ -60,6 +60,7 @@ class DayArchiveMixin:
                 time=item["time"],
                 activity=item["activity"],
                 status=item["status"],
+                duration_minutes=item["duration_minutes"],
                 place=item["place"],
                 place_kind=item["place_kind"],
                 place_scope=item["place_scope"],
@@ -82,7 +83,7 @@ class DayArchiveMixin:
             )
             for item in self._conn.execute(
                 """
-                SELECT time, activity, status, place, place_kind, place_scope,
+                SELECT time, activity, status, duration_minutes, place, place_kind, place_scope,
                        place_city, place_hint, travel_mode, place_address,
                        place_latitude, place_longitude, place_coordinate_source,
                        travel_origin, travel_provider, travel_detail, travel_minutes,
@@ -340,13 +341,14 @@ class DayArchiveMixin:
             self._conn.execute(
                 """
                 INSERT INTO timelines(
-                    date, sort_order, time, activity, status, place, place_kind,
+                    date, sort_order, time, activity, status, duration_minutes,
+                    place, place_kind,
                     place_scope, place_city, place_hint, travel_mode, place_address,
                     place_latitude, place_longitude, place_coordinate_source,
                     travel_origin, travel_provider, travel_detail, travel_minutes,
                     travel_distance_meters, execution_state, execution_reason,
                     execution_evidence, execution_updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     date_str,
@@ -354,6 +356,7 @@ class DayArchiveMixin:
                     item.time,
                     item.activity,
                     item.status,
+                    item.duration_minutes,
                     item.place,
                     item.place_kind,
                     item.place_scope,

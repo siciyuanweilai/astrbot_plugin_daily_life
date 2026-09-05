@@ -23,7 +23,9 @@ class ProactiveFollowupMixin:
     _FOLLOW_UP_ACTIONS = {"contact_person", "remind_person"}
 
     @staticmethod
-    def _validate_proactive_commitment_decision(value: dict[str, Any]) -> dict[str, Any]:
+    def _validate_proactive_commitment_decision(
+        value: dict[str, Any],
+    ) -> dict[str, Any]:
         """把模型裁定收敛到固定字段，拒绝 should_send 与正文互相矛盾。"""
 
         result = dict(value)
@@ -114,13 +116,17 @@ class ProactiveFollowupMixin:
     def _commitment_requests_photo(cls, commitment: CommitmentRecord) -> bool:
         """媒体执行只信任提取阶段持久化的结构化类型。"""
 
-        return str(getattr(commitment, "media_kind", "") or "").strip().lower() == "photo"
+        return (
+            str(getattr(commitment, "media_kind", "") or "").strip().lower() == "photo"
+        )
 
     @classmethod
     def _commitment_requests_video(cls, commitment: CommitmentRecord) -> bool:
         """视频任务与图片任务一样，只接受明确的结构化媒体类型。"""
 
-        return str(getattr(commitment, "media_kind", "") or "").strip().lower() == "video"
+        return (
+            str(getattr(commitment, "media_kind", "") or "").strip().lower() == "video"
+        )
 
     @classmethod
     def _photo_commitment_owner_allowed(
@@ -229,9 +235,7 @@ class ProactiveFollowupMixin:
             key = f"commitment_photo:{getattr(commitment, 'id', 0)}"
             if key in existing_keys:
                 continue
-            if await self.schedule_commitment_photo(
-                commitment, observed_at=now
-            ):
+            if await self.schedule_commitment_photo(commitment, observed_at=now):
                 existing_keys.add(key)
                 created += 1
         return created
@@ -345,8 +349,12 @@ class ProactiveFollowupMixin:
         event = SimpleNamespace(
             unified_msg_origin=scope,
             session_id=scope,
-            message_id=str(payload.get("source_message_id") or f"commitment-photo:{commitment.id}"),
+            message_id=str(
+                payload.get("source_message_id") or f"commitment-photo:{commitment.id}"
+            ),
             message_str=prompt,
+            _daily_life_commitment_id=commitment.id,
+            _daily_life_media_reply_name="承诺的生活照片",
         )
         generator = getattr(self, "life_image_generate", None)
         if not callable(generator):
@@ -360,20 +368,41 @@ class ProactiveFollowupMixin:
             result_payload = json.loads(str(result or ""))
         except (TypeError, ValueError):
             result_payload = {}
-        if not isinstance(result_payload, dict) or result_payload.get("status") != "sent":
+        if (
+            not isinstance(result_payload, dict)
+            or result_payload.get("status") != "sent"
+        ):
             error = str(result or "图片生成或发送未成功").strip()
             if int(getattr(task, "attempts", 0) or 0) >= int(
                 getattr(task, "max_attempts", 0) or 0
             ):
                 await self.archive.set_commitment_status(
-                    commitment.id, "delivery_failed", life_now().isoformat(timespec="seconds")
+                    commitment.id,
+                    "delivery_failed",
+                    life_now().isoformat(timespec="seconds"),
                 )
             raise RuntimeError(f"承诺拍照执行失败：{error}")
         await self.archive.set_commitment_status(
             commitment.id, "done", life_now().isoformat(timespec="seconds")
         )
+        reply_sent = bool(getattr(event, "_daily_life_media_reply_sent", False))
+        followup = getattr(self, "_send_delivered_media_followup", None)
+        if not reply_sent and callable(followup):
+            reply_sent = await followup(
+                scope,
+                media_name="承诺的生活照片",
+                request_text=prompt,
+                delivery_text="照片已成功送达，承诺已经履行",
+                guidance="像角色本人履行先前约定后顺手接一句，不要写成系统通知。",
+                source_event=event,
+                source="commitment_photo_followup",
+            )
         logger.info(f"{LOG_PREFIX} 已履行承诺拍照：编号={commitment.id}")
-        return {"outcome": "sent", "commitment_id": commitment.id}
+        return {
+            "outcome": "sent",
+            "commitment_id": commitment.id,
+            "reply_sent": reply_sent,
+        }
 
     async def run_commitment_video_task(self, task: Any) -> dict[str, Any]:
         """执行一条承诺拍视频，并等待真实视频投递完成后结算。"""
@@ -405,9 +434,13 @@ class ProactiveFollowupMixin:
         event = SimpleNamespace(
             unified_msg_origin=scope,
             session_id=scope,
-            message_id=str(payload.get("source_message_id") or f"commitment-video:{commitment.id}"),
+            message_id=str(
+                payload.get("source_message_id") or f"commitment-video:{commitment.id}"
+            ),
             message_str=prompt,
             _daily_life_commitment_video_future=completion,
+            _daily_life_commitment_id=commitment.id,
+            _daily_life_media_reply_name="承诺的生活视频",
         )
         generator = getattr(self, "life_video_generate", None)
         if not callable(generator):
@@ -436,7 +469,9 @@ class ProactiveFollowupMixin:
             result_payload = json.loads(str(result or ""))
         except (TypeError, ValueError):
             result_payload = {}
-        status = result_payload.get("status") if isinstance(result_payload, dict) else ""
+        status = (
+            result_payload.get("status") if isinstance(result_payload, dict) else ""
+        )
         if status == "sent" and result_payload.get("media") == "video":
             outcome = "sent"
         elif status == "pending" and result_payload.get("media") == "video":
@@ -499,9 +534,7 @@ class ProactiveFollowupMixin:
             execute_at = observed_at + datetime.timedelta(
                 minutes=max(5, min(delay_minutes, 60))
             )
-        expires_at = (
-            observed_at + datetime.timedelta(hours=24) if condition else None
-        )
+        expires_at = observed_at + datetime.timedelta(hours=24) if condition else None
         if execute_at < observed_at:
             execute_at = observed_at
         await self.archive.enqueue_durable_task(
@@ -624,16 +657,12 @@ class ProactiveFollowupMixin:
             raise RuntimeError("没有可用的主动承诺裁定模型")
         persona = await self._current_proactive_persona(scope)
         recent_messages = await self._read_recent_context_messages(scope, limit=10)
-        recent_context = self._format_recent_context_messages(
-            recent_messages, now=now
-        )
+        recent_context = self._format_recent_context_messages(recent_messages, now=now)
         life_context = await self._proactive_commitment_life_context(now)
         target_name = str(getattr(relationship, "name", "") or "对方").strip()
         interaction_context = {
             "mode": str(getattr(interaction, "mode", "") or "unknown"),
-            "mode_label": str(
-                getattr(interaction, "mode_label", "") or "互动方式未知"
-            ),
+            "mode_label": str(getattr(interaction, "mode_label", "") or "互动方式未知"),
             "evidence": str(getattr(interaction, "evidence", "") or ""),
         }
         fixed = f"""你负责在一个已经到期的主动联系承诺真正发送前做最后语义复核。
@@ -651,9 +680,9 @@ class ProactiveFollowupMixin:
 只返回严格 JSON：
 {{"should_send":true,"reply_text":"","reason":"","settlement":"send|wait|already_done|cancelled|superseded|invalid","retry_after_minutes":0,"expression_intent":{{"emotion":"","emotion_category":"","voice_style":"","emoji_intent":"","action_intent":"","send_emoji":false,"reason":""}}}}
 """
-        dynamic = f"""当前时间：{now.strftime('%Y-%m-%d %H:%M:%S')}
+        dynamic = f"""当前时间：{now.strftime("%Y-%m-%d %H:%M:%S")}
 当前角色人设：
-{persona or '暂无额外人设。'}
+{persona or "暂无额外人设。"}
 
 承诺对象：{target_name}
 已保存承诺：{json.dumps(commitment.as_dict(), ensure_ascii=False)}
@@ -751,7 +780,9 @@ class ProactiveFollowupMixin:
                     "retry_at": retry_at.strftime("%Y-%m-%d %H:%M:%S"),
                     "reason": str(decision.get("reason") or "等待承诺条件成立"),
                 }
-            status = "cancelled" if settlement in {"cancelled", "superseded"} else "done"
+            status = (
+                "cancelled" if settlement in {"cancelled", "superseded"} else "done"
+            )
             if settle_commitment:
                 await self.archive.set_commitment_status(
                     commitment.id, status, now.isoformat(timespec="seconds")
@@ -790,7 +821,11 @@ class ProactiveFollowupMixin:
                 await self.archive.set_commitment_status(
                     commitment.id, "delivery_failed", now.isoformat(timespec="seconds")
                 )
-                return {"outcome": "undeliverable", "reason": str(exc), "code": exc.code}
+                return {
+                    "outcome": "undeliverable",
+                    "reason": str(exc),
+                    "code": exc.code,
+                }
             raise
         if not sent:
             raise RuntimeError("主动承诺消息未成功投递")

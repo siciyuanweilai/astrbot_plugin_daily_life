@@ -9,6 +9,7 @@ from typing import Any
 from astrbot.api import logger
 
 from .routing import (
+    LOCAL_SCOPE_MAX_TRAVEL_MINUTES,
     ROUTE_MODES,
     RouteChoiceContext,
     choose_practical_route,
@@ -42,6 +43,13 @@ class _LocationAuditState:
 
 
 class DailyLocationAuditMixin:
+    @staticmethod
+    def _timeline_item_duration_minutes(item: dict[str, Any]) -> int:
+        try:
+            return max(0, int(float(item.get("duration_minutes") or 0)))
+        except (AttributeError, TypeError, ValueError):
+            return 0
+
     async def audit_daily_locations(
         self,
         payload: dict[str, Any],
@@ -782,12 +790,26 @@ class DailyLocationAuditMixin:
                 straight_distance=transition["straight_distance"],
             )
             required_minutes = self._route_minutes(route)
+            if (
+                transition["destination"]["scope"] == "local"
+                and required_minutes > LOCAL_SCOPE_MAX_TRAVEL_MINUTES
+            ):
+                return (
+                    [],
+                    {},
+                    f"本地地点“{transition['destination']['place']}”单程约需 "
+                    f"{required_minutes} 分钟，超出本地日程范围；请改用附近地点，"
+                    "或将明确的跨城安排标记为 travel",
+                )
             origin_index = transition["origin"]["index"]
             destination_index = transition["destination"]["index"]
             origin_minutes = unwrapped_minutes[origin_index]
             destination_minutes = unwrapped_minutes[destination_index]
+            origin_duration = self._timeline_item_duration_minutes(
+                transition["origin"]["item"]
+            )
             available_minutes = (
-                destination_minutes - origin_minutes
+                destination_minutes - origin_minutes - origin_duration
                 if origin_minutes is not None and destination_minutes is not None
                 else None
             )

@@ -18,11 +18,6 @@ DEFAULT_CHAT_STYLE_PROMPT = (
     "偏好自然、简洁、有生活感的聊天语气。普通闲聊先接住当前话题，保留最必要的一个意思，"
     "达到目的就自然停住；需要解释、核实或安慰时保持清楚完整，不为追求短句省略关键信息。"
 )
-_LEGACY_CHAT_STYLE_PROMPT = (
-    "日常闲聊先接住当下的一句话，不为了显得温柔或有趣而多铺陈。"
-    "轻松接话保持短气口，一句只放一个主要意思，能自然停住就停住。"
-    "认真问题、事实解释和情绪支持按内容自然展开，先给判断，再补必要原因。"
-)
 CHAT_STYLE_PROMPT_MAX_CHARS = 220
 DEFAULT_PUNCTUATION_CLEANUP_CHARS = "，。！？；、,.!?;"
 
@@ -30,13 +25,7 @@ DEFAULT_PUNCTUATION_CLEANUP_CHARS = "，。！？；、,.!?;"
 def normalize_chat_style_prompt(value: Any, default: str = DEFAULT_CHAT_STYLE_PROMPT) -> str:
     """将配置中的表达偏好压成单行软偏好，避免它变成额外的提示词规则。"""
     text = " ".join(as_str(value, default).strip().split())
-    if text == _LEGACY_CHAT_STYLE_PROMPT:
-        text = default
     return text[:CHAT_STYLE_PROMPT_MAX_CHARS].rstrip() or default
-
-
-def is_legacy_chat_style_prompt(value: Any) -> bool:
-    return " ".join(as_str(value).strip().split()) == _LEGACY_CHAT_STYLE_PROMPT
 
 
 def format_chat_style_prompt(value: Any) -> str:
@@ -203,8 +192,8 @@ class ChatStyleSettings:
     private_casual_max_chars: int = 15
     proactive_max_chars: int = 15
     continuous_turn_enabled: bool = True
-    continuous_turn_wait_seconds: float = 1.5
-    continuous_turn_max_wait_seconds: float = 4.0
+    continuous_turn_wait_seconds: float = 3.5
+    continuous_turn_max_wait_seconds: float = 12.0
     continuous_turn_group_enabled: bool = False
     continuous_turn_semantic_enabled: bool = True
     punctuation_cleanup_enabled: bool = True
@@ -234,15 +223,15 @@ class ChatStyleSettings:
         else:
             minimum, maximum = sorted((minimum, maximum))
         continuous_wait = as_float(
-            data.get("continuous_turn_wait_seconds", 1.5), 1.5, 0.0, 3.0
+            data.get("continuous_turn_wait_seconds", 3.5), 3.5, 0.0, 5.0
         )
         continuous_max_wait = max(
             continuous_wait,
             as_float(
-                data.get("continuous_turn_max_wait_seconds", 4.0),
-                4.0,
+                data.get("continuous_turn_max_wait_seconds", 12.0),
+                12.0,
                 1.0,
-                8.0,
+                20.0,
             ),
         )
         return ChatStyleSettings(

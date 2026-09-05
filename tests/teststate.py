@@ -12,6 +12,14 @@ from core.life.condition import (
     normalize_physiological_rhythm,
     normalize_state,
 )
+from core.life.appearance import (
+    format_current_appearance_context,
+    format_image_appearance_context,
+)
+from core.life.tools import get_current_timeline_status
+from core.life.wardrobe import scene_category_for_place_kind
+from core.models import DayRecord, SleepState, TimelineItem
+from core.runtime.refresh import RefreshMixin
 from support import LifeState
 
 
@@ -49,6 +57,138 @@ class LifeStateSubjectiveTest(unittest.TestCase):
 
         self.assertEqual(state["sleep"]["depth"], "light_sleep")
         self.assertEqual(state["sleep"]["quality"], 42)
+
+
+class SceneAwareOutfitTest(unittest.TestCase):
+    def test_current_schedule_location_projects_home_outfit_without_legacy_fallback(self):
+        day = DayRecord(
+            date="2026-05-24",
+            outfit="白衬衫、运动鞋、帆布包",
+            timeline=[
+                TimelineItem(
+                    time="18:00",
+                    activity="和朋友聚餐",
+                    place="餐厅",
+                    place_kind="poi",
+                ),
+                TimelineItem(
+                    time="21:00",
+                    activity="回家看电影",
+                    place="家",
+                    place_kind="home",
+                ),
+            ],
+            meta={
+                "outfit_components": (
+                    '{"main_clothing":{"state":"worn","description":"白衬衫"},'
+                    '"footwear":{"state":"worn","description":"运动鞋"},'
+                    '"carried_accessories":{"state":"carried","description":"帆布包"}}'
+                ),
+                "outfit_scene_category": "public",
+                "life_mode": "social",
+            },
+        )
+        current, _next = get_current_timeline_status(
+            day.timeline,
+            datetime.datetime(2026, 5, 24, 21, 30),
+            day.date,
+        )
+        scene = scene_category_for_place_kind(current.place_kind)
+        context = format_current_appearance_context(day, scene_category=scene)
+
+        self.assertEqual(scene, "home")
+        self.assertIn("当前穿搭：白衬衫", context)
+        self.assertIn("鞋履=待用：运动鞋", context)
+        self.assertIn("随身配饰=待用：帆布包", context)
+        self.assertNotIn("当前穿搭：白衬衫、运动鞋、帆布包", context)
+
+    def test_image_appearance_context_excludes_staged_home_components(self):
+        day = DayRecord(
+            date="2026-05-24",
+            outfit="白衬衫、运动鞋、帆布包",
+            meta={
+                "outfit_scene_category": "home",
+                "outfit_components": (
+                    '{"main_clothing":{"state":"worn","description":"白衬衫"},'
+                    '"footwear":{"state":"worn","description":"运动鞋"},'
+                    '"carried_accessories":{"state":"carried","description":"帆布包"}}'
+                ),
+            },
+        )
+
+        context = format_image_appearance_context(day)
+
+        self.assertIn("当前穿搭：白衬衫", context)
+        self.assertIn("鞋履不在脚上", context)
+        self.assertIn("随身包/外出配饰不在身上", context)
+        self.assertIn("不得将其画成穿着、背着或手提状态", context)
+
+    def test_schedule_sync_updates_stored_current_outfit(self):
+        day = DayRecord(
+            date="2026-05-24",
+            outfit="白衬衫、运动鞋、帆布包",
+            timeline=[
+                TimelineItem(
+                    time="18:00",
+                    activity="和朋友聚餐",
+                    place="餐厅",
+                    place_kind="poi",
+                ),
+                TimelineItem(
+                    time="21:00",
+                    activity="回家看电影",
+                    place="家",
+                    place_kind="home",
+                ),
+            ],
+            meta={
+                "outfit_scene_category": "public",
+                "outfit_components": (
+                    '{"main_clothing":{"state":"worn","description":"白衬衫"},'
+                    '"footwear":{"state":"worn","description":"运动鞋"},'
+                    '"carried_accessories":{"state":"carried","description":"帆布包"}}'
+                ),
+            },
+        )
+
+        changed = RefreshMixin._synchronize_outfit_with_schedule(
+            day, datetime.datetime(2026, 5, 24, 21, 30)
+        )
+
+        self.assertTrue(changed)
+        self.assertEqual(day.meta["outfit_scene_category"], "home")
+        self.assertEqual(day.outfit, "白衬衫")
+        self.assertIn('"state":"staged"', day.meta["outfit_components"])
+
+        day.outfit = "白衬衫、运动鞋、帆布包"
+        changed = RefreshMixin._synchronize_outfit_with_schedule(
+            day, datetime.datetime(2026, 5, 24, 21, 31)
+        )
+        self.assertTrue(changed)
+        self.assertEqual(day.outfit, "白衬衫")
+
+    def test_sleep_state_overrides_finished_schedule_for_outfit_scene(self):
+        day = DayRecord(
+            date="2026-05-24",
+            state=LifeState(sleep=SleepState(depth="deep_sleep")),
+            timeline=[
+                TimelineItem(
+                    time="22:00",
+                    activity="洗漱后准备休息",
+                    execution_state="elapsed",
+                    place="家",
+                    place_kind="home",
+                )
+            ],
+            meta={"outfit_scene_category": "home"},
+        )
+
+        self.assertEqual(
+            RefreshMixin._schedule_outfit_scene(
+                day, datetime.datetime(2026, 5, 24, 23, 30)
+            ),
+            "sleep",
+        )
 
     def test_normalize_physiological_rhythm_clamps_and_expires_short_state(self):
         rhythm = normalize_physiological_rhythm(

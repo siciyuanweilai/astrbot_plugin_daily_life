@@ -4,7 +4,7 @@ from typing import Any
 
 from ...clock import now as life_now
 from ...config.options.cast import as_bool
-from ...life.tools import resolve_business_now
+from ...life.tools import build_time_context
 from .procontext import ProactiveSyntheticEvent
 
 
@@ -399,9 +399,8 @@ class ProactiveScopeMixin:
         now: datetime.datetime,
     ) -> tuple[str, bool, Any | None]:
         today_str = now.strftime("%Y-%m-%d")
-        target_date_str = resolve_business_now(self.config.schedule_time, now).strftime(
-            "%Y-%m-%d"
-        )
+        time_context = build_time_context(now, self.config.schedule_time)
+        target_date_str = time_context.business_date_text
         using_extended_night = target_date_str != today_str
         day = await self.archive.get_day(target_date_str)
         if not day and using_extended_night:

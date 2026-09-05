@@ -724,6 +724,12 @@ class RuntimePhotoSuiteMediaMixin:
                 [str(shot.get("path") or "") for shot in successful],
                 action_type="photo",
                 evidence=f"套图已生成 {len(successful)} 张，等待投递确认",
+                reply_context={
+                    "media_name": "一组生活照片",
+                    "request_text": str(manifest.get("prompt") or ""),
+                    "delivery_text": f"已恢复并送达 {len(successful)} 张照片",
+                    "guidance": "自然回应这组照片已经送达。",
+                },
             )
             sent_indexes = await self._photo_suite_send_images(scope, event, successful)
             (
@@ -1041,7 +1047,9 @@ shots 数量必须与要求一致。shared 只写整组共同内容，不得写�
         if not isinstance(payload, dict) or set(payload) != {"shared", "shots"}:
             return []
         shared = payload.get("shared")
-        if not isinstance(shared, dict) or set(shared) != set(PHOTO_SUITE_SHARED_FIELDS):
+        if not isinstance(shared, dict) or set(shared) != set(
+            PHOTO_SUITE_SHARED_FIELDS
+        ):
             return []
         shared_values = {
             key: " ".join(str(shared.get(key) or "").split()).strip()
@@ -1073,8 +1081,7 @@ shots 数量必须与要求一致。shared 只写整组共同内容，不得写�
                 f"{key}：{shared_values[key]}" for key in PHOTO_SUITE_SHARED_FIELDS
             )
             detail = "；".join(
-                f"{key}：{values[key]}"
-                for key in ("action", "camera", "composition")
+                f"{key}：{values[key]}" for key in ("action", "camera", "composition")
             )
             result.append(
                 {
