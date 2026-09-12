@@ -17,7 +17,6 @@ class ImageRoute:
     origin: str
     resolution_source: str = "通道配置"
     quality: str = "medium"
-    edit_request_format: str = "auto"
 
 
 @dataclass(slots=True)

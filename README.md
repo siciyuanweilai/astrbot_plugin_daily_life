@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.3.4-ef6f8f" alt="版本 1.3.4"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.3.5-ef6f8f" alt="版本 1.3.5"></a>
   <img src="https://img.shields.io/badge/AstrBot-%3E%3D4.26%2C%3C5-4c78a8" alt="AstrBot >= 4.26,<5">
   <img src="https://img.shields.io/badge/platform-aiocqhttp%20%7C%20weixin__oc-4f8a66" alt="支持 aiocqhttp 和 weixin_oc">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-555555" alt="MIT License"></a>
@@ -34,7 +34,7 @@
 [![Yousa Ling](https://count.getloli.com/get/@DailyLife?theme=yousa-ling)](https://github.com/siciyuanweilai/astrbot_plugin_daily_life)
 
 > [!TIP]
-> **v1.3.4 重点更新**：连续消息按会话实际发送节奏自适应收束，并保留整轮等待上限；时间线按真实城市、通勤耗时和活动持续时间校正。穿搭改用结构化组成账本，居家/睡眠场景会将鞋履和随身物品标为待用，外出或公共场景再恢复穿着与携带；生图会同步当前场景，只呈现实际穿着或携带的组成。完整说明见 [CHANGELOG.md](./CHANGELOG.md)。
+> **v1.3.5 重点更新**：新增独立 Seedream 文生图和图生图通道，按接口地址自动选择 JSON 或 multipart 请求；移除旧请求格式设置，Seedream 不再携带 GPT Image 专用质量字段，旧 OpenAI 通道也不会因填写 Seedream 模型名而被误判。完整说明见 [CHANGELOG.md](./CHANGELOG.md)。
 
 ---
 
@@ -169,7 +169,7 @@
 
 ### 8. 🎙️ 声音、影像与表情：把生活说出来、拍下来
 
-* **GPT Image 2、Gemini、Grok 生图**：支持文生图和图生图，能把当前生活状态、穿搭、场景和角色形象参考图整理成更适合出图的提示词；普通生活照是否带角色参考图由图片导演判断，创意衣橱则严格按用户选择的生成方式执行。Grok 通道兼容接口返回图片链接或 Base64 数据。
+* **GPT Image 2、Seedream、Gemini、Grok 生图**：支持文生图和图生图，能把当前生活状态、穿搭、场景和角色形象参考图整理成更适合出图的提示词；普通生活照是否带角色参考图由图片导演判断，创意衣橱则严格按用户选择的生成方式执行。GPT Image 与 Seedream 提供独立的文生图/图生图通道和模型配置，Grok 通道兼容接口返回图片链接或 Base64 数据。
 * **普通聊天主动分享图片**：角色会结合自身性格、关系、当前生活状态、眼前事物和聊天节奏，判断是否自然产生“想让对方看看这个瞬间”的意愿；有独立画面价值时可直接分享，不需要用户先索要，也不靠关键词、固定场景或随机概率触发。视频仍沿用明确请求、引用图转视频或强动作/镜头场景的原有边界。
 * **真实换装与图片试穿分离**：用户明确要求当前角色实际换装时，会先更新生活穿搭状态，再以已经保存的最终造型作为确认照唯一依据；同一条“换一套”请求不会在生图阶段被再次解释成另一套衣服、鞋饰或发型。只想看试穿效果或创作图片时，仍可临时指定视觉造型，不会改变当前生活状态。
 * **生活套图**：明确要求“拍一套”或“多拍几张”时，默认后台生成 3 张、最多 6 张独立原图；整组保持人物、穿搭、场景和光线连续，局部失败可按位置重拍，不会重做其他成功照片。
@@ -526,7 +526,7 @@ Research 支持 `mini`、`pro`、`auto` 模型，`short`、`standard`、`long` �
 | `vision_config` | 图片上下文理解和表情素材识别使用的视觉模型 |
 | `emoji_config` | 表情素材目录、自动附加、冷却、候选轮换和语义匹配 |
 | `sight_config` | 视频总结模型、关键画面模型、普通与专业转写上限、最大关键画面数、下载/处理超时和B站自动总结 |
-| `image_generation_config` | Gemini、GPT Image、Grok 图片接口通道按序轮询，文生图/图生图通道、每通道尺寸/比例/质量/超时及图生图请求格式、当前角色参考、好友参考和创意衣橱底层设置；创意衣橱控制项在设置页显示于“生活背景” |
+| `image_generation_config` | Gemini、GPT Image、Seedream、Grok 图片接口通道按序轮询，文生图/图生图通道、每通道尺寸/比例/质量/超时、当前角色参考、好友参考和创意衣橱底层设置；创意衣橱控制项在设置页显示于“生活背景” |
 | `video_generation_config` | Grok 视频生成、时长、比例、清晰度和后台轮询 |
 | `voice_generation_config` | 火山引擎语音合成、预置/复刻音色、智能切换和闲时语音概率 |
 | `realtime_voice_call_config` | 实时通话配置。`实时语音通话` 使用 WebSocket 全双工接口，可选火山官方联网与唱歌能力；`AI 音视频通话` 使用 veRTC 智能体和独立 RTC 凭据；两者共用 6186 网关。 |

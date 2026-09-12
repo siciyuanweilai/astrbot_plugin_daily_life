@@ -251,7 +251,6 @@ class LifeSettingsTest(unittest.TestCase):
                             "model": "",
                             "resolution": "2k",
                             "aspect_ratio": "16:9",
-                            "edit_request_format": "multipart",
                             "timeout_seconds": "9999",
                         },
                         {
@@ -456,10 +455,6 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertEqual(config.image_generation.edit_channels[0].protocol, "openai")
         self.assertEqual(config.image_generation.edit_channels[0].resolution, "2K")
         self.assertEqual(config.image_generation.edit_channels[0].aspect_ratio, "16:9")
-        self.assertEqual(
-            config.image_generation.edit_channels[0].edit_request_format,
-            "multipart",
-        )
         self.assertEqual(config.image_generation.edit_channels[0].timeout_seconds, 600)
         self.assertEqual(
             config.image_generation.character_reference_images[0]["path"],
@@ -765,6 +760,7 @@ class LifeSettingsTest(unittest.TestCase):
             for template_key, expected_default in (
                 ("gemini", "Gemini"),
                 ("openai", "GPT Image"),
+                ("seedream", "Seedream"),
                 ("grok", "Grok Image"),
             ):
                 channel_items = image_items[list_key]["templates"][template_key][
@@ -813,6 +809,38 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertEqual(edit_channel.model, "grok-imagine-image")
         self.assertEqual(edit_channel.resolution, "2K")
         self.assertEqual(edit_channel.timeout_seconds, 300)
+
+    def test_seedream_image_channels_use_seedream_defaults(self):
+        config = LifeSettings.from_dict(
+            {
+                "image_generation_config": {
+                    "enabled": True,
+                    "text_channels": [
+                        {
+                            "__template_key": "seedream",
+                            "api_url": "https://seedream-text.example/v1",
+                            "api_key": "text-key",
+                        }
+                    ],
+                    "edit_channels": [
+                        {
+                            "__template_key": "seedream",
+                            "api_url": "https://seedream-edit.example/v1",
+                            "api_key": "edit-key",
+                        }
+                    ],
+                }
+            }
+        )
+
+        text_channel = config.image_generation.text_channels[0]
+        edit_channel = config.image_generation.edit_channels[0]
+        for channel in (text_channel, edit_channel):
+            self.assertEqual(channel.protocol, "seedream")
+            self.assertEqual(channel.model, "doubao-seedream-4-0-250828")
+            self.assertEqual(channel.resolution, "4K")
+            self.assertEqual(channel.aspect_ratio, "1:1")
+            self.assertEqual(channel.timeout_seconds, 300)
 
     def test_image_channel_quality_is_normalized(self):
         config = LifeSettings.from_dict(
@@ -1244,14 +1272,24 @@ class LifeSettingsTest(unittest.TestCase):
         )
         self.assertNotIn("1:4", openai_channel_items["aspect_ratio"]["options"])
         self.assertIn("固定合法尺寸", openai_channel_items["aspect_ratio"]["hint"])
-        self.assertEqual(
-            openai_channel_items["edit_request_format"]["default"], "auto"
-        )
-        self.assertEqual(
-            openai_channel_items["edit_request_format"]["options"],
-            ["auto", "leo_json", "multipart"],
-        )
+        self.assertNotIn("edit_request_format", openai_channel_items)
         self.assertEqual(openai_channel_items["timeout_seconds"]["default"], 300)
+        seedream_text_items = image_items["text_channels"]["templates"]["seedream"][
+            "items"
+        ]
+        seedream_edit_items = image_items["edit_channels"]["templates"]["seedream"][
+            "items"
+        ]
+        for seedream_items in (seedream_text_items, seedream_edit_items):
+            self.assertEqual(seedream_items["group_name"]["default"], "Seedream")
+            self.assertEqual(
+                seedream_items["model"]["default"], "doubao-seedream-4-0-250828"
+            )
+            self.assertEqual(seedream_items["resolution"]["default"], "4K")
+            self.assertEqual(seedream_items["aspect_ratio"]["default"], "1:1")
+            self.assertIn("1:4", seedream_items["aspect_ratio"]["options"])
+            self.assertNotIn("quality", seedream_items)
+            self.assertEqual(seedream_items["timeout_seconds"]["default"], 300)
         grok_text_items = image_items["text_channels"]["templates"]["grok"]["items"]
         grok_edit_items = image_items["edit_channels"]["templates"]["grok"]["items"]
         for grok_items in (grok_text_items, grok_edit_items):
@@ -1636,9 +1674,9 @@ class LifeSettingsTest(unittest.TestCase):
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertIn("version: 1.3.4", metadata)
+        self.assertIn("version: 1.3.5", metadata)
         self.assertIn('astrbot_version: ">=4.26,<5"', metadata)
-        self.assertIn("version-1.3.4", readme)
+        self.assertIn("version-1.3.5", readme)
         self.assertIn("创意衣橱生成", readme)
         self.assertIn("文生图不使用角色参考图", readme)
         self.assertIn("不读取联网灵感或固定风格池", readme)
@@ -1650,7 +1688,8 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertNotIn("用户明确要求联网寻找灵感时", readme)
         self.assertNotIn("图片 → 创意衣橱", readme)
         self.assertNotIn("SiliconFlow", readme)
-        self.assertIn("v1.3.4 · 2026-09-05", changelog)
+        self.assertIn("v1.3.5 · 2026-09-13", changelog)
+        self.assertIn("v1.3.4 · 2026-09-06", changelog)
         self.assertIn("v1.3.3 · 2026-08-28", changelog)
         self.assertIn("v1.3.2 · 2026-08-22", changelog)
         self.assertIn("v1.3.1 · 2026-08-20", changelog)
@@ -1663,6 +1702,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertIn("v1.2.4 · 2026-08-12", changelog)
         self.assertIn("v1.2.3 · 2026-08-11", changelog)
         self.assertIn("v1.2.2 · 2026-08-09", changelog)
+        self.assertLess(changelog.index("v1.3.5"), changelog.index("v1.3.4"))
         self.assertLess(changelog.index("v1.3.4"), changelog.index("v1.3.3"))
         self.assertLess(changelog.index("v1.3.3"), changelog.index("v1.3.2"))
         self.assertLess(changelog.index("v1.3.2"), changelog.index("v1.3.1"))
@@ -1676,6 +1716,12 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertLess(changelog.index("v1.2.4"), changelog.index("v1.2.3"))
         self.assertLess(changelog.index("v1.2.3"), changelog.index("v1.2.2"))
         self.assertLess(changelog.index("v1.2.2"), changelog.index("v1.2.1"))
+        release_135 = changelog.split("## 🌸 v1.3.5", 1)[1].split("## 🌸 v1.3.4", 1)[0]
+        self.assertIn("独立 Seedream", release_135)
+        self.assertIn("自动选择 JSON 或 multipart", release_135)
+        self.assertIn("旧 OpenAI 通道", release_135)
+        self.assertIn("旧请求格式", release_135)
+
         release_134 = changelog.split("## 🌸 v1.3.4", 1)[1].split("## 🌸 v1.3.3", 1)[0]
         release_133 = changelog.split("## 🌸 v1.3.3", 1)[1].split("## 🌸 v1.3.2", 1)[0]
         release_132 = changelog.split("## 🌸 v1.3.2", 1)[1].split("## 🌸 v1.3.1", 1)[0]
@@ -1697,7 +1743,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertIn("当前可见外观快照", release_134)
         self.assertIn("AI 音视频通话", release_133)
         self.assertIn("O2.0", release_133)
-        self.assertIn("OpenAI multipart", release_133)
+        self.assertIn("按接口地址自动选择", release_133)
         self.assertIn("shared + shots", release_133)
         self.assertIn("过去节点", release_133)
         self.assertIn("媒体承诺", release_133)

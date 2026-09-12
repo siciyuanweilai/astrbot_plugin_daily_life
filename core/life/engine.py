@@ -21,6 +21,7 @@ from .wardrobe import (
     format_outfit_components,
     merge_outfit_components,
     normalize_outfit_decision,
+    normalize_outfit_components,
     normalize_outfit_scene_category,
     reconcile_outfit_components_for_scene,
     scene_category_for_place_kind,
@@ -293,7 +294,8 @@ class DailyEngineMixin:
         current_reference_ids = self._style_catalog_reference_ids(
             outfit_decision.get("catalog_reference_ids")
         )
-        if outfit_choice != "keep" and not context["manual_extra"]:
+        full_outfit_change = outfit_choice in {"change", "sleepwear", "outdoor"}
+        if full_outfit_change and not context["manual_extra"]:
             current_reference_ids = (
                 await self._style_catalog_resolve_new_outfit_reference_ids(
                     current_reference_ids,
@@ -320,6 +322,20 @@ class DailyEngineMixin:
                 if context["manual_extra"]
                 else current_scene_category,
             )
+            if outfit_choice == "partial_change":
+                # A local adjustment may use an explicitly named shoe, outer
+                # layer, or accessory, but it must keep the current main layer.
+                catalog_appearance.pop("outfit", None)
+                partial_components = normalize_outfit_components(
+                    catalog_appearance.get("outfit_components")
+                )
+                partial_components.pop("main_clothing", None)
+                if partial_components:
+                    catalog_appearance["outfit_components"] = serialize_outfit_components(
+                        partial_components
+                    )
+                else:
+                    catalog_appearance.pop("outfit_components", None)
 
         for raw_action in result.get("planned_actions") or []:
             if not isinstance(raw_action, dict):
@@ -346,11 +362,40 @@ class DailyEngineMixin:
             )
             place_kind = str(timeline_item.get("place_kind") or "").strip()
             action_scene_category = scene_category_for_place_kind(place_kind)
-            if context["manual_extra"]:
+            action_components = normalize_outfit_components(
+                payload.get("outfit_components")
+            )
+            current_components = normalize_outfit_components(
+                result.get("outfit_components")
+            )
+            action_main = action_components.get("main_clothing") or {}
+            current_main = current_components.get("main_clothing") or {}
+            partial_action = bool(
+                action_components
+                and str(action_main.get("description") or "").strip()
+                and str(current_main.get("description") or "").strip()
+                and str(action_main.get("description") or "").strip()
+                == str(current_main.get("description") or "").strip()
+            )
+            if context["manual_extra"] or partial_action:
                 action_appearance = await self._style_catalog_reference_appearance(
                     action_reference_ids,
-                    scene_category="",
+                    scene_category=(
+                        "" if context["manual_extra"] else action_scene_category
+                    ),
                 )
+                if partial_action:
+                    action_appearance.pop("outfit", None)
+                    partial_action_components = normalize_outfit_components(
+                        action_appearance.get("outfit_components")
+                    )
+                    partial_action_components.pop("main_clothing", None)
+                    if partial_action_components:
+                        action_appearance["outfit_components"] = serialize_outfit_components(
+                            partial_action_components
+                        )
+                    else:
+                        action_appearance.pop("outfit_components", None)
                 action_issue = ""
             else:
                 action_reference_ids = (

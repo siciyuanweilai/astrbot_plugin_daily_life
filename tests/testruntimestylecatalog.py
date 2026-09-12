@@ -318,6 +318,73 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 archive.close()
 
+    async def test_autonomous_new_outfit_reference_filters_scene_incompatible_candidates(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(f"{tmpdir}/daily_life.db")
+            home = await archive.upsert_style_catalog_item(
+                {
+                    "kind": "outfit",
+                    "title": "居家睡衣套装",
+                    "description": "浅粉色吊带家居服配毛绒拖鞋",
+                    "attributes": {
+                        "category": "homewear",
+                        "scenes": ["居家", "睡眠"],
+                        "home_description": "浅粉色吊带家居服",
+                        "component_roles": [
+                            {
+                                "kind": "footwear",
+                                "home_presence": "home",
+                                "name": "毛绒拖鞋",
+                            }
+                        ],
+                    },
+                    "source_image_hash": "home-scene" * 8,
+                    "confidence": 0.9,
+                }
+            )
+            outdoor = await archive.upsert_style_catalog_item(
+                {
+                    "kind": "outfit",
+                    "title": "轻便外出套装",
+                    "description": "浅蓝短袖配白色直筒裤和低帮鞋",
+                    "attributes": {
+                        "category": "daily",
+                        "scenes": ["日常外出", "公共场景"],
+                        "component_roles": [
+                            {
+                                "kind": "footwear",
+                                "home_presence": "outdoor",
+                                "name": "白色低帮鞋",
+                            }
+                        ],
+                    },
+                    "source_image_hash": "outdoor-scene" * 8,
+                    "confidence": 0.9,
+                }
+            )
+            try:
+                runtime = _StyleCatalogComposer(archive)
+                self.assertEqual(
+                    await runtime._style_catalog_resolve_new_outfit_reference_ids(
+                        [], scene_category="public"
+                    ),
+                    [outdoor.id],
+                )
+                self.assertEqual(
+                    await runtime._style_catalog_resolve_new_outfit_reference_ids(
+                        [home.id], scene_category="public"
+                    ),
+                    [outdoor.id],
+                )
+                self.assertEqual(
+                    await runtime._style_catalog_resolve_new_outfit_reference_ids(
+                        [], scene_category="home"
+                    ),
+                    [home.id],
+                )
+            finally:
+                archive.close()
+
     async def test_autonomous_new_outfit_reference_falls_back_to_separate_pieces(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             archive = LifeArchive(f"{tmpdir}/daily_life.db")

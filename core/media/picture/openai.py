@@ -80,6 +80,7 @@ def build_request(
     base = normalize_openai_base_url(route.api_url)
     headers = {"Authorization": f"Bearer {route.api_key}"}
     siciyuanweilai = is_siciyuanweilai(route.api_url)
+    seedream = route.protocol == "seedream"
     if siciyuanweilai:
         # Keep the request traceable and idempotent at the gateway.
         headers["X-Client-Request-ID"] = f"daily-life-{uuid4().hex}"
@@ -92,14 +93,10 @@ def build_request(
             "size": size,
         }
         if siciyuanweilai:
-            payload.update(
-                {
-                    "n": 1,
-                    "response_format": "url",
-                    "extra_fields": {"quality": route.quality.upper()},
-                }
-            )
-        else:
+            payload.update({"n": 1, "response_format": "url"})
+            if not seedream:
+                payload["extra_fields"] = {"quality": route.quality.upper()}
+        elif not seedream:
             payload["quality"] = route.quality
         return ImageRequest(
             url=f"{base}/images/generations",
@@ -107,11 +104,17 @@ def build_request(
             payload=payload,
         )
 
-    edit_request_format = normalized_edit_request_format(
-        route.edit_request_format,
-        siciyuanweilai=siciyuanweilai,
-    )
-    if edit_request_format == "leo_json":
+    if siciyuanweilai:
+        extra_fields = {
+            "guidances": {
+                "image_reference": [
+                    {"image": {"id": f"{{{{upload:{index}}}}}"}}
+                    for index in range(len(images))
+                ],
+            },
+        }
+        if not seedream:
+            extra_fields["quality"] = route.quality.upper()
         return ImageRequest(
             url=f"{base}/images/edits",
             headers=headers,
@@ -120,15 +123,7 @@ def build_request(
                 "prompt": prompt_from_parts(parts),
                 "size": size,
                 "n": 1,
-                "extra_fields": {
-                    "quality": route.quality.upper(),
-                    "guidances": {
-                        "image_reference": [
-                            {"image": {"id": f"{{{{upload:{index}}}}}"}}
-                            for index in range(len(images))
-                        ],
-                    },
-                },
+                "extra_fields": extra_fields,
                 "image": [image_data_url(image, mime) for image, mime in images],
             },
             reference_image_count=len(images),
@@ -138,7 +133,8 @@ def build_request(
     form.add_field("model", route.model)
     form.add_field("prompt", prompt_from_parts(parts))
     form.add_field("size", size)
-    form.add_field("quality", route.quality)
+    if not seedream:
+        form.add_field("quality", route.quality)
     form.add_field("response_format", "url")
     for index, (image_bytes, mime_type) in enumerate(images, start=1):
         _, ext = image_mime_and_ext(image_bytes)
@@ -159,15 +155,6 @@ def build_request(
 def form_data() -> Any:
     form = getattr(aiohttp, "FormData", None)
     return form() if callable(form) else SimpleFormData()
-
-
-def normalized_edit_request_format(value: str, *, siciyuanweilai: bool) -> str:
-    request_format = str(value or "auto").strip().lower() or "auto"
-    if request_format == "auto":
-        return "leo_json" if siciyuanweilai else "multipart"
-    if request_format not in {"leo_json", "multipart"}:
-        raise ValueError("GPT Image 图生图请求格式只能是自动、Leo JSON 或 multipart")
-    return request_format
 
 
 def is_siciyuanweilai(api_url: str) -> bool:

@@ -15,10 +15,9 @@ from .cast import (
 DEFAULT_VOLCENGINE_TTS_MODEL = "seed-tts-2.0-standard"
 DEFAULT_VOLCENGINE_SAMPLE_RATE = 24000
 DEFAULT_VOLCENGINE_FORMAT = "mp3"
-IMAGE_PROTOCOLS = {"gemini", "openai", "grok"}
+IMAGE_PROTOCOLS = {"gemini", "openai", "seedream", "grok"}
 IMAGE_RESOLUTIONS = {"1K", "2K", "4K"}
 IMAGE_QUALITIES = {"low", "medium", "high"}
-OPENAI_IMAGE_EDIT_REQUEST_FORMATS = {"auto", "leo_json", "multipart"}
 REALTIME_OFFICIAL_SEARCH_TYPES = {
     "web",
     "web_summary",
@@ -69,7 +68,6 @@ class ImageApiChannel:
     aspect_ratio: str = "1:1"
     timeout_seconds: int = 300
     quality: str = "medium"
-    edit_request_format: str = "auto"
 
 
 @dataclass(slots=True)
@@ -109,27 +107,11 @@ def _image_quality(value: Any) -> str:
     return quality if quality in IMAGE_QUALITIES else "medium"
 
 
-def _openai_image_edit_request_format(value: Any) -> str:
-    request_format = as_str(value, "auto").strip().lower() or "auto"
-    aliases = {
-        "json": "leo_json",
-        "leo": "leo_json",
-        "form": "multipart",
-        "form_data": "multipart",
-    }
-    request_format = aliases.get(request_format, request_format)
-    return (
-        request_format
-        if request_format in OPENAI_IMAGE_EDIT_REQUEST_FORMATS
-        else "auto"
-    )
-
-
 def _image_channels(value: Any) -> list[ImageApiChannel]:
     if not isinstance(value, list):
         return []
     result: list[ImageApiChannel] = []
-    seen: set[tuple[str, str, str, str, str, str, str, str, int]] = set()
+    seen: set[tuple[str, str, str, str, str, str, str, int]] = set()
     for raw in value:
         if not isinstance(raw, dict):
             continue
@@ -146,6 +128,7 @@ def _image_channels(value: Any) -> list[ImageApiChannel]:
         protocol = protocol if protocol in IMAGE_PROTOCOLS else "gemini"
         default_model = {
             "openai": "gpt-image-2",
+            "seedream": "doubao-seedream-4-0-250828",
             "grok": "grok-imagine-image",
         }.get(protocol, "gemini-3-pro-image-preview")
         model = (
@@ -155,9 +138,6 @@ def _image_channels(value: Any) -> list[ImageApiChannel]:
         resolution = _image_resolution(raw.get("resolution"), protocol)
         aspect_ratio = _image_aspect_ratio(raw.get("aspect_ratio", "1:1"))
         quality = _image_quality(raw.get("quality", "medium"))
-        edit_request_format = _openai_image_edit_request_format(
-            raw.get("edit_request_format", "auto")
-        )
         timeout_seconds = as_int(raw.get("timeout_seconds", 300), 300, 10, 600)
         if not api_url or not api_key:
             continue
@@ -169,7 +149,6 @@ def _image_channels(value: Any) -> list[ImageApiChannel]:
             resolution,
             aspect_ratio,
             quality,
-            edit_request_format,
             timeout_seconds,
         )
         if key in seen:
@@ -186,7 +165,6 @@ def _image_channels(value: Any) -> list[ImageApiChannel]:
                 aspect_ratio=aspect_ratio,
                 timeout_seconds=timeout_seconds,
                 quality=quality,
-                edit_request_format=edit_request_format,
             )
         )
     return result

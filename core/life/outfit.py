@@ -545,6 +545,7 @@ class OutfitMixin:
 - 实时生活状态明确记载已经换装时，kind=explicit_outfit_change、source=live_state，quote 必须原样摘录实时状态中的确认短句。
 - 只是基于舒适度自主建议换装时，kind=comfort_adjustment、source=autonomous；场景变化但没有已发生换装事实时使用 scene_transition；没有变化依据时使用 none。不得把未来安排、普通活动或换装建议标成已经换装。
 13. 本轮提供视觉衣橱候选且自主决定产生新主体服装时，必须选择一条完整套装，或同时选择上装与下装；采用编号写入 catalog_reference_ids。长期偏好只能帮助比较候选，不能直接改写成具体衣服。用户本轮明确指定衣服时不受此限制。
+14. 晚餐、散步、拍照等轻松晚间外出，若主体服装仍干净、舒适且适合天气，优先沿用主体，只调整鞋履、外层或随身配饰；不要因为进入夜间就自动改成睡衣、礼服或整套新衣。
 
 返回JSON格式：
 {{
@@ -689,6 +690,10 @@ class OutfitMixin:
             str(key or "").strip(): str(value or "").strip().lower()
             for key, value in component_review.items()
         }
+        main_clothing_review = component_states.get("main_clothing", "unknown")
+        component_only_partial_change = (
+            decision == "partial_change" and main_clothing_review != "adjust"
+        )
         clothing_component_adjusted = any(
             component_states.get(key) == "adjust"
             for key in (
@@ -751,7 +756,25 @@ class OutfitMixin:
                 )
             )
         )
-        if requires_catalog_clothing and not context.get("instruction"):
+        if component_only_partial_change:
+            catalog_appearance = await self._style_catalog_reference_appearance(
+                reference_ids,
+                scene_category="" if context.get("instruction") else scene_category,
+            )
+            # A partial change may adopt a shoe, outer layer, or carried item,
+            # but a catalog outfit must never replace the preserved main layer.
+            catalog_appearance.pop("outfit", None)
+            catalog_components = normalize_outfit_components(
+                catalog_appearance.get("outfit_components")
+            )
+            catalog_components.pop("main_clothing", None)
+            if catalog_components:
+                catalog_appearance["outfit_components"] = serialize_outfit_components(
+                    catalog_components
+                )
+            else:
+                catalog_appearance.pop("outfit_components", None)
+        elif requires_catalog_clothing and not context.get("instruction"):
             resolved_reference_ids = (
                 await self._style_catalog_resolve_new_outfit_reference_ids(
                     reference_ids,
@@ -788,6 +811,9 @@ class OutfitMixin:
         catalog_components = normalize_outfit_components(
             catalog_appearance.get("outfit_components")
         )
+        if component_only_partial_change:
+            generated_components.pop("main_clothing", None)
+            catalog_components.pop("main_clothing", None)
         effective_components = merge_outfit_components(old_components, generated_components)
         effective_components = merge_outfit_components(
             effective_components,
@@ -806,7 +832,10 @@ class OutfitMixin:
         visible_outfit = ""
         if effective_components:
             visible_outfit = format_outfit_components(effective_components)
-            if visible_outfit:
+            if visible_outfit and (
+                not component_only_partial_change
+                or old_components.get("main_clothing")
+            ):
                 generated_outfit = visible_outfit
         components_changed = bool(
             effective_components != old_components

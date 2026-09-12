@@ -96,6 +96,81 @@ class StyleCatalogMixin:
                 )
         return profiles
 
+    @classmethod
+    def _style_catalog_scene_values(cls, item: Any) -> list[str]:
+        """读取候选声明的场景与服装类别，用于粗粒度场景过滤。"""
+
+        attributes = cls._style_catalog_attributes(item)
+        values: list[str] = []
+        for key in ("scenes", "category", "garment_type"):
+            for value in cls._style_catalog_list(attributes.get(key), 12):
+                normalized = value.strip().lower()
+                if normalized and normalized not in values:
+                    values.append(normalized)
+        return values
+
+    @classmethod
+    def _style_catalog_scene_compatible(
+        cls, item: Any, scene_category: object
+    ) -> bool:
+        """Reject clearly incompatible home/outdoor catalog candidates.
+
+        Unknown or unclassified candidates remain eligible so older catalog
+        entries do not become unusable solely because they lack scene tags.
+        """
+
+        scene = str(scene_category or "").strip().lower()
+        if scene not in {"home", "sleep", "outdoor", "public"}:
+            return True
+        kind = str(getattr(item, "kind", "") or "").strip().lower()
+        role = cls._style_catalog_scene_role(item)
+        attributes = cls._style_catalog_attributes(item)
+        if kind in {"footwear", "accessory"}:
+            if scene in {"home", "sleep"}:
+                return role in {"home", "both", "unknown"}
+            return role != "home"
+
+        values = cls._style_catalog_scene_values(item)
+        home_markers = (
+            "居家",
+            "室内",
+            "睡眠",
+            "睡衣",
+            "家居服",
+            "home",
+            "sleep",
+            "lounge",
+        )
+        outdoor_markers = (
+            "外出",
+            "户外",
+            "公共",
+            "通勤",
+            "街头",
+            "outdoor",
+            "public",
+            "commute",
+        )
+        has_home = any(
+            marker in value for value in values for marker in home_markers
+        )
+        has_outdoor = any(
+            marker in value for value in values for marker in outdoor_markers
+        )
+        if scene in {"outdoor", "public"}:
+            if role == "home":
+                return False
+            profiles = cls._style_catalog_component_profiles(item)
+            if profiles and all(profile["role"] == "home" for profile in profiles):
+                return False
+            return not (has_home and not has_outdoor)
+
+        if role == "outdoor" and not attributes.get("home_description"):
+            return False
+        if scene == "sleep":
+            return has_home or bool(attributes.get("home_description")) or not values
+        return not (has_outdoor and not has_home)
+
     @staticmethod
     def _style_catalog_component_state(
         kind: str,
@@ -226,11 +301,11 @@ class StyleCatalogMixin:
         才从当前启用候选中选一套完整套装，或选择一件上装加一件下装。
         """
 
-        del scene_category  # 保留参数，便于后续按场景筛选候选。
         item_ids = self._style_catalog_reference_ids(value)
         getter = getattr(self.archive, "get_style_catalog_items", None)
         if not callable(getter):
             return item_ids
+        complete_selection_seen = False
         if item_ids:
             try:
                 selected = await getter(
@@ -242,24 +317,55 @@ class StyleCatalogMixin:
                 str(getattr(item, "kind", "") or "").strip().lower()
                 for item in selected or []
             }
-            if "outfit" in kinds or {"top", "bottom"}.issubset(kinds):
+            complete_selection_seen = "outfit" in kinds or {
+                "top",
+                "bottom",
+            }.issubset(kinds)
+            if (
+                complete_selection_seen
+                and len(selected or []) >= len(item_ids)
+                and all(
+                    self._style_catalog_scene_compatible(item, scene_category)
+                    for item in selected or []
+                    if str(getattr(item, "kind", "") or "").strip().lower()
+                    in STYLE_CATALOG_CLOTHING_KINDS
+                )
+            ):
                 return item_ids
 
         try:
-            outfits = await getter(kind="outfit", status="active", limit=1)
-            if outfits:
-                outfit_id = int(getattr(outfits[0], "id", 0) or 0)
+            outfits = await getter(kind="outfit", status="active", limit=64)
+            for outfit in outfits or []:
+                if not self._style_catalog_scene_compatible(outfit, scene_category):
+                    continue
+                outfit_id = int(getattr(outfit, "id", 0) or 0)
                 if outfit_id > 0:
                     return [outfit_id]
-            tops = await getter(kind="top", status="active", limit=1)
-            bottoms = await getter(kind="bottom", status="active", limit=1)
-            top_id = int(getattr(tops[0], "id", 0) or 0) if tops else 0
-            bottom_id = int(getattr(bottoms[0], "id", 0) or 0) if bottoms else 0
+            tops = await getter(kind="top", status="active", limit=64)
+            bottoms = await getter(kind="bottom", status="active", limit=64)
+            top = next(
+                (
+                    item
+                    for item in tops or []
+                    if self._style_catalog_scene_compatible(item, scene_category)
+                ),
+                None,
+            )
+            bottom = next(
+                (
+                    item
+                    for item in bottoms or []
+                    if self._style_catalog_scene_compatible(item, scene_category)
+                ),
+                None,
+            )
+            top_id = int(getattr(top, "id", 0) or 0) if top else 0
+            bottom_id = int(getattr(bottom, "id", 0) or 0) if bottom else 0
             if top_id > 0 and bottom_id > 0:
                 return [top_id, bottom_id]
         except Exception:
             return item_ids
-        return item_ids
+        return [] if complete_selection_seen else item_ids
 
     async def _style_catalog_new_outfit_selection(
         self, value: object, *, scene_category: object = ""

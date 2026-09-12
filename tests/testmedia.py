@@ -17,7 +17,11 @@ from core.media.picture import canvas as picture_canvas
 from core.media.picture import imagine as grok_image
 from core.media.picture import openai as openai_image
 from core.media.picture.pipe import ImageRoute
-from core.media.picture.routes import requested_image_provider
+from core.media.picture.routes import (
+    channel_matches_provider,
+    make_route,
+    requested_image_provider,
+)
 from core.media.video import GrokVideoService
 from core.media.video.protocol.size import video_aspect_ratio, video_size
 from core.media.video.keyframe import (
@@ -432,6 +436,29 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(requested_image_provider("grok"), "grok")
         self.assertEqual(requested_image_provider("grok-imagine-image"), "grok")
 
+    def test_seedream_provider_requires_explicit_protocol(self):
+        self.assertEqual(requested_image_provider("seedream"), "seedream")
+        with self.assertRaisesRegex(ValueError, "图片接口只能指定"):
+            requested_image_provider("seedream-4.0")
+        with self.assertRaisesRegex(ValueError, "图片接口只能指定"):
+            requested_image_provider("doubao-seedream-4-0-250828")
+
+    def test_openai_channel_model_does_not_change_protocol(self):
+        channel = type("Channel", (), {"protocol": "openai", "model": "seedream-4.0"})()
+        self.assertTrue(channel_matches_provider(channel, "openai"))
+        self.assertFalse(channel_matches_provider(channel, "seedream"))
+        route = make_route(
+            "https://openai.example/v1",
+            "openai-key",
+            "seedream-4.0",
+            "旧 OpenAI 通道",
+            "openai",
+            "1K",
+            "1:1",
+            120,
+        )
+        self.assertEqual(route.protocol, "openai")
+
     async def test_generate_image_filters_channels_by_explicit_model(self):
         output_bytes = b"\x89PNG\r\n\x1a\noutput"
         calls = []
@@ -542,6 +569,61 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request_routes[0].label, "OpenAI 备用线路")
         logs = "\n".join(str(call.args[0]) for call in debug_log.call_args_list)
         self.assertIn("通道=https://openai.example / OpenAI 备用线路", logs)
+
+    async def test_generate_image_filters_seedream_channels_separately(self):
+        output_bytes = b"\x89PNG\r\n\x1a\nseedream-output"
+        calls = []
+
+        class _ImageSession:
+            closed = False
+
+            def post(self, url, json=None, data=None, headers=None, timeout=None):
+                calls.append((url, json or {}))
+                return _Response(
+                    payload={
+                        "data": [
+                            {"b64_json": base64.b64encode(output_bytes).decode("ascii")}
+                        ]
+                    }
+                )
+
+        settings = LifeSettings.from_dict(
+            {
+                "image_generation_config": {
+                    "enabled": True,
+                    "text_channels": [
+                        {
+                            "__template_key": "openai",
+                            "api_url": "https://gpt.example/v1",
+                            "api_key": "gpt-key",
+                            "model": "gpt-image-2",
+                        },
+                        {
+                            "__template_key": "seedream",
+                            "api_url": "https://seedream.example/v1",
+                            "api_key": "seedream-key",
+                        },
+                    ],
+                }
+            }
+        ).image_generation
+        service = GeminiImageService(settings, Path(tempfile.mkdtemp()))
+
+        async def get_session():
+            return _ImageSession()
+
+        service._get_session = get_session
+
+        generated = await service.generate_image(
+            "自然的夜景生活照", protocol="seedream"
+        )
+
+        self.assertTrue(generated.path.exists())
+        self.assertEqual(calls[0][0], "https://seedream.example/v1/images/generations")
+        self.assertEqual(calls[0][1]["model"], "doubao-seedream-4-0-250828")
+        request_routes = await service._request_routes("text", protocol="seedream")
+        self.assertEqual(len(request_routes), 1)
+        self.assertEqual(request_routes[0].protocol, "seedream")
 
     async def test_generate_image_tries_next_channel_after_first_failure(self):
         output_bytes = b"\x89PNG\r\n\x1a\noutput"
@@ -832,6 +914,73 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    def test_seedream_text_request_omits_gpt_quality_fields(self):
+        route = ImageRoute(
+            api_url="https://openai-relay.example/v1",
+            api_key="relay-key",
+            model="seedream-4.0",
+            label="Seedream",
+            protocol="seedream",
+            resolution="2K",
+            aspect_ratio="16:9",
+            timeout_seconds=120,
+            origin="https://openai-relay.example",
+            quality="high",
+        )
+
+        request = openai_image.build_request(
+            route,
+            [{"text": "自然的夜景生活照"}],
+            resolution="2K",
+            aspect_ratio="16:9",
+        )
+
+        self.assertEqual(
+            request.payload,
+            {
+                "model": "seedream-4.0",
+                "prompt": "自然的夜景生活照",
+                "size": "2048x1152",
+            },
+        )
+
+    def test_siciyuanweilai_seedream_text_request_omits_gpt_quality_fields(self):
+        route = ImageRoute(
+            api_url="https://siciyuanweilai.com",
+            api_key="relay-key",
+            model="doubao-seedream-4-0-250828",
+            label="Seedream",
+            protocol="seedream",
+            resolution="1K",
+            aspect_ratio="1:1",
+            timeout_seconds=120,
+            origin="https://siciyuanweilai.com",
+            quality="high",
+        )
+
+        request = openai_image.build_request(
+            route,
+            [{"text": "自然的夜景生活照"}],
+            resolution="1K",
+            aspect_ratio="1:1",
+        )
+
+        self.assertEqual(
+            request.payload,
+            {
+                "model": "doubao-seedream-4-0-250828",
+                "prompt": "自然的夜景生活照",
+                "size": "1024x1024",
+                "n": 1,
+                "response_format": "url",
+            },
+        )
+        self.assertTrue(
+            str(request.headers.get("X-Client-Request-ID") or "").startswith(
+                "daily-life-"
+            )
+        )
+
     def test_openai_edit_request_includes_quality_multipart_field(self):
         route = ImageRoute(
             api_url="https://openai-relay.example/v1",
@@ -864,6 +1013,39 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(_form_field(request.form, "quality"), "low")
         self.assertEqual(_form_field(request.form, "image"), b"reference")
         self.assertEqual(request.reference_image_count, 1)
+
+    def test_seedream_edit_request_omits_gpt_quality_field(self):
+        route = ImageRoute(
+            api_url="https://openai-relay.example/v1",
+            api_key="relay-key",
+            model="seedream-4.0",
+            label="Seedream",
+            protocol="seedream",
+            resolution="1K",
+            aspect_ratio="1:1",
+            timeout_seconds=120,
+            origin="https://openai-relay.example",
+            quality="low",
+        )
+        request = openai_image.build_request(
+            route,
+            [
+                {"text": "改成自然的夜景"},
+                {
+                    "inlineData": {
+                        "mimeType": "image/png",
+                        "data": base64.b64encode(b"reference").decode("ascii"),
+                    }
+                },
+            ],
+            resolution="1K",
+            aspect_ratio="1:1",
+        )
+
+        self.assertIsNotNone(request.form)
+        self.assertIsNone(_form_field(request.form, "quality"))
+        self.assertEqual(_form_field(request.form, "model"), "seedream-4.0")
+        self.assertEqual(_form_field(request.form, "image"), b"reference")
 
     def test_siciyuanweilai_edit_request_uses_documented_json_payload(self):
         route = ImageRoute(
@@ -931,24 +1113,23 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
             },
         )
 
-    def test_siciyuanweilai_edit_channel_can_use_gaisc_multipart(self):
+    def test_siciyuanweilai_seedream_edit_omits_gpt_quality_field(self):
         route = ImageRoute(
             api_url="https://siciyuanweilai.com",
             api_key="relay-key",
-            model="gpt-image-2",
-            label="GPT Image 2 低价",
-            protocol="openai",
+            model="doubao-seedream-4-0-250828",
+            label="Seedream",
+            protocol="seedream",
             resolution="1K",
             aspect_ratio="1:1",
             timeout_seconds=120,
             origin="https://siciyuanweilai.com",
-            quality="medium",
-            edit_request_format="multipart",
+            quality="high",
         )
         request = openai_image.build_request(
             route,
             [
-                {"text": "改成雨夜街景"},
+                {"text": "改成自然的夜景"},
                 {
                     "inlineData": {
                         "mimeType": "image/png",
@@ -961,11 +1142,14 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(request.url, "https://siciyuanweilai.com/v1/images/edits")
-        self.assertIsNone(request.payload)
-        self.assertIsNotNone(request.form)
-        self.assertEqual(_form_field(request.form, "model"), "gpt-image-2")
-        self.assertEqual(_form_field(request.form, "image"), b"reference")
-        self.assertEqual(_form_field(request.form, "response_format"), "url")
+        self.assertIsNone(request.form)
+        self.assertEqual(request.payload["model"], "doubao-seedream-4-0-250828")
+        self.assertEqual(request.payload["size"], "1024x1024")
+        self.assertNotIn("quality", request.payload["extra_fields"])
+        self.assertEqual(
+            request.payload["extra_fields"]["guidances"]["image_reference"],
+            [{"image": {"id": "{{upload:0}}"}}],
+        )
         self.assertEqual(request.reference_image_count, 1)
 
     async def test_generate_image_downloads_openai_url_response(self):
@@ -1558,7 +1742,7 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-    def test_gpt_image_2_uses_leostudio_fixed_size_catalog(self):
+    def test_gpt_image_2_uses_fixed_size_catalog(self):
         expected = {
             "1K": {
                 "2:3": "848x1264",

@@ -597,7 +597,7 @@ class GeminiImageService:
     def _route_accepts_character_reference(
         route: ImageRoute, *, text_to_image: bool = False
     ) -> bool:
-        return not (text_to_image and route.protocol in {"openai", "grok"})
+        return not (text_to_image and route.protocol in {"openai", "seedream", "grok"})
 
     def _character_reference_sources(self) -> list[dict[str, Any]]:
         policy = str(
@@ -925,7 +925,7 @@ class GeminiImageService:
                     f"请求={requested_size}；实际={actual_size}"
                 )
                 if (
-                    route.protocol == "openai"
+                    route.protocol in {"openai", "seedream"}
                     and width
                     and height
                     and actual_size != requested_size
@@ -1009,6 +1009,7 @@ class GeminiImageService:
         kwargs = {"resolution": route.resolution, "aspect_ratio": route.aspect_ratio}
         builder = {
             "openai": openai.build_request,
+            "seedream": openai.build_request,
             "grok": imagine.build_request,
         }.get(route.protocol, gemini.build_request)
         return builder(route, parts, **kwargs)
@@ -1030,7 +1031,7 @@ class GeminiImageService:
         Returns:
             可直接保存的图片字节。
         """
-        if route.protocol == "openai":
+        if route.protocol in {"openai", "seedream"}:
             image_bytes, image_url = openai.extract_image(data, route.api_url)
             if image_bytes or not image_url:
                 return image_bytes
@@ -1202,7 +1203,7 @@ class GeminiImageService:
         effective_aspect_ratio = (
             aspect_ratio if aspect_ratio in IMAGE_ASPECT_RATIOS else route.aspect_ratio
         )
-        if route.protocol == "openai":
+        if route.protocol in {"openai", "seedream"}:
             effective_aspect_ratio = openai.supported_aspect_ratio(
                 route.model, effective_aspect_ratio
             )
@@ -1230,7 +1231,6 @@ class GeminiImageService:
             origin=route.origin,
             resolution_source=resolution_source,
             quality=route.quality,
-            edit_request_format=route.edit_request_format,
         )
 
     @staticmethod
@@ -1239,7 +1239,7 @@ class GeminiImageService:
 
     @staticmethod
     def _request_size_label(route: ImageRoute) -> str:
-        if route.protocol in {"openai", "grok"}:
+        if route.protocol in {"openai", "seedream", "grok"}:
             return openai.size_for(
                 route.resolution, route.aspect_ratio, model=route.model
             ).replace("x", "×")
@@ -1307,14 +1307,13 @@ class GeminiImageService:
                 channel.aspect_ratio,
                 channel.timeout_seconds,
                 getattr(channel, "quality", "medium"),
-                getattr(channel, "edit_request_format", "auto"),
             )
             for index, channel in enumerate(
                 (
                     channel
                     for channel in self._channels_for_mode(mode)
                     if not protocol
-                    or str(getattr(channel, "protocol", "") or "").lower() == protocol
+                    or routes.channel_matches_provider(channel, protocol)
                 ),
                 start=1,
             )
