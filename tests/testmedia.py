@@ -875,7 +875,7 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(calls[0][3])
         self.assertEqual(_timeout_total(calls[0][4]), 180)
 
-    def test_siciyuanweilai_text_request_uses_documented_extra_fields(self):
+    def test_siciyuanweilai_gpt_text_request_uses_standard_quality_and_base64(self):
         route = ImageRoute(
             api_url="https://siciyuanweilai.com",
             api_key="relay-key",
@@ -903,11 +903,11 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
                 "prompt": "雨夜街头生活照",
                 "size": "1024x1024",
                 "n": 1,
-                "response_format": "url",
-                "extra_fields": {"quality": "HIGH"},
+                "response_format": "b64_json",
+                "quality": "high",
             },
         )
-        self.assertNotIn("quality", request.payload)
+        self.assertNotIn("extra_fields", request.payload)
         self.assertTrue(
             str(request.headers.get("X-Client-Request-ID") or "").startswith(
                 "daily-life-"
@@ -1095,23 +1095,67 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
                 ),
                 "size": "1024x1024",
                 "n": 1,
-                "extra_fields": {
-                    "quality": "MEDIUM",
-                    "guidances": {
-                        "image_reference": [
-                            {"image": {"id": "{{upload:0}}"}},
-                            {"image": {"id": "{{upload:1}}"}},
-                        ]
-                    },
-                },
-                "image": [
-                    "data:image/png;base64,"
-                    + base64.b64encode(b"reference").decode("ascii"),
-                    "data:image/png;base64,"
-                    + base64.b64encode(b"second-reference").decode("ascii"),
+                "quality": "medium",
+                "response_format": "b64_json",
+                "images": [
+                    {"image_url": "data:image/png;base64,"
+                     + base64.b64encode(b"reference").decode("ascii")},
+                    {"image_url": "data:image/png;base64,"
+                     + base64.b64encode(b"second-reference").decode("ascii")},
                 ],
             },
         )
+
+    def test_siciyuanweilai_gpt_json_quality_and_reference_contract(self):
+        for api_url in (
+            "https://siciyuanweilai.com",
+            "https://siciyuanweilai.com/v1",
+            "https://www.siciyuanweilai.com/v1/images/edits",
+        ):
+            for quality in ("low", "medium", "high"):
+                for reference_count in (0, 1, 2):
+                    with self.subTest(
+                        api_url=api_url, quality=quality, references=reference_count
+                    ):
+                        route = ImageRoute(
+                            api_url=api_url, api_key="test-key",
+                            model="gpt-image-2", label="GPT Image",
+                            protocol="openai", resolution="1K",
+                            aspect_ratio="1:1", timeout_seconds=300,
+                            origin="https://siciyuanweilai.com", quality=quality,
+                        )
+                        references = [
+                            (b"first-reference", "image/png"),
+                            (b"second-reference", "image/jpeg"),
+                        ][:reference_count]
+                        parts = [{"text": "保留构图，调整颜色"}] + [
+                            {"inline_data": {
+                                "mime_type": mime,
+                                "data": base64.b64encode(content).decode("ascii"),
+                            }}
+                            for content, mime in references
+                        ]
+
+                        request = openai_image.build_request(
+                            route, parts, resolution="1K", aspect_ratio="1:1"
+                        )
+
+                        self.assertIsNone(request.form)
+                        self.assertEqual(request.payload["quality"], quality)
+                        self.assertEqual(request.payload["response_format"], "b64_json")
+                        self.assertNotIn("extra_fields", request.payload)
+                        self.assertNotIn("image", request.payload)
+                        self.assertEqual(request.reference_image_count, reference_count)
+                        endpoint = "edits" if reference_count else "generations"
+                        self.assertTrue(request.url.endswith(f"/v1/images/{endpoint}"))
+                        if not reference_count:
+                            self.assertNotIn("images", request.payload)
+                            continue
+                        self.assertEqual(len(request.payload["images"]), reference_count)
+                        for entry, (content, mime) in zip(request.payload["images"], references):
+                            prefix, encoded = entry["image_url"].split(",", 1)
+                            self.assertEqual(prefix, f"data:{mime};base64")
+                            self.assertEqual(base64.b64decode(encoded), content)
 
     def test_siciyuanweilai_seedream_edit_omits_gpt_quality_field(self):
         route = ImageRoute(
@@ -1952,9 +1996,9 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(calls[0][3])
 
     async def test_siciyuanweilai_edit_image_posts_application_json(self):
-        output_bytes = b"\x89PNG\r\n\x1a\nleo-edit"
+        output_bytes = _real_png_bytes(16, 16)
         reference = Path(tempfile.mkdtemp()) / "reference.png"
-        reference.write_bytes(b"\x89PNG\r\n\x1a\nreference")
+        reference.write_bytes(_real_png_bytes(32, 32))
         calls = []
 
         class _ImageSession:
@@ -1962,6 +2006,16 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
 
             def post(self, url, json=None, data=None, headers=None, timeout=None):
                 calls.append((url, headers or {}, json, data, timeout))
+                if not (json or {}).get("images") or any(
+                    not image.get("image_url") for image in json["images"]
+                ):
+                    return _Response(
+                        status=400,
+                        text='{"error":{"message":"images[].image_url is required",'
+                        '"type":"invalid_request_error"}}',
+                    )
+                if json.get("response_format") != "b64_json":
+                    return _Response(status=503, text="image task storage is unavailable")
                 return _Response(
                     payload={
                         "data": [
@@ -1984,6 +2038,7 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
                             "api_url": "https://siciyuanweilai.com/v1",
                             "api_key": "relay-key",
                             "model": "gpt-image-2",
+                            "quality": "low",
                         }
                     ],
                 }
@@ -2003,8 +2058,13 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[0][0], "https://siciyuanweilai.com/v1/images/edits")
         self.assertIsNotNone(calls[0][2])
         self.assertIsNone(calls[0][3])
-        self.assertEqual(calls[0][2]["extra_fields"]["quality"], "MEDIUM")
-        self.assertTrue(calls[0][2]["image"][0].startswith("data:image/png;base64,"))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][2]["quality"], "low")
+        self.assertEqual(calls[0][2]["response_format"], "b64_json")
+        self.assertEqual(generated.path.read_bytes(), output_bytes)
+        image_url = calls[0][2]["images"][0]["image_url"]
+        self.assertTrue(image_url.startswith("data:image/png;base64,"))
+        self.assertEqual(base64.b64decode(image_url.split(",", 1)[1]), reference.read_bytes())
 
     async def test_edit_image_downloads_openai_url_response(self):
         output_bytes = _real_png_bytes(2, 2)

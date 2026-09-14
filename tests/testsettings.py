@@ -1280,10 +1280,13 @@ class LifeSettingsTest(unittest.TestCase):
         seedream_edit_items = image_items["edit_channels"]["templates"]["seedream"][
             "items"
         ]
-        for seedream_items in (seedream_text_items, seedream_edit_items):
+        for seedream_items, default_model in (
+            (seedream_text_items, "seedream-5.0-pro"),
+            (seedream_edit_items, "doubao-seedream-4-0-250828"),
+        ):
             self.assertEqual(seedream_items["group_name"]["default"], "Seedream")
             self.assertEqual(
-                seedream_items["model"]["default"], "doubao-seedream-4-0-250828"
+                seedream_items["model"]["default"], default_model
             )
             self.assertEqual(seedream_items["resolution"]["default"], "4K")
             self.assertEqual(seedream_items["aspect_ratio"]["default"], "1:1")
@@ -1674,9 +1677,9 @@ class LifeSettingsTest(unittest.TestCase):
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertIn("version: 1.3.5", metadata)
+        self.assertIn("version: 1.3.6", metadata)
         self.assertIn('astrbot_version: ">=4.26,<5"', metadata)
-        self.assertIn("version-1.3.5", readme)
+        self.assertIn("version-1.3.6", readme)
         self.assertIn("创意衣橱生成", readme)
         self.assertIn("文生图不使用角色参考图", readme)
         self.assertIn("不读取联网灵感或固定风格池", readme)
@@ -1688,6 +1691,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertNotIn("用户明确要求联网寻找灵感时", readme)
         self.assertNotIn("图片 → 创意衣橱", readme)
         self.assertNotIn("SiliconFlow", readme)
+        self.assertIn("v1.3.6 · 2026-09-14", changelog)
         self.assertIn("v1.3.5 · 2026-09-13", changelog)
         self.assertIn("v1.3.4 · 2026-09-06", changelog)
         self.assertIn("v1.3.3 · 2026-08-28", changelog)
@@ -1702,6 +1706,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertIn("v1.2.4 · 2026-08-12", changelog)
         self.assertIn("v1.2.3 · 2026-08-11", changelog)
         self.assertIn("v1.2.2 · 2026-08-09", changelog)
+        self.assertLess(changelog.index("v1.3.6"), changelog.index("v1.3.5"))
         self.assertLess(changelog.index("v1.3.5"), changelog.index("v1.3.4"))
         self.assertLess(changelog.index("v1.3.4"), changelog.index("v1.3.3"))
         self.assertLess(changelog.index("v1.3.3"), changelog.index("v1.3.2"))
@@ -1719,8 +1724,8 @@ class LifeSettingsTest(unittest.TestCase):
         release_135 = changelog.split("## 🌸 v1.3.5", 1)[1].split("## 🌸 v1.3.4", 1)[0]
         self.assertIn("独立 Seedream", release_135)
         self.assertIn("自动选择 JSON 或 multipart", release_135)
-        self.assertIn("旧 OpenAI 通道", release_135)
-        self.assertIn("旧请求格式", release_135)
+        self.assertIn("Seedream 仅通过显式 Seedream 通道协议识别", release_135)
+        self.assertIn("移除旧的请求格式配置", release_135)
 
         release_134 = changelog.split("## 🌸 v1.3.4", 1)[1].split("## 🌸 v1.3.3", 1)[0]
         release_133 = changelog.split("## 🌸 v1.3.3", 1)[1].split("## 🌸 v1.3.2", 1)[0]

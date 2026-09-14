@@ -86,6 +86,32 @@ def build_request(
         headers["X-Client-Request-ID"] = f"daily-life-{uuid4().hex}"
     size = size_for(resolution, aspect_ratio, model=route.model)
     images = inline_images(parts)
+    if (
+        siciyuanweilai
+        and not seedream
+        and route.model.strip().lower() == "gpt-image-2"
+    ):
+        # 同一地址下的模型可使用不同协议；GPT Image 2 接收标准图片对象。
+        payload = {
+            "model": route.model,
+            "prompt": prompt_from_parts(parts),
+            "size": size,
+            "n": 1,
+            "quality": route.quality,
+            # 直接接收图片，避免 URL 模式依赖服务端的图片链接存储。
+            "response_format": "b64_json",
+        }
+        if images:
+            payload["images"] = [
+                {"image_url": image_data_url(image, mime)} for image, mime in images
+            ]
+        endpoint = "edits" if images else "generations"
+        return ImageRequest(
+            url=f"{base}/images/{endpoint}",
+            headers=headers,
+            payload=payload,
+            reference_image_count=len(images),
+        )
     if not images:
         payload = {
             "model": route.model,

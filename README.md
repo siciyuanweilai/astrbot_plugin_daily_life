@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.3.5-ef6f8f" alt="版本 1.3.5"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.3.6-ef6f8f" alt="版本 1.3.6"></a>
   <img src="https://img.shields.io/badge/AstrBot-%3E%3D4.26%2C%3C5-4c78a8" alt="AstrBot >= 4.26,<5">
   <img src="https://img.shields.io/badge/platform-aiocqhttp%20%7C%20weixin__oc-4f8a66" alt="支持 aiocqhttp 和 weixin_oc">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-555555" alt="MIT License"></a>
@@ -34,7 +34,7 @@
 [![Yousa Ling](https://count.getloli.com/get/@DailyLife?theme=yousa-ling)](https://github.com/siciyuanweilai/astrbot_plugin_daily_life)
 
 > [!TIP]
-> **v1.3.5 重点更新**：新增独立 Seedream 文生图和图生图通道，按接口地址自动选择 JSON 或 multipart 请求；移除旧请求格式设置，Seedream 不再携带 GPT Image 专用质量字段，旧 OpenAI 通道也不会因填写 Seedream 模型名而被误判。完整说明见 [CHANGELOG.md](./CHANGELOG.md)。
+> **v1.3.6 重点更新**：修复 GPT Image 2 图生图的 `images[].image_url is required` 错误，正确传递参考图和质量档位；文生图、图生图直接接收 Base64 图片，避免图片链接存储不可用导致生成失败。请求格式自动处理，无需新增配置；低价 1K 通道已通过实际出图验证。完整说明见 [CHANGELOG.md](./CHANGELOG.md)。
 
 ---
 
