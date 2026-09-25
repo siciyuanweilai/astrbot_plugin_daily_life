@@ -43,6 +43,27 @@ from core.models import (
 
 
 class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
+    async def test_previous_context_prefers_daytime_outfit_over_late_night_snapshot(self):
+        composer, _, _, archive = make_composer([])
+        await archive.save_day(
+            DayRecord(
+                date="2026-06-11",
+                outfit="米白色蕾丝家居服",
+                outfit_history={
+                    "afternoon": "粉色露肩上衣搭配粉色碎花蕾丝半身短裙",
+                    "late_night": "米白色蕾丝家居服",
+                },
+                meta={"schedule_intent": "生日外出"},
+            )
+        )
+
+        context = await composer._build_previous_life_context(
+            datetime.datetime(2026, 6, 12, 9, 0)
+        )
+
+        self.assertIn("粉色露肩上衣搭配粉色碎花蕾丝半身短裙", context)
+        self.assertNotIn("米白色蕾丝家居服", context)
+
     def test_person_fact_replacements_only_change_allowed_existing_text(self):
         payload = {
             "timeline": [

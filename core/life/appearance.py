@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from collections.abc import Iterable
 from typing import Any
@@ -8,14 +9,14 @@ from typing import Any
 from astrbot.api import logger
 
 from ..models import PreferenceRecord
+from ..prompts import CORE_JSON_OUTPUT_RULES, cache_friendly_prompt
+from .tools import extract_json_from_text
 from .wardrobe import (
     format_outfit_component_ledger,
     format_outfit_components,
     normalize_outfit_scene_category,
     project_outfit_components_for_scene,
 )
-from ..prompts import CORE_JSON_OUTPUT_RULES, cache_friendly_prompt
-from .tools import extract_json_from_text
 
 APPEARANCE_PREFERENCE_CATEGORIES = (
     "outfit",
@@ -27,6 +28,19 @@ APPEARANCE_PREFERENCE_CATEGORIES = (
     "makeup",
     "nails",
     "style",
+)
+
+# A day's top-level outfit is the latest state, which can be sleepwear after a
+# late-night change. Historical references should prefer the daytime record.
+_REFERENCE_OUTFIT_PERIODS = (
+    "noon",
+    "afternoon",
+    "forenoon",
+    "morning",
+    "evening",
+    "dawn",
+    "night",
+    "late_night",
 )
 AUTONOMOUS_APPEARANCE_PREFERENCE_SOURCES = frozenset(
     {"daily_review", "daily_generation", "autonomous"}
@@ -103,6 +117,86 @@ def persona_appearance_values(values: object) -> dict[str, str]:
     }
 
 
+def reference_outfit(day: Any) -> tuple[str, str]:
+    """Return the most useful historical outfit and its recorded period."""
+
+    if day is None:
+        return "", ""
+    history = getattr(day, "outfit_history", {}) or {}
+    if isinstance(history, dict):
+        normalized = {
+            str(period or "").strip().casefold(): str(outfit or "").strip()
+            for period, outfit in history.items()
+            if str(period or "").strip() and str(outfit or "").strip()
+        }
+        for period in _REFERENCE_OUTFIT_PERIODS:
+            outfit = normalized.get(period, "")
+            if outfit:
+                return outfit, period
+        if normalized:
+            period, outfit = next(iter(normalized.items()))
+            return outfit, period
+    return str(getattr(day, "outfit", "") or "").strip(), "current"
+
+
+def is_historical_appearance_request(value: object) -> bool:
+    """Recognize explicit requests to recreate an earlier appearance."""
+
+    text = " ".join(str(value or "").strip().split())
+    return bool(
+        re.search(r"(?:20\d{2}[-年/])?\d{1,2}[-月/]\d{1,2}(?:日|号)?", text)
+    ) or any(
+        marker in text
+        for marker in (
+            "昨天",
+            "昨日",
+            "前一天",
+            "前日",
+            "前天",
+            "昨晚",
+            "昨夜",
+            "前晚",
+            "上次",
+            "那天",
+            "那套穿搭",
+            "那身",
+            "上次那套",
+            "上次穿搭",
+            "上次的穿搭",
+            "之前那套",
+            "之前那身",
+            "之前穿搭",
+            "之前的穿搭",
+        )
+    )
+
+
+def format_reference_appearance_context(day: Any, *, label: str = "历史参考") -> str:
+    """Render a dated outfit without treating the day's latest state as current."""
+
+    outfit, period = reference_outfit(day)
+    if not outfit:
+        return ""
+    meta = getattr(day, "meta", {}) or {}
+    if not isinstance(meta, dict):
+        meta = {}
+    lines = [
+        f"{label}穿搭（按{period or '白天'}生活记录）：{outfit}",
+    ]
+    # Legacy period records contain clothes only. The final hair of the day
+    # does not establish what the hair looked like at an earlier period.
+    same_snapshot = outfit == str(getattr(day, "outfit", "") or "").strip()
+    hair_style = (
+        normalize_appearance_fact(meta.get("hair_style"), 80) if same_snapshot else ""
+    )
+    hair = normalize_appearance_fact(meta.get("hair"), 180) if same_snapshot else ""
+    if hair_style:
+        lines.append(f"{label}发型名称：{hair_style}")
+    if hair:
+        lines.append(f"{label}发型细节：{hair}")
+    return "\n".join(lines)
+
+
 class AppearanceAuditMixin:
     async def _audit_persona_appearance(
         self,
@@ -122,8 +216,10 @@ class AppearanceAuditMixin:
             if str(slot).strip()
         }
         persona = str(persona or "").strip()
-        if not persona or not provider or not any(
-            any(values.values()) for values in normalized.values()
+        if (
+            not persona
+            or not provider
+            or not any(any(values.values()) for values in normalized.values())
         ):
             return normalized
 
@@ -197,7 +293,9 @@ class AppearanceAuditMixin:
                     for field in _PERSONA_APPEARANCE_FIELDS
                 }
             reason = str(payload.get("reason") or "").strip()
-            changed = any(result.get(slot) != values for slot, values in normalized.items())
+            changed = any(
+                result.get(slot) != values for slot, values in normalized.items()
+            )
             logger.debug(
                 "[人物外观审计] "
                 + ("已校正与人设冲突的外观" if changed else "通过")
@@ -302,10 +400,19 @@ def current_appearance_values(day: Any) -> dict[str, str]:
     makeup = normalize_appearance_fact(meta.get("makeup"), 160)
     nails_style = normalize_appearance_fact(meta.get("nails_style"), 80)
     nails = normalize_appearance_fact(meta.get("nails"), 160)
+    components = project_outfit_components_for_scene(
+        meta.get("outfit_components"), "mixed"
+    )
+    outfit = getattr(day, "outfit", "")
+    if components.get("main_clothing", {}).get("state") in {
+        "worn",
+        "carried",
+        "staged",
+        "removed",
+    }:
+        outfit = format_outfit_components(components)
     return {
-        "outfit": strip_hair_from_outfit(
-            getattr(day, "outfit", ""), hair_style, hair
-        ),
+        "outfit": strip_hair_from_outfit(outfit, hair_style, hair),
         "style": normalize_appearance_fact(meta.get("style"), 120),
         "hair_style": hair_style,
         "hair": hair,
@@ -329,7 +436,12 @@ def format_current_appearance_context(day: Any, *, scene_category: object = "") 
     )
     component_ledger = format_outfit_component_ledger(components)
     visible_outfit = format_outfit_components(components)
-    if scene in {"home", "sleep"} and visible_outfit:
+    if components.get("main_clothing", {}).get("state") in {
+        "worn",
+        "carried",
+        "removed",
+        "staged",
+    }:
         outfit = visible_outfit
     else:
         outfit = values["outfit"]
@@ -359,23 +471,26 @@ def format_image_appearance_context(day: Any, *, scene_category: object = "") ->
         scene = normalize_outfit_scene_category(
             meta.get("outfit_scene_category"), default=""
         )
-    if scene not in {"home", "sleep"}:
-        return context
-
     components = project_outfit_components_for_scene(
         meta.get("outfit_components"), scene
     )
     hidden_labels = []
-    footwear = components.get("footwear") or {}
-    accessories = components.get("carried_accessories") or {}
-    if footwear.get("state") not in {"worn", "carried"}:
-        hidden_labels.append("鞋履不在脚上")
-    if accessories.get("state") not in {"worn", "carried"}:
-        hidden_labels.append("随身包/外出配饰不在身上")
+    for key, label in (
+        ("footwear", "鞋履不在脚上"),
+        ("carried_accessories", "随身包/外出配饰不在身上"),
+        ("outer_layer", "外套不在身上"),
+    ):
+        item = components.get(key) or {}
+        if item.get("state") in {"removed", "staged"} or (
+            scene in {"home", "sleep"}
+            and key != "outer_layer"
+            and item.get("state") not in {"worn", "carried"}
+        ):
+            hidden_labels.append(label)
     if not hidden_labels:
         return context
     constraint = (
-        "画面可见约束：当前为居家/睡眠场景；"
+        "画面可见约束："
         + "；".join(hidden_labels)
         + "，不得将其画成穿着、背着或手提状态。"
     )
@@ -403,8 +518,7 @@ def is_autonomous_appearance_preference(item: PreferenceRecord) -> bool:
 
     return bool(
         _clean_text(item.category) in APPEARANCE_PREFERENCE_CATEGORIES
-        and _clean_text(item.source).lower()
-        in AUTONOMOUS_APPEARANCE_PREFERENCE_SOURCES
+        and _clean_text(item.source).lower() in AUTONOMOUS_APPEARANCE_PREFERENCE_SOURCES
     )
 
 
@@ -444,9 +558,7 @@ def format_life_preference_context(
     catalog_backed: bool = False,
 ) -> str:
     learned = [
-        item
-        for item in preferences
-        if not is_autonomous_appearance_preference(item)
+        item for item in preferences if not is_autonomous_appearance_preference(item)
     ]
     if appearance_only:
         learned = appearance_preferences(learned)
@@ -455,7 +567,9 @@ def format_life_preference_context(
     if learned:
         parts.append("已学习长期偏好：")
         parts.extend(_format_preference_line(item) for item in learned)
-        parts.append("- 同义偏好即使存在多条也只能视为一次证据，不得叠加权重或据此复刻同一具体方案。")
+        parts.append(
+            "- 同义偏好即使存在多条也只能视为一次证据，不得叠加权重或据此复刻同一具体方案。"
+        )
         if catalog_backed:
             parts.append(
                 "- 已启用视觉衣橱时，长期外观偏好只用于比较衣橱候选；"

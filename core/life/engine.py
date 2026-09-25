@@ -5,7 +5,7 @@ import uuid
 from astrbot.api import logger
 
 from ..clock import now as life_now
-from .appearance import persona_appearance_values
+from .appearance import current_appearance_values, persona_appearance_values
 from .calendar import format_calendar_context, format_season_context
 from .people import DAILY_PERSON_TEXT_PATHS
 from .tools import (
@@ -20,13 +20,13 @@ from .tools import (
 from .wardrobe import (
     format_outfit_components,
     merge_outfit_components,
-    normalize_outfit_decision,
     normalize_outfit_components,
+    normalize_outfit_decision,
     normalize_outfit_scene_category,
     reconcile_outfit_components_for_scene,
+    resolve_outfit_style_pool,
     scene_category_for_place_kind,
     serialize_outfit_components,
-    resolve_outfit_style_pool,
 )
 
 _CURRENT_APPEARANCE_META_KEYS = (
@@ -118,7 +118,9 @@ class DailyEngineMixin:
         today_suggested = resolve_daily_suggested(week_plan, date)
 
         history_schedules_str = await self._build_history_schedule_summary(date)
-        previous_context = await self._build_previous_life_context(date)
+        previous_context = await self._build_previous_life_context(
+            date, include_outfit=False
+        )
         recent_chats = await self._collect_recent_chat_context(persona)
         replaced_day = (
             await self.archive.get_day(date_str) if regenerate_existing else None
@@ -269,9 +271,7 @@ class DailyEngineMixin:
             else {}
         )
         outfit_decision = (
-            decision.get("outfit")
-            if isinstance(decision.get("outfit"), dict)
-            else {}
+            decision.get("outfit") if isinstance(decision.get("outfit"), dict) else {}
         )
         outfit_choice = normalize_outfit_decision(outfit_decision.get("decision"))
         current_scene_category = str(
@@ -331,8 +331,8 @@ class DailyEngineMixin:
                 )
                 partial_components.pop("main_clothing", None)
                 if partial_components:
-                    catalog_appearance["outfit_components"] = serialize_outfit_components(
-                        partial_components
+                    catalog_appearance["outfit_components"] = (
+                        serialize_outfit_components(partial_components)
                     )
                 else:
                     catalog_appearance.pop("outfit_components", None)
@@ -391,8 +391,8 @@ class DailyEngineMixin:
                     )
                     partial_action_components.pop("main_clothing", None)
                     if partial_action_components:
-                        action_appearance["outfit_components"] = serialize_outfit_components(
-                            partial_action_components
+                        action_appearance["outfit_components"] = (
+                            serialize_outfit_components(partial_action_components)
                         )
                     else:
                         action_appearance.pop("outfit_components", None)
@@ -474,15 +474,11 @@ class DailyEngineMixin:
             current_scene_category,
             catalog_components=catalog_appearance.get("outfit_components"),
             catalog_selected=bool(
-                current_reference_ids
-                and catalog_outfit
-                and not context["manual_extra"]
+                current_reference_ids and catalog_outfit and not context["manual_extra"]
             ),
         )
         if day_components:
-            day.meta["outfit_components"] = serialize_outfit_components(
-                day_components
-            )
+            day.meta["outfit_components"] = serialize_outfit_components(day_components)
             if current_scene_category in {"home", "sleep"}:
                 visible_outfit = format_outfit_components(day_components)
                 if visible_outfit:
@@ -604,13 +600,10 @@ class DailyEngineMixin:
             day.meta["outfit_fact_evidence"] = "当日日程已覆盖当前时刻"
             return day
 
-        previous_date = (
-            check_time.date() - datetime.timedelta(days=1)
-        ).isoformat()
+        previous_date = (check_time.date() - datetime.timedelta(days=1)).isoformat()
         previous_day = await self.archive.get_day(previous_date)
-        previous_outfit = str(
-            getattr(previous_day, "outfit", "") if previous_day else ""
-        ).strip()
+        previous_outfit = current_appearance_values(previous_day)["outfit"]
+        previous_outfit_period = "最终"
         if not previous_outfit:
             day.meta["outfit_fact_source"] = "daily_generation"
             day.meta["outfit_fact_confirmed_at"] = confirmed_at
@@ -630,9 +623,7 @@ class DailyEngineMixin:
             else:
                 day.meta.pop(key, None)
 
-        previous_source = str(
-            previous_meta.get("outfit_fact_source") or ""
-        ).strip()
+        previous_source = str(previous_meta.get("outfit_fact_source") or "").strip()
         day.outfit = previous_outfit
         day.outfit_history = {context["period"]: previous_outfit}
         day.meta["outfit_fact_source"] = (
@@ -644,7 +635,7 @@ class DailyEngineMixin:
             previous_meta.get("outfit_fact_confirmed_at") or confirmed_at
         ).strip()
         day.meta["outfit_fact_evidence"] = (
-            f"延续 {previous_date} 尚未被已发生换装替代的当前穿搭"
+            f"延续 {previous_date} {previous_outfit_period or '白天'}记录中尚未被已发生换装替代的穿搭"
         )
         day.meta["outfit_carried_from"] = previous_date
         logger.debug("[日程生成] 首个日程节点尚未发生，当前穿搭延续上一日记录")
@@ -835,9 +826,7 @@ class DailyEngineMixin:
                                 "person_facts"
                             ].format_for_generation(include_persona=True),
                             location_context=location_context,
-                            style_catalog_context=context[
-                                "style_catalog_context"
-                            ],
+                            style_catalog_context=context["style_catalog_context"],
                         )
 
                 logger.error("[日程生成] 最终生成失败，重试次数耗尽")

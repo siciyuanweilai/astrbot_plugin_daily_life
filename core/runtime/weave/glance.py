@@ -158,7 +158,8 @@ class StructuredGlanceMixin:
     def _structured_history_payload(self, item: StructuredMessage) -> dict[str, str]:
         return {
             "role": "assistant" if item.is_bot else "user",
-            "content": self._structured_text(item.content, 220),
+            "message_id": item.message_id,
+            "content": str(item.content or "").strip(),
             "user_id": item.sender_id,
             "name": item.display_sender,
             "group_id": item.group_id,
@@ -168,7 +169,7 @@ class StructuredGlanceMixin:
             "reply_to_id": item.reply_to_id,
             "reply_to_sender_id": item.reply_to_sender_id,
             "reply_to_sender_name": item.reply_to_sender_name,
-            "reply_to_content": self._structured_text(item.reply_to_content, 120),
+            "reply_to_content": str(item.reply_to_content or "").strip(),
             "media": item.media,
             "timestamp": str(item.timestamp or ""),
         }

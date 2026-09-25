@@ -7,6 +7,7 @@ from typing import Any
 
 from astrbot.api import logger
 
+from ..life.appearance_history import record_appearance_snapshot
 from ..life.condition import state_is_stale
 from ..life.tools import (
     get_current_timeline_status,
@@ -207,11 +208,7 @@ class RefreshMixin:
         current_index = -1
         if current is not None:
             current_index = next(
-                (
-                    index
-                    for index, item in enumerate(data.timeline)
-                    if item is current
-                ),
+                (index for index, item in enumerate(data.timeline) if item is current),
                 -1,
             )
 
@@ -238,11 +235,14 @@ class RefreshMixin:
         component_states = normalize_outfit_components(
             (data.meta or {}).get("outfit_components")
         )
-        component_signature = ";".join(
-            f"{key}:{item.get('state', 'unknown')}"
-            for key, item in component_states.items()
-            if key in {"footwear", "carried_accessories"}
-        ) or "none"
+        component_signature = (
+            ";".join(
+                f"{key}:{item.get('state', 'unknown')}"
+                for key, item in component_states.items()
+                if key in {"footwear", "carried_accessories"}
+            )
+            or "none"
+        )
 
         action_events: dict[int, str] = {}
         raw_actions = str((data.meta or {}).get("planned_life_actions") or "")
@@ -376,6 +376,8 @@ class RefreshMixin:
         if target != previous:
             meta["outfit_scene_category"] = target
             changed = True
+        if changed:
+            record_appearance_snapshot(data, now)
         return changed
 
     def _next_auto_life_check_at(
@@ -657,8 +659,8 @@ class RefreshMixin:
                 data.meta["auto_life_last_checked_at"] = now.strftime("%Y-%m-%d %H:%M")
                 data.meta["auto_life_stable_checks"] = str(stable_checks)
                 if outfit_context_recorded or not outfit_context_changed:
-                    data.meta["auto_outfit_context"] = (
-                        self._outfit_context_signature(data, now, current_period)
+                    data.meta["auto_outfit_context"] = self._outfit_context_signature(
+                        data, now, current_period
                     )
                 next_check = self._next_auto_life_check_at(
                     data,

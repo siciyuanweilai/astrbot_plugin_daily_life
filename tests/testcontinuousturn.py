@@ -1,6 +1,8 @@
 import asyncio
 import time
+import types
 import unittest
+from unittest.mock import Mock
 
 from support import DailyLifeRuntime, Event, LifeSettings, ProviderRequest
 
@@ -67,6 +69,243 @@ class ContinuousTurnTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(runtime.prepare_continuous_turn_llm_request(second, request))
         self.assertEqual(request.prompt, "明天下雨\n记得带伞出门")
         self.assertIn("同一个话轮", request.system_prompt)
+
+    @classmethod
+    def _image_event(cls, message_id, *sources, text=""):
+        event = cls._event(text, message_id)
+        event.message_items.extend(
+            {"type": "image", "url": source} for source in sources
+        )
+        return event
+
+    async def test_text_then_image_replaces_waiting_text_with_complete_turn(self):
+        runtime = self._runtime()
+        first = self._event("帮我看看这张图", "text", FrameworkStopEvent)
+        second = self._image_event("image", "https://example.com/photo.png")
+        runtime.note_continuous_turn_incoming(first)
+        waiting = asyncio.create_task(runtime.settle_continuous_turn(first))
+        await asyncio.sleep(0)
+
+        self.assertTrue(runtime.note_continuous_turn_incoming(second))
+        self.assertTrue(await runtime.settle_continuous_turn(second))
+        self.assertFalse(await waiting)
+        self.assertTrue(first.is_stopped())
+        self.assertIsNone(first.get_result())
+        self.assertEqual(runtime.continuous_turn_message_count(second), 2)
+        request = ProviderRequest(
+            prompt="", image_urls=["https://example.com/photo.png"]
+        )
+        self.assertTrue(runtime.prepare_continuous_turn_llm_request(second, request))
+        self.assertEqual(request.prompt, "帮我看看这张图\n[图片]")
+        self.assertEqual(request.image_urls, ["https://example.com/photo.png"])
+        self.assertEqual(len(second.get_messages()), 1)
+
+    async def test_images_survive_later_text_and_more_images_in_arrival_order(self):
+        runtime = self._runtime(continuous_turn_wait_seconds=0)
+        first = self._image_event("first", "https://example.com/first.png")
+        middle = self._event("比较这三张图片", "text")
+        last = self._image_event(
+            "last",
+            "https://example.com/second.png",
+            "https://example.com/third.png",
+            text="这是后两张",
+        )
+        runtime.note_continuous_turn_incoming(first)
+        self.assertTrue(await runtime.settle_continuous_turn(first))
+        runtime.note_continuous_turn_incoming(middle)
+        self.assertTrue(await runtime.settle_continuous_turn(middle))
+        self.assertEqual(middle.get_messages(), first.get_messages())
+        runtime.note_continuous_turn_incoming(last)
+        self.assertTrue(await runtime.settle_continuous_turn(last))
+        self.assertFalse(
+            runtime.prepare_continuous_turn_llm_request(middle, ProviderRequest())
+        )
+        self.assertEqual(
+            [item["url"] for item in last.get_messages()],
+            [
+                f"https://example.com/{name}.png"
+                for name in ("first", "second", "third")
+            ],
+        )
+        request = ProviderRequest(prompt=last.message_str)
+        runtime.prepare_continuous_turn_llm_request(last, request)
+        self.assertEqual(request.prompt, "[图片]\n比较这三张图片\n这是后两张")
+
+    async def test_image_collection_waits_for_durable_cache_and_keeps_gif_metadata(
+        self,
+    ):
+        runtime = self._runtime(continuous_turn_wait_seconds=0)
+        first = self._image_event("image", "/temporary/animation.gif")
+        second = self._event("这张动图是什么意思", "text")
+        runtime.note_continuous_turn_incoming(first)
+        runtime.note_continuous_turn_incoming(second)
+        waiting = asyncio.create_task(runtime.settle_continuous_turn(second))
+        await asyncio.sleep(0)
+        self.assertFalse(waiting.done())
+        entry = {"item": first.get_messages()[0], "path": "/cache/animation.gif"}
+        setattr(first, runtime._PREPARED_VISUAL_MEDIA_ATTR, [entry])
+        runtime.note_continuous_turn_media_ready(first)
+
+        self.assertTrue(await asyncio.wait_for(waiting, timeout=0.2))
+        self.assertEqual(
+            second.get_messages(), [{"type": "image", "file": "/cache/animation.gif"}]
+        )
+        self.assertEqual(getattr(second, runtime._PREPARED_VISUAL_MEDIA_ATTR), [entry])
+
+    async def test_image_follow_up_restarts_text_generation_with_actual_image(self):
+        runtime = self._runtime(continuous_turn_wait_seconds=0)
+        runtime._init_response_gate_state()
+        first = self._event("照着这张参考图画", "text")
+        second = self._image_event("image", "https://example.com/reference.png")
+        runtime.note_continuous_turn_incoming(first)
+        await runtime.settle_continuous_turn(first)
+        runtime.prepare_continuous_turn_llm_request(first, ProviderRequest())
+        runner = types.SimpleNamespace(
+            run_context=types.SimpleNamespace(
+                context=types.SimpleNamespace(event=first)
+            ),
+            request_stop=Mock(),
+        )
+        runtime._active_agent_runner = lambda _event: runner
+
+        self.assertTrue(runtime.note_continuous_turn_incoming(second))
+        runner.request_stop.assert_called_once_with()
+        self.assertTrue(first.get_extra("agent_stop_requested"))
+        self.assertTrue(first.is_stopped())
+        self.assertFalse(runtime.continuous_turn_event_is_current(first))
+        self.assertFalse(runtime.complete_continuous_turn(first))
+        self.assertTrue(await runtime.settle_continuous_turn(second))
+        decision = await runtime.evaluate_response_gate(second)
+        self.assertEqual(decision["action"], "reply")
+        self.assertTrue(decision["forced"])
+        request = ProviderRequest(
+            prompt="", image_urls=["https://example.com/reference.png"]
+        )
+        runtime.prepare_continuous_turn_llm_request(second, request)
+        self.assertEqual(request.prompt, "照着这张参考图画\n[图片]")
+        self.assertEqual(request.image_urls, ["https://example.com/reference.png"])
+
+    async def test_completed_image_turn_and_duplicate_id_do_not_repeat_images(self):
+        runtime = self._runtime(continuous_turn_wait_seconds=0)
+        first = self._image_event("image", "https://example.com/photo.png")
+        second = self._event("下一轮", "text")
+        runtime.note_continuous_turn_incoming(first)
+        runtime.note_continuous_turn_incoming(first)
+        await runtime.settle_continuous_turn(first)
+        self.assertEqual(runtime.continuous_turn_message_count(first), 1)
+        self.assertEqual(len(first.get_messages()), 1)
+        self.assertTrue(runtime.complete_continuous_turn(first))
+        self.assertEqual(
+            runtime._continuous_turn_batch(first.unified_msg_origin, "private").images,
+            {},
+        )
+        runtime.note_continuous_turn_incoming(second)
+        await runtime.settle_continuous_turn(second)
+        self.assertEqual(runtime.continuous_turn_messages(second), ("下一轮",))
+        self.assertEqual(second.get_messages(), [])
+
+    async def test_image_follow_up_marks_generation_before_runner_registration(self):
+        runtime = self._runtime(continuous_turn_wait_seconds=0)
+        first = self._event("照着参考图画", "text")
+        second = self._image_event("image", "https://example.com/reference.png")
+        runtime.note_continuous_turn_incoming(first)
+        await runtime.settle_continuous_turn(first)
+        runtime.prepare_continuous_turn_llm_request(first, ProviderRequest())
+        runtime._active_agent_runner = lambda _event: None
+
+        runtime.note_continuous_turn_incoming(second)
+
+        self.assertTrue(first.get_extra("agent_stop_requested"))
+        self.assertTrue(first.is_stopped())
+        runner = types.SimpleNamespace(
+            run_context=types.SimpleNamespace(
+                context=types.SimpleNamespace(event=first)
+            ),
+            request_stop=Mock(),
+        )
+        runtime._active_agent_runner = lambda _event: runner
+        self.assertTrue(await runtime.settle_continuous_turn(second))
+        runner.request_stop.assert_called_once_with()
+
+    async def test_image_takeover_survives_a_further_text_follow_up(self):
+        runtime = self._runtime(continuous_turn_wait_seconds=0)
+        first = self._event("按参考图画", "text")
+        second = self._image_event("image", "https://example.com/reference.png")
+        third = self._event("颜色柔和一点", "tail")
+        runtime.note_continuous_turn_incoming(first)
+        await runtime.settle_continuous_turn(first)
+        runtime.prepare_continuous_turn_llm_request(first, ProviderRequest())
+        runtime.note_continuous_turn_incoming(second)
+        runtime.note_continuous_turn_media_ready(second)
+        runtime.note_continuous_turn_incoming(third)
+
+        self.assertFalse(await runtime.settle_continuous_turn(second))
+        self.assertTrue(await runtime.settle_continuous_turn(third))
+        self.assertTrue(first.get_extra("agent_stop_requested"))
+        request = ProviderRequest()
+        self.assertTrue(runtime.prepare_continuous_turn_llm_request(third, request))
+        self.assertEqual(request.prompt, "按参考图画\n[图片]\n颜色柔和一点")
+        self.assertEqual(
+            third.get_messages(),
+            [{"type": "image", "url": "https://example.com/reference.png"}],
+        )
+
+    async def test_trimmed_messages_also_release_their_images(self):
+        runtime = self._runtime(continuous_turn_wait_seconds=0)
+        runtime._CONTINUOUS_TURN_MAX_MESSAGES = 2
+        first = self._image_event("image", "https://example.com/old.png")
+        runtime.note_continuous_turn_incoming(first)
+        runtime.note_continuous_turn_media_ready(first)
+        runtime.note_continuous_turn_incoming(self._event("保留这句", "second"))
+        last = self._event("以及这句", "last")
+        runtime.note_continuous_turn_incoming(last)
+        self.assertTrue(await runtime.settle_continuous_turn(last))
+        self.assertEqual(
+            runtime.continuous_turn_messages(last), ("保留这句", "以及这句")
+        )
+        self.assertEqual(last.get_messages(), [])
+
+    async def test_non_image_media_quotes_commands_and_disabled_images_stay_independent(
+        self,
+    ):
+        runtime = self._runtime()
+        for kind in ("record", "voice", "video", "file", "reply"):
+            with self.subTest(kind=kind):
+                event = self._image_event(
+                    kind, "https://example.com/photo.png", text="看看"
+                )
+                event.message_items.append({"type": kind})
+                self.assertFalse(runtime.note_continuous_turn_incoming(event))
+        command = self._image_event("command", "https://example.com/photo.png")
+        runtime._event_has_command_handler = lambda _event: True
+        self.assertFalse(runtime.note_continuous_turn_incoming(command))
+        disabled = self._runtime(continuous_turn_enabled=False)
+        self.assertFalse(disabled.note_continuous_turn_incoming(command))
+
+    async def test_group_images_only_join_same_sender_when_enabled(self):
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled):
+                runtime = self._runtime(
+                    continuous_turn_group_enabled=enabled,
+                    continuous_turn_wait_seconds=0,
+                )
+                first = self._event("我的参考图", "text")
+                second = self._image_event("image", "https://example.com/photo.png")
+                other = self._event("另一个人的消息", "other")
+                for event in (first, second, other):
+                    event.unified_msg_origin = "aiocqhttp:GroupMessage:group"
+                    event._group_id = "group"
+                other._sender_id = "20002"
+                self.assertEqual(runtime.note_continuous_turn_incoming(first), enabled)
+                self.assertEqual(runtime.note_continuous_turn_incoming(other), enabled)
+                self.assertEqual(runtime.note_continuous_turn_incoming(second), enabled)
+                self.assertTrue(await runtime.settle_continuous_turn(second))
+                if enabled:
+                    self.assertEqual(
+                        runtime.continuous_turn_messages(second),
+                        ("我的参考图", "[图片]"),
+                    )
+                    self.assertTrue(runtime.continuous_turn_event_is_current(other))
 
     async def test_single_message_keeps_the_short_base_wait(self):
         runtime = self._runtime()

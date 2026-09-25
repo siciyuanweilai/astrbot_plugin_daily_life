@@ -2412,7 +2412,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(len(event.sent_messages), 1)
         self._assert_last_assistant_history(runtime, event.unified_msg_origin, "我困啦")
 
-    async def test_proactive_voice_probability_can_skip_voice(self):
+    async def test_proactive_text_intent_keeps_text_despite_emotion(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.context = Context(Provider([]))
         runtime.config = LifeSettings.from_dict(
@@ -2420,7 +2420,6 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
                 "voice_generation_config": {
                     "enabled": True,
                     "proactive_enabled": True,
-                    "proactive_probability": 0,
                     "api_key": "sf-key",
                     "voice": "voice-1",
                 }
@@ -2448,6 +2447,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             "aiocqhttp:FriendMessage:10001",
             "我困啦",
             "闲时回复发送失败",
+            send_payload={"expression_intent": {"channel": "text", "confidence": 0.95, "emotion": "困倦", "reason": "对方不方便听语音"}},
         )
 
         self.assertTrue(sent)
@@ -2455,24 +2455,37 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(runtime.context.sent_messages[0][1].items, ["我困啦"])
         self.assertEqual(await runtime.archive.get_recent_action_decisions(3), [])
 
-    def test_proactive_voice_probability_boundaries(self):
+    async def test_proactive_voice_requires_valid_semantic_intent(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
-
-        self.assertFalse(
-            runtime._proactive_voice_probability_hit(
-                types.SimpleNamespace(proactive_probability=0)
-            )
-        )
-        self.assertTrue(
-            runtime._proactive_voice_probability_hit(
-                types.SimpleNamespace(proactive_probability=100)
-            )
-        )
-        self.assertTrue(
-            runtime._proactive_voice_probability_hit(
-                types.SimpleNamespace(proactive_probability="bad")
-            )
-        )
+        runtime.config = LifeSettings.from_dict({"voice_generation_config": {
+            "enabled": True, "proactive_enabled": True,
+        }})
+        calls = []
+        async def synthesize(text, **kwargs):
+            calls.append(text)
+            return types.SimpleNamespace(path=Path("voice.mp3"))
+        runtime.media = types.SimpleNamespace(voice=types.SimpleNamespace(synthesize=synthesize))
+        cases = [
+            {}, {"emotion": "开心"},
+            {"channel": "text", "confidence": 0.99, "reason": "适合文字"},
+            *[{"channel": "voice", "confidence": value, "reason": "想说晚安"}
+              for value in (None, "bad", float("nan"), float("inf"), -1, 1.1, True, 0.4)],
+            {"channel": "voice", "confidence": 0.99, "reason": ""},
+        ]
+        for intent in cases:
+            with self.subTest(intent=intent):
+                self.assertFalse(await runtime._send_proactive_voice_if_enabled(
+                    "aiocqhttp:FriendMessage:1", "早点休息", {"expression_intent": intent}
+                ))
+        valid = {"expression_intent": {"channel": "voice", "confidence": 0.9, "reason": "想轻声说晚安"}}
+        self.assertFalse(await runtime._send_proactive_voice_if_enabled(
+            "aiocqhttp:FriendMessage:1", "请查看 https://example.com", valid
+        ))
+        runtime.config.voice_generation.proactive_enabled = False
+        self.assertFalse(await runtime._send_proactive_voice_if_enabled(
+            "aiocqhttp:FriendMessage:1", "早点休息", valid
+        ))
+        self.assertEqual(calls, [])
 
     async def test_collects_emoji_assets_and_uses_vision_provider(self):
         memory_provider = Provider([], provider_id="memory-model")

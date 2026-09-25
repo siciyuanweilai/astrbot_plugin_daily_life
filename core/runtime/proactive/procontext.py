@@ -1,10 +1,19 @@
 import datetime
+import math
+import uuid
 from typing import Any
 
 from astrbot.api import logger
 
 from ...config.options.basis import format_chat_style_prompt
+from ...prompts import (
+    CORE_EMOJI_DELIVERY_RULES,
+    CORE_JSON_OUTPUT_RULES,
+    CORE_PROACTIVE_CONTINUITY_RULES,
+    cache_friendly_prompt,
+)
 from ...sources.history import SavedHistoryReader
+from ..capture.jsonclean import call_pure_json
 from ..markers import LOG_PREFIX
 
 
@@ -144,22 +153,10 @@ class ProactiveContextMixin:
         lines = [f"- 消息传输范围：{scope_label}主动消息；不代表现实距离。"]
         if limit > 0:
             lines.append(
-                f"- {scope_label}主动消息参考长度约 {limit} 字左右；不是硬截断，但后台主动发言要优先短气口。"
+                f"- {scope_label}主动消息参考长度约 {limit} 字左右；只作节奏参考，主动开口优先简短、不打扰；必要的关心或解释说完整，不按字数删减。"
             )
         lines.append(f"- 表达节奏：{style_prompt or '轻量、自然、少展开。'}")
         return "\n".join(lines)
-
-    def _proactive_reply_style_reject_reason(
-        self, target_scope: str, reply_text: str
-    ) -> str:
-        limit = self._proactive_expression_limit_for_scope(target_scope)
-        if limit <= 0:
-            return ""
-        compact_length = len("".join(str(reply_text or "").split()))
-        generous_limit = max(limit * 3, limit + 20)
-        if compact_length > generous_limit:
-            return f"回复长度 {compact_length} 明显超过聊天表达参考长度 {limit}"
-        return ""
 
     def _expression_review_passed(self, payload: dict[str, Any]) -> bool:
         review = payload.get("expression_review")
@@ -190,18 +187,186 @@ class ProactiveContextMixin:
         if not target_scope or limit <= 0:
             return []
         structured_reader = getattr(self, "structured_recent_history_messages", None)
-        if callable(structured_reader):
-            structured = structured_reader(target_scope, limit=limit)
-            if structured:
-                return structured
+        structured = (
+            structured_reader(target_scope, limit=limit)
+            if callable(structured_reader)
+            else []
+        )
         try:
             reader = SavedHistoryReader(self.context, LOG_PREFIX)
-            return await reader.fetch(
+            saved = await reader.fetch(
                 target_scope, max_count=limit, hours=12, prefer_conversation=True
             )
         except Exception as exc:
             logger.debug(f"{LOG_PREFIX} 读取闲时回复最近对话片段失败：{exc}")
-            return []
+            saved = []
+        return self._merge_recent_context_messages(saved, structured)[-limit:]
+
+    @staticmethod
+    def _context_message_timestamp(message: dict[str, str]) -> float:
+        raw = message.get("timestamp")
+        try:
+            value = float(raw or 0.0)
+        except (TypeError, ValueError):
+            try:
+                value = datetime.datetime.fromisoformat(
+                    str(raw or "").replace("Z", "+00:00")
+                ).timestamp()
+            except (TypeError, ValueError, OverflowError, OSError):
+                return 0.0
+        return value if math.isfinite(value) and value > 0 else 0.0
+
+    @classmethod
+    def _merge_recent_context_messages(
+        cls, saved: list[dict[str, str]], structured: list[dict[str, str]]
+    ) -> list[dict[str, str]]:
+        """补齐缓存之前的上下文，按出现位置匹配，保留真实重复及缓存元数据。"""
+
+        def same_message(left: dict[str, str], right: dict[str, str]) -> bool:
+            if left.get("role") != right.get("role"):
+                return False
+            left_id, right_id = left.get("message_id"), right.get("message_id")
+            if left_id and right_id:
+                return left_id == right_id
+            left_user, right_user = left.get("user_id"), right.get("user_id")
+            generic_ids = {
+                "",
+                None,
+                "user",
+                "assistant",
+                left.get("name"),
+                right.get("name"),
+            }
+            if left_user not in generic_ids and right_user not in generic_ids:
+                if left_user != right_user:
+                    return False
+            elif left.get("role") == "user":
+                left_name, right_name = left.get("name"), right.get("name")
+                if left_name and right_name and left_name != right_name:
+                    return False
+            a = " ".join(str(left.get("content") or "").split())
+            b = " ".join(str(right.get("content") or "").split())
+            if not a or a != b:
+                return False
+            t1, t2 = (
+                cls._context_message_timestamp(left),
+                cls._context_message_timestamp(right),
+            )
+            return not (t1 and t2) or abs(t1 - t2) <= 2
+
+        # 从最新出现处向前匹配，不能把两次“嗯”或相同问候全局去重。
+        matches: list[tuple[int, int]] = []
+        saved_end = len(saved)
+        for cache_index in range(len(structured) - 1, -1, -1):
+            for saved_index in range(saved_end - 1, -1, -1):
+                if same_message(saved[saved_index], structured[cache_index]):
+                    matches.append((saved_index, cache_index))
+                    saved_end = saved_index
+                    break
+        result: list[dict[str, str]] = []
+        saved_start = cache_start = 0
+        for saved_index, cache_index in [
+            *reversed(matches),
+            (len(saved), len(structured)),
+        ]:
+            gap = [
+                *saved[saved_start:saved_index],
+                *structured[cache_start:cache_index],
+            ]
+            if gap and all(cls._context_message_timestamp(item) for item in gap):
+                gap.sort(key=cls._context_message_timestamp)
+            result.extend(gap)
+            if saved_index < len(saved):
+                result.append(
+                    {
+                        **saved[saved_index],
+                        **{k: v for k, v in structured[cache_index].items() if v},
+                    }
+                )
+            saved_start, cache_start = saved_index + 1, cache_index + 1
+        return result
+
+    async def _audit_proactive_continuity(
+        self,
+        *,
+        payload: dict[str, Any],
+        recent_context: str,
+        life_context: str | None = None,
+        provider: Any,
+        provider_id: str,
+    ) -> tuple[bool, str]:
+        """复核话题、情绪、收尾意图；回访同时核对生活事实。"""
+        fact_rules = (
+            ""
+            if life_context is None
+            else """
+- 区分已经发生、正在发生、未来计划、承诺和推测，不得把计划或承诺当作已经完成。
+- 当前地点、动作完成、状态变化或物品状态的断言，必须有当前生活事实或带时间消息直接支持。
+- 旧回复与当前结构化生活事实冲突时，以当前结构化事实为准，不为旧回复补造经过。
+- 任一可见事实断言缺少证据或与证据冲突时 valid=false。
+"""
+        )
+        fixed = f"""审计一条待发送的主动消息能否自然承接最近的交流。
+判断语义联系、情绪、重复与收尾边界，不评价个人文风，不用关键词重合代替理解。
+
+JSON 输出要求：
+{CORE_JSON_OUTPUT_RULES}
+
+{CORE_PROACTIVE_CONTINUITY_RULES}
+
+{CORE_EMOJI_DELIVERY_RULES}
+
+只输出 JSON：
+{{"valid": true, "reason": "简短结论", "conflicts": ["断裂或冲突依据"]}}
+
+审计原则：
+- 联系自然且尊重最近交流的走向才可通过；事实正确但突然转移话题、忽略情绪、重复发问或打断收尾，也应 valid=false。
+- 问候和开放式提问不自动通过；有依据的新进展和约定提醒可以自然换话题，不要求复述上文。
+- 候选尚未发送，旧媒体记录不能证明本轮已重新发送图片、语音、视频或文件。
+- 没有明确依据判断自然承接时 valid=false；不要替候选补造过渡或经历。
+{fact_rules}"""
+        dynamic = f"""候选理由：{str(payload.get("reason") or "").strip()}
+候选回复：{str(payload.get("reply_text") or "").strip()}
+本轮待发送内容：候选回复可按表达意图以文字或语音送达；目前尚未发送，也没有附带图片、视频或文件。
+
+最近真实交流（时间未知时不推断已过去多久）：
+{recent_context}
+
+当前结构化生活事实：
+{life_context or "本轮仅复核对话承接。"}"""
+        prompt = cache_friendly_prompt(
+            fixed, dynamic, dynamic_title="主动消息连续性审计资料"
+        )
+        session_id = f"daily_life_proactive_continuity_{uuid.uuid4().hex[:8]}"
+        try:
+            audit = await call_pure_json(
+                self,
+                provider,
+                prompt,
+                session_id,
+                primary_provider_id=provider_id,
+                strict=True,
+                validator=lambda value: {
+                    **value,
+                    "valid": value.get("valid") is True,
+                    "reason": str(value.get("reason") or "").strip(),
+                    "conflicts": value.get("conflicts")
+                    if isinstance(value.get("conflicts"), list)
+                    else [],
+                },
+                fallback={
+                    "valid": False,
+                    "reason": "模型未给出严格审计结果",
+                    "conflicts": [],
+                },
+            )
+            if not isinstance(audit, dict) or not isinstance(audit.get("valid"), bool):
+                return False, "连续性审计未返回有效结果"
+            return bool(audit["valid"]), str(audit.get("reason") or "").strip()[:240]
+        except Exception as exc:
+            return False, f"连续性审计失败：{str(exc)[:180]}"
+        finally:
+            await self.close_text_session(session_id)
 
     @staticmethod
     def _format_context_message_label(message: dict[str, str]) -> str:
@@ -216,7 +381,7 @@ class ProactiveContextMixin:
 
     @staticmethod
     def _format_context_message_content(
-        message: dict[str, str], limit: int = 140
+        message: dict[str, str], limit: int = 1200
     ) -> str:
         content = "；".join(
             part.strip()
@@ -224,6 +389,8 @@ class ProactiveContextMixin:
             if part.strip()
         )
         quote = str(message.get("reply_to_content") or "").strip()
+        if len(quote) > 240:
+            quote = quote[:110] + " …[中间省略]… " + quote[-110:]
         reply_sender = str(message.get("reply_to_sender_name") or "").strip()
         if quote:
             prefix = f"引用{reply_sender}: " if reply_sender else "引用: "
@@ -236,7 +403,13 @@ class ProactiveContextMixin:
             if marker not in content:
                 content = f"{marker} {content}".strip()
         if len(content) > limit:
-            content = content[:limit].rstrip() + "..."
+            marker = " …[中间省略]… "
+            keep = limit - len(marker)
+            content = (
+                content[: keep // 2].rstrip()
+                + marker
+                + content[-(keep - keep // 2) :].lstrip()
+            )
         return content
 
     def _format_recent_context_messages(
@@ -246,21 +419,16 @@ class ProactiveContextMixin:
         now: datetime.datetime | None = None,
     ) -> str:
         lines: list[str] = []
-        for message in messages[-8:]:
+        remaining = 6000
+        for message in reversed(messages):
+            if remaining < 200:
+                break
             label = self._format_context_message_label(message)
-            content = self._format_context_message_content(message, limit=140)
+            content = self._format_context_message_content(
+                message, limit=min(1200, remaining)
+            )
             if content:
-                timestamp = 0.0
-                raw_timestamp = message.get("timestamp")
-                try:
-                    timestamp = float(raw_timestamp or 0.0)
-                except (TypeError, ValueError):
-                    try:
-                        timestamp = datetime.datetime.fromisoformat(
-                            str(raw_timestamp or "").replace("Z", "+00:00")
-                        ).timestamp()
-                    except (TypeError, ValueError):
-                        timestamp = 0.0
+                timestamp = self._context_message_timestamp(message)
                 time_prefix = ""
                 if timestamp > 0:
                     occurred_at = datetime.datetime.fromtimestamp(timestamp)
@@ -279,8 +447,10 @@ class ProactiveContextMixin:
                             age_text = f"{age_seconds // 3600} 小时前"
                         time_text = f"{time_text}，{age_text}"
                     time_prefix = f"[{time_text}] "
-                lines.append(f"- {time_prefix}{label}: {content}")
-        return "\n".join(lines) if lines else "暂无可读取的最近对话片段。"
+                line = f"- {time_prefix}{label}: {content}"
+                lines.append(line)
+                remaining -= len(line)
+        return "\n".join(reversed(lines)) if lines else "暂无可读取的最近对话片段。"
 
     async def _build_recent_context_for_proactive(
         self, target_scope: str, limit: int = 6

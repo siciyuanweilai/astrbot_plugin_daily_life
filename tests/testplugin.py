@@ -1742,9 +1742,11 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         plugin = DailyLifePlugin.__new__(DailyLifePlugin)
         plugin.runtime = types.SimpleNamespace(
             note_recalled_message=lambda event: False,
+            note_continuous_turn_incoming=lambda event: calls.append(("turn", event)),
             prepare_visual_media_from_event=lambda event: record_async(
                 calls, "prepare", event
             ),
+            note_continuous_turn_media_ready=lambda event: calls.append(("media_ready", event)),
             note_structured_incoming_message=lambda event: calls.append(
                 ("structured", event)
             ),
@@ -1776,7 +1778,9 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [name for name, _ in calls],
             [
+                "turn",
                 "prepare",
+                "media_ready",
                 "structured",
                 "emoji",
                 "visual",

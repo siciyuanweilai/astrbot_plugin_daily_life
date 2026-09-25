@@ -1,5 +1,5 @@
 import json
-
+import re
 
 OUTFIT_SCENE_CATEGORY_ENUM = "home | sleep | outdoor | public | mixed"
 OUTFIT_STYLE_POOL_ENUM = "sleep_styles | outfit_styles | mixed"
@@ -139,6 +139,40 @@ def normalize_outfit_components(value: object) -> dict[str, dict[str, str]]:
         else:
             continue
         normalized[key] = {"state": state, "description": description}
+    # A legacy main_clothing field sometimes contains the entire outfit. Keep
+    # component names disjoint so removing a coat cannot leave it in the main.
+    for key, item in normalized.items():
+        if key != "main_clothing":
+            item["description"] = re.sub(
+                r"[，,；;、\s]*(?:已(?:经)?(?:脱下|取下|摘下|放下|收起|穿上|戴上|穿着|佩戴)|待用)[。！!\s]*$",
+                "",
+                item["description"],
+            ).strip(" ，。；、")
+    main = normalized.get("main_clothing")
+    if main:
+        text = main["description"]
+        for key, item in normalized.items():
+            if key == "main_clothing" or not item["description"]:
+                continue
+            name = item["description"]
+            suffix = re.sub(
+                r"^(?:浅|深|淡|亮|暗|米|奶)?(?:粉|蓝|白|黑|灰|绿|黄|红|紫|棕|褐|橙|杏|卡其)色",
+                "",
+                name,
+            )
+            candidates = [re.escape(name)]
+            if suffix != name and len(suffix) >= 4:
+                candidates.append(r"(?:同色)?" + re.escape(suffix))
+            text = re.sub(
+                r"(?:脚穿|脚踩|脚上穿着|身披|外搭|佩戴|戴着|背着|手提|搭配)?(?:"
+                + "|".join(candidates)
+                + r")(?:与|和|以及|及)?",
+                "",
+                text,
+            )
+        text = re.sub(r"[，,；;。]\s*[，,；;。]+", "，", text)
+        text = re.sub(r"(?:搭配|配着|与|和|以及|及)(?=[，,；;。]|$)", "", text)
+        main["description"] = text.strip(" ，,。；;、与和")
     return normalized
 
 
@@ -158,7 +192,7 @@ def merge_outfit_components(base: object, updates: object) -> dict[str, dict[str
         if item.get("state") == "unknown" and key in merged:
             continue
         merged[key] = item
-    return merged
+    return normalize_outfit_components(merged)
 
 
 def reconcile_outfit_components_for_scene(
@@ -318,6 +352,7 @@ OUTFIT_CONTINUITY_RULES = (
     "outfit 只写此刻实际穿在身上或实际携带的组成；不属于当前场景的组成进入备用状态，不写进当前穿搭。"
     "场景变化时分别维护主体服装、鞋履、外层和随身配饰的状态，不把整套造型当成不可拆分的文字。\n"
     "outfit_components 是当前穿搭的组成账本：worn 表示穿在身上，carried 表示随身携带，staged 表示已准备但尚未穿戴/携带，removed 表示已脱下或放下，unknown 只在事实不足时使用。"
+    "main_clothing 只包含主体上衣、下装或连衣裙，不得重复鞋履、外套或配饰；各 description 只写物品名称和外观，不写已脱下等状态，状态只填 state。"
     "每次更新都要让账本与 scene_category、当前活动和 outfit 同步；没有变化的组成沿用原状态，不要凭空清空或新增。\n"
     "决定 keep 前分别审视主体服装、鞋履、外层和随身配饰是否适合当前活动；不能因为主体衣物仍舒适，就忽略其他组成对居住、家务、休息、睡眠、天气或公共场景的不适配。\n"
     "回家、进入室内或时段变化不等于已经换衣；衣服仍舒适干净或之后还要出门时可以继续穿。\n"

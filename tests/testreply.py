@@ -7,7 +7,6 @@ from unittest.mock import patch
 
 from support import Context, DailyLifeRuntime, Event, LifeSettings, Provider
 from core.runtime.delivery import BackgroundTextMode
-from core.runtime.reply import SegmentPart, SemanticSegmentPlan
 
 
 class SemanticSegmentTest(unittest.TestCase):
@@ -365,40 +364,27 @@ class SemanticSegmentTest(unittest.TestCase):
         self.assertIn("最多返回 3 个分段", runtime.composer.prompts[0])
         self.assertIn("当前场景单个分段参考长度约为 15 字", runtime.composer.prompts[0])
 
-    def test_casual_semantic_plan_is_capped_at_complete_pause(self):
-        runtime = self._runtime("{}")
-        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
-        event.message_str = "哈哈"
-        source = "我也觉得挺好玩的。后面那段先不展开啦。"
-        plan = SemanticSegmentPlan(
-            (
-                SegmentPart("我也觉得挺好玩的。", relation="lead"),
-                SegmentPart("后面那段先不展开啦。", relation="closing"),
-            ),
-            stance="play",
-        )
+    def test_short_prompt_keeps_complete_reply_beyond_length_hint(self):
+        parts = ["我也觉得挺好玩的。", "后面那段我们下次可以一起试试。"]
+        for stance, message in [("play", "哈哈"), ("respond", "为什么？"), ("comfort", "有点难过")]:
+            with self.subTest(stance=stance):
+                runtime = self._runtime(json.dumps({
+                    "segments": [{"text": text, "pause": "none"} for text in parts],
+                    "stance": stance,
+                }, ensure_ascii=False))
+                runtime.config.chat_style.casual_max_chars = 10
+                runtime.config.chat_style.private_casual_max_chars = 10
+                runtime.config.chat_style.punctuation_cleanup_enabled = False
+                event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
+                event.message_str = message
+                event.set_result(event.chain_result([
+                    types.SimpleNamespace(text="".join(parts))
+                ]))
 
-        trimmed = runtime._semantic_segment_trim_casual_plan(event, plan, source)
-
-        self.assertEqual(trimmed.text, "我也觉得挺好玩的。")
-        self.assertLessEqual(
-            len("".join(trimmed.text.split())),
-            runtime._chat_style_limit_for_event(event),
-        )
-
-    def test_serious_semantic_plan_is_not_capped(self):
-        runtime = self._runtime("{}")
-        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
-        event.message_str = "为什么会这样？"
-        source = "先看现象，再确认原因，最后给你一个能执行的处理办法。"
-        plan = SemanticSegmentPlan(
-            (SegmentPart(source, relation="standalone"),),
-            stance="reflect",
-        )
-
-        trimmed = runtime._semantic_segment_trim_casual_plan(event, plan, source)
-
-        self.assertEqual(trimmed.text, source)
+                self.assertTrue(asyncio.run(runtime.apply_semantic_segment_before_send(event)))
+                self.assertEqual("".join(item.text for item in event.get_result().chain), "".join(parts))
+                self.assertTrue(asyncio.run(runtime.send_semantic_segments_if_needed(event)))
+                self.assertEqual("".join(part for msg in event.sent_messages for part in msg.chain), "".join(parts))
 
     def test_semantic_segment_delay_uses_random_pause_range(self):
         runtime = self._runtime("{}")
@@ -969,6 +955,7 @@ class SemanticSegmentTest(unittest.TestCase):
                 ensure_ascii=False,
             )
         )
+        runtime.config.chat_style.private_casual_max_chars = 15
         runtime.context = Context(
             Provider([]), config={"t2i": False, "t2i_word_threshold": 120}
         )
@@ -1099,6 +1086,7 @@ class SemanticSegmentTest(unittest.TestCase):
 
     def test_invalid_semantic_plan_uses_soft_pause_natural_fallback(self):
         runtime = self._runtime("{}")
+        runtime.config.chat_style.private_casual_max_chars = 15
         runtime.context = Context(
             Provider([]), config={"t2i": False, "t2i_word_threshold": 120}
         )
@@ -1129,6 +1117,7 @@ class SemanticSegmentTest(unittest.TestCase):
     ):
         runtime = self._runtime("{}")
         runtime.config.chat_style.semantic_max_segments = 5
+        runtime.config.chat_style.group_casual_max_chars = 30
         runtime.context = Context(
             Provider([]), config={"t2i": False, "t2i_word_threshold": 120}
         )

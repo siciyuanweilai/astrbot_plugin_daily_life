@@ -4,7 +4,9 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from core.archive import LifeArchive
+# Install AstrBot test stubs before importing runtime modules.
+from support import LifeArchive  # isort: skip
+
 from core.life.reliability import NonRetryableProviderError
 from core.models import CommitmentRecord
 from core.runtime.channel.summary import RuntimeMediaCommonMixin
@@ -457,6 +459,166 @@ class ProactiveCommitmentScheduleTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(untimed_result)
         self.assertEqual(
             await self.archive.get_durable_tasks(kind="proactive_commitment"), []
+        )
+
+    async def test_media_promises_never_create_text_followup_tasks(self):
+        for media_kind in ("photo", "video"):
+            with self.subTest(media_kind=media_kind):
+                commitment = await self.archive.save_commitment(
+                    CommitmentRecord(
+                        content="明天白天把挑好的两张照片发给对方慢慢看",
+                        trigger_date="2026-09-25",
+                        owner="当前角色",
+                        media_kind=media_kind,
+                        source_session="test:FriendMessage:1",
+                    )
+                )
+                scheduled = await self.runtime.schedule_proactive_commitment(
+                    commitment,
+                    owner="当前角色",
+                    follow_up={
+                        "action": "contact_person",
+                        "condition": "明天白天合适时段且照片已准备妥当",
+                        "message_goal": "把照片发给对方，并说可以慢慢看",
+                    },
+                    observed_at=datetime.datetime(2026, 9, 24, 22, 4),
+                )
+                self.assertFalse(scheduled)
+        self.assertEqual(
+            await self.archive.get_durable_tasks(kind="proactive_commitment"), []
+        )
+
+    async def test_queued_media_followup_routes_to_delivery_without_sending_text(self):
+        for media_kind in ("photo", "video"):
+            for trigger_time in ("09:00", ""):
+                with self.subTest(media_kind=media_kind, trigger_time=trigger_time):
+                    commitment = await self.archive.save_commitment(
+                        CommitmentRecord(
+                            content="把准备好的生活照片或视频发给对方",
+                            trigger_date="2026-09-25",
+                            trigger_time=trigger_time,
+                            owner="当前角色",
+                            media_kind=media_kind,
+                            source_session="test:FriendMessage:1",
+                        )
+                    )
+                    # No text evaluator or sender exists on this test runtime.
+                    result = await self.runtime.run_proactive_commitment_task(
+                        SimpleNamespace(
+                            payload={
+                                "scope": commitment.source_session,
+                                "commitment_id": commitment.id,
+                                "action": "contact_person",
+                            }
+                        )
+                    )
+                    stored = await self.archive.get_commitment(commitment.id)
+                    self.assertNotEqual(stored.status, "done")
+                    tasks = await self.archive.get_durable_tasks(
+                        kind=f"commitment_{media_kind}"
+                    )
+                    matching = [
+                        task
+                        for task in tasks
+                        if task.payload["commitment_id"] == commitment.id
+                    ]
+                    if trigger_time:
+                        self.assertEqual(result["outcome"], "media_scheduled")
+                        self.assertEqual(len(matching), 1)
+                        self.assertEqual(
+                            matching[0].payload["scope"], commitment.source_session
+                        )
+                    else:
+                        self.assertEqual(result["outcome"], "media_pending")
+                        self.assertEqual(stored.status, "pending")
+                        self.assertEqual(matching, [])
+
+    async def test_photo_task_requires_image_delivery_before_completing_promise(self):
+        responses = (
+            '{"status":"sent","media":"text"}',
+            '{"status":"sent"}',
+            '{"status":"pending","media":"image"}',
+            "图片生成失败",
+            OSError("DNS lookup failed"),
+        )
+        self.runtime.config = SimpleNamespace(
+            image_generation=SimpleNamespace(enabled=True)
+        )
+        for response in responses:
+            for attempts in (1, 4):
+                with self.subTest(response=response, attempts=attempts):
+                    commitment = await self.archive.save_commitment(
+                        CommitmentRecord(
+                            content="把照片发给对方",
+                            owner="当前角色",
+                            media_kind="photo",
+                            source_session="test:FriendMessage:1",
+                        )
+                    )
+                    await self.archive.save_conversation_action_item(
+                        {
+                            "commitment_id": commitment.id,
+                            "title": commitment.content,
+                            "owner": commitment.owner,
+                            "source_session": commitment.source_session,
+                        }
+                    )
+
+                    async def generate(event, prompt, **kwargs):
+                        if isinstance(response, Exception):
+                            raise response
+                        return response
+
+                    self.runtime.life_image_generate = generate
+                    task = SimpleNamespace(
+                        payload={
+                            "scope": commitment.source_session,
+                            "commitment_id": commitment.id,
+                        },
+                        attempts=attempts,
+                        max_attempts=4,
+                    )
+                    with self.assertRaises((RuntimeError, OSError)):
+                        await self.runtime.run_commitment_photo_task(task)
+                    stored = await self.archive.get_commitment(commitment.id)
+                    self.assertEqual(
+                        stored.status, "delivery_failed" if attempts == 4 else "active"
+                    )
+                    items = await self.archive.get_conversation_action_items(limit=50)
+                    item = next(
+                        row for row in items if row["commitment_id"] == commitment.id
+                    )
+                    self.assertEqual(
+                        item["status"], "failed" if attempts == 4 else "open"
+                    )
+
+    async def test_expired_media_followup_does_not_schedule_delivery(self):
+        commitment = await self.archive.save_commitment(
+            CommitmentRecord(
+                content="拍张照片给对方",
+                trigger_date="2000-01-01",
+                trigger_time="09:00",
+                owner="当前角色",
+                media_kind="photo",
+                source_session="test:FriendMessage:1",
+            )
+        )
+        result = await self.runtime.run_proactive_commitment_task(
+            SimpleNamespace(
+                payload={
+                    "scope": commitment.source_session,
+                    "commitment_id": commitment.id,
+                    "action": "contact_person",
+                    "expires_at": "2000-01-02 09:00:00",
+                }
+            )
+        )
+        self.assertEqual(result["outcome"], "expired")
+        self.assertEqual(
+            await self.archive.get_durable_tasks(kind="commitment_photo"), []
+        )
+        self.assertEqual(
+            (await self.archive.get_commitment(commitment.id)).status, "expired"
         )
 
     async def test_photo_commitment_creates_private_image_task_at_morning_window(self):

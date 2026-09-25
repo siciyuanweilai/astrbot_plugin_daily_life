@@ -1,3 +1,4 @@
+import datetime
 import json
 
 from ..clock import now as life_now
@@ -15,6 +16,7 @@ from ..models import (
     LifeEpisodeRecord,
     MemoryEvidenceRecord,
 )
+from .appearance_history import record_appearance_snapshot
 from .signals import physiological_rhythm_log_from_state
 from .surroundings import normalize_place_names
 
@@ -47,6 +49,41 @@ class DailyRecordMixin:
         await self.archive.link_commitments_to_day(
             date_str, [item.id for item in due_commitments]
         )
+        try:
+            actions = json.loads(day.meta.get("planned_life_actions") or "[]")
+        except (ValueError, TypeError):
+            actions = []
+        due = {str(item.id): item for item in due_commitments}
+        for action in actions if isinstance(actions, list) else []:
+            if not isinstance(action, dict):
+                continue
+            payload = action.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            ids = payload.get("commitment_ids")
+            payload["commitment_links"] = [
+                {"id": item.id, "scope": item.source_session}
+                for value in (ids if isinstance(ids, list) else [])
+                if (item := due.get(str(value))) is not None
+                and item.owner == "当前角色"
+                and item.media_kind in {"", "none"}
+                and item.kind == "plan"
+                and item.source_session
+            ]
+        if actions:
+            day.meta["planned_life_actions"] = json.dumps(actions, ensure_ascii=False)
+        previous = await self.archive.get_day(date_str)
+        if previous is not None:
+            for key, value in previous.meta.items():
+                if key.startswith("appearance_snapshot:"):
+                    day.meta.setdefault(key, value)
+        confirmed_at = (day.meta or {}).get("outfit_fact_confirmed_at", "")
+        try:
+            observed_at = datetime.datetime.fromisoformat(confirmed_at)
+        except (ValueError, TypeError):
+            observed_at = None
+        if observed_at is not None and observed_at.date().isoformat() == day.date:
+            record_appearance_snapshot(day, observed_at)
         await self.archive.save_day(day, replace=True)
         sync_world_facts = getattr(self, "sync_day_world_facts", None)
         if callable(sync_world_facts):

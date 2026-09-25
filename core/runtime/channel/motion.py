@@ -10,6 +10,7 @@ from typing import Any
 
 from astrbot.api import logger
 
+from ...life.appearance import is_historical_appearance_request
 from ...media.base import GROUP_IDENTITY_CONTINUITY_RULE
 from ...paths import expand_path, path_is_file
 from ...prompts import CORE_MEDIA_REPLY_RULES, cache_friendly_prompt
@@ -296,11 +297,36 @@ class RuntimeVideoMediaMixin:
                 return self._friend_look_parameters_result(required)
             self._log_friend_daily_look(participant_ids[0], friend_look, look_source)
             friend_look_persist = self._friend_look_should_persist(look_source)
-        current_appearance = ""
-        if not initial_reference_image:
-            current_appearance = await self._current_life_appearance_snapshot(route)
         source_request = self._event_current_image_request_text(event)
-        if current_appearance and route in {"current_character", "group"}:
+        historical_text = (
+            source_request
+            if is_historical_appearance_request(source_request)
+            else prompt
+        )
+        historical_request = route in {
+            "current_character",
+            "group",
+        } and is_historical_appearance_request(historical_text)
+        current_appearance = ""
+        if historical_request:
+            historical_appearance = await self._historical_life_appearance_snapshot(
+                historical_text
+            )
+            if not historical_appearance:
+                return "没有找到能确认日期和时段的历史造型，请补充具体日期或时段；这次未生成视频。"
+            if historical_appearance:
+                prompt = (
+                    f"{prompt}\n\n{historical_appearance}\n"
+                    "这是用户明确要求回现的历史实际造型，服装、配饰和发型必须以此为准；"
+                    "不要使用今天的穿搭替换它。"
+                )
+        elif not initial_reference_image:
+            current_appearance = await self._current_life_appearance_snapshot(route)
+        if (
+            current_appearance
+            and not historical_request
+            and route in {"current_character", "group"}
+        ):
             prompt = await self._align_current_appearance_scene_prompt(
                 prompt,
                 source_request,

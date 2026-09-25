@@ -2282,9 +2282,12 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             return
         self._runtime_hook_call("note_runtime_scope_activity", event)
         self._runtime_hook_call("note_continuous_turn_incoming", event)
-        await self._runtime_hook_apply(
-            "prepare_visual_media_from_event", event, is_async=True
-        )
+        try:
+            await self._runtime_hook_apply(
+                "prepare_visual_media_from_event", event, is_async=True
+            )
+        finally:
+            self._runtime_hook_call("note_continuous_turn_media_ready", event)
         for name in self._INCOMING_NOTE_HOOKS:
             self._runtime_hook_call(name, event)
         self._runtime_hook_call("note_semantic_segment_incoming_message", event)
@@ -2310,6 +2313,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         self._runtime_hook_call("mark_alias_directed_event_as_wake", event)
         self.runtime.note_proactive_activity(event)
         decision = await self.runtime.apply_response_gate_for_event(event)
+        self._runtime_hook_call("_continuous_turn_restart_for_image", event)
         self._log_response_gate_outcome(event, decision)
         self._log_message_entry_timing(event, started_at)
 

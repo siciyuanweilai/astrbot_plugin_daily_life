@@ -8,6 +8,8 @@ from ....life.calendar import format_calendar_context, format_season_context
 from ....life.tools import format_timeline_to_text
 from ....prompts import (
     CORE_EMOJI_DELIVERY_RULES,
+    CORE_PROACTIVE_VOICE_RULES,
+    CORE_PROACTIVE_CONTINUITY_RULES,
     CORE_HIDDEN_CONTEXT_RULES,
     CORE_JSON_OUTPUT_RULES,
     CORE_PERSONA_PRONOUN_RULES,
@@ -108,7 +110,7 @@ class ProactivePromptMixin:
                 event
             ),
             "recent_context": await self._build_recent_context_for_proactive(
-                session_id, limit=6
+                session_id, limit=12
             ),
             "structured": self.format_structured_message_context(event, limit=8),
             "memos_context": await self.build_memos_hidden_context(
@@ -283,6 +285,7 @@ class ProactivePromptMixin:
             if is_group
             else self.config.proactive.private_talk_frequency,
             "voice_call_capability": self._proactive_voice_call_capability(event),
+            "voice_message_capability": self._proactive_voice_capability(session_id),
             "message": message,
             "meta": meta,
             "now": now,
@@ -341,23 +344,25 @@ JSON 输出要求：
   "reason": "为什么此刻适合或不适合自然回应",
   "target_message_id": "如果回复，写最自然承接的消息ID；没有明确目标则空字符串",
   "target_topic": "如果回复，写自然承接的话题；没有明确目标则空字符串",
-  "reply_text": "如果 should_reply=true，写一条自然短回复；否则空字符串",
+  "reply_text": "如果 should_reply=true，写简短自然、意思完整的回复；否则空字符串",
   "voice_call_intent": {{
     "should_invite": false,
     "greeting": "如果邀请被接受，角色想先说的上下文相关短句；没有自然开场就留空",
     "reason": "为什么此刻适合或不适合主动邀请实时语音通话"
   }},
-  "expression_intent": {{"emotion": "可选自然情绪", "emotion_category": "neutral|happy|sad|angry", "voice_style": "neutral|happy|light|sad|angry", "emoji_intent": "可选表情意图", "action_intent": "可选动作意图", "send_emoji": true/false, "reason": "可选理由"}}
+  "expression_intent": {{"channel": "text|voice", "confidence": 0.0, "emotion": "可选自然情绪", "emotion_category": "neutral|happy|sad|angry", "voice_style": "neutral|happy|light|sad|angry", "emoji_intent": "可选表情意图", "action_intent": "可选动作意图", "send_emoji": true/false, "reason": "可选理由"}}
 }}
 
 裁定方式：
 - 先看本地门控与候选消息，再判断 reply、observe 或 wait。
 - benefit、timeliness、continuity、disruption、uncertainty 必须分别填写 0 至 100 的整数；前三项是主动回复收益，后两项是打扰与不确定风险。
 - 只有主动收益确实高于风险时才设 should_reply=true；不值得打扰时选择 observe 或 wait。
-- reply_text 只写一句自然短文本；口吻跟随角色人设和本轮表达约束。
+- reply_text 优先写简短自然的回复，必要的意思说完整，不刻意扩写；口吻跟随角色人设和本轮表达约束。
 - voice_call_intent 默认 should_invite=false。只有私聊、实时通话能力明确可用、角色此刻确实想听对方声音且邀请比继续文字更自然时才设 true；不要因为想延长聊天、模型不知道说什么或为了展示功能而邀请。
 - 主动邀请时，reply_text 要先自然表达想通话的意愿，不要伪装成系统通知；执行层会另外发送邀请提示和链接。greeting 只在这次接通后确实适合先开口时填写，不要固定写“你好，听得到吗”。
 - 群聊、双方可能同处现场、刚刚已经邀请过、深夜打扰风险高或通话能力不可用时，voice_call_intent 必须保持 false。
+{CORE_PROACTIVE_VOICE_RULES}
+{CORE_PROACTIVE_CONTINUITY_RULES}
 - voice_style 必须根据整轮语义直接选择枚举值，不要从 emotion 文本推导；没有明显情绪时使用 neutral。
 - reason 只写相对场景和判断依据，不复述具体日期、钟点或时间轴编号；具体时间只保留在内部证据中。
 - 只输出上面列出的字段，不添加内部过程或发送控制字段。
@@ -452,12 +457,13 @@ MemOS 外部长期记忆参考：
 可自然承接的候选消息：
 {records["candidate_messages"]}
 
-刚才的对话余温（只作氛围参考，不要补答旧消息）：
+最近真实交流（按时间顺序；优先承接最后的话题、情绪和收尾，不重复已答内容）：
 {records["recent_context"]}
 
 闲时发言频率：{scene["frequency"]:.2f}（0 表示几乎不开口，1 表示很愿意自然参与）
 
 实时语音邀请能力：{scene["voice_call_capability"]}
+主动语音消息能力：{scene["voice_message_capability"]}
 
 本轮表达约束：
 - 对方：{scene["audience_name"]}

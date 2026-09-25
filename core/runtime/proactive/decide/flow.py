@@ -369,6 +369,29 @@ class ProactiveFlowMixin:
                         payload, reply_text = self._normalize_proactive_payload(
                             event, readiness, audit.payload
                         )
+            if payload["should_reply"]:
+                recent_messages = await self._read_recent_context_messages(
+                    self._event_session_id(event), limit=12
+                )
+                if recent_messages:
+                    valid, reason = await self._audit_proactive_continuity(
+                        payload=payload,
+                        recent_context=self._format_recent_context_messages(
+                            recent_messages, now=now
+                        ),
+                        provider=provider,
+                        provider_id=provider_id,
+                    )
+                    if not valid:
+                        payload.update({
+                            "should_reply": False,
+                            "decision": "observe",
+                            "reason": reason or "主动回复没有自然承接最近交流",
+                            "reason_code": "continuity_audit_failed",
+                            "reply_text": "",
+                        })
+                        reply_text = ""
+                        self._normalize_proactive_voice_call_intent(event, payload)
             if not payload["should_reply"]:
                 self._update_proactive_air_after_decision(key, payload, now, sent=False)
             await self._record_proactive_decision(

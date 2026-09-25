@@ -8,17 +8,17 @@ from astrbot.api import logger
 from ...clock import now as life_now
 from ...life.appearance import current_appearance_values
 from ...life.condition import format_state_prompt
-from ...life.wardrobe import (
-    format_outfit_component_ledger,
-    format_outfit_components,
-    project_outfit_components_for_scene,
-    scene_category_for_place_kind,
-    outfit_scene_category_label,
-)
 from ...life.tools import (
     build_time_context,
     format_timeline_to_text,
     get_current_timeline_status,
+)
+from ...life.wardrobe import (
+    format_outfit_component_ledger,
+    format_outfit_components,
+    outfit_scene_category_label,
+    project_outfit_components_for_scene,
+    scene_category_for_place_kind,
 )
 from ...sources.history import SavedHistoryReader
 from ..markers import LOG_PREFIX
@@ -78,7 +78,12 @@ class StageFrameMixin:
         )
         component_ledger = format_outfit_component_ledger(projected_components)
         visible_outfit = format_outfit_components(projected_components)
-        if scene_category in {"home", "sleep"} and visible_outfit:
+        if projected_components.get("main_clothing", {}).get("state") in {
+            "worn",
+            "carried",
+            "removed",
+            "staged",
+        }:
             outfit = visible_outfit
         else:
             outfit = appearance["outfit"]

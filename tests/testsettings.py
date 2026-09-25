@@ -73,11 +73,7 @@ class LifeSettingsTest(unittest.TestCase):
             "认真问题、事实解释和情绪支持按内容自然展开，先给判断，再补必要原因。"
         )
         config = LifeSettings.from_dict(
-            {
-                "chat_style_config": {
-                    "casual_short_prompt": prompt
-                }
-            }
+            {"chat_style_config": {"casual_short_prompt": prompt}}
         )
 
         self.assertEqual(config.chat_style.casual_short_prompt, prompt)
@@ -304,7 +300,6 @@ class LifeSettingsTest(unittest.TestCase):
                     "smart_switch_enabled": "false",
                     "smart_switch_probability": "135",
                     "proactive_enabled": "yes",
-                    "proactive_probability": "135",
                     "api_key": "volc-key",
                     "speaker_source": "cloned",
                     "speaker_id": "speaker-1",
@@ -487,7 +482,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertFalse(config.voice_generation.smart_switch_enabled)
         self.assertEqual(config.voice_generation.smart_switch_probability, 100.0)
         self.assertTrue(config.voice_generation.proactive_enabled)
-        self.assertEqual(config.voice_generation.proactive_probability, 100.0)
+        self.assertFalse(hasattr(config.voice_generation, "proactive_probability"))
         self.assertEqual(config.voice_generation.api_key, "volc-key")
         self.assertEqual(config.voice_generation.speaker_source, "cloned")
         self.assertEqual(config.voice_generation.speaker_id, "speaker-1")
@@ -963,11 +958,11 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertEqual(chat_style_items["segment_delay_range"]["default"], "1.5,3.5")
         self.assertIn("发送间隔", chat_style_items["segment_delay_range"]["hint"])
         self.assertIn(
-            "模型语义分段",
+            "不因字数删减原文",
             schema["chat_style_config"]["items"]["casual_max_chars"]["hint"],
         )
         self.assertIn(
-            "模型语义分段",
+            "不因字数删减原文",
             schema["chat_style_config"]["items"]["private_casual_max_chars"]["hint"],
         )
         self.assertEqual(
@@ -1124,7 +1119,7 @@ class LifeSettingsTest(unittest.TestCase):
         )
         self.assertEqual(chat_style_items["proactive_max_chars"]["slider"]["max"], 30)
         self.assertIn(
-            "全局和场景两项里较小的数值", chat_style_items["casual_max_chars"]["hint"]
+            "全局和场景设置中较小的数值", chat_style_items["casual_max_chars"]["hint"]
         )
         self.assertNotIn("LLM", chat_style_items["casual_max_chars"]["hint"])
         self.assertNotIn("后处理", chat_style_items["group_casual_max_chars"]["hint"])
@@ -1285,9 +1280,7 @@ class LifeSettingsTest(unittest.TestCase):
             (seedream_edit_items, "doubao-seedream-4-0-250828"),
         ):
             self.assertEqual(seedream_items["group_name"]["default"], "Seedream")
-            self.assertEqual(
-                seedream_items["model"]["default"], default_model
-            )
+            self.assertEqual(seedream_items["model"]["default"], default_model)
             self.assertEqual(seedream_items["resolution"]["default"], "4K")
             self.assertEqual(seedream_items["aspect_ratio"]["default"], "1:1")
             self.assertIn("1:4", seedream_items["aspect_ratio"]["options"])
@@ -1446,34 +1439,18 @@ class LifeSettingsTest(unittest.TestCase):
                 "hint"
             ],
         )
-        self.assertIn(
+        self.assertNotIn(
             "proactive_probability", schema["voice_generation_config"]["items"]
         )
         self.assertEqual(
             schema["voice_generation_config"]["items"]["proactive_enabled"][
                 "description"
             ],
-            "闲时消息优先语音",
+            "主动消息智能语音",
         )
         self.assertIn(
-            "闲时回复和私聊回访",
+            "表达意图",
             schema["voice_generation_config"]["items"]["proactive_enabled"]["hint"],
-        )
-        self.assertEqual(
-            schema["voice_generation_config"]["items"]["proactive_probability"][
-                "default"
-            ],
-            100,
-        )
-        self.assertEqual(
-            schema["voice_generation_config"]["items"]["proactive_probability"][
-                "slider"
-            ]["max"],
-            100,
-        )
-        self.assertIn(
-            "闲时回复或私聊回访",
-            schema["voice_generation_config"]["items"]["proactive_probability"]["hint"],
         )
         voice_items = schema["voice_generation_config"]["items"]
         self.assertIn("speaker_source", voice_items)
@@ -1677,9 +1654,9 @@ class LifeSettingsTest(unittest.TestCase):
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertIn("version: 1.3.6", metadata)
+        self.assertIn("version: 1.3.7", metadata)
         self.assertIn('astrbot_version: ">=4.26,<5"', metadata)
-        self.assertIn("version-1.3.6", readme)
+        self.assertIn("version-1.3.7", readme)
         self.assertIn("创意衣橱生成", readme)
         self.assertIn("文生图不使用角色参考图", readme)
         self.assertIn("不读取联网灵感或固定风格池", readme)
@@ -1691,6 +1668,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertNotIn("用户明确要求联网寻找灵感时", readme)
         self.assertNotIn("图片 → 创意衣橱", readme)
         self.assertNotIn("SiliconFlow", readme)
+        self.assertIn("v1.3.7 · 2026-09-25", changelog)
         self.assertIn("v1.3.6 · 2026-09-14", changelog)
         self.assertIn("v1.3.5 · 2026-09-13", changelog)
         self.assertIn("v1.3.4 · 2026-09-06", changelog)
@@ -1706,6 +1684,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertIn("v1.2.4 · 2026-08-12", changelog)
         self.assertIn("v1.2.3 · 2026-08-11", changelog)
         self.assertIn("v1.2.2 · 2026-08-09", changelog)
+        self.assertLess(changelog.index("v1.3.7"), changelog.index("v1.3.6"))
         self.assertLess(changelog.index("v1.3.6"), changelog.index("v1.3.5"))
         self.assertLess(changelog.index("v1.3.5"), changelog.index("v1.3.4"))
         self.assertLess(changelog.index("v1.3.4"), changelog.index("v1.3.3"))

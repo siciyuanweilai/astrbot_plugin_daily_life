@@ -143,6 +143,7 @@ class StatusMixin:
 - 这是实时微调，不是重新生成一天。变化要自然、克制，不要大起大落。
 - schedule_replan 默认 should_replan=false 且 replacements 为空。只有下方给出的待处理原因或本轮状态明确使未来锚点不可行时才填写；只能替换给出的未来锚点，不能新增、删除、改写已开始项目，也不能仅为了丰富日程而重排。
 - 根据当前活动、时间、天气、触发信息和原状态推断。
+- 时间轴是安排，时间经过不等于执行完成；只有执行状态 completed 且有执行证据，或本轮明确已发生事实，才能说某事已经做完。不要把未执行计划写成完成事实，也不要用本轮自行生成的 summary 证明计划完成。
 - 体力低时 summary 可以体现“不太想出门/更想低强度互动”；社交意愿低时体现慢热和低负担。
 - mood_score 表示当下心情正向程度，不等同于 emotional_stability；情绪稳定但低落、开心但容易波动都可以存在。
 - stress 是主观压力感，busyness 是客观忙碌度；sleepiness 是实时困倦度，sleep.quality 是昨晚/近期睡眠质量。
@@ -165,6 +166,7 @@ class StatusMixin:
         dynamic = f"""生活日程日期：{data.date or "未知"}
 天气：{data.weather or "未知"}
 当前活动：{activity_text}
+当前活动执行状态：{curr_act.execution_state if curr_act else "未知"}；执行证据：{curr_act.execution_evidence if curr_act else "无"}
 下一项安排：{next_text}
 当前状态：{format_state_prompt(data.state)}
 近期状态变化：
@@ -301,9 +303,7 @@ class StatusMixin:
                 await get_emotion_arcs(limit=4, scope="", include_global=True)
             )
         rhythm_context = ""
-        get_rhythm_trend = getattr(
-            self.archive, "get_physiological_rhythm_trend", None
-        )
+        get_rhythm_trend = getattr(self.archive, "get_physiological_rhythm_trend", None)
         if callable(get_rhythm_trend):
             rhythm_context = self._format_rhythm_trend_for_state_prompt(
                 await get_rhythm_trend(days=7, limit=6)
@@ -375,9 +375,7 @@ class StatusMixin:
             )
         if not significant_change:
             return
-        save_rhythm_log = getattr(
-            self.archive, "save_physiological_rhythm_log", None
-        )
+        save_rhythm_log = getattr(self.archive, "save_physiological_rhythm_log", None)
         if callable(save_rhythm_log):
             rhythm_log = physiological_rhythm_log_from_state(
                 state, date=spec.date_str, source=spec.source
@@ -464,7 +462,9 @@ class StatusMixin:
                     {
                         "trace_id": f"schedule_replan:{data.date}:{spec.now.strftime('%H%M')}",
                         "scope": f"day:{data.date}",
-                        "stage": "committed" if revision.status == "applied" else "rejected",
+                        "stage": "committed"
+                        if revision.status == "applied"
+                        else "rejected",
                         "reason_code": "state_schedule_replan",
                         "decision": revision.status,
                         "evidence": [
@@ -556,9 +556,7 @@ class StatusMixin:
                 ),
             )
         except DayRevisionConflict as exc:
-            logger.debug(
-                f"{LOG_PREFIX} 实时状态结果已过期，保留较新的生活状态：{exc}"
-            )
+            logger.debug(f"{LOG_PREFIX} 实时状态结果已过期，保留较新的生活状态：{exc}")
             return await self.archive.get_day(date_str)
         except Exception as e:
             logger.warning(f"{LOG_PREFIX} 更新实时状态失败：{e}")

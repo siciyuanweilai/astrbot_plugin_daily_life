@@ -6,8 +6,16 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from astrbot.api import logger
+from astrbot.api.message_components import Image
 
 from .markers import LOG_PREFIX
+
+
+@dataclass(slots=True)
+class ContinuousTurnImages:
+    items: list[Any]
+    prepared: list[dict[str, Any]] = field(default_factory=list)
+    ready: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 @dataclass(slots=True)
@@ -19,6 +27,8 @@ class ContinuousTurnBatch:
     phase: str = "collecting"
     messages: list[str] = field(default_factory=list)
     message_ids: list[str] = field(default_factory=list)
+    images: dict[str, ContinuousTurnImages] = field(default_factory=dict)
+    generation_event: Any = None
     wait_seconds: float = 0.0
 
 
@@ -33,6 +43,8 @@ class ContinuousTurnMixin:
     _CONTINUOUS_TURN_STOPPED_ATTR = "_daily_life_continuous_turn_stopped"
     _CONTINUOUS_TURN_WAIT_ATTR = "_daily_life_continuous_turn_wait_seconds"
     _CONTINUOUS_TURN_FOLLOW_UP_ATTR = "_daily_life_continuous_turn_follow_up"
+    _CONTINUOUS_TURN_IMAGES_ATTR = "_daily_life_continuous_turn_images"
+    _CONTINUOUS_TURN_RESTART_ATTR = "_daily_life_continuous_turn_restart"
     _CONTINUOUS_TURN_MAX_MESSAGES = 12
     _CONTINUOUS_TURN_MAX_CHARS = 4000
     _CONTINUOUS_TURN_ACTIVE_SECONDS = 90.0
@@ -81,9 +93,15 @@ class ContinuousTurnMixin:
             return False
         media_checker = getattr(self, "_response_gate_has_media", None)
         if callable(media_checker) and media_checker(event):
-            return False
+            # 普通图片参与图文收束；语音、视频和文件仍由各自入口处理。
+            if any(
+                token in self._event_component_kind(item)
+                for item in self._event_message_items(event)
+                for token in ("record", "voice", "video", "file")
+            ):
+                return False
         text = str(getattr(event, "message_str", "") or "").strip()
-        if not text:
+        if not text and not self._continuous_turn_image_items(event):
             return False
         is_group_checker = getattr(self, "_event_is_group_message", None)
         is_group = (
@@ -93,6 +111,61 @@ class ContinuousTurnMixin:
         return not is_group or bool(
             getattr(style, "continuous_turn_group_enabled", False)
         )
+
+    def _continuous_turn_image_items(self, event: Any) -> list[Any]:
+        return [
+            item
+            for item in self._event_message_items(event)
+            if "image" in self._event_component_kind(item)
+        ]
+
+    def note_continuous_turn_media_ready(self, event: Any) -> None:
+        images = getattr(event, self._CONTINUOUS_TURN_IMAGES_ATTR, None)
+        if not isinstance(images, ContinuousTurnImages) or images.ready.is_set():
+            return
+        prepared = getattr(event, self._PREPARED_VISUAL_MEDIA_ATTR, [])
+        images.prepared = list(prepared) if isinstance(prepared, list) else []
+        # 接管旧事件之前保留固化后的图片，避免框架清理原事件临时文件。
+        images.items = [
+            next(
+                (
+                    Image.fromFileSystem(str(entry["path"]))
+                    for entry in images.prepared
+                    if entry.get("item") is item and entry.get("path")
+                ),
+                item,
+            )
+            for item in images.items
+        ]
+        images.ready.set()
+
+    def _continuous_turn_restart_for_image(self, event: Any) -> None:
+        """框架的运行中续话只接收文字，图片需交给新的完整图文请求。"""
+        current = self._continuous_turn_event_identity(event)
+        if current is None or not self.continuous_turn_event_is_current(event):
+            return
+        batch = self._continuous_turn_batch(current[0], current[1])
+        if batch is None or not batch.images:
+            return
+        source = batch.generation_event
+        identity = self._continuous_turn_event_identity(source)
+        if identity is None or identity[:2] != current[:2] or identity[2] >= current[2]:
+            return
+        # 先标记旧事件，覆盖旧 Runner 尚未注册的窗口。
+        setter = getattr(source, "set_extra", None)
+        if callable(setter):
+            setter("agent_stop_requested", True)
+        self.stop_stale_continuous_turn_event(source)
+        getter = getattr(self, "_active_agent_runner", None)
+        runner = getter(event) if callable(getter) else None
+        runner_event = getattr(
+            getattr(getattr(runner, "run_context", None), "context", None),
+            "event",
+            None,
+        )
+        stopper = getattr(runner, "request_stop", None)
+        if runner_event is source and callable(stopper):
+            stopper()
 
     def _continuous_turn_identity(self, event: Any) -> tuple[str, str]:
         session_getter = getattr(self, "_event_session_id", None)
@@ -250,7 +323,10 @@ class ContinuousTurnMixin:
             and previous.phase in {"collecting", "ready", "generating", "waiting"}
             and now - previous.last_at <= self._CONTINUOUS_TURN_ACTIVE_SECONDS
         )
-        joins_active_generation = bool(active and previous.phase == "generating")
+        image_items = self._continuous_turn_image_items(event)
+        generating = bool(active and previous.phase == "generating")
+        joins_active_generation = generating and not image_items
+        restarts_generation = generating and bool(image_items)
         revision_bucket = revisions.setdefault(scope, {})
         if joins_active_generation:
             revision = previous.revision
@@ -259,11 +335,16 @@ class ContinuousTurnMixin:
             revision_bucket[participant] = revision
         messages = list(previous.messages) if active else []
         message_ids = list(previous.message_ids) if active else []
+        images = dict(previous.images) if active else {}
         message_id = self._continuous_turn_message_id(event)
         text = str(getattr(event, "message_str", "") or "").strip()
         if message_id not in message_ids:
-            messages.append(text)
+            messages.append(text or "[图片]")
             message_ids.append(message_id)
+            if image_items:
+                images[message_id] = ContinuousTurnImages(items=image_items)
+        if message_id in images:
+            setattr(event, self._CONTINUOUS_TURN_IMAGES_ATTR, images[message_id])
         messages, message_ids = self._continuous_turn_trim_messages(
             messages, message_ids
         )
@@ -300,13 +381,18 @@ class ContinuousTurnMixin:
             phase=(previous.phase if joins_active_generation else "collecting"),
             messages=messages,
             message_ids=message_ids,
+            images={key: images[key] for key in message_ids if key in images},
+            generation_event=previous.generation_event if active else None,
         )
         batch_bucket[participant] = batch
         setattr(event, self._CONTINUOUS_TURN_SCOPE_ATTR, scope)
         setattr(event, self._CONTINUOUS_TURN_PARTICIPANT_ATTR, participant)
         setattr(event, self._CONTINUOUS_TURN_REVISION_ATTR, revision)
         setattr(event, self._CONTINUOUS_TURN_DEADLINE_ATTR, batch.deadline)
-        setattr(event, self._CONTINUOUS_TURN_FOLLOW_UP_ATTR, joins_active_generation)
+        setattr(event, self._CONTINUOUS_TURN_FOLLOW_UP_ATTR, generating)
+        setattr(event, self._CONTINUOUS_TURN_RESTART_ATTR, restarts_generation)
+        if restarts_generation:
+            self._continuous_turn_restart_for_image(event)
         self._continuous_turn_metrics["registered"] += 1
         if len(messages) > 1:
             self._continuous_turn_metrics["merged"] += 1
@@ -363,10 +449,13 @@ class ContinuousTurnMixin:
         return True
 
     async def settle_continuous_turn(self, event: Any) -> bool:
+        self.note_continuous_turn_media_ready(event)
         identity = self._continuous_turn_event_identity(event)
         if identity is None:
             return True
-        if self.continuous_turn_event_is_inflight_follow_up(event):
+        if self.continuous_turn_event_is_inflight_follow_up(event) and not bool(
+            getattr(event, self._CONTINUOUS_TURN_RESTART_ATTR, False)
+        ):
             text = str(getattr(event, "message_str", "") or "").strip()
             setattr(
                 event,
@@ -384,6 +473,8 @@ class ContinuousTurnMixin:
         delay = min(wait_seconds, remaining)
         if delay > 0:
             await self._continuous_turn_wait(event, delay)
+        for images in batch.images.values():
+            await images.ready.wait()
         if not self.continuous_turn_event_is_current(event):
             self.stop_stale_continuous_turn_event(event)
             return False
@@ -395,10 +486,29 @@ class ContinuousTurnMixin:
         messages = tuple(item for item in batch.messages if item)
         setattr(event, self._CONTINUOUS_TURN_MESSAGES_ATTR, messages)
         setattr(event, self._CONTINUOUS_TURN_DEADLINE_ATTR, batch.deadline)
+        if len(messages) > 1 and batch.images:
+            # 在框架构建 ProviderRequest 之前合并真实组件，保留平台图片转换流程。
+            chain = getattr(getattr(event, "message_obj", None), "message", None)
+            if isinstance(chain, list):
+                chain[:] = [
+                    item
+                    for item in chain
+                    if "image" not in self._event_component_kind(item)
+                ] + [item for images in batch.images.values() for item in images.items]
+            setattr(
+                event,
+                self._PREPARED_VISUAL_MEDIA_ATTR,
+                [
+                    entry
+                    for images in batch.images.values()
+                    for entry in images.prepared
+                ],
+            )
         if len(messages) > 1:
             logger.debug(
                 f"{LOG_PREFIX} 连续消息已收束：{len(messages)} 条合并为一个话轮。"
             )
+        self._continuous_turn_restart_for_image(event)
         return True
 
     def continuous_turn_messages(self, event: Any) -> tuple[str, ...]:
@@ -461,6 +571,7 @@ class ContinuousTurnMixin:
             batch = self._continuous_turn_batch(identity[0], identity[1])
             if batch is not None and batch.revision == identity[2]:
                 batch.phase = "generating"
+                batch.generation_event = event
         messages = self.continuous_turn_messages(event)
         if len(messages) < 2:
             return True
@@ -484,6 +595,8 @@ class ContinuousTurnMixin:
         batch.phase = "completed"
         batch.messages.clear()
         batch.message_ids.clear()
+        batch.images.clear()
+        batch.generation_event = None
         batch.last_at = time.monotonic()
         self._continuous_turn_metrics["completed"] += 1
         return True

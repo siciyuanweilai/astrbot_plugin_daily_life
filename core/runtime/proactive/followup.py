@@ -11,7 +11,12 @@ from astrbot.api import logger
 
 from ...clock import now as life_now
 from ...models import CommitmentRecord
-from ...prompts import CORE_EMOJI_DELIVERY_RULES, cache_friendly_prompt
+from ...prompts import (
+    CORE_EMOJI_DELIVERY_RULES,
+    CORE_PROACTIVE_CONTINUITY_RULES,
+    CORE_PROACTIVE_VOICE_RULES,
+    cache_friendly_prompt,
+)
 from ...sources.dispatch import PermanentScopeDeliveryError, ScopeDeliveryError
 from ..capture.jsonclean import call_pure_json
 from ..markers import LOG_PREFIX
@@ -359,20 +364,8 @@ class ProactiveFollowupMixin:
         generator = getattr(self, "life_image_generate", None)
         if not callable(generator):
             raise RuntimeError("当前运行时没有可用的图片生成工具")
-        result = await generator(
-            event,
-            f"按这项已到期的拍照承诺，生成并发送一张真实自然的生活照片：{prompt}",
-            subject_route="free",
-        )
-        try:
-            result_payload = json.loads(str(result or ""))
-        except (TypeError, ValueError):
-            result_payload = {}
-        if (
-            not isinstance(result_payload, dict)
-            or result_payload.get("status") != "sent"
-        ):
-            error = str(result or "图片生成或发送未成功").strip()
+
+        async def mark_delivery_failed_on_last_attempt() -> None:
             if int(getattr(task, "attempts", 0) or 0) >= int(
                 getattr(task, "max_attempts", 0) or 0
             ):
@@ -381,6 +374,27 @@ class ProactiveFollowupMixin:
                     "delivery_failed",
                     life_now().isoformat(timespec="seconds"),
                 )
+
+        try:
+            result = await generator(
+                event,
+                f"按这项已到期的拍照承诺，生成并发送一张真实自然的生活照片：{prompt}",
+                subject_route="free",
+            )
+        except Exception:
+            await mark_delivery_failed_on_last_attempt()
+            raise
+        try:
+            result_payload = json.loads(str(result or ""))
+        except (TypeError, ValueError):
+            result_payload = {}
+        if (
+            not isinstance(result_payload, dict)
+            or result_payload.get("status") != "sent"
+            or result_payload.get("media") != "image"
+        ):
+            error = str(result or "图片生成或发送未成功").strip()
+            await mark_delivery_failed_on_last_attempt()
             raise RuntimeError(f"承诺拍照执行失败：{error}")
         await self.archive.set_commitment_status(
             commitment.id, "done", life_now().isoformat(timespec="seconds")
@@ -519,6 +533,8 @@ class ProactiveFollowupMixin:
         if (
             owner != "当前角色"
             or action not in self._FOLLOW_UP_ACTIONS
+            or self._commitment_requests_photo(commitment)
+            or self._commitment_requests_video(commitment)
             or ":GroupMessage:" in scope
             or not scope
             or not commitment.id
@@ -674,16 +690,20 @@ class ProactiveFollowupMixin:
 4. 如果主动动作含 condition 且当前证据不足以确认条件已经成立，返回 should_send=false、settlement=wait，并给出 5 到 60 分钟的 retry_after_minutes；不要提前发送。
 5. 传输会话不代表现实分开。若双方正同处现场且承诺仍需履行，应生成一句面对面直接说出的自然招呼或提醒，不能仅因同处现场静默完成；这时不要使用“发消息、你那边、到哪了、上线”等远程措辞。
 6. 只依据提供的证据，不补造地点、进度或对方反应。
+7. 本通道只发送文字或语音，不发送照片和视频；不能用“照片给你了”“这两张慢慢看”等正文代替媒体投递。需要交付媒体的承诺不得在这里判为已完成。
 
 {CORE_EMOJI_DELIVERY_RULES}
+{CORE_PROACTIVE_VOICE_RULES}
+{CORE_PROACTIVE_CONTINUITY_RULES}
 
 只返回严格 JSON：
-{{"should_send":true,"reply_text":"","reason":"","settlement":"send|wait|already_done|cancelled|superseded|invalid","retry_after_minutes":0,"expression_intent":{{"emotion":"","emotion_category":"","voice_style":"","emoji_intent":"","action_intent":"","send_emoji":false,"reason":""}}}}
+{{"should_send":true,"reply_text":"","reason":"","settlement":"send|wait|already_done|cancelled|superseded|invalid","retry_after_minutes":0,"expression_intent":{{"channel":"text|voice","confidence":0.0,"emotion":"","emotion_category":"","voice_style":"","emoji_intent":"","action_intent":"","send_emoji":false,"reason":""}}}}
 """
         dynamic = f"""当前时间：{now.strftime("%Y-%m-%d %H:%M:%S")}
 当前角色人设：
 {persona or "暂无额外人设。"}
 
+主动语音消息能力：{self._proactive_voice_capability(scope)}
 承诺对象：{target_name}
 已保存承诺：{json.dumps(commitment.as_dict(), ensure_ascii=False)}
 主动动作：{json.dumps(task_payload, ensure_ascii=False)}
@@ -747,6 +767,19 @@ class ProactiveFollowupMixin:
                 commitment.id, "expired", now.isoformat(timespec="seconds")
             )
             return {"outcome": "expired", "reason": "条件承诺已超过有效期"}
+        # Older queued follow-ups may actually owe media, not a text message.
+        media_scheduler = None
+        if self._commitment_requests_photo(commitment):
+            media_scheduler = self.schedule_commitment_photo
+        elif self._commitment_requests_video(commitment):
+            media_scheduler = self.schedule_commitment_video
+        if media_scheduler is not None:
+            scheduled = await media_scheduler(commitment, observed_at=now)
+            return {
+                "outcome": "media_scheduled" if scheduled else "media_pending",
+                "reason": "媒体承诺必须通过实际媒体投递履行",
+                "commitment_id": commitment.id,
+            }
         interaction = await self.resolve_interaction_context(
             target_scope=scope, now=now
         )

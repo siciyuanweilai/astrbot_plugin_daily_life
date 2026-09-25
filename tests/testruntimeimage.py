@@ -30,10 +30,95 @@ from runtimehelpers import (
 
 
 class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTestCase):
+    async def test_historical_image_request_uses_yesterday_daytime_outfit(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.config = LifeSettings.from_dict({})
+        runtime.archive = DataManager()
+        runtime._media_director_current_day = lambda: async_return(
+            (DayRecord(date="2026-06-12"), datetime.datetime(2026, 6, 12, 12, 0), False)
+        )
+        await runtime.archive.save_day(
+            DayRecord(
+                date="2026-06-11",
+                outfit="米白色蕾丝家居服",
+                outfit_history={
+                    "afternoon": "粉色露肩上衣搭配粉色碎花蕾丝半身短裙",
+                    "late_night": "米白色蕾丝家居服",
+                },
+                meta={"hair_style": "高马尾"},
+            )
+        )
+
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
+        event.message_str = "把昨天那套穿搭再现一下"
+        result = await runtime._historical_life_appearance_snapshot("昨天的穿搭")
+
+        self.assertIn("粉色露肩上衣搭配粉色碎花蕾丝半身短裙", result)
+        self.assertNotIn("米白色蕾丝家居服", result)
+
+    async def test_historical_image_request_uses_calendar_yesterday_during_extended_night(
+        self,
+    ):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.config = LifeSettings.from_dict({})
+        runtime.archive = DataManager()
+        runtime._media_director_current_day = lambda: async_return(
+            (DayRecord(date="2026-06-11"), datetime.datetime(2026, 6, 12, 0, 30), True)
+        )
+        await runtime.archive.save_day(
+            DayRecord(
+                date="2026-06-11",
+                outfit="白色睡衣",
+                outfit_history={"evening": "蓝色针织开衫和牛仔裤"},
+            )
+        )
+        await runtime.archive.save_day(
+            DayRecord(
+                date="2026-06-10",
+                outfit="前天穿搭",
+                outfit_history={"afternoon": "前天穿搭"},
+            )
+        )
+
+        result = await runtime._historical_life_appearance_snapshot("昨天的穿搭")
+
+        self.assertIn("蓝色针织开衫和牛仔裤", result)
+        self.assertNotIn("前天穿搭", result)
+
+    async def test_historical_image_request_does_not_lock_current_appearance(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.context = Context(Provider([]))
+        runtime.config = LifeSettings.from_dict({})
+        runtime.archive = DataManager()
+        runtime._current_life_appearance_snapshot = lambda route: async_return(
+            "当前穿搭：浅灰色宽松 T 恤"
+        )
+        runtime._historical_life_appearance_snapshot = lambda request: async_return(
+            "昨日回现穿搭：粉色露肩上衣搭配粉色碎花蕾丝半身短裙"
+        )
+        runtime.media = types.SimpleNamespace(
+            image=types.SimpleNamespace(
+                can_edit_image=lambda: False,
+                first_character_reference_image=lambda: "",
+                generate_image=lambda prompt, **kwargs: async_return(
+                    types.SimpleNamespace(path=Path("life.png"))
+                ),
+            )
+        )
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
+        event.message_str = "把昨天那套穿搭再现一下"
+
+        result = await runtime.life_image_generate(
+            event,
+            "昨天生日外出时的粉色裙装生活照",
+            subject_route="current_character",
+        )
+
+        self.assertEqual(json.loads(result)["status"], "sent")
+
     async def test_life_image_generate_removes_direct_image_tools_after_delivery(self):
         import core.runtime.channel.image as image_module
 
-        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         scope = "aiocqhttp:FriendMessage:10001"
         event = Event(unified_msg_origin=scope)
 
@@ -74,13 +159,17 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
                 ["life_photo_suite_generate"],
             )
 
-    async def test_life_image_generate_suppresses_second_direct_call_in_active_turn(self):
+    async def test_life_image_generate_suppresses_second_direct_call_in_active_turn(
+        self,
+    ):
         import core.runtime.channel.image as image_module
 
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         scope = "aiocqhttp:FriendMessage:10001"
         event = Event(unified_msg_origin=scope)
-        runner = types.SimpleNamespace(_daily_life_direct_image_tools_sent={"life_image_generate"})
+        runner = types.SimpleNamespace(
+            _daily_life_direct_image_tools_sent={"life_image_generate"}
+        )
         old_follow_up = image_module._astrbot_follow_up
         image_module._astrbot_follow_up = types.SimpleNamespace(
             _ACTIVE_AGENT_RUNNERS={scope: runner}
@@ -3276,7 +3365,10 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             all("当前唯一镜头要求" in item["prompt"] for item in person_fallback)
         )
         self.assertTrue(
-            all("不要把其他镜头带入当前画面" in item["prompt"] for item in person_fallback)
+            all(
+                "不要把其他镜头带入当前画面" in item["prompt"]
+                for item in person_fallback
+            )
         )
         self.assertTrue(
             all(
@@ -3692,9 +3784,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertEqual([item["emoji_id"] for item in reaction_calls], [125, 79])
         self.assertLessEqual(max_active, 2)
         shot2_calls = sum(
-            count
-            for prompt, count in prompt_calls.items()
-            if "雨后公园镜头2" in prompt
+            count for prompt, count in prompt_calls.items() if "雨后公园镜头2" in prompt
         )
         self.assertEqual(shot2_calls, 2, prompt_calls)
         manifests = list(
@@ -3716,7 +3806,10 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(runtime.context.sent_messages, [])
         first_messages = event.sent_messages[:3]
         self.assertEqual(
-            [[Path(item["file"]).name for item in chain.items] for chain in first_messages],
+            [
+                [Path(item["file"]).name for item in chain.items]
+                for chain in first_messages
+            ],
             [["01.png"], ["03.png"], ["04.png"]],
         )
 
@@ -3998,7 +4091,9 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertTrue(runtime.suppress_photo_suite_agent_error(event))
         self.assertIsNone(event.get_result())
 
-    async def test_photo_suite_agent_done_error_is_suppressed_before_result_exists(self):
+    async def test_photo_suite_agent_done_error_is_suppressed_before_result_exists(
+        self,
+    ):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
         task_dir = Path(tempfile.mkdtemp())

@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from typing import Any
 
@@ -236,6 +237,70 @@ class CommitmentArchiveMixin:
             return [self._compose_commitment(row) for row in rows]
 
         return await self._run_db(dbwork)
+
+    async def get_open_commitments_for_scope(
+        self, scope: str, before_date: str, limit: int = 80
+    ) -> list[CommitmentRecord]:
+        def read():
+            rows = self._conn.execute(
+                """SELECT * FROM commitments WHERE source_session = ?
+                AND status IN ('active', 'scheduled', 'pending')
+                AND (trigger_date = '' OR trigger_date <= ?)
+                ORDER BY trigger_date DESC, id DESC LIMIT ?""",
+                (scope, before_date, max(1, min(200, int(limit)))),
+            ).fetchall()
+            return [self._compose_commitment(row) for row in rows]
+
+        return await self._run_db(read)
+
+    async def complete_simulated_commitment(
+        self,
+        commitment_id: int,
+        *,
+        scope: str,
+        when: str,
+        evidence: str,
+        source_id: str,
+    ) -> bool:
+        """Atomically close an evidenced virtual action; never complete media delivery."""
+        if not scope or not evidence or not source_id:
+            return False
+
+        def write():
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                cursor = self._conn.execute(
+                    """UPDATE commitments SET status = 'done', completed_at = ?
+                    WHERE id = ? AND source_session = ? AND owner = '当前角色'
+                    AND media_kind IN ('', 'none') AND kind = 'plan'
+                    AND status IN ('active', 'scheduled', 'pending')
+                    AND (trigger_date = '' OR trigger_date <= ?)""",
+                    (when, int(commitment_id), scope, when[:10]),
+                )
+                changed = cursor.rowcount > 0
+                if changed:
+                    self._conn.execute(
+                        "UPDATE conversation_action_items SET status = 'done', updated_at = CURRENT_TIMESTAMP WHERE commitment_id = ?",
+                        (int(commitment_id),),
+                    )
+                    self._conn.execute(
+                        """INSERT INTO decision_traces(trace_id, scope, stage, reason_code, decision, evidence_json, outcome)
+                        VALUES (?, ?, 'completed', 'virtual_action_evidence', 'done', ?, ?)
+                        ON CONFLICT(trace_id, stage) DO NOTHING""",
+                        (
+                            f"commitment:{commitment_id}",
+                            scope,
+                            json.dumps([evidence, source_id], ensure_ascii=False),
+                            "依据已发送的角色行动完成陈述同步虚拟承诺",
+                        ),
+                    )
+                self._conn.commit()
+                return changed
+            except Exception:
+                self._conn.rollback()
+                raise
+
+        return await self._run_db(write)
 
     async def set_commitment_status(
         self, commitment_id: int, status: str, when: str = ""

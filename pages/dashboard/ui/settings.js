@@ -342,7 +342,6 @@ const CONFIG_SECTION_FIELD_GROUPS = new Map([
         "voice_generation_config.smart_switch_enabled",
         "voice_generation_config.smart_switch_probability",
         "voice_generation_config.proactive_enabled",
-        "voice_generation_config.proactive_probability",
         "voice_generation_config.api_key",
         "voice_generation_config.speaker_source",
         "voice_generation_config.speaker_id",

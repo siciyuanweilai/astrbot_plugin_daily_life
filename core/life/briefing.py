@@ -3,6 +3,7 @@ import datetime
 from astrbot.api import logger
 
 from ..models import CommitmentRecord
+from .appearance import reference_outfit
 from .surroundings import (
     choose_place_candidates,
     format_world_prompt,
@@ -66,7 +67,9 @@ class DailyBriefingMixin:
             "暂无可参考的近期生活记录。请根据角色人设、天气、聊天记忆、承诺和当前指令自主决定，不需要套用固定模板。"
         )
 
-    async def _build_previous_life_context(self, date: datetime.datetime) -> str:
+    async def _build_previous_life_context(
+        self, date: datetime.datetime, *, include_outfit: bool = True
+    ) -> str:
         previous_str = (date - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
         previous_day = await self.archive.get_day(previous_str)
         if not previous_day:
@@ -86,12 +89,19 @@ class DailyBriefingMixin:
         timeline_hint = (
             previous_day.timeline[-1].activity[:80] if previous_day.timeline else ""
         )
+        previous_outfit, outfit_period = reference_outfit(previous_day)
+        outfit_text = (
+            f"\n- 昨日代表穿搭（{outfit_period or '白天记录'}）：{previous_outfit}"
+            if include_outfit and previous_outfit
+            else ""
+        )
         return (
             "\n\n## 🌙 昨日状态参考"
             f"\n- 昨日生活模式：{meta.get('life_mode') or meta.get('schedule_intent') or '未知'}"
             f"\n- 昨日最后片段：{timeline_hint or '无'}"
+            f"{outfit_text}"
             f"{sleep_text}"
-            "\n这些只是连续生活参考，不强制延续。"
+            "\n穿搭历史只在用户明确回现某一日期或时段时查询；今天穿什么以已经发生的状态为准。"
         )
 
     async def _build_history_schedule_summary(self, date: datetime.datetime) -> str:

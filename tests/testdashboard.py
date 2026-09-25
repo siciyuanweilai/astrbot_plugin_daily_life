@@ -11,6 +11,7 @@ import zipfile
 from contextlib import asynccontextmanager
 from io import BytesIO
 from pathlib import Path
+from unittest.mock import patch
 
 from core.interface.portal import entry as portal_entry
 from core.interface.portal.entry import PortalBaseMixin
@@ -1638,6 +1639,7 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn("target", status["memo"])
         self.assertNotIn("tomorrow", status["memo"])
+
         self.assertNotIn("display_label", status["memo"])
         self.assertEqual(status["week_plan"]["theme"], "慢生活周")
         self.assertEqual(status["world"]["relationships"][0]["name"], "阿林")
@@ -1705,6 +1707,22 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
         health_checks = status["experience"]["health"]["checks"]
         health_labels = [item["label"] for item in health_checks]
         self.assertEqual(len(health_labels), len(set(health_labels)))
+
+    async def test_page_status_wait_resyncs_when_runtime_version_rewinds(self):
+        async def rewound_version(_since, _timeout):
+            return 0
+
+        self.plugin.runtime.wait_page_status_changed = rewound_version
+        with patch.object(portal_entry, "_quart_has_request_context", lambda: True), patch.object(
+            portal_entry,
+            "_quart_request",
+            types.SimpleNamespace(args={"since": "7", "timeout": "1"}),
+        ):
+            result = await self.plugin.page_status_wait()
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["data"]["changed"])
+        self.assertEqual(result["data"]["day"]["date"], "2026-06-11")
 
     async def test_page_domain_actions_use_contact_and_group_display_names(self):
         class Resolver:

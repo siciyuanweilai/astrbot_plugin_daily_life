@@ -549,6 +549,11 @@ async function watchStatusOnce() {
       _ts: Date.now(),
     });
     if (data.changed) applyStatus(data);
+    // A plugin reload resets the server-side counter. If an older server did
+    // not return a snapshot for that reset, fetch the complete status now.
+    else if (Number(data.status_version || 0) < statusVersion()) {
+      await loadStatus({ quiet: true });
+    }
     scheduleStatusWatch(0);
   } catch (_error) {
     scheduleStatusWatch(STATUS_RETRY_DELAY_MS);

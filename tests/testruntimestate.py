@@ -53,11 +53,15 @@ class RuntimeStateTest(unittest.TestCase):
         self.assertIn("</daily_life>", text)
         self.assertIn("[HiddenActivityHint]", text)
         self.assertIn("[HiddenContextRules]", text)
-        self.assertIn("隐藏上下文只用于保持角色处境", text)
+        self.assertIn("不必等用户明确询问", text)
+        self.assertIn("计划、旧记录和生成候选不能说成已经发生", text)
+        self.assertNotIn("禁止主动介绍", text)
+        self.assertNotIn("否则禁止主动提及", text)
+        self.assertIn("隐藏上下文用于保持角色处境", text)
         self.assertIn("[HiddenScheduleWindow]", text)
         self.assertIn("全天索引", text)
         self.assertNotIn("[HiddenScheduleMemory]", text)
-        self.assertEqual(text.count("隐藏上下文只用于保持角色处境"), 1)
+        self.assertEqual(text.count("隐藏上下文用于保持角色处境"), 1)
         self.assertNotIn("<expression_channel>", text)
 
     def test_event_helpers_unwrap_tool_context_event(self):

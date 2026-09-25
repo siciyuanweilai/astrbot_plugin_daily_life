@@ -131,12 +131,14 @@ class SavedHistoryReader:
                 return []
 
             cutoff = self._cutoff_ts(hours)
-            window = raw_history[-(max_count + 5) :]
-            messages = [
-                msg
-                for msg in (self._normalize_conversation_item(item) for item in window)
-                if msg and self._within_cutoff(msg.get("timestamp", ""), cutoff)
-            ]
+            messages = []
+            for item in reversed(raw_history):
+                msg = self._normalize_conversation_item(item)
+                if msg and self._within_cutoff(msg.get("timestamp", ""), cutoff):
+                    messages.append(msg)
+                    if len(messages) >= max_count:
+                        break
+            messages.reverse()
             if messages:
                 logger.debug(
                     f"{self.log_prefix} 已读取会话保存的聊天历史：{target_umo}（{len(messages)} 条消息）"
@@ -183,6 +185,8 @@ class SavedHistoryReader:
             return None
 
         role = str(item.get("role") or item.get("type") or "user").lower()
+        if role in ("system", "developer", "tool", "function"):
+            return None
         if role not in ("user", "assistant"):
             role = "assistant" if role in ("ai", "bot") else "user"
 

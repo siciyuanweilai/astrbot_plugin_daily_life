@@ -955,7 +955,7 @@ class RuntimeProactiveAsyncTest(
             "我困啦",
             "闲时回复发送失败",
             send_payload={
-                "expression_intent": {"emotion": "困倦", "emotion_category": "neutral"}
+                "expression_intent": {"channel": "voice", "confidence": 0.9, "reason": "想轻声道晚安，对方方便听", "emotion": "困倦", "emotion_category": "neutral"}
             },
         )
 
@@ -974,7 +974,9 @@ class RuntimeProactiveAsyncTest(
         self.assertEqual(await runtime.archive.get_recent_action_decisions(3), [])
 
     async def test_proactive_voice_failure_falls_back_to_text(self):
+        voice_attempts = []
         async def fail_voice(*args, **kwargs):
+            voice_attempts.append(args[0])
             raise RuntimeError("语音服务暂时不可用")
 
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
@@ -1006,16 +1008,17 @@ class RuntimeProactiveAsyncTest(
             "我困啦",
             "闲时回复发送失败",
             send_payload={
-                "expression_intent": {"emotion": "困倦", "emotion_category": "neutral"}
+                "expression_intent": {"channel": "voice", "confidence": 0.9, "reason": "想轻声道晚安，对方方便听", "emotion": "困倦", "emotion_category": "neutral"}
             },
         )
 
+        self.assertEqual(voice_attempts, ["我困啦"])
         self.assertTrue(sent)
         self.assertEqual(len(runtime.context.sent_messages), 1)
         self.assertEqual(runtime.context.sent_messages[0][1].items, ["我困啦"])
         self.assertEqual(await runtime.archive.get_recent_action_decisions(3), [])
 
-    async def test_proactive_voice_sends_when_enabled(self):
+    async def test_proactive_voice_without_intent_keeps_text(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.context = Context(Provider([]))
         runtime.config = LifeSettings.from_dict(
@@ -1053,14 +1056,9 @@ class RuntimeProactiveAsyncTest(
         )
 
         self.assertTrue(sent)
-        self.assertEqual(voice_calls, ["我困啦"])
+        self.assertEqual(voice_calls, [])
         self.assertEqual(len(runtime.context.sent_messages), 1)
-        self.assertTrue(
-            any(
-                getattr(item, "file", "") == "voice.mp3"
-                for item in runtime.context.sent_messages[0][1].items
-            )
-        )
+        self.assertEqual(runtime.context.sent_messages[0][1].items, ["我困啦"])
         self.assertEqual(await runtime.archive.get_recent_action_decisions(3), [])
 
     async def test_directed_detection_ignores_listener_wake_flag(self):
@@ -1409,7 +1407,7 @@ class RuntimeProactiveAsyncTest(
         self.assertLess(
             prompt.index("角色人设摘要"), prompt.index("此刻日期时间：2026-05-24 12:00")
         )
-        self.assertIn("刚才的对话余温（只作氛围参考，不要补答旧消息）", prompt)
+        self.assertIn("最近真实交流（按时间顺序；优先承接最后的话题、情绪和收尾，不重复已答内容）", prompt)
         self.assertIn("阿林: 这周末要不要去看展？", prompt)
         self.assertIn("我: 可以呀，我想看看时间。", prompt)
         self.assertIn("阿林: 我比较想下午去。", prompt)
@@ -2557,6 +2555,39 @@ class RuntimeProactiveAsyncTest(
         self.assertEqual(
             await runtime._response_gate_relationship_delta(unknown, now, []), 0.0
         )
+
+    async def test_response_gate_keeps_semantic_wait_after_multiple_messages(self):
+        for pending_count, rounds in [(3, 0), (1, 2), (6, 4)]:
+            with self.subTest(pending_count=pending_count, rounds=rounds):
+                runtime, provider = self._make_proactive_runtime([
+                    '{"action":"wait","confidence":0.95,"reason":"对方还有补充"}'
+                ])
+                runtime._init_response_gate_state()
+                event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
+                event.message_str = "最后还有一部分没说完"
+                decision = await runtime._response_gate_semantic_decision(
+                    event, score=0.8, reasons=[], pending_count=pending_count,
+                    wait_state={"rounds": rounds, "messages": ["先等我讲完整件事", "第一部分", "第二部分", "第三部分"]},
+                )
+                self.assertEqual(decision["action"], "wait")
+                self.assertIn("先等我讲完整件事", provider.prompts[0])
+                self.assertIn("最后还有一部分没说完", provider.prompts[0])
+
+    async def test_response_gate_wait_history_keeps_full_bounded_turn(self):
+        runtime, _ = self._make_proactive_runtime([])
+        runtime._init_response_gate_state()
+        now = datetime.datetime(2026, 9, 19, 12, 0)
+        messages = [f"第{i}段补充" for i in range(6)]
+        for message in messages:
+            runtime._response_gate_mark_wait("scope", now, message_text=message)
+        state = runtime._response_gate_wait_state("scope", now)
+        self.assertEqual(state["messages"], messages)
+        self.assertEqual(state["rounds"], 6)
+        for _ in range(20):
+            runtime._response_gate_mark_wait("scope", now, message_text="长内容" * 1000)
+        state = runtime._response_gate_wait_state("scope", now)
+        self.assertLessEqual(len(state["messages"]), 12)
+        self.assertLessEqual(sum(map(len, state["messages"])), 4000)
 
     async def test_response_gate_semantic_wait_uses_accumulated_messages(self):
         runtime, provider = self._make_proactive_runtime(
@@ -4113,7 +4144,8 @@ class RuntimeProactiveAsyncTest(
         self.assertIn("在糖水铺吃糖水、翻看刚拍的照片", decision_prompt)
         self.assertIn("21:30 回到家洗澡", decision_prompt)
         self.assertIn("回家洗完澡后叫对方", decision_prompt)
-        self.assertIn("本轮发送能力：仅文字", audit_prompt)
+        self.assertIn("候选回复可按表达意图以文字或语音送达", audit_prompt)
+        self.assertIn("目前尚未发送，也没有附带图片、视频或文件", audit_prompt)
         self.assertIn("照片发你啦，我洗好了，该你去啦。", audit_prompt)
 
     async def test_private_revisit_continuity_audit_allows_grounded_question(self):
@@ -4211,7 +4243,7 @@ class RuntimeProactiveAsyncTest(
             message.sender_card = "阿林"
             return True, "候选本身没有事实冲突"
 
-        runtime._audit_private_revisit_continuity = audit_with_new_message
+        runtime._audit_proactive_continuity = audit_with_new_message
         now = datetime.datetime(2026, 7, 30, 21, 0)
 
         with patch("core.runtime.proactive.revisit.life_now", return_value=now):
@@ -4225,56 +4257,29 @@ class RuntimeProactiveAsyncTest(
             runtime._proactive_lifecycle_snapshot(target)["state"], "interrupted"
         )
 
-    async def test_private_revisit_respects_chat_style_length_budget(self):
-        runtime, provider = self._make_proactive_runtime(
-            [
-                json.dumps(
-                    {
-                        "should_reply": True,
-                        "confidence": 0.95,
-                        "decision": "reply",
-                        "reason": "关系里有自然回访点",
-                        "reply_text": "刚才那张图你是认真的吗，我看那厚度顶多也就是你半个钱包的距离。",
-                        "memory_note": "主动回访图片话题",
-                    },
-                    ensure_ascii=False,
-                )
-            ],
-            provider_id="proactive-model",
+    async def test_private_revisit_does_not_reject_complete_message_for_length(self):
+        runtime, _ = self._make_proactive_runtime([])
+        runtime.config.chat_style.casual_max_chars = 10
+        runtime.config.chat_style.private_casual_max_chars = 10
+        runtime.config.chat_style.proactive_max_chars = 10
+        reply = "刚才你说那件事的时候有点失落，我还记着。现在感觉好些了吗？不想细说也没关系，我陪你待一会儿。"
+        payload = {
+            "should_reply": True, "confidence": 0.95, "decision": "reply",
+            "reason": "关系里有自然回访点", "reply_text": reply,
+            "benefit": 90, "timeliness": 90, "continuity": 90,
+            "disruption": 10, "uncertainty": 10,
+        }
+        result = runtime._private_revisit_normalize_payload(
+            dict(payload), target_scope="aiocqhttp:FriendMessage:10001",
+            revisit_evidence={"can_revisit": True},
         )
-        runtime.config = LifeSettings.from_dict(
-            {
-                "chat_style_config": {
-                    "casual_max_chars": 10,
-                    "private_casual_max_chars": 10,
-                    "proactive_max_chars": 10,
-                },
-                "proactive_config": {
-                    "provider": "proactive-model",
-                    "private_revisit_enabled": True,
-                    "revisit_min_confidence": 0.8,
-                },
-            }
+        self.assertTrue(result["should_reply"])
+        self.assertEqual(result["reply_text"], reply)
+        declined = runtime._private_revisit_normalize_payload(
+            dict(payload), target_scope="aiocqhttp:FriendMessage:10001",
+            revisit_evidence={"can_revisit": False, "reason": "没有回访依据"},
         )
-        runtime.archive = DataManager()
-        runtime._proactive_last_reply_at = {}
-        runtime._proactive_private_last_revisit_at = {}
-        await runtime.archive.touch_relationship(
-            "10001",
-            name="阿林",
-            note="刚才发了一张调侃图片",
-            date_str="2026-05-24",
-            platform="aiocqhttp",
-            user_id="10001",
-            contact_type="friend",
-            target_scope="aiocqhttp:FriendMessage:10001",
-        )
-
-        await runtime.evaluate_private_revisit_candidates()
-
-        self.assertEqual(runtime.context.sent_messages, [])
-        self.assertIn("聊天表达设置", provider.prompts[0])
-        self.assertIn("私聊主动消息参考长度约 10 字左右", provider.prompts[0])
+        self.assertFalse(declined["should_reply"])
 
     async def test_private_revisit_prompt_includes_recent_private_context(self):
         runtime, provider = self._make_proactive_runtime(

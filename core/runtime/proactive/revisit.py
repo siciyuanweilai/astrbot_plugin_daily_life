@@ -8,7 +8,8 @@ from ...clock import now as life_now
 from ...life.condition import format_state_prompt, normalize_state
 from ...life.people import PROACTIVE_PERSON_TEXT_PATHS
 from ...prompts import (
-    CORE_EMOJI_DELIVERY_RULES,
+    CORE_PROACTIVE_VOICE_RULES,
+    CORE_PROACTIVE_CONTINUITY_RULES,
     CORE_HIDDEN_CONTEXT_RULES,
     CORE_JSON_OUTPUT_RULES,
     CORE_PERSONA_PRONOUN_RULES,
@@ -238,85 +239,6 @@ class ProactiveRevisitMixin:
             day or commitments or interaction_context.has_authoritative_mode
         )
 
-    async def _audit_private_revisit_continuity(
-        self,
-        *,
-        payload: dict[str, Any],
-        recent_context: str,
-        life_context: str,
-        provider: Any,
-        provider_id: str,
-    ) -> tuple[bool, str]:
-        """根据时间与运行时事实依据校验候选回复中的断言。
-
-        Args:
-            payload: 规范化后的私聊回访决策。
-            recent_context: 带时间信息的近期对话依据。
-            life_context: 当前日程、状态和约定依据。
-            provider: 用于审计的文本模型提供商。
-            provider_id: 配置的模型提供商标识。
-
-        Returns:
-            候选回复是否有事实依据，以及审计理由。
-        """
-        fixed = f"""审计一条待发送的私聊回访是否符合当前事实与时间连续性。
-只核对事实，不评价文风、关系亲疏或是否有趣。
-
-JSON 输出要求：
-{CORE_JSON_OUTPUT_RULES}
-
-{CORE_EMOJI_DELIVERY_RULES}
-
-只输出 JSON：
-{{"valid": true, "reason": "简短结论", "conflicts": ["不一致事实"]}}
-
-审计原则：
-- 区分已经发生、正在发生、未来计划、承诺和推测，不得把计划或承诺当作已经完成。
-- 涉及当前地点、当前动作、动作完成、状态变化或物品状态的断言，必须有当前生活事实或带时间消息直接支持。
-- 旧消息中的媒体记录只证明当时发送过媒体；本轮发送能力为纯文本，不能暗示本轮刚附带或重新发送了媒体。
-- 近期对话中的旧回复也可能有误；与当前结构化生活事实冲突时，以当前结构化事实为准。
-- 纯问候、开放式提问或不改变事实的自然承接，在没有冲突时可以通过。
-- 任一可见断言缺少证据或与证据冲突时 valid=false；不要替候选补造经过。
-"""
-        dynamic = f"""候选理由：{str(payload.get("reason") or "").strip()}
-候选回复：{str(payload.get("reply_text") or "").strip()}
-本轮发送能力：仅文字；没有执行图片、语音、视频或文件发送。
-
-带时间的近期私聊：
-{recent_context}
-
-当前结构化生活事实：
-{life_context}"""
-        prompt = cache_friendly_prompt(
-            fixed, dynamic, dynamic_title="私聊回访连续性审计资料"
-        )
-        session_id = f"daily_life_revisit_continuity_{uuid.uuid4().hex[:8]}"
-        try:
-            audit = await call_pure_json(
-                self,
-                provider,
-                prompt,
-                session_id,
-                primary_provider_id=provider_id,
-                strict=True,
-                validator=lambda value: {
-                    **value,
-                    "valid": value.get("valid") is True,
-                    "reason": str(value.get("reason") or "").strip(),
-                    "conflicts": value.get("conflicts")
-                    if isinstance(value.get("conflicts"), list)
-                    else [],
-                },
-                fallback={"valid": False, "reason": "模型未给出严格审计结果", "conflicts": []},
-            )
-            if not isinstance(audit, dict) or not isinstance(audit.get("valid"), bool):
-                return False, "连续性审计未返回有效结果"
-            return bool(audit["valid"]), str(audit.get("reason") or "").strip()[:240]
-        except Exception as exc:
-            return False, f"连续性审计失败：{str(exc)[:180]}"
-        finally:
-            await self.close_text_session(session_id)
-
     async def _private_revisit_expression_context(
         self,
         target_scope: str,
@@ -385,7 +307,7 @@ JSON 输出要求：
             f"- 私聊回访参考长度为 {expression_limit} 字左右；这是表达节奏参考，不是硬截断。"
             if chat_style_enabled and expression_limit > 0
             else (
-                "- 私聊回访保持一句完整、自然的问候，不额外套用聊天表达长度。"
+                "- 私聊回访保持完整、自然的表达，不额外套用聊天表达长度。"
                 if not chat_style_enabled
                 else ""
             )
@@ -421,20 +343,22 @@ JSON 输出要求：
   "uncertainty": 0,
   "decision": "reply|observe|wait|skip",
   "reason": "为什么此刻适合或不适合发起私聊回访",
-  "reply_text": "一句自然、短、像真人的私聊问候",
-  "expression_intent": {{"emotion": "可选自然情绪", "emotion_category": "neutral|happy|sad|angry", "voice_style": "neutral|happy|light|sad|angry", "emoji_intent": "可选表情意图", "action_intent": "可选动作意图", "send_emoji": true/false, "reason": "可选理由"}}
+  "reply_text": "简短自然、意思完整的私聊问候或话题延续",
+  "expression_intent": {{"channel": "text|voice", "confidence": 0.0, "emotion": "可选自然情绪", "emotion_category": "neutral|happy|sad|angry", "voice_style": "neutral|happy|light|sad|angry", "emoji_intent": "可选表情意图", "action_intent": "可选动作意图", "send_emoji": true/false, "reason": "可选理由"}}
 }}
 裁定方式：
 - 先看“回访依据”，判断 reply、observe、wait 或 skip。
 - benefit、timeliness、continuity、disruption、uncertainty 必须分别填写 0 至 100 的整数；前三项是回访收益，后两项是打扰与不确定风险。
 - 只有回访收益确实高于风险时才设 should_reply=true；不值得打扰时选择 observe 或 wait。
-- reply_text 只写一句自然短问候，{expression_guidance}
+- reply_text 优先写简短自然的问候或话题延续，必要的意思说完整，不刻意扩写，{expression_guidance}
+{CORE_PROACTIVE_VOICE_RULES}
+{CORE_PROACTIVE_CONTINUITY_RULES}
 - voice_style 必须根据整轮语义直接选择枚举值，不要从 emotion 文本推导；没有明显情绪时使用 neutral。
 {expression_limit_line}
 - reason 只写相对场景和判断依据，不复述具体日期、钟点或时间轴编号；具体时间只保留在内部证据中。
 - 近期消息必须按其明确时间理解；旧照片、旧回复或未来约定不能表述成刚发生或已经完成。
 - 只有“当前生活事实”明确支持时，才能断言当前地点、当前动作、动作完成或状态变化。
-- 本轮可见文字只写 reply_text；如果 expression_intent.send_emoji=true，执行层会在文字成功投递后独立尝试发送一张已有表情，但不保证一定有合适素材。reply_text 不得声称本轮已经附带、补发或重新发送任何媒体。
+- 本轮可见回复只写 reply_text；如果 expression_intent.send_emoji=true，执行层会在文字成功投递后独立尝试发送一张已有表情，但不保证一定有合适素材。reply_text 不得声称本轮已经附带、补发或重新发送任何媒体。
 - 只输出上面列出的字段，不添加内部过程或发送控制字段。
 """
         dynamic = f"""角色人设摘要：
@@ -459,7 +383,8 @@ JSON 输出要求：
 当前生活事实：
 {life_context}
 
-本轮发送能力：先发送 reply_text 文字；若表达裁定明确需要表情，执行层再从现有素材中独立选择一张，找不到合适素材时保持文字结果。
+主动语音消息能力：{self._proactive_voice_capability(target_scope)}
+本轮发送能力：按表达意图发送 reply_text 文字或语音。文字发送成功后若需要表情，再从现有素材中选择一张；语音成功后不重复发送文字。
 
 外部长期记忆参考：
 {memory_context["memos_context"] or "暂无外部长期记忆参考。"}
@@ -513,16 +438,12 @@ JSON 输出要求：
         utility, utility_valid = self._normalize_proactive_utility(
             payload, confidence=confidence
         )
-        style_reject_reason = self._proactive_reply_style_reject_reason(
-            target_scope, reply_text
-        )
         should_reply = (
             requested
             and confidence >= self.config.proactive.revisit_min_confidence
             and expression_passed
             and bool(reply_text)
             and bool(revisit_evidence["can_revisit"])
-            and not style_reject_reason
             and utility_valid
             and utility >= self._PROACTIVE_UTILITY_THRESHOLD
         )
@@ -539,10 +460,6 @@ JSON 输出要求：
             reason_code = "invalid_utility_scores"
         elif utility < self._PROACTIVE_UTILITY_THRESHOLD:
             reason_code = "utility_below_threshold"
-        if style_reject_reason:
-            payload["decision"] = "observe"
-            payload["reason"] = style_reject_reason
-            reason_code = "style_rejected"
         if not revisit_evidence["can_revisit"]:
             payload["decision"] = "observe"
             payload["reason"] = payload.get("reason") or revisit_evidence["reason"]
@@ -722,18 +639,14 @@ JSON 输出要求：
                 latest_life_evidence,
             ) = await self._private_revisit_life_context(target_scope, now)
             if (
-                life_evidence_available
+                latest_messages
+                or life_evidence_available
                 or latest_life_evidence
-                or any(
-                    str(item.get("timestamp") or "").strip()
-                    or str(item.get("media") or "").strip()
-                    for item in latest_messages
-                )
             ):
                 (
                     continuity_valid,
                     continuity_reason,
-                ) = await self._audit_private_revisit_continuity(
+                ) = await self._audit_proactive_continuity(
                     payload=normalized,
                     recent_context=latest_recent_context,
                     life_context=latest_life_context,

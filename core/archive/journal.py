@@ -538,6 +538,22 @@ class DayArchiveMixin:
 
         return await self._run_db(read)
 
+    async def get_recent_appearance_days(
+        self, before_date: str, limit: int = 30
+    ) -> list[DayRecord]:
+        def read():
+            rows = self._conn.execute(
+                "SELECT date FROM days WHERE date <= ? ORDER BY date DESC LIMIT ?",
+                (before_date, max(1, min(90, int(limit)))),
+            ).fetchall()
+            return [
+                day
+                for row in rows
+                if (day := self._get_day_unlocked(row["date"])) is not None
+            ]
+
+        return await self._run_db(read)
+
     async def save_day(self, day: DayRecord, *, replace: bool = False) -> DayRecord:
         """保存每日生活记录，并合并基于旧版本产生的非冲突改动。"""
 

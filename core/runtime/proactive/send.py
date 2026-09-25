@@ -1,4 +1,4 @@
-import random
+import math
 from pathlib import Path
 from typing import Any
 
@@ -199,6 +199,22 @@ class ProactiveSendMixin:
                 )
             )
 
+    def _proactive_voice_available(self, target_scope: str) -> bool:
+        config = getattr(self.config, "voice_generation", None)
+        service = getattr(getattr(self, "media", None), "voice", None)
+        return bool(
+            config
+            and config.enabled
+            and config.proactive_enabled
+            and self._voice_allowed_for_scope(target_scope)
+            and callable(getattr(service, "synthesize", None))
+        )
+
+    def _proactive_voice_capability(self, target_scope: str) -> str:
+        if self._proactive_voice_available(target_scope):
+            return "可用；是否使用由本轮表达意图和收听情境决定，不代表必须发语音"
+        return "不可用；expression_intent.channel 必须选择 text"
+
     async def _send_proactive_voice_if_enabled(
         self,
         target_scope: str,
@@ -208,30 +224,30 @@ class ProactiveSendMixin:
         source_event: Any = None,
         source_message_id: str = "",
     ) -> bool:
-        voice_config = getattr(self.config, "voice_generation", None)
+        if not self._proactive_voice_available(target_scope):
+            return False
+        intent = payload.get("expression_intent") if isinstance(payload, dict) else None
+        if not isinstance(intent, dict) or intent.get("channel") != "voice":
+            return False
+        raw_confidence = intent.get("confidence")
+        if isinstance(raw_confidence, bool):
+            return False
+        try:
+            confidence = float(raw_confidence)
+        except (TypeError, ValueError):
+            return False
+        reason = str(intent.get("reason") or "").strip()
         if (
-            not voice_config
-            or not voice_config.enabled
-            or not voice_config.proactive_enabled
+            not math.isfinite(confidence)
+            or not self._VOICE_SWITCH_MIN_NATURAL_SCORE <= confidence <= 1.0
+            or not reason
+            or self._voice_switch_structural_text_reason(reply_text)
         ):
             return False
-        if not self._voice_allowed_for_scope(target_scope):
-            return False
-        if not self._proactive_voice_probability_hit(voice_config):
-            return False
-        media = getattr(self, "media", None)
-        voice_service = getattr(media, "voice", None)
-        if not voice_service:
-            return False
-        emotion = ""
-        emotion_category = ""
-        voice_style = ""
-        if isinstance(payload, dict):
-            intent = payload.get("expression_intent")
-            if isinstance(intent, dict):
-                emotion = str(intent.get("emotion") or "").strip()
-                emotion_category = str(intent.get("emotion_category") or "").strip()
-                voice_style = str(intent.get("voice_style") or "").strip().lower()
+        voice_service = self.media.voice
+        emotion = str(intent.get("emotion") or "").strip()
+        emotion_category = str(intent.get("emotion_category") or "").strip()
+        voice_style = str(intent.get("voice_style") or "").strip().lower()
         source_label = self._proactive_source_label(payload)
         try:
             voice_kwargs = {
@@ -248,17 +264,16 @@ class ProactiveSendMixin:
                 source_message_id=source_message_id,
             ):
                 return False
-            self.note_structured_bot_message(target_scope, reply_text, media="语音")
             await self._note_voice_expression_decision(
                 scope=target_scope,
                 channel="语音",
                 source=source_label,
-                reason=f"{source_label}设置允许语音且概率命中，本次直接使用语音。",
+                reason=reason,
                 result="已发送",
                 text=reply_text,
                 emotion=emotion,
                 emotion_category=emotion_category,
-                confidence=1.0,
+                confidence=confidence,
             )
             return True
         except Exception as exc:
@@ -272,21 +287,9 @@ class ProactiveSendMixin:
                 text=reply_text,
                 emotion=emotion,
                 emotion_category=emotion_category,
-                confidence=1.0,
+                confidence=confidence,
             )
             return False
-
-    @staticmethod
-    def _proactive_voice_probability_hit(voice_config: Any) -> bool:
-        try:
-            probability = float(getattr(voice_config, "proactive_probability", 100.0))
-        except (TypeError, ValueError):
-            probability = 100.0
-        if probability <= 0:
-            return False
-        if probability >= 100:
-            return True
-        return random.random() * 100 < probability
 
     @staticmethod
     def _record_message_chain(path: Path) -> Any:

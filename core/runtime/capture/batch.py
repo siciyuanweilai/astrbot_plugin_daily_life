@@ -10,17 +10,18 @@ from typing import Any
 from astrbot.api import logger
 
 from ...clock import now as life_now
+from ...life.reliability import NonRetryableProviderError
 from ...models import ChatSummaryRecord, CommitmentRecord
 from ...models.coerce import compact_explanation_text
 from ...prompts import CORE_PERSONA_PRONOUN_RULES
 from ...sources.platforms import parse_unified_origin
-from ...life.reliability import NonRetryableProviderError
 from ..context import INTERACTION_MODE_PREDICATE, interaction_fact_is_current
 from ..markers import LOG_PREFIX
+from .execution import ChatExecutionMixin
 from .jsonclean import call_pure_json
 
 
-class ChatMemoryBatchMixin:
+class ChatMemoryBatchMixin(ChatExecutionMixin):
     """保存收到的聊天快照，并按互不重叠的会话批次提炼。"""
 
     _BATCH_READABLE_FIELDS = {
@@ -48,7 +49,13 @@ class ChatMemoryBatchMixin:
     def _validate_chat_memory_payload(value: dict[str, Any]) -> dict[str, Any]:
         result = dict(value)
         result["worth_saving"] = result.get("worth_saving") is True
-        for key in ("commitments", "temporal_facts", "memory_targets", "experiences"):
+        for key in (
+            "commitments",
+            "temporal_facts",
+            "memory_targets",
+            "experiences",
+            "execution_updates",
+        ):
             if not isinstance(result.get(key), list):
                 result[key] = []
         return result
@@ -361,7 +368,7 @@ class ChatMemoryBatchMixin:
             messages.append(
                 {
                     "row_id": row["id"],
-                    "message_id": row.get("message_id", ""),
+                    "message_id": str(row.get("message_id") or row["id"]),
                     "time": row.get("occurred_at", ""),
                     "role": role,
                     "speaker_profile_id": profile_id,
@@ -385,8 +392,19 @@ class ChatMemoryBatchMixin:
             "messages": messages,
             "current_temporal_facts": batch.get("current_temporal_facts", []),
             "current_day_timeline": batch.get("current_day_timeline", []),
+            "open_commitments": batch.get("open_commitments", []),
+            "execution_candidates": batch.get("execution_candidates", []),
         }
         schema = {
+            "execution_updates": [
+                {
+                    "action_id": "输入候选中的编号，无对应动作时留空",
+                    "commitment_ids": [],
+                    "completed": True,
+                    "source_message_id": "已发送角色消息编号",
+                    "evidence": "原消息中明确完成整个目标的原文",
+                }
+            ],
             "worth_saving": True,
             "brief": "",
             "long_summary": "",
@@ -516,7 +534,8 @@ class ChatMemoryBatchMixin:
             "普通共同计划不等于主动联系承诺；证据没有明确要求我未来发起联系时使用 none。"
             "群聊中无法确认应该向谁履行联系动作时 follow_up.action 使用 none，不把对某个人的承诺误发给整个群。"
             "群聊中的明确拍照或拍视频承诺属于当前群的分群承诺：若 owner=当前角色，后续只回原群投递，不是跨群广播；不要因为来源是群聊就一概丢弃。"
-            "明确由我拍照并发送图片时 media_kind=photo，明确由我拍摄或录制视频时 media_kind=video；视频通话及其他承诺为 none。"
+            "明确由我拍照或发送已有照片时 media_kind=photo，明确由我拍摄、录制或发送已有视频时 media_kind=video；视频通话及其他承诺为 none。"
+            "媒体交付由专用图片或视频任务执行，follow_up.action 必须为 none，不能另建只发文字的联系任务冒充媒体履约。"
             "媒体承诺必须有证据支持完整 trigger_date 和 trigger_time 才能自动执行；只有日期或模糊时段时保留 trigger_time 为空，等待后续确认，不猜默认钟点。"
             "需要主动联系时 execute_at 必须依据明确时间证据或 current_day_timeline 中已确认的相关节点给出完整本地日期时间；无法可靠确定执行时间时使用 none，不猜时间。"
             "若联系承诺明确依赖未来条件但无法换算出钟点，保留 action，execute_at 留空，并填写可由后续聊天或生活状态复核的 condition；check_after_minutes 给出首次复核间隔，范围 5 到 60。"
@@ -526,6 +545,10 @@ class ChatMemoryBatchMixin:
             "behavior_feedback 或 life_terms 有内容时属于可复用信息，应同时给出有效摘要并设置 worth_saving=true。\n"
             "scope.type 只是平台传输范围，不是现实互动场景。brief、long_summary、relationship_story、note、points、scene_type 等自然语言字段必须按语义区分现实同处、远程交流和未知；"
             "没有明确现实互动证据时使用“这轮交流中”“聊天中”等中性叙述，不要仅因 private/group、role 或消息记录写成隔着屏幕发消息。\n"
+            "execution_updates 只同步已经发送的 assistant 消息明确陈述已完成的虚拟生活动作。对照 execution_candidates 和 open_commitments，动作类型、目标、对象及日期必须一致，编号只能来自输入。"
+            "准备做、进行中、只做了一部分、条件句、否定、引用旧话、时间已过均不算完成；打包完成不代表送到，不能完成整个送达承诺。"
+            "只允许当前角色自己承担的非媒体 plan；用户或共同事项不代为完成，图片/视频/发消息必须依赖实际交付回执，不能凭聊天说已经发了。"
+            "证据必须逐字引用本批消息的完整完成陈述，不能删掉否定词；worth_saving=false 也应输出有依据的执行同步。没有依据输出空数组，不猜。"
             "temporal_facts 只记录有明确证据、以后仍需按时间查询的结构化事实；subject 和 predicate 必须是稳定结构键，不得从措辞关键词临时拼接。"
             "对照 current_temporal_facts：新增键用 ADD，同键值改变用 UPDATE，明确失效用 INVALIDATE，没有变化用 NONE；不得省略历史变化而直接覆盖。"
             "source_message_id 必须来自输入批次，evidence_signal 只能是 reinforce 或 dispute；没有可靠消息证据就不要输出该事实。\n"
@@ -1191,6 +1214,7 @@ class ChatMemoryBatchMixin:
             persona_hint,
         )
         payload = self._normalize_chat_memory_batch_payload(payload, batch)
+        await self._save_batch_execution_updates(payload, batch)
         commitments = await self._save_batch_commitments(payload, batch)
         temporal_facts = await self._save_batch_temporal_facts(payload, batch)
         await self._save_memory_awareness_records(payload, meta)
@@ -1284,6 +1308,7 @@ class ChatMemoryBatchMixin:
                             item.as_dict() for item in current_day.timeline
                         ],
                     }
+            batch = {**batch, **await self._chat_execution_context(batch)}
             payload = await call_pure_json(
                 self,
                 provider,

@@ -130,6 +130,9 @@ class ResponseGateApplyMixin:
             list(wait_state.get("messages") or []) if wait_state else []
         )
         accumulated_messages.extend(turn_messages or [current_message])
+        accumulated_messages, _ = self._continuous_turn_trim_messages(
+            accumulated_messages, [""] * len(accumulated_messages)
+        )
         interaction_context = await self.resolve_interaction_context(
             event=event,
             now=life_now(),
@@ -158,6 +161,7 @@ JSON 输出要求：
 - 消息传输范围只说明平台通道，不能据此推断双方现实分开或正在远程收发消息；现实互动方式以结构化依据为准。
 - interaction 只审阅当前完整话轮是否提供了新的现实互动证据：没有新证据用 keep；明确同处现场或明确远程交流用 set；明确推翻旧状态但无法确认新状态才用 clear。
 - 当前话轮中时间更晚、指向更明确的陈述优先；不能因为私聊、群聊、user/assistant、收到消息或平台标识推断正在使用手机、屏幕或远程通信。
+- 结合本轮连续内容判断表达是否完整、是否仍有补充；消息数量和等待轮数只作背景，不能仅因达到固定次数强行接话。等待时长由执行层统一设上限。
 - 不根据单个词、标点或固定句式裁定，也不要改写或回答消息。"""
         previous_mode_label = (
             interaction_context.previous_mode_label
@@ -167,7 +171,7 @@ JSON 输出要求：
         dynamic = f"""消息传输范围：{"群聊" if is_group else "私聊"}
 本轮开始前最近互动方式：{previous_mode_label}
 当前消息：{current_message}
-本轮连续内容：{json.dumps(accumulated_messages[-3:], ensure_ascii=False)}
+本轮连续内容：{json.dumps(accumulated_messages, ensure_ascii=False)}
 本轮累计消息：{pending_count}
 已在等待聚合：{"是" if wait_state else "否"}
 连续等待次数：{int(wait_state.get("rounds") or 0) if wait_state else 0}
@@ -205,11 +209,6 @@ JSON 输出要求：
             if action not in {"reply", "wait", "observe"} or confidence < 0.55:
                 self._response_gate_semantic_metrics["invalid"] += 1
                 return None
-            if action == "wait" and (
-                pending_count >= 3
-                or (wait_state and int(wait_state.get("rounds") or 0) >= 2)
-            ):
-                action = "reply"
             self._response_gate_semantic_metrics["accepted"] += 1
             return {
                 "action": action,

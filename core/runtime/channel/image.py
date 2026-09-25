@@ -14,7 +14,10 @@ from ...config.options import IMAGE_ASPECT_RATIOS
 from ...life.appearance import (
     format_current_appearance_context,
     format_image_appearance_context,
+    is_historical_appearance_request,
 )
+from ...life.appearance_history import historical_appearance_context
+from ...life.tools import get_current_timeline_status
 from ...life.wardrobe import (
     normalize_outfit_decision,
     normalize_outfit_scene_category,
@@ -24,7 +27,6 @@ from ...life.wardrobe import (
     scene_category_for_place_kind,
     style_pool_for_scene_category,
 )
-from ...life.tools import get_current_timeline_status
 from ...media.base import GROUP_IDENTITY_CONTINUITY_RULE
 from ...media.picture.routes import (
     image_provider_label,
@@ -66,6 +68,10 @@ class ImageGenerationExecution:
 class RuntimeImageMediaMixin:
     _CURRENT_APPEARANCE_PROMPT_MARKER = "当前生活状态权威造型快照"
     _DIRECT_IMAGE_TOOLS = frozenset({"life_image_generate", "edit_life_image"})
+
+    @staticmethod
+    def _is_historical_appearance_request(*values: object) -> bool:
+        return any(is_historical_appearance_request(value) for value in values)
 
     @classmethod
     def _active_agent_runner(cls, event: Any) -> Any:
@@ -318,6 +324,23 @@ JSON 字段：
         )
         scene_category = scene_category_for_place_kind(place_kind, default="")
         return format_image_appearance_context(day, scene_category=scene_category)
+
+    async def _historical_life_appearance_snapshot(
+        self, request: str = "昨天的穿搭"
+    ) -> str:
+        """Resolve the requested calendar date/period without changing live state."""
+        resolver = getattr(self, "_media_director_current_day", None)
+        archive = getattr(self, "archive", None)
+        if not callable(resolver) or not callable(getattr(archive, "get_day", None)):
+            return ""
+        try:
+            current_day, now, _using_extended_night = await resolver()
+            return await historical_appearance_context(
+                archive, request, now, current_day
+            )
+        except Exception as exc:
+            logger.debug(f"{LOG_PREFIX} 读取历史造型快照失败：{type(exc).__name__}")
+            return ""
 
     def _apply_current_appearance_snapshot(
         self,
@@ -1493,6 +1516,18 @@ JSON 字段：
             return self._duplicate_direct_image_result()
         route = self._normalize_image_subject_route(subject_route)
         current_appearance = ""
+        source_request = self._event_current_image_request_text(event)
+        historical_text = (
+            source_request
+            if is_historical_appearance_request(source_request)
+            else prompt
+        )
+        historical_request = route in {
+            "current_character",
+            "group",
+        } and is_historical_appearance_request(historical_text)
+        if current_outfit_change and historical_request:
+            return "历史回现不会改变当前穿搭。请取消 current_outfit_change 后重试；若要实际换回，请先明确换装要求。"
         if current_outfit_change:
             if use_last_reverse_prompt:
                 return "真实换装不能与上一条反推提示词同时使用。"
@@ -1558,9 +1593,25 @@ JSON 字段：
             prompt = visual_prompt
             await self.mark_page_status_changed("outfit_update")
 
-        if not current_appearance:
+        if historical_request:
+            historical_appearance = await self._historical_life_appearance_snapshot(
+                historical_text
+            )
+            if not historical_appearance:
+                return "没有找到能确认日期和时段的历史造型，请补充具体日期或时段；这次未生成图片。"
+            if historical_appearance:
+                prompt = (
+                    f"{prompt}\n\n{historical_appearance}\n"
+                    "这是用户明确要求回现的历史实际造型，服装、配饰和发型必须以此为准；"
+                    "不要使用今天的穿搭替换它。"
+                )
+        if not current_appearance and not historical_request:
             current_appearance = await self._current_life_appearance_snapshot(route)
-        if current_appearance and route in {"current_character", "group"}:
+        if (
+            current_appearance
+            and not historical_request
+            and route in {"current_character", "group"}
+        ):
             prompt = await self._align_current_appearance_scene_prompt(
                 prompt,
                 self._event_current_image_request_text(event),

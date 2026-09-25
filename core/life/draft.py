@@ -216,6 +216,7 @@ class DailyDraftMixin:
 - 仅换鞋、增减外层、拿起或放下随身包属于局部穿戴调整，target 必须保留原主体服装，不得借局部调整重写成整套新衣服。
 - 本轮提供视觉衣橱候选时，change_outfit 的 payload.catalog_reference_ids 必须填写该次换装实际采用的衣橱服装编号；如果组合上装和下装，至少同时填写对应的上装与下装编号。系统会用衣橱详细描述校正 target，不能只把衣橱当作灵感后另写一套衣服。
 - action_id 在不同日期和节点间必须唯一；effects 只写该动作真实会改变的数值状态。
+- 若一个动作完成即可完整兑现输入中某条当前角色的非媒体承诺，可在 payload.commitment_ids 填该承诺编号；只完成承诺的一部分时不得关联，不能把打包等同于送达，不能填未提供的编号。没有对应承诺用空数组。
 - payload 只用于明确的领域数据：cook 的 ingredients、purchase 的 items 使用 {{"name":"名称","quantity":1,"unit":"可选单位"}} 数组；只有明确属于家庭食材、会用于后续烹饪的采购项才放入 purchase.payload.pantry_items，格式同上；普通物品、纪念品、家居用品和杂货仍放在 items，不得写入 pantry_items；meal/cook/order_food 可填 meal_type 和 place；move/travel 可填 origin、destination、travel_mode；chore 的 cadence_days 使用非负整数、effort 使用 1-5 整数；exercise 的 intensity 使用 1-5 整数。
 - 现有可用食材库存是会变化的生活事实，不得长期只当作背景。若在家自制、现做、加热、调配，或明确使用其中食材，优先生成 cook；从库存中选择实际用到的名称并填写正数 ingredients，系统会按此扣减。不要为了清库存机械安排做饭，也不要虚构库存里没有的食材。
 - meal 表示外食、现成餐食或无法确认用料的直接用餐，不校验或扣减家庭库存；cook 表示实际动手烹饪，必须填写至少一项 ingredients，会按库存校验并扣减，同时由系统自动沉淀食谱；order_food 表示点餐或外卖。不要用 meal 代替实际在家烹饪，也不要为 meal/order_food 填写 ingredients 或自行编造 recipe_id。

@@ -35,8 +35,8 @@ class LayerTextMixin:
             )
             prompt_hint = f"\n- {self._hidden_text(prompt, 360)}" if prompt else ""
             length_hint = (
-                f"\n- 日常闲聊参考长度约 {casual_limit} 字左右；轻闲聊整轮达到主要意思就停，"
-                "不要用多条消息绕过总长度；认真问题按内容自然展开。"
+                f"\n- 日常闲聊参考长度约 {casual_limit} 字左右；只作节奏参考，"
+                "普通闲聊整轮保持简短，不因分条而扩写；必要的解释和情绪支持说完整，不按字数删减。"
                 if casual_limit > 0
                 else ""
             )
@@ -63,8 +63,8 @@ class LayerTextMixin:
             casual_max_int = 0
         if casual_max_int > 0:
             lines.append(
-                f"- 日常闲聊参考长度约 {casual_max_int} 字左右；轻闲聊整轮达到主要意思就停，"
-                "不要用多条消息绕过总长度；认真问题按内容自然展开。"
+                f"- 日常闲聊参考长度约 {casual_max_int} 字左右；只作节奏参考，"
+                "普通闲聊整轮保持简短，不因分条而扩写；必要的解释和情绪支持说完整，不按字数删减。"
             )
 
         lines.append("- 轻松接话保持短气口；一句只放一个主要意思，能自然停住就停住。")
@@ -306,9 +306,8 @@ class LayerTextMixin:
             )
         parts = [
             "\n\n<daily_life>",
-            "\n[UseRule] 以下内容是角色日常生活背景的隐藏上下文，不是当前聊天话题。"
-            "除非用户明确询问时间、状态、穿搭、天气、日程、邀约或相关细节，"
-            "否则禁止主动提及、复述、解释或暗示这些内容；普通闲聊时只用于维持处境一致。",
+            "\n[UseRule] 以下内容是角色日常生活背景。按当前话题自然引用有依据的细节，"
+            "无需逐项汇报，也不要把未来计划说成已经发生。",
             f"\n[HiddenContextRules] {CORE_HIDDEN_CONTEXT_RULES}",
         ]
         style_hint = self.build_hidden_chat_style_hint()
@@ -326,7 +325,7 @@ class LayerTextMixin:
             if appearance:
                 parts.append(
                     f"\n[HiddenAppearanceHint]\n{appearance}\n"
-                    "(仅在用户明确询问外貌、穿搭或相关视觉细节时参考，禁止主动介绍)"
+                    "(结合当前话题按需参考，不逐项介绍；仅以当前已确认外观为事实)"
                 )
 
             if meta:
@@ -349,7 +348,7 @@ class LayerTextMixin:
 
         if data.memo:
             parts.append(
-                f"\n[HiddenMemoHint] 今日重要备忘录: {data.memo} (仅在用户询问安排、计划或相关事项时参考)"
+                f"\n[HiddenMemoHint] 今日重要备忘录: {data.memo} (涉及相关话题时自然参考，计划不等于已经发生)"
             )
 
         lines = [
@@ -365,7 +364,7 @@ class LayerTextMixin:
 
         if world_context:
             parts.append(
-                "\n[HiddenWorldMemory] 关系、地点与事件记忆，仅用于维持长期一致性，禁止主动展开:\n"
+                "\n[HiddenWorldMemory] 关系、地点与事件记忆，按话题相关性自然引用，旧事不可当作当前事实:\n"
                 f"{world_context}"
             )
         if experience_context:

@@ -84,7 +84,7 @@ JSON 输出要求：
 - “周末一起...” kind=plan，trigger_date 优先填本周六，time_window=weekend。
 - “下次再聊这个/回头继续说” kind=followup，trigger_date 为空，time_window=next_chat。
 - confidence 低于 0.7 时也可以输出，但系统不会自动保存。
-- 若承诺明确由当前角色拍照并发送图片，media_kind=photo；明确拍摄/录制视频，media_kind=video；视频通话和非媒体承诺均为 none。不能靠系统在后续重读原话判断媒体类型。
+- 若承诺明确由当前角色拍照或发送已有照片，media_kind=photo；明确拍摄、录制或发送已有视频，media_kind=video；视频通话和非媒体承诺均为 none。不能靠系统在后续重读原话判断媒体类型。
 - 媒体承诺只有明确到 YYYY-MM-DD HH:MM 才能自动执行；日期或时段不明确时保留空 trigger_time，后续作为待确认承诺，不得擅自补时间。
 - 没有未来承诺时输出 {{"has_commitment": false}}。
 - 字段中涉及人物称谓时按人物边界判断。

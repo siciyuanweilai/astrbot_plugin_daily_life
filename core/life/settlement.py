@@ -8,6 +8,7 @@ from astrbot.api import logger
 
 from ..clock import now as life_now
 from ..models import (
+    INTERNAL_SIMULATED_ACTION_TYPES,
     LIFE_ACTION_TYPES,
     DayRecord,
     LifeActionEffect,
@@ -20,13 +21,14 @@ from ..models import (
     ReflectionSignal,
     ScheduleAnchor,
 )
+from .appearance_history import record_appearance_snapshot
+from .tools import parse_life_datetime, timeline_item_datetime
 from .wardrobe import (
     format_outfit_components,
     merge_outfit_components,
     normalize_outfit_components,
     serialize_outfit_components,
 )
-from .tools import parse_life_datetime, timeline_item_datetime
 
 ACTION_SETTLEMENT_META_KEY = "life_action_settlements"
 ACTION_EXPIRATION_META_KEY = "life_action_expirations"
@@ -357,6 +359,9 @@ class LifeActionMixin:
             day.meta["outfit_fact_evidence"] = action.action_id
             if action_components:
                 day.meta["outfit_components"] = serialize_outfit_components(components)
+            record_appearance_snapshot(
+                day, datetime.datetime.fromisoformat(committed_at)
+            )
             catalog_ids = []
             raw_catalog_ids = action.payload.get("catalog_reference_ids")
             values = (
@@ -410,9 +415,7 @@ class LifeActionMixin:
             != "user_instruction"
         ):
             return False
-        confirmed_at = parse_life_datetime(
-            day.meta.get("outfit_fact_confirmed_at")
-        )
+        confirmed_at = parse_life_datetime(day.meta.get("outfit_fact_confirmed_at"))
         scheduled_at = timeline_item_datetime(
             day.timeline[action.timeline_index], day.date
         )
@@ -715,14 +718,8 @@ class LifeActionMixin:
                 )
             return outcome
 
-        if action.timeline_index is not None and 0 <= action.timeline_index < len(
-            day.timeline
-        ):
-            item = day.timeline[action.timeline_index]
-            item.execution_state = "completed"
-            item.execution_reason = "已收到动作执行回执"
-            item.execution_evidence = evidence
-            item.execution_updated_at = current_time.strftime("%Y-%m-%d %H:%M:%S")
+        # Settlement itself marks a successful action completed. Do not mark it
+        # before feasibility/precondition checks, which can reject the receipt.
         action.source = "daily_plan"
         action.evidence = evidence
         outcome = await self.settle_and_persist_life_action(
@@ -883,6 +880,23 @@ class LifeActionMixin:
                 }
             )
         if outcome.status == "committed":
+            complete = getattr(self.archive, "complete_simulated_commitment", None)
+            links = action.payload.get("commitment_links")
+            if action.action_type in INTERNAL_SIMULATED_ACTION_TYPES and callable(
+                complete
+            ):
+                for link in links if isinstance(links, list) else []:
+                    if not isinstance(link, dict) or not isinstance(
+                        link.get("id"), int
+                    ):
+                        continue
+                    await complete(
+                        link["id"],
+                        scope=str(link.get("scope") or ""),
+                        when=outcome.committed_at,
+                        evidence=fact_evidence or outcome.evidence,
+                        source_id=action.action_id,
+                    )
             domain_service = getattr(self, "domains", None)
             apply_domain = getattr(domain_service, "apply_action", None)
             if callable(apply_domain):

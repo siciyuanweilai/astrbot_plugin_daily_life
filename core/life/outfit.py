@@ -23,6 +23,7 @@ from .appearance import (
     normalize_appearance_fact,
     strip_hair_from_outfit,
 )
+from .appearance_history import record_appearance_snapshot
 from .condition import format_physiological_rhythm_prompt
 from .fashion import outfit_style_contamination_reason
 from .future import future_outfit_timing_issue
@@ -43,16 +44,16 @@ from .wardrobe import (
     format_outfit_component_ledger,
     format_outfit_components,
     merge_outfit_components,
-    normalize_outfit_current_basis,
     normalize_outfit_components,
+    normalize_outfit_current_basis,
     normalize_outfit_decision,
     normalize_outfit_scene_category,
     outfit_scene_category_label,
+    outfit_style_pool_label,
     project_outfit_components_for_scene,
     reconcile_outfit_components_for_scene,
-    scene_category_for_place_kind,
-    outfit_style_pool_label,
     resolve_outfit_style_pool,
+    scene_category_for_place_kind,
     serialize_outfit_components,
 )
 
@@ -77,6 +78,7 @@ _OUTFIT_FACT_SOURCE_LABELS = {
     "daily_generation": "当日日程生成",
     "carried_previous_day": "前一日延续",
 }
+
 
 class OutfitMixin:
     @staticmethod
@@ -447,11 +449,15 @@ class OutfitMixin:
         style_catalog_context = await self._style_catalog_context(limit=14)
         catalog_has_clothing = await self._style_catalog_has_clothing_candidates()
         instruction_text = str(instruction or "").strip()
-        normalized_instruction_source = str(
-            instruction_source
-            if instruction_source is not None
-            else ("user" if instruction_text else "")
-        ).strip().lower()
+        normalized_instruction_source = (
+            str(
+                instruction_source
+                if instruction_source is not None
+                else ("user" if instruction_text else "")
+            )
+            .strip()
+            .lower()
+        )
         resolved_source_instruction = (
             instruction_text
             if source_instruction is None
@@ -600,8 +606,12 @@ class OutfitMixin:
 候选仅在本轮确实生成新造型时使用；keep 时必须返回空数组。可以采用完整套装，也可以组合上装、下装、鞋袜和配饰；发型、妆容、美甲分别选择。实际采用的编号写入 catalog_reference_ids，未采用写空数组。
 当前实际时间：{current_time.strftime("%Y-%m-%d %H:%M")}
 当前时间范围：{PERIOD_TIME_RANGES.get(target_period, "未知")}
-本轮穿搭要求（来源：{context["instruction_source_label"]}）：{context["instruction"] or "无"}
-用户原始穿搭请求（判断是否允许覆盖稳定人设外观，以此为准）：{context["source_instruction"] or "无"}"""
+本轮穿搭要求（来源：{context["instruction_source_label"]}）：{
+            context["instruction"] or "无"
+        }
+用户原始穿搭请求（判断是否允许覆盖稳定人设外观，以此为准）：{
+            context["source_instruction"] or "无"
+        }"""
         return cache_friendly_prompt(fixed, dynamic, dynamic_title="穿搭现场")
 
     async def _apply_outfit_update_result(
@@ -627,17 +637,13 @@ class OutfitMixin:
         verified_change_source = self._verified_outfit_change_source(result, context)
         generated_outfit = str(result.get("outfit") or "").strip()
         generated_style = normalize_appearance_fact(result.get("style"), 120)
-        generated_hair_style = normalize_appearance_fact(
-            result.get("hair_style"), 80
-        )
+        generated_hair_style = normalize_appearance_fact(result.get("hair_style"), 80)
         generated_hair = normalize_appearance_fact(result.get("hair"), 180)
         generated_makeup_style = normalize_appearance_fact(
             result.get("makeup_style"), 80
         )
         generated_makeup = normalize_appearance_fact(result.get("makeup"), 160)
-        generated_nails_style = normalize_appearance_fact(
-            result.get("nails_style"), 80
-        )
+        generated_nails_style = normalize_appearance_fact(result.get("nails_style"), 80)
         generated_nails = normalize_appearance_fact(result.get("nails"), 160)
         component_review = (
             result.get("component_review")
@@ -656,13 +662,9 @@ class OutfitMixin:
         old_style = normalize_appearance_fact(old_meta.get("style"), 120)
         old_hair_style = normalize_appearance_fact(old_meta.get("hair_style"), 80)
         old_hair = normalize_appearance_fact(old_meta.get("hair"), 180)
-        old_makeup_style = normalize_appearance_fact(
-            old_meta.get("makeup_style"), 80
-        )
+        old_makeup_style = normalize_appearance_fact(old_meta.get("makeup_style"), 80)
         old_makeup = normalize_appearance_fact(old_meta.get("makeup"), 160)
-        old_nails_style = normalize_appearance_fact(
-            old_meta.get("nails_style"), 80
-        )
+        old_nails_style = normalize_appearance_fact(old_meta.get("nails_style"), 80)
         old_nails = normalize_appearance_fact(old_meta.get("nails"), 160)
         current_reference_ids = self._style_catalog_reference_ids(
             old_meta.get("style_catalog_reference_ids")
@@ -707,8 +709,7 @@ class OutfitMixin:
             (
                 bool(generated_outfit) and generated_outfit != old_outfit,
                 bool(generated_style) and generated_style != old_style,
-                bool(generated_hair_style)
-                and generated_hair_style != old_hair_style,
+                bool(generated_hair_style) and generated_hair_style != old_hair_style,
                 bool(generated_hair) and generated_hair != old_hair,
                 bool(generated_makeup_style)
                 and generated_makeup_style != old_makeup_style,
@@ -802,9 +803,7 @@ class OutfitMixin:
                 reference_ids,
                 scene_category="" if context.get("instruction") else scene_category,
             )
-        old_components = normalize_outfit_components(
-            old_meta.get("outfit_components")
-        )
+        old_components = normalize_outfit_components(old_meta.get("outfit_components"))
         generated_components = normalize_outfit_components(
             result.get("outfit_components")
         )
@@ -814,7 +813,9 @@ class OutfitMixin:
         if component_only_partial_change:
             generated_components.pop("main_clothing", None)
             catalog_components.pop("main_clothing", None)
-        effective_components = merge_outfit_components(old_components, generated_components)
+        effective_components = merge_outfit_components(
+            old_components, generated_components
+        )
         effective_components = merge_outfit_components(
             effective_components,
             catalog_components,
@@ -823,9 +824,7 @@ class OutfitMixin:
             effective_components,
             scene_category,
             catalog_components=catalog_components,
-            catalog_selected=bool(
-                reference_ids and catalog_appearance.get("outfit")
-            )
+            catalog_selected=bool(reference_ids and catalog_appearance.get("outfit")),
         )
         if not generated_components and catalog_components:
             generated_components = catalog_components
@@ -833,8 +832,7 @@ class OutfitMixin:
         if effective_components:
             visible_outfit = format_outfit_components(effective_components)
             if visible_outfit and (
-                not component_only_partial_change
-                or old_components.get("main_clothing")
+                not component_only_partial_change or old_components.get("main_clothing")
             ):
                 generated_outfit = visible_outfit
         components_changed = bool(
@@ -859,15 +857,12 @@ class OutfitMixin:
                 "hair_style", ""
             )
             generated_hair = generated_hair or catalog_appearance.get("hair", "")
-            generated_makeup_style = (
-                generated_makeup_style
-                or catalog_appearance.get("makeup_style", "")
+            generated_makeup_style = generated_makeup_style or catalog_appearance.get(
+                "makeup_style", ""
             )
-            generated_makeup = generated_makeup or catalog_appearance.get(
-                "makeup", ""
-            )
-            generated_nails_style = (
-                generated_nails_style or catalog_appearance.get("nails_style", "")
+            generated_makeup = generated_makeup or catalog_appearance.get("makeup", "")
+            generated_nails_style = generated_nails_style or catalog_appearance.get(
+                "nails_style", ""
             )
             generated_nails = generated_nails or catalog_appearance.get("nails", "")
             reserve = str(catalog_appearance.get("outing_reserve") or "").strip()
@@ -890,9 +885,7 @@ class OutfitMixin:
             final_makeup_style = old_makeup_style or (
                 generated_makeup_style if model_kept_outfit else ""
             )
-            final_makeup = old_makeup or (
-                generated_makeup if model_kept_outfit else ""
-            )
+            final_makeup = old_makeup or (generated_makeup if model_kept_outfit else "")
             final_nails_style = old_nails_style or (
                 generated_nails_style if model_kept_outfit else ""
             )
@@ -992,12 +985,9 @@ class OutfitMixin:
             final_hair_style,
             final_hair,
         )
-        outfit_changed = bool(
-            new_outfit and new_outfit != comparable_old_outfit
-        )
+        outfit_changed = bool(new_outfit and new_outfit != comparable_old_outfit)
         user_confirmed = (
-            str(old_meta.get("outfit_fact_source") or "").strip()
-            == "user_instruction"
+            str(old_meta.get("outfit_fact_source") or "").strip() == "user_instruction"
         )
         instruction_source = str(context.get("instruction_source") or "").strip()
         user_instruction = bool(context.get("instruction")) and (
@@ -1010,9 +1000,7 @@ class OutfitMixin:
             and appearance_changed
             and not verified_change_source
         ):
-            logger.info(
-                "[穿搭更新] 已保留用户确认的当前穿搭：本轮没有已发生换装证据"
-            )
+            logger.info("[穿搭更新] 已保留用户确认的当前穿搭：本轮没有已发生换装证据")
             return old_data
         style_pool = resolve_outfit_style_pool(
             scene_category,
@@ -1107,6 +1095,8 @@ class OutfitMixin:
             old_data.meta["style_catalog_reference_ids"] = ",".join(
                 str(item) for item in reference_ids
             )
+        if appearance_changed:
+            record_appearance_snapshot(old_data, current_time)
         await self.archive.save_day(old_data)
         if reference_ids:
             await self._mark_style_catalog_references(reference_ids)

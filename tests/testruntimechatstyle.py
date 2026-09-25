@@ -395,8 +395,9 @@ class RuntimeChatStyleTest(unittest.TestCase):
             runtime.build_chat_style_injection_context(event, event.message_str)
         )
 
-        self.assertIn("当前私聊闲聊的单个分段参考长度约为 15 字", text)
-        self.assertIn("不是硬性截断", text)
+        self.assertIn("当前私聊轻闲聊整轮参考长度约为 15 字", text)
+        self.assertIn("不刻意凑字数或分多条扩写", text)
+        self.assertIn("不按字数删减内容", text)
 
     def test_chat_style_before_send_segments_group_casual_reply_without_truncating(
         self,
@@ -1014,7 +1015,7 @@ class RuntimeChatStyleTest(unittest.TestCase):
 
     def test_chat_style_natural_segments_keep_protected_spans_intact(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
-        runtime.config = LifeSettings.from_dict({"chat_style_config": {}})
+        runtime.config = LifeSettings.from_dict({"chat_style_config": {"private_casual_max_chars": 15}})
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
         event.message_str = "这个呢"
         url = "https://example.com/a,b?x=1"
@@ -1478,7 +1479,7 @@ class RuntimeChatStyleTest(unittest.TestCase):
 
     def test_new_message_cancels_unsent_natural_segment_tail(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
-        runtime.config = LifeSettings.from_dict({"chat_style_config": {}})
+        runtime.config = LifeSettings.from_dict({"chat_style_config": {"private_casual_max_chars": 15}})
         runtime._semantic_segment_init_state()
         runtime.note_structured_sent_result = lambda event: None
         runtime.note_media_source_event = lambda event: None

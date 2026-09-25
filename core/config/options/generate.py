@@ -274,7 +274,6 @@ class VoiceGenerationSettings:
     smart_switch_enabled: bool = True
     smart_switch_probability: float = 35.0
     proactive_enabled: bool = False
-    proactive_probability: float = 100.0
     api_key: str = ""
     speaker_id: str = ""
     speaker_source: str = "cloned"
@@ -294,9 +293,6 @@ class VoiceGenerationSettings:
                 data.get("smart_switch_probability", 35.0), 35.0, 0.0, 100.0
             ),
             proactive_enabled=as_bool(data.get("proactive_enabled", False), False),
-            proactive_probability=as_float(
-                data.get("proactive_probability", 100.0), 100.0, 0.0, 100.0
-            ),
             api_key=as_str(data.get("api_key", "")).strip(),
             speaker_id=as_str(data.get("speaker_id", data.get("speaker", ""))).strip(),
             speaker_source=_normalize_voice_source(

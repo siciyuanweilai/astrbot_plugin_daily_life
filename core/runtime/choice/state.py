@@ -65,12 +65,13 @@ class ResponseGateStateMixin:
         text = str(message_text or "").strip()
         if text:
             messages.append(text)
+        messages, _ = self._continuous_turn_trim_messages(messages, [""] * len(messages))
         self._response_gate_waiting[key] = {
             "until": now + datetime.timedelta(seconds=90),
-            "rounds": min(rounds, 2),
+            "rounds": rounds,
             "reason": str(reason or "").strip(),
             "message_id": str(message_id or "").strip(),
-            "messages": messages[-3:],
+            "messages": messages,
         }
 
     def _response_gate_clear_wait(self, key: str) -> None:
