@@ -159,6 +159,48 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             )
         )
 
+    async def test_webchat_video_is_persisted_as_file_attachment(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.context = Context(Provider([]))
+        self._stub_media_director(runtime)
+        image_path = Path(tempfile.mkdtemp()) / "first-frame.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\nimage")
+        runtime.media = types.SimpleNamespace(
+            image=types.SimpleNamespace(
+                generate_image=lambda prompt: async_return(
+                    types.SimpleNamespace(path=image_path)
+                ),
+                _load_reference_image=lambda reference: async_return(
+                    (b"first-frame", "image/png")
+                ),
+            ),
+            video=types.SimpleNamespace(
+                generate_video=lambda prompt, image_bytes=None: async_return(
+                    types.SimpleNamespace(url="https://cdn.example/video.mp4")
+                )
+            ),
+        )
+        runtime._media_result_summary = lambda *_args: async_return("测试视频")
+        scheduled = []
+        runtime._schedule_background_task = lambda coro, **_kwargs: (
+            scheduled.append(coro) or True
+        )
+        event = Event(
+            platform_name="webchat",
+            unified_msg_origin="webchat:FriendMessage:webchat!admin!test-session",
+        )
+
+        result = await runtime.life_video_generate(event, "窗边挥手视频")
+        await scheduled[0]
+
+        self.assertEqual(json.loads(result)["status"], "pending")
+        self.assertEqual(event.sent_messages, [])
+        self.assertEqual(len(runtime.context.sent_messages), 1)
+        scope, chain = runtime.context.sent_messages[0]
+        self.assertEqual(scope, event.unified_msg_origin)
+        self.assertEqual(chain.items[0].name, "生活视频.mp4")
+        self.assertEqual(chain.items[0].url, "https://cdn.example/video.mp4")
+
     async def test_life_video_new_first_frame_locks_current_appearance(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.context = Context(Provider([]))
@@ -284,6 +326,54 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertIn(
             "昨日回现穿搭：粉色露肩上衣搭配粉色碎花蕾丝半身短裙", video_calls[0]
         )
+        self.assertNotIn("当前生活状态权威造型快照", image_calls[0])
+
+    async def test_life_video_festival_prompt_avoids_current_appearance(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.context = Context(Provider([]))
+        runtime.config = LifeSettings.from_dict({})
+        runtime.archive = DataManager()
+        self._stub_media_director(runtime)
+        runtime._runtime_now = lambda: datetime.datetime(2026, 9, 27, 21)
+        runtime._historical_life_appearance_snapshot = lambda request: async_return(
+            "历史回现穿搭（2026-09-25）：浅紫色针织裙和米白开衫"
+        )
+        runtime._current_life_appearance_snapshot = lambda route: (_ for _ in ()).throw(
+            AssertionError("festival video used current appearance")
+        )
+        image_path = Path(tempfile.mkdtemp()) / "first-frame.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\nimage")
+        image_calls = []
+        runtime.media = types.SimpleNamespace(
+            image=types.SimpleNamespace(
+                generate_image=lambda prompt, **kwargs: (
+                    image_calls.append(prompt)
+                    or async_return(types.SimpleNamespace(path=image_path))
+                ),
+                _load_reference_image=lambda reference: async_return(
+                    (b"first-frame", "image/png")
+                ),
+            ),
+            video=types.SimpleNamespace(
+                generate_video=lambda prompt, image_bytes=None, **kwargs: async_return(
+                    types.SimpleNamespace(url="https://example.com/life.mp4")
+                )
+            ),
+        )
+        scheduled = []
+        runtime._schedule_background_task = lambda coro, label="", key="": (
+            scheduled.append(coro) or True
+        )
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
+        event.message_str = "发给我看看"
+
+        result = await runtime.life_video_generate(
+            event, "中秋下午老街散步的视频", subject_route="current_character"
+        )
+
+        self.assertEqual(json.loads(result)["status"], "pending")
+        await scheduled[0]
+        self.assertIn("浅紫色针织裙和米白开衫", image_calls[0])
         self.assertNotIn("当前生活状态权威造型快照", image_calls[0])
 
     async def test_life_video_generate_resolves_agent_context_event(self):

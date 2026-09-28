@@ -9,6 +9,10 @@ from astrbot.api import logger
 
 from ..life.appearance_history import record_appearance_snapshot
 from ..life.condition import state_is_stale
+from ..life.rest_delay import (
+    activate_rest_delay,
+    rest_timing_request,
+)
 from ..life.tools import (
     get_current_timeline_status,
     reconcile_timeline_execution,
@@ -28,6 +32,31 @@ from .markers import LOG_PREFIX
 
 
 class RefreshMixin:
+    async def _apply_rest_delay_message(
+        self,
+        data: DayRecord,
+        text: str,
+        now: datetime.datetime,
+        *,
+        event_key: str = "",
+    ) -> DayRecord:
+        """把用户明确的晚点休息请求写入当日日记录，并保持窗口有上限。"""
+        if rest_timing_request(text) is None:
+            return data
+        changed = False
+
+        def apply(latest: DayRecord) -> bool:
+            nonlocal changed
+            changed = activate_rest_delay(latest, text, now, event_key=event_key)
+            return changed
+
+        # 使用数据库事务更新最新记录，不覆盖并发刷新的身体状态或日程。
+        result = await self.archive.mutate_day(data.date, apply)
+        notify = getattr(self, "mark_page_status_changed", None)
+        if changed and callable(notify):
+            await notify("state")
+        return result or data
+
     async def _settle_timeline_planning(
         self,
         data: DayRecord,
@@ -195,7 +224,7 @@ class RefreshMixin:
         self, data: DayRecord, now: datetime.datetime, period: str
     ) -> str:
         del period  # 普通时段切换本身不是换装事件。
-        current, _ = get_current_timeline_status(data.timeline, now, data.date)
+        current, _ = get_current_timeline_status(data.timeline, now, data.date, meta=data.meta)
         weather = data.weather_info
 
         def item_field(item: Any, key: str) -> str:
@@ -311,7 +340,7 @@ class RefreshMixin:
         sleep_depth = str(getattr(sleep, "depth", "") or "").strip().lower()
         if sleep_depth in {"light_sleep", "deep_sleep"}:
             return "sleep"
-        current, _ = get_current_timeline_status(data.timeline, now, data.date)
+        current, _ = get_current_timeline_status(data.timeline, now, data.date, meta=data.meta)
         place_kind = ""
         if current is not None:
             place_kind = (
@@ -391,8 +420,8 @@ class RefreshMixin:
         base = max(5, int(self.config.state.refresh_minutes or 30))
         multiplier = min(3, stable_checks + 1) if stable else 1
         delay_minutes = min(90, base * multiplier)
-        _, next_item = get_current_timeline_status(data.timeline, now, data.date)
-        next_transition = timeline_item_datetime(next_item, data.date)
+        _, next_item = get_current_timeline_status(data.timeline, now, data.date, meta=data.meta)
+        next_transition = timeline_item_datetime(next_item, data.date, meta=data.meta)
         if next_transition is not None and next_transition > now:
             transition_minutes = max(
                 1, math.ceil((next_transition - now).total_seconds() / 60)
@@ -478,6 +507,7 @@ class RefreshMixin:
             data.date,
             evidence=f"{execution_source}：时间轴时钟",
             timeline_end=(data.meta or {}).get("life_window_end"),
+            meta=data.meta,
         )
         current_period = self._get_curr_period(now)
         schedule_outfit_sync_needed = self._schedule_outfit_scene_sync_needed(data, now)
@@ -508,6 +538,7 @@ class RefreshMixin:
                 data.date,
                 evidence=f"{execution_source}：时间轴时钟",
                 timeline_end=(data.meta or {}).get("life_window_end"),
+                meta=data.meta,
             )
             planning_changed = await self._settle_timeline_planning(data, now)
             if execution_changed or planning_changed:

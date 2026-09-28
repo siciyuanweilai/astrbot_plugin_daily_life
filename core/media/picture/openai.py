@@ -80,17 +80,12 @@ def build_request(
     base = normalize_openai_base_url(route.api_url)
     headers = {"Authorization": f"Bearer {route.api_key}"}
     siciyuanweilai = is_siciyuanweilai(route.api_url)
-    seedream = route.protocol == "seedream"
     if siciyuanweilai:
         # Keep the request traceable and idempotent at the gateway.
         headers["X-Client-Request-ID"] = f"daily-life-{uuid4().hex}"
     size = size_for(resolution, aspect_ratio, model=route.model)
     images = inline_images(parts)
-    if (
-        siciyuanweilai
-        and not seedream
-        and route.model.strip().lower() == "gpt-image-2"
-    ):
+    if siciyuanweilai and route.model.strip().lower() == "gpt-image-2":
         # 同一地址下的模型可使用不同协议；GPT Image 2 接收标准图片对象。
         payload = {
             "model": route.model,
@@ -120,9 +115,8 @@ def build_request(
         }
         if siciyuanweilai:
             payload.update({"n": 1, "response_format": "url"})
-            if not seedream:
-                payload["extra_fields"] = {"quality": route.quality.upper()}
-        elif not seedream:
+            payload["extra_fields"] = {"quality": route.quality.upper()}
+        else:
             payload["quality"] = route.quality
         return ImageRequest(
             url=f"{base}/images/generations",
@@ -139,8 +133,7 @@ def build_request(
                 ],
             },
         }
-        if not seedream:
-            extra_fields["quality"] = route.quality.upper()
+        extra_fields["quality"] = route.quality.upper()
         return ImageRequest(
             url=f"{base}/images/edits",
             headers=headers,
@@ -159,8 +152,7 @@ def build_request(
     form.add_field("model", route.model)
     form.add_field("prompt", prompt_from_parts(parts))
     form.add_field("size", size)
-    if not seedream:
-        form.add_field("quality", route.quality)
+    form.add_field("quality", route.quality)
     form.add_field("response_format", "url")
     for index, (image_bytes, mime_type) in enumerate(images, start=1):
         _, ext = image_mime_and_ext(image_bytes)

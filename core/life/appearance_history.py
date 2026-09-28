@@ -7,10 +7,23 @@ import json
 import re
 from typing import Any
 
+try:
+    from lunardate import LunarDate
+except ImportError:  # pragma: no cover - 仅在依赖尚未安装时触发
+    LunarDate = None  # type: ignore[assignment,misc]
+
 from .appearance import current_appearance_values, reference_outfit
 from .wardrobe import format_outfit_components, normalize_outfit_components
 
 _PREFIX = "appearance_snapshot:"
+_FESTIVAL_LUNAR_DATES = {
+    "春节": (1, 1),
+    "元宵": (1, 15),
+    "端午": (5, 5),
+    "七夕": (7, 7),
+    "中秋": (8, 15),
+    "重阳": (9, 9),
+}
 _PERIODS = {
     "dawn": (0, 6),
     "morning": (6, 9),
@@ -21,6 +34,17 @@ _PERIODS = {
     "night": (20, 23),
     "late_night": (23, 24),
 }
+
+
+def _festival_solar_date(year: int, month: int, day: int) -> dt.date | None:
+    if LunarDate is None:
+        return None
+    try:
+        lunar = LunarDate(year, month, day)
+        converter = getattr(lunar, "to_solar_date", None)
+        return converter() if callable(converter) else lunar.toSolarDate()
+    except (ValueError, OverflowError):
+        return None
 
 
 def record_appearance_snapshot(day: Any, observed_at: dt.datetime) -> None:
@@ -84,13 +108,27 @@ def appearance_query(
     else:
         for markers, offset in (
             (("大前天",), 3),
-            (("前天", "前日", "前晚"), 2),
+            (("前天", "前两天", "前日", "前晚"), 2),
             (("昨天", "昨日", "前一天", "昨晚", "昨夜"), 1),
             (("今天", "今日"), 0),
         ):
             if any(marker in text for marker in markers):
                 target = (now.date() - dt.timedelta(days=offset)).isoformat()
                 break
+    if not target:
+        festival = re.search(
+            r"(?:(20\d{2})年|(去年|前年|今年))?\s*"
+            r"(春节|元宵|端午|七夕|中秋|重阳)(?:节)?",
+            text,
+        )
+        if festival:
+            lunar_month, lunar_day = _FESTIVAL_LUNAR_DATES[festival[3]]
+            year = int(festival[1]) if festival[1] else now.year
+            year -= {"去年": 1, "前年": 2}.get(festival[2], 0)
+            date = _festival_solar_date(year, lunar_month, lunar_day)
+            if date and not festival[1] and not festival[2] and date > now.date():
+                date = _festival_solar_date(year - 1, lunar_month, lunar_day)
+            target = date.isoformat() if date and date <= now.date() else "ambiguous"
     if not target:
         target = "last" if "上次" in text else "ambiguous"
     period = None

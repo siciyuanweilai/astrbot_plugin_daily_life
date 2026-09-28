@@ -248,12 +248,15 @@ class OutfitMixin:
         return ""
 
     @staticmethod
-    def _timeline_item_text(item: object, *, previous_place: str = "") -> str:
+    def _timeline_item_text(item: object, *, previous_place: str = "", timeline_date: object = None, meta: dict | None = None) -> str:
         if not item:
             return "无"
         time = str(
             getattr(item, "time", "") if hasattr(item, "time") else item.get("time", "")
         ).strip()
+        effective = timeline_item_datetime(item, timeline_date, meta=meta)
+        if meta and effective:
+            time = effective.strftime("%m-%d %H:%M")
         activity = str(
             getattr(item, "activity", "")
             if hasattr(item, "activity")
@@ -280,6 +283,7 @@ class OutfitMixin:
         timeline: list,
         current_time: datetime.datetime,
         timeline_date: object = None,
+        *, meta: dict | None = None,
     ) -> tuple[str, str]:
         if not timeline:
             return "暂无已发生日程", "暂无未发生日程"
@@ -295,8 +299,8 @@ class OutfitMixin:
                 else item.get("time", "")
             ).strip()
             item_minutes = parse_time_minutes(item_time)
-            line = cls._timeline_item_text(item, previous_place=previous_place)
-            item_datetime = timeline_item_datetime(item, timeline_date)
+            line = cls._timeline_item_text(item, previous_place=previous_place, timeline_date=timeline_date, meta=meta)
+            item_datetime = timeline_item_datetime(item, timeline_date, meta=meta)
             if item_datetime is not None:
                 if item_datetime <= current_time:
                     past_lines.append(line)
@@ -420,16 +424,16 @@ class OutfitMixin:
     ) -> dict:
         timeline_date = old_data.date or date_str
         current_item, next_item = get_current_timeline_status(
-            old_data.timeline, current_time, timeline_date
+            old_data.timeline, current_time, timeline_date, meta=old_data.meta
         )
-        current_timeline = self._timeline_item_text(current_item)
-        next_timeline = self._timeline_item_text(next_item)
+        current_timeline = self._timeline_item_text(current_item, timeline_date=timeline_date, meta=old_data.meta)
+        next_timeline = self._timeline_item_text(next_item, timeline_date=timeline_date, meta=old_data.meta)
         past_timeline, future_timeline = self._timeline_context_text(
-            old_data.timeline, current_time, timeline_date
+            old_data.timeline, current_time, timeline_date, meta=old_data.meta
         )
         occurred_timeline_items = []
         for item in old_data.timeline:
-            item_time = timeline_item_datetime(item, timeline_date)
+            item_time = timeline_item_datetime(item, timeline_date, meta=old_data.meta)
             if item_time is not None and item_time <= current_time:
                 occurred_timeline_items.append(item)
         old_meta = old_data.meta

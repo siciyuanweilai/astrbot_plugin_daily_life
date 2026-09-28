@@ -15,7 +15,7 @@ from .cast import (
 DEFAULT_VOLCENGINE_TTS_MODEL = "seed-tts-2.0-standard"
 DEFAULT_VOLCENGINE_SAMPLE_RATE = 24000
 DEFAULT_VOLCENGINE_FORMAT = "mp3"
-IMAGE_PROTOCOLS = {"gemini", "openai", "seedream", "grok"}
+IMAGE_PROTOCOLS = {"gemini", "openai", "grok"}
 IMAGE_RESOLUTIONS = {"1K", "2K", "4K"}
 IMAGE_QUALITIES = {"low", "medium", "high"}
 REALTIME_OFFICIAL_SEARCH_TYPES = {
@@ -42,6 +42,7 @@ IMAGE_ASPECT_RATIOS = (
 )
 
 CREATIVE_STYLE_GENERATION_MODES = {"text_to_image", "image_to_image"}
+
 
 def _normalize_voice_source(value: Any) -> str:
     source = as_str(value, "cloned").strip().lower()
@@ -125,10 +126,11 @@ def _image_channels(value: Any) -> list[ImageApiChannel]:
             .strip()
             .lower()
         )
-        protocol = protocol if protocol in IMAGE_PROTOCOLS else "gemini"
+        if protocol not in IMAGE_PROTOCOLS:
+            # Unknown protocol entries are not valid image channels.
+            continue
         default_model = {
             "openai": "gpt-image-2",
-            "seedream": "doubao-seedream-4-0-250828",
             "grok": "grok-imagine-image",
         }.get(protocol, "gemini-3-pro-image-preview")
         model = (
@@ -350,18 +352,19 @@ class RealtimeVoiceCallSettings:
             return RealtimeVoiceCallSettings()
         endpoint_url = as_str(data.get("endpoint_url", "")).strip()
         if not endpoint_url.startswith(("ws://", "wss://")):
-            endpoint_url = "wss://openspeech.bytedance.com/api/v3/duplex/realtime/dialogue"
+            endpoint_url = (
+                "wss://openspeech.bytedance.com/api/v3/duplex/realtime/dialogue"
+            )
         return RealtimeVoiceCallSettings(
             enabled=as_bool(data.get("enabled", False), False),
             listen_host=as_str(data.get("listen_host", "0.0.0.0")).strip() or "0.0.0.0",
             listen_port=as_int(data.get("listen_port", 6186), 6186, 1024, 65535),
-            public_url=as_str(
-                data.get("public_url", data.get("gateway_url", ""))
-            ).strip().rstrip("/"),
+            public_url=as_str(data.get("public_url", data.get("gateway_url", "")))
+            .strip()
+            .rstrip("/"),
             endpoint_url=endpoint_url,
-            model=as_str(
-                data.get("model", "doubao-seed-2-0-lite-260428")
-            ).strip() or "doubao-seed-2-0-lite-260428",
+            model=as_str(data.get("model", "doubao-seed-2-0-lite-260428")).strip()
+            or "doubao-seed-2-0-lite-260428",
             max_duration_seconds=as_int(
                 data.get("max_duration_seconds", 1800), 1800, 30, 7200
             ),
@@ -371,9 +374,7 @@ class RealtimeVoiceCallSettings:
             invite_expire_seconds=as_int(
                 data.get("invite_expire_seconds", 120), 120, 30, 3600
             ),
-            max_concurrent_calls=as_int(
-                data.get("max_concurrent_calls", 1), 1, 1, 4
-            ),
+            max_concurrent_calls=as_int(data.get("max_concurrent_calls", 1), 1, 1, 4),
             context_turns=as_int(data.get("context_turns", 8), 8, 0, 20),
             allow_function_calls=as_bool(
                 data.get("allow_function_calls", False), False
@@ -409,15 +410,20 @@ class RealtimeVoiceCallSettings:
             short_url_enabled=as_bool(data.get("short_url_enabled", True), True),
             rtc_model_name=as_str(
                 data.get("rtc_model_name", "Doubao-Seed-1.6｜250615")
-            ).strip() or "Doubao-Seed-1.6｜250615",
+            ).strip()
+            or "Doubao-Seed-1.6｜250615",
             rtc_app_id=as_str(data.get("rtc_app_id", "")).strip(),
             rtc_app_key=as_str(data.get("rtc_app_key", "")).strip(),
             rtc_access_key=as_str(data.get("rtc_access_key", "")).strip(),
             rtc_secret_key=as_str(data.get("rtc_secret_key", "")).strip(),
             rtc_region=as_str(data.get("rtc_region", "cn-north-1")).strip()
             or "cn-north-1",
-            rtc_callback_url=as_str(data.get("rtc_callback_url", "")).strip().rstrip("/"),
-            rtc_callback_signature=as_str(data.get("rtc_callback_signature", "")).strip(),
+            rtc_callback_url=as_str(data.get("rtc_callback_url", ""))
+            .strip()
+            .rstrip("/"),
+            rtc_callback_signature=as_str(
+                data.get("rtc_callback_signature", "")
+            ).strip(),
             rtc_token_ttl_seconds=as_int(
                 data.get("rtc_token_ttl_seconds", 3600), 3600, 300, 86400
             ),
@@ -439,9 +445,7 @@ class RealtimeVoiceCallSettings:
                 in {"low", "high"}
                 else "low"
             ),
-            rtc_vision_height=as_int(
-                data.get("rtc_vision_height", 480), 480, 0, 1792
-            ),
+            rtc_vision_height=as_int(data.get("rtc_vision_height", 480), 480, 0, 1792),
             rtc_vision_interval_ms=as_int(
                 data.get("rtc_vision_interval_ms", 1000), 1000, 200, 10000
             ),

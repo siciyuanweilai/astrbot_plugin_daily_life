@@ -247,7 +247,7 @@
     grid-column: span 2;
   }
 
-  .template-list-item-compact .template-list-item-inline > .danger {
+  .template-list-item-compact .template-list-item-inline > .template-list-item-actions {
     grid-column: 2;
     grid-row: 1;
     align-self: center;

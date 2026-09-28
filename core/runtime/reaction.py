@@ -341,7 +341,15 @@ class ToolReactionMixin:
         result = getattr(event, "get_result", lambda: None)()
         result_type = str(getattr(result, "result_content_type", "") or "").upper()
         if not response_is_error and "ERROR" not in result_type:
-            return False
+            if not result_type.endswith("GENERAL_RESULT"):
+                return False
+            # AstrBot 的非流式智能体错误使用普通结果类型。
+            error_text = "".join(
+                str(getattr(component, "text", "") or "")
+                for component in (getattr(result, "chain", None) or [])
+            ).strip()
+            if not error_text.startswith("LLM 响应错误:"):
+                return False
 
         key = self._tool_reaction_key(event)
         state = self._tool_reaction_states().get(key)

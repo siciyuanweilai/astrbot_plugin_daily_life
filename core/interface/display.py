@@ -11,6 +11,7 @@ from ..life.tools import (
     get_week_id,
     resolve_daily_hint,
     resolve_daily_suggested,
+    timeline_item_datetime,
 )
 from ..life.surroundings import format_world_display
 from ..life.wardrobe import (
@@ -50,16 +51,17 @@ class DisplayCommandMixin:
             yield event.plain_result("今天还没有安排日程哦。")
             return
 
-        curr, next_act = get_current_timeline_status(data.timeline, req.now, data.date)
+        curr, next_act = get_current_timeline_status(data.timeline, req.now, data.date, meta=data.meta)
         if curr:
             activity_text = (
                 f"当前是 {req.now.strftime('%H:%M')}，现状：\n"
                 f"{curr.activity}（状态：{curr.status or '平和'}）"
             )
         elif next_act:
+            next_time = timeline_item_datetime(next_act, data.date, meta=data.meta)
             activity_text = (
-                f"当前是 {req.now.strftime('%H:%M')}，还没有进入第一项安排。\n"
-                f"下一项：{next_act.time} {next_act.activity}"
+                f"当前是 {req.now.strftime('%H:%M')}，下一项安排尚未开始。\n"
+                f"下一项：{next_time:%m-%d %H:%M} {next_act.activity}"
             )
         else:
             activity_text = "当前是休息时间。"
@@ -88,12 +90,12 @@ class DisplayCommandMixin:
         if not req.param1:
             data = await self.runtime.archive.get_day(req.target_date_str)
             if data and data.timeline:
-                tl_text = format_timeline_to_text(data.timeline)
+                tl_text = format_timeline_to_text(data.timeline, timeline_date=data.date, meta=data.meta)
                 meta = data.meta
                 w_info = data.weather_info
                 w_str = f"{data.weather or '未知'} ({w_info.temp_desc})"
                 current, _ = get_current_timeline_status(
-                    data.timeline, req.now, data.date
+                    data.timeline, req.now, data.date, meta=data.meta
                 )
                 scene_category = scene_category_for_place_kind(
                     current.place_kind if current else "",
@@ -155,13 +157,13 @@ class DisplayCommandMixin:
             yield event.plain_result("今天还没有安排日程哦，无法剧透。")
             return
 
-        now_mins = req.now.hour * 60 + req.now.minute
         future_timeline = [
-            item for item in data.timeline if self._timeline_minutes(item) > now_mins
+            item for item in data.timeline
+            if (time := timeline_item_datetime(item, data.date, meta=data.meta)) is not None and time > req.now
         ]
         if future_timeline:
             yield event.plain_result(
-                f"🤫 嘘...剧透一下接下来的安排：\n\n{format_timeline_to_text(future_timeline)}"
+                f"🤫 嘘...剧透一下接下来的安排：\n\n{format_timeline_to_text(future_timeline, timeline_date=data.date, meta=data.meta)}"
             )
             return
 

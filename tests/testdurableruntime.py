@@ -40,6 +40,10 @@ class _MediaRuntime(RuntimeActionReceiptMixin, SpineBootMixin):
     def video_message_chain(path):
         return {"type": "video", "file": str(path)}
 
+    @staticmethod
+    def video_file_message_chain(path):
+        return {"type": "file", "file": str(path)}
+
     async def record_current_life_action_receipt(self, event, action_type, **kwargs):
         self.receipts.append((event, action_type, kwargs))
 
@@ -295,6 +299,23 @@ class DurableRuntimeTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(runtime.sent), 1)
         self.assertEqual(runtime.receipts, [])
+
+    async def test_webchat_video_recovery_uses_file_attachment(self):
+        runtime = _MediaRuntime(self.archive, None)
+        task = await self.archive.enqueue_durable_task(
+            "media_delivery:webchat-video",
+            "media_delivery",
+            {
+                "scope": "webchat:FriendMessage:webchat!admin!test-session",
+                "media_kind": "video",
+                "artifacts": ["https://cdn.example/video.mp4"],
+            },
+        )
+
+        result = await runtime.resume_durable_media_delivery(task)
+
+        self.assertEqual(result["delivery"], "recovered")
+        self.assertEqual(runtime.sent[0][1]["type"], "file")
 
     async def test_active_media_delivery_cannot_be_claimed_by_worker(self):
         cases = (

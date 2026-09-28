@@ -81,7 +81,11 @@ def _bounded_target_size(
 ) -> tuple[int, int]:
     ratio = video_aspect_ratio(aspect_ratio)
     ratio_width, ratio_height = (int(value) for value in ratio.split(":", 1))
-    short_side = 1080 if str(resolution or "").strip().lower() == "1080p" else 720
+    short_side = {
+        "480p": 480,
+        "720p": 720,
+        "1080p": 1080,
+    }.get(str(resolution or "").strip().lower(), 720)
     if ratio_width >= ratio_height:
         target_width = round(short_side * ratio_width / ratio_height)
         target_height = short_side

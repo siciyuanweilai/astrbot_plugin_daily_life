@@ -31,7 +31,6 @@ async def create_video_task(
     ratio = aspect_ratio or settings.aspect_ratio
     payload = video_task_payload(
         settings,
-        endpoint=endpoint,
         prompt=prompt,
         image_bytes=image_bytes,
         aspect_ratio=ratio,
@@ -53,30 +52,21 @@ async def create_video_task(
 def video_task_payload(
     settings: VideoGenerationSettings,
     *,
-    endpoint: str,
     prompt: str,
     image_bytes: bytes | None,
     aspect_ratio: str,
     seconds: int,
 ) -> dict[str, Any]:
     resolution = str(settings.resolution or "720p").strip().lower() or "720p"
+    if resolution not in {"480p", "720p", "1080p"}:
+        raise ValueError("Grok 视频分辨率仅支持 480p、720p 或 1080p")
     payload = {
         "model": settings.model,
         "prompt": prompt,
+        "seconds": str(seconds),
         "aspect_ratio": video_aspect_ratio(aspect_ratio),
         "resolution": resolution,
     }
-    if _official_generation_endpoint(endpoint):
-        payload["duration"] = seconds
-        if image_bytes:
-            payload["image"] = {"url": image_data_url(image_bytes)}
-    else:
-        payload["seconds"] = str(seconds)
-        payload["resolution"] = resolution.upper()
-        if image_bytes:
-            payload["image"] = image_data_url(image_bytes)
+    if image_bytes:
+        payload["input_reference"] = {"image_url": image_data_url(image_bytes)}
     return payload
-
-
-def _official_generation_endpoint(endpoint: str) -> bool:
-    return str(endpoint or "").rstrip("/").lower().endswith("/v1/videos/generations")

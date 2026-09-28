@@ -597,7 +597,7 @@ class GeminiImageService:
     def _route_accepts_character_reference(
         route: ImageRoute, *, text_to_image: bool = False
     ) -> bool:
-        return not (text_to_image and route.protocol in {"openai", "seedream", "grok"})
+        return not (text_to_image and route.protocol in {"openai", "grok"})
 
     def _character_reference_sources(self) -> list[dict[str, Any]]:
         policy = str(
@@ -871,7 +871,9 @@ class GeminiImageService:
                     require_reference=str(mode or "").strip().lower() == "edit",
                 )
             except Exception as exc:
-                message = f"{route_label}：{self._error_text(exc, route.timeout_seconds)}"
+                message = (
+                    f"{route_label}：{self._error_text(exc, route.timeout_seconds)}"
+                )
                 errors.append(message)
                 if self._is_policy_violation_error(exc):
                     raise RuntimeError(f"图片生成触发安全拒绝：{message}") from exc
@@ -894,7 +896,9 @@ class GeminiImageService:
                     timeout=timeout,
                 )
             except Exception as exc:
-                message = f"{route_label}：{self._error_text(exc, route.timeout_seconds)}"
+                message = (
+                    f"{route_label}：{self._error_text(exc, route.timeout_seconds)}"
+                )
                 errors.append(message)
                 logger.debug(
                     f"{LOG_PREFIX} {self._mode_label(mode)}结果图片获取失败，"
@@ -925,7 +929,7 @@ class GeminiImageService:
                     f"请求={requested_size}；实际={actual_size}"
                 )
                 if (
-                    route.protocol in {"openai", "seedream"}
+                    route.protocol == "openai"
                     and width
                     and height
                     and actual_size != requested_size
@@ -1009,7 +1013,6 @@ class GeminiImageService:
         kwargs = {"resolution": route.resolution, "aspect_ratio": route.aspect_ratio}
         builder = {
             "openai": openai.build_request,
-            "seedream": openai.build_request,
             "grok": imagine.build_request,
         }.get(route.protocol, gemini.build_request)
         return builder(route, parts, **kwargs)
@@ -1031,7 +1034,7 @@ class GeminiImageService:
         Returns:
             可直接保存的图片字节。
         """
-        if route.protocol in {"openai", "seedream"}:
+        if route.protocol == "openai":
             image_bytes, image_url = openai.extract_image(data, route.api_url)
             if image_bytes or not image_url:
                 return image_bytes
@@ -1132,7 +1135,10 @@ class GeminiImageService:
                         response,
                         max_bytes=max_bytes,
                     )
-                    if content_length is not None and len(image_bytes) != content_length:
+                    if (
+                        content_length is not None
+                        and len(image_bytes) != content_length
+                    ):
                         raise _RetryableRemoteImageError(
                             f"{label}下载不完整（声明={content_length}字节，实际={len(image_bytes)}字节）"
                         )
@@ -1153,13 +1159,17 @@ class GeminiImageService:
                 raise RuntimeError(f"{label}下载失败：{exc}") from exc
             if attempt + 1 >= _REMOTE_IMAGE_DOWNLOAD_ATTEMPTS:
                 break
-            delay = _REMOTE_IMAGE_RETRY_DELAYS[min(attempt, len(_REMOTE_IMAGE_RETRY_DELAYS) - 1)]
+            delay = _REMOTE_IMAGE_RETRY_DELAYS[
+                min(attempt, len(_REMOTE_IMAGE_RETRY_DELAYS) - 1)
+            ]
             logger.debug(
                 f"{LOG_PREFIX} {label}暂不可用，第 {attempt + 1} 次下载失败，"
                 f"将在 {delay:g} 秒后重试：{last_error}"
             )
             await asyncio.sleep(delay)
-        raise RuntimeError(f"{label}下载失败：{last_error or '未知错误'}") from last_error
+        raise RuntimeError(
+            f"{label}下载失败：{last_error or '未知错误'}"
+        ) from last_error
 
     @staticmethod
     async def _read_remote_image_body(response: Any, *, max_bytes: int) -> bytes:
@@ -1183,7 +1193,9 @@ class GeminiImageService:
 
     @staticmethod
     def _content_length(headers: Any) -> int | None:
-        value = str(getattr(headers, "get", lambda *_: "")("Content-Length", "") or "").strip()
+        value = str(
+            getattr(headers, "get", lambda *_: "")("Content-Length", "") or ""
+        ).strip()
         if not value:
             return None
         try:
@@ -1203,7 +1215,7 @@ class GeminiImageService:
         effective_aspect_ratio = (
             aspect_ratio if aspect_ratio in IMAGE_ASPECT_RATIOS else route.aspect_ratio
         )
-        if route.protocol in {"openai", "seedream"}:
+        if route.protocol == "openai":
             effective_aspect_ratio = openai.supported_aspect_ratio(
                 route.model, effective_aspect_ratio
             )
@@ -1239,7 +1251,7 @@ class GeminiImageService:
 
     @staticmethod
     def _request_size_label(route: ImageRoute) -> str:
-        if route.protocol in {"openai", "seedream", "grok"}:
+        if route.protocol in {"openai", "grok"}:
             return openai.size_for(
                 route.resolution, route.aspect_ratio, model=route.model
             ).replace("x", "×")

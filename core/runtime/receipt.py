@@ -237,7 +237,11 @@ class RuntimeActionReceiptMixin:
 
                 if not Path(artifact).is_file():
                     raise FileNotFoundError("待恢复的视频产物已不存在")
-            chain = self.video_message_chain(artifact)
+            chain = (
+                self.video_file_message_chain(artifact)
+                if scope.split(":", 1)[0].lower() == "webchat"
+                else self.video_message_chain(artifact)
+            )
         sent = await send_message_to_scope(self.context, scope, chain)
         if sent is False:
             raise RuntimeError("目标平台尚未就绪，媒体将在后续任务中重试")

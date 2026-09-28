@@ -1500,13 +1500,31 @@ export function createConfigPanel({
         }
       });
       const headActions = node("div", "template-list-item-actions");
+      const moveButton = (direction, label, iconPath) => {
+        const button = node("button", "template-list-move", "");
+        button.type = "button";
+        button.disabled = direction < 0 ? index === 0 : index === items.length - 1;
+        button.setAttribute("aria-label", `${itemTitle} ${label}`);
+        button.title = label;
+        button.innerHTML = `
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="${iconPath}" />
+          </svg>
+        `;
+        button.addEventListener("click", () => reorderItem(index, index + direction));
+        return button;
+      };
+      const moveUpButton = moveButton(-1, "上移", "m7 14 5-5 5 5");
+      const moveDownButton = moveButton(1, "下移", "m7 10 5 5 5-5");
       const removeButton = node("button", "danger", "删除");
       removeButton.type = "button";
       removeButton.addEventListener("click", () => saveItems(
         items.filter((_, itemIndex) => itemIndex !== index),
         { itemIds: itemIds.filter((_, itemIndex) => itemIndex !== index) }
       ));
-      headActions.append(removeButton);
+      const reorderActions = node("div", "template-list-reorder");
+      reorderActions.append(moveUpButton, moveDownButton);
+      headActions.append(reorderActions, removeButton);
       const body = node("div", "template-list-item-grid");
       if (templateEntries(spec).length > 1) {
         const templateSelect = document.createElement("select");
@@ -1544,7 +1562,7 @@ export function createConfigPanel({
       }
       if (compactChannels) {
         const row = node("div", "template-list-item-inline");
-        row.append(dragButton, body, removeButton);
+        row.append(dragButton, body, headActions);
         card.append(row);
       } else {
         titleLine.append(dragButton, node("strong", "", itemTitle));

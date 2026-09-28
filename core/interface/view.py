@@ -13,6 +13,7 @@ from ..life.tools import (
     get_week_id,
     resolve_daily_hint,
     resolve_daily_suggested,
+    timeline_deferred_until,
 )
 from ..life.wardrobe import (
     format_outfit_components,
@@ -1054,7 +1055,7 @@ class PageViewMixin:
         return result
 
     def _page_day(self, data, now: datetime.datetime, extended_night: bool) -> dict:
-        current, next_item = get_current_timeline_status(data.timeline, now, data.date)
+        current, next_item = get_current_timeline_status(data.timeline, now, data.date, meta=data.meta)
         if extended_night:
             current = None
         meta = dict(data.meta)
@@ -1078,6 +1079,17 @@ class PageViewMixin:
             meta["outfit_reason"] = compact_explanation_text(
                 meta.get("outfit_reason"), 360
             )
+
+        def display_item(item):
+            if item is None:
+                return None
+            record = item.as_dict()
+            deferred = timeline_deferred_until(item, data.date, data.meta)
+            if deferred:
+                record["time"] = deferred.strftime("%H:%M")
+                record["execution_reason"] = f"原定 {item.time}，顺延至 {deferred:%m-%d %H:%M}；{record['execution_reason']}"
+            return record
+
         return {
             "date": data.date,
             "outfit": visible_outfit or data.outfit,
@@ -1085,13 +1097,13 @@ class PageViewMixin:
             "weather_info": data.weather_info.as_dict(),
             "meta": meta,
             "state": data.state.as_dict() if data.state else {},
-            "timeline": [item.as_dict() for item in data.timeline],
+            "timeline": [display_item(item) for item in data.timeline],
             "places": [item.as_dict() for item in data.places],
             "new_events": [item.as_dict() for item in data.new_events],
             "outfit_history": dict(data.outfit_history),
             "state_log": list(data.state_log),
-            "current": current.as_dict() if current else None,
-            "next": next_item.as_dict() if next_item else None,
+            "current": display_item(current),
+            "next": display_item(next_item),
             "extended_night": extended_night,
         }
 

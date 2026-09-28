@@ -12,6 +12,11 @@ except Exception:
     Record = None
     Video = None
 
+try:
+    from astrbot.api.message_components import File
+except ImportError:
+    File = None
+
 from ...models import ExpressionIntentRecord, ExpressionReviewRecord
 from ...sources.dispatch import ScopeDeliveryError
 from ..markers import LOG_PREFIX
@@ -370,4 +375,17 @@ class ProactiveSendMixin:
                 item["url"] = text
             stub_items.append(item)
             return chain
+        return chain
+
+    @staticmethod
+    def video_file_message_chain(url: str) -> Any:
+        chain = MessageChain()
+        items = getattr(chain, "chain", None)
+        if File is None or not isinstance(items, list):
+            raise RuntimeError("当前环境不支持视频文件附件")
+        text = str(url)
+        if text.startswith(("http://", "https://")):
+            items.append(File(name="生活视频.mp4", url=text))
+        else:
+            items.append(File(name="生活视频.mp4", file=text))
         return chain

@@ -249,7 +249,7 @@ class ProactivePromptMixin:
             scope_key=scope_key,
             now=now,
         )
-        timeline = format_timeline_to_text(getattr(day, "timeline", []) if day else [])
+        timeline = format_timeline_to_text(getattr(day, "timeline", []) if day else [], timeline_date=getattr(day, "date", None), meta=getattr(day, "meta", None))
         meta = getattr(day, "meta", {}) if day else {}
         activity = (
             self.build_hidden_activity_hint(day, now, using_extended_night)[1]

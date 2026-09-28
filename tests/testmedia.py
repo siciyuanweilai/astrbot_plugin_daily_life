@@ -23,14 +23,14 @@ from core.media.picture.routes import (
     requested_image_provider,
 )
 from core.media.video import GrokVideoService
-from core.media.video.protocol.size import video_aspect_ratio, video_size
+from core.media.video.errors import VideoTaskError
+from core.media.video.protocol.size import video_aspect_ratio
 from core.media.video.keyframe import (
     VIDEO_REFERENCE_MAX_BYTES,
     prepare_video_reference_image,
 )
 from core.media.video.tasks import task_status_url
 from core.media.video.tasks import poll_video_url
-from core.media.video.errors import VideoAPIError, VideoTaskError
 from core.runtime.proactive.send import ProactiveSendMixin
 from PIL import Image
 
@@ -436,22 +436,21 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(requested_image_provider("grok"), "grok")
         self.assertEqual(requested_image_provider("grok-imagine-image"), "grok")
 
-    def test_seedream_provider_requires_explicit_protocol(self):
-        self.assertEqual(requested_image_provider("seedream"), "seedream")
-        with self.assertRaisesRegex(ValueError, "图片接口只能指定"):
-            requested_image_provider("seedream-4.0")
-        with self.assertRaisesRegex(ValueError, "图片接口只能指定"):
-            requested_image_provider("doubao-seedream-4-0-250828")
+    def test_removed_image_provider_is_rejected(self):
+        for provider in ("nai", "nai-diffusion-4-5-full", "nai-diffusion-5-full"):
+            with self.subTest(provider=provider), self.assertRaises(ValueError):
+                requested_image_provider(provider)
 
     def test_openai_channel_model_does_not_change_protocol(self):
-        channel = type("Channel", (), {"protocol": "openai", "model": "seedream-4.0"})()
+        channel = type(
+            "Channel", (), {"protocol": "openai", "model": "custom-image-model"}
+        )()
         self.assertTrue(channel_matches_provider(channel, "openai"))
-        self.assertFalse(channel_matches_provider(channel, "seedream"))
         route = make_route(
             "https://openai.example/v1",
             "openai-key",
-            "seedream-4.0",
-            "旧 OpenAI 通道",
+            "custom-image-model",
+            "OpenAI 通道",
             "openai",
             "1K",
             "1:1",
@@ -569,61 +568,6 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request_routes[0].label, "OpenAI 备用线路")
         logs = "\n".join(str(call.args[0]) for call in debug_log.call_args_list)
         self.assertIn("通道=https://openai.example / OpenAI 备用线路", logs)
-
-    async def test_generate_image_filters_seedream_channels_separately(self):
-        output_bytes = b"\x89PNG\r\n\x1a\nseedream-output"
-        calls = []
-
-        class _ImageSession:
-            closed = False
-
-            def post(self, url, json=None, data=None, headers=None, timeout=None):
-                calls.append((url, json or {}))
-                return _Response(
-                    payload={
-                        "data": [
-                            {"b64_json": base64.b64encode(output_bytes).decode("ascii")}
-                        ]
-                    }
-                )
-
-        settings = LifeSettings.from_dict(
-            {
-                "image_generation_config": {
-                    "enabled": True,
-                    "text_channels": [
-                        {
-                            "__template_key": "openai",
-                            "api_url": "https://gpt.example/v1",
-                            "api_key": "gpt-key",
-                            "model": "gpt-image-2",
-                        },
-                        {
-                            "__template_key": "seedream",
-                            "api_url": "https://seedream.example/v1",
-                            "api_key": "seedream-key",
-                        },
-                    ],
-                }
-            }
-        ).image_generation
-        service = GeminiImageService(settings, Path(tempfile.mkdtemp()))
-
-        async def get_session():
-            return _ImageSession()
-
-        service._get_session = get_session
-
-        generated = await service.generate_image(
-            "自然的夜景生活照", protocol="seedream"
-        )
-
-        self.assertTrue(generated.path.exists())
-        self.assertEqual(calls[0][0], "https://seedream.example/v1/images/generations")
-        self.assertEqual(calls[0][1]["model"], "doubao-seedream-4-0-250828")
-        request_routes = await service._request_routes("text", protocol="seedream")
-        self.assertEqual(len(request_routes), 1)
-        self.assertEqual(request_routes[0].protocol, "seedream")
 
     async def test_generate_image_tries_next_channel_after_first_failure(self):
         output_bytes = b"\x89PNG\r\n\x1a\noutput"
@@ -914,73 +858,6 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-    def test_seedream_text_request_omits_gpt_quality_fields(self):
-        route = ImageRoute(
-            api_url="https://openai-relay.example/v1",
-            api_key="relay-key",
-            model="seedream-4.0",
-            label="Seedream",
-            protocol="seedream",
-            resolution="2K",
-            aspect_ratio="16:9",
-            timeout_seconds=120,
-            origin="https://openai-relay.example",
-            quality="high",
-        )
-
-        request = openai_image.build_request(
-            route,
-            [{"text": "自然的夜景生活照"}],
-            resolution="2K",
-            aspect_ratio="16:9",
-        )
-
-        self.assertEqual(
-            request.payload,
-            {
-                "model": "seedream-4.0",
-                "prompt": "自然的夜景生活照",
-                "size": "2048x1152",
-            },
-        )
-
-    def test_siciyuanweilai_seedream_text_request_omits_gpt_quality_fields(self):
-        route = ImageRoute(
-            api_url="https://siciyuanweilai.com",
-            api_key="relay-key",
-            model="doubao-seedream-4-0-250828",
-            label="Seedream",
-            protocol="seedream",
-            resolution="1K",
-            aspect_ratio="1:1",
-            timeout_seconds=120,
-            origin="https://siciyuanweilai.com",
-            quality="high",
-        )
-
-        request = openai_image.build_request(
-            route,
-            [{"text": "自然的夜景生活照"}],
-            resolution="1K",
-            aspect_ratio="1:1",
-        )
-
-        self.assertEqual(
-            request.payload,
-            {
-                "model": "doubao-seedream-4-0-250828",
-                "prompt": "自然的夜景生活照",
-                "size": "1024x1024",
-                "n": 1,
-                "response_format": "url",
-            },
-        )
-        self.assertTrue(
-            str(request.headers.get("X-Client-Request-ID") or "").startswith(
-                "daily-life-"
-            )
-        )
-
     def test_openai_edit_request_includes_quality_multipart_field(self):
         route = ImageRoute(
             api_url="https://openai-relay.example/v1",
@@ -1014,39 +891,6 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(_form_field(request.form, "image"), b"reference")
         self.assertEqual(request.reference_image_count, 1)
 
-    def test_seedream_edit_request_omits_gpt_quality_field(self):
-        route = ImageRoute(
-            api_url="https://openai-relay.example/v1",
-            api_key="relay-key",
-            model="seedream-4.0",
-            label="Seedream",
-            protocol="seedream",
-            resolution="1K",
-            aspect_ratio="1:1",
-            timeout_seconds=120,
-            origin="https://openai-relay.example",
-            quality="low",
-        )
-        request = openai_image.build_request(
-            route,
-            [
-                {"text": "改成自然的夜景"},
-                {
-                    "inlineData": {
-                        "mimeType": "image/png",
-                        "data": base64.b64encode(b"reference").decode("ascii"),
-                    }
-                },
-            ],
-            resolution="1K",
-            aspect_ratio="1:1",
-        )
-
-        self.assertIsNotNone(request.form)
-        self.assertIsNone(_form_field(request.form, "quality"))
-        self.assertEqual(_form_field(request.form, "model"), "seedream-4.0")
-        self.assertEqual(_form_field(request.form, "image"), b"reference")
-
     def test_siciyuanweilai_edit_request_uses_documented_json_payload(self):
         route = ImageRoute(
             api_url="https://siciyuanweilai.com",
@@ -1072,9 +916,7 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
                 {
                     "inlineData": {
                         "mimeType": "image/png",
-                        "data": base64.b64encode(b"second-reference").decode(
-                            "ascii"
-                        ),
+                        "data": base64.b64encode(b"second-reference").decode("ascii"),
                     }
                 },
             ],
@@ -1090,18 +932,21 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
             {
                 "model": "gpt-image-2",
                 "prompt": (
-                    "改成雨夜街景\n"
-                    "参考随请求提供的图片线索，保持画面要求自然一致。"
+                    "改成雨夜街景\n参考随请求提供的图片线索，保持画面要求自然一致。"
                 ),
                 "size": "1024x1024",
                 "n": 1,
                 "quality": "medium",
                 "response_format": "b64_json",
                 "images": [
-                    {"image_url": "data:image/png;base64,"
-                     + base64.b64encode(b"reference").decode("ascii")},
-                    {"image_url": "data:image/png;base64,"
-                     + base64.b64encode(b"second-reference").decode("ascii")},
+                    {
+                        "image_url": "data:image/png;base64,"
+                        + base64.b64encode(b"reference").decode("ascii")
+                    },
+                    {
+                        "image_url": "data:image/png;base64,"
+                        + base64.b64encode(b"second-reference").decode("ascii")
+                    },
                 ],
             },
         )
@@ -1118,21 +963,28 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
                         api_url=api_url, quality=quality, references=reference_count
                     ):
                         route = ImageRoute(
-                            api_url=api_url, api_key="test-key",
-                            model="gpt-image-2", label="GPT Image",
-                            protocol="openai", resolution="1K",
-                            aspect_ratio="1:1", timeout_seconds=300,
-                            origin="https://siciyuanweilai.com", quality=quality,
+                            api_url=api_url,
+                            api_key="test-key",
+                            model="gpt-image-2",
+                            label="GPT Image",
+                            protocol="openai",
+                            resolution="1K",
+                            aspect_ratio="1:1",
+                            timeout_seconds=300,
+                            origin="https://siciyuanweilai.com",
+                            quality=quality,
                         )
                         references = [
                             (b"first-reference", "image/png"),
                             (b"second-reference", "image/jpeg"),
                         ][:reference_count]
                         parts = [{"text": "保留构图，调整颜色"}] + [
-                            {"inline_data": {
-                                "mime_type": mime,
-                                "data": base64.b64encode(content).decode("ascii"),
-                            }}
+                            {
+                                "inline_data": {
+                                    "mime_type": mime,
+                                    "data": base64.b64encode(content).decode("ascii"),
+                                }
+                            }
                             for content, mime in references
                         ]
 
@@ -1151,50 +1003,15 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
                         if not reference_count:
                             self.assertNotIn("images", request.payload)
                             continue
-                        self.assertEqual(len(request.payload["images"]), reference_count)
-                        for entry, (content, mime) in zip(request.payload["images"], references):
+                        self.assertEqual(
+                            len(request.payload["images"]), reference_count
+                        )
+                        for entry, (content, mime) in zip(
+                            request.payload["images"], references
+                        ):
                             prefix, encoded = entry["image_url"].split(",", 1)
                             self.assertEqual(prefix, f"data:{mime};base64")
                             self.assertEqual(base64.b64decode(encoded), content)
-
-    def test_siciyuanweilai_seedream_edit_omits_gpt_quality_field(self):
-        route = ImageRoute(
-            api_url="https://siciyuanweilai.com",
-            api_key="relay-key",
-            model="doubao-seedream-4-0-250828",
-            label="Seedream",
-            protocol="seedream",
-            resolution="1K",
-            aspect_ratio="1:1",
-            timeout_seconds=120,
-            origin="https://siciyuanweilai.com",
-            quality="high",
-        )
-        request = openai_image.build_request(
-            route,
-            [
-                {"text": "改成自然的夜景"},
-                {
-                    "inlineData": {
-                        "mimeType": "image/png",
-                        "data": base64.b64encode(b"reference").decode("ascii"),
-                    }
-                },
-            ],
-            resolution="1K",
-            aspect_ratio="1:1",
-        )
-
-        self.assertEqual(request.url, "https://siciyuanweilai.com/v1/images/edits")
-        self.assertIsNone(request.form)
-        self.assertEqual(request.payload["model"], "doubao-seedream-4-0-250828")
-        self.assertEqual(request.payload["size"], "1024x1024")
-        self.assertNotIn("quality", request.payload["extra_fields"])
-        self.assertEqual(
-            request.payload["extra_fields"]["guidances"]["image_reference"],
-            [{"image": {"id": "{{upload:0}}"}}],
-        )
-        self.assertEqual(request.reference_image_count, 1)
 
     async def test_generate_image_downloads_openai_url_response(self):
         output_bytes = _real_png_bytes(2, 2)
@@ -1250,7 +1067,10 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
             generated = await service.generate_image("雨夜生活照")
 
         self.assertEqual(generated.path.read_bytes(), output_bytes)
-        self.assertEqual(calls[0][0:2], ("POST", "https://openai-relay.example/v1/images/generations"))
+        self.assertEqual(
+            calls[0][0:2],
+            ("POST", "https://openai-relay.example/v1/images/generations"),
+        )
         self.assertEqual(calls[1][0:2], ("GET", "https://cdn.example/openai.png"))
 
     async def test_generated_url_retries_incomplete_cdn_body(self):
@@ -1282,7 +1102,11 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
                 nonlocal attempts
                 attempts += 1
                 calls.append((url, headers or {}))
-                data = output_bytes[: len(output_bytes) // 2] if attempts == 1 else output_bytes
+                data = (
+                    output_bytes[: len(output_bytes) // 2]
+                    if attempts == 1
+                    else output_bytes
+                )
                 return _DownloadResponse(data)
 
         settings = LifeSettings.from_dict(
@@ -1871,7 +1695,18 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
                 with self.subTest(resolution=resolution, ratio=ratio):
                     self.assertIn(
                         openai_image.supported_aspect_ratio("gpt-image-2", ratio),
-                        {"2:3", "1:1", "16:9", "3:2", "3:4", "5:4", "4:3", "4:5", "9:16", "21:9"},
+                        {
+                            "2:3",
+                            "1:1",
+                            "16:9",
+                            "3:2",
+                            "3:4",
+                            "5:4",
+                            "4:3",
+                            "4:5",
+                            "9:16",
+                            "21:9",
+                        },
                     )
 
     def test_gpt_image_2_normalizes_legacy_unsupported_ratio_before_prompting(self):
@@ -2015,7 +1850,9 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
                         '"type":"invalid_request_error"}}',
                     )
                 if json.get("response_format") != "b64_json":
-                    return _Response(status=503, text="image task storage is unavailable")
+                    return _Response(
+                        status=503, text="image task storage is unavailable"
+                    )
                 return _Response(
                     payload={
                         "data": [
@@ -2064,7 +1901,9 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(generated.path.read_bytes(), output_bytes)
         image_url = calls[0][2]["images"][0]["image_url"]
         self.assertTrue(image_url.startswith("data:image/png;base64,"))
-        self.assertEqual(base64.b64decode(image_url.split(",", 1)[1]), reference.read_bytes())
+        self.assertEqual(
+            base64.b64decode(image_url.split(",", 1)[1]), reference.read_bytes()
+        )
 
     async def test_edit_image_downloads_openai_url_response(self):
         output_bytes = _real_png_bytes(2, 2)
@@ -2122,7 +1961,9 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
             generated = await service.edit_image("换成雨夜窗边", str(reference))
 
         self.assertEqual(generated.path.read_bytes(), output_bytes)
-        self.assertEqual(calls[0][0:2], ("POST", "https://openai-relay.example/v1/images/edits"))
+        self.assertEqual(
+            calls[0][0:2], ("POST", "https://openai-relay.example/v1/images/edits")
+        )
         self.assertEqual(calls[1][0:2], ("GET", "https://cdn.example/openai-edit.png"))
 
     async def test_edit_image_does_not_duplicate_character_identity_anchor(self):
@@ -2557,7 +2398,7 @@ class GrokVideoServiceTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, r"^Grok 视频任务超时：task-timeout$"):
             await service.generate_video("雨夜街边短视频")
 
-    async def test_video_uses_xai_compatible_json_payload(self):
+    async def test_video_uses_documented_first_frame_payload(self):
         settings = LifeSettings.from_dict(
             {
                 "image_generation_config": {
@@ -2599,19 +2440,20 @@ class GrokVideoServiceTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.url, "https://cdn.example/video.mp4")
         self.assertEqual(calls[0][1], "https://relay.example/v1/videos")
-        self.assertEqual(calls[0][3]["image"][:22], "data:image/png;base64,")
+        self.assertTrue(
+            calls[0][3]["input_reference"]["image_url"].startswith(
+                "data:image/png;base64,"
+            )
+        )
         self.assertEqual(calls[0][3]["aspect_ratio"], "9:16")
-        self.assertEqual(calls[0][3]["resolution"], "1080P")
+        self.assertEqual(calls[0][3]["resolution"], "1080p")
         self.assertEqual(calls[0][3]["seconds"], "8")
+        self.assertNotIn("image", calls[0][3])
+        self.assertNotIn("duration", calls[0][3])
         self.assertNotIn("size", calls[0][3])
         self.assertNotIn("n", calls[0][3])
         self.assertIsNone(calls[0][4])
         self.assertEqual(_timeout_total(calls[0][5]), 300)
-
-    async def test_video_size_maps_image_portrait_ratio_to_portrait_video_size(self):
-        self.assertEqual(video_size("2:3", "720p"), "720x1280")
-        self.assertEqual(video_size("4:5", "1080p"), "1024x1792")
-        self.assertEqual(video_size("21:9", "720p"), "1280x720")
 
     async def test_video_aspect_ratio_uses_nearest_supported_ratio(self):
         self.assertEqual(video_aspect_ratio("2:3"), "2:3")
@@ -2648,6 +2490,18 @@ class GrokVideoServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(prepared.data), VIDEO_REFERENCE_MAX_BYTES)
         self.assertTrue(prepared.compressed)
 
+    async def test_video_reference_480p_uses_480_pixel_short_side(self):
+        source = _real_bmp_bytes(2400, 3600)
+
+        prepared = prepare_video_reference_image(
+            source,
+            aspect_ratio="9:16",
+            resolution="480p",
+        )
+
+        self.assertEqual((prepared.output_width, prepared.output_height), (480, 853))
+        self.assertLessEqual(len(prepared.data), VIDEO_REFERENCE_MAX_BYTES)
+
     async def test_invalid_video_reference_fails_before_network_request(self):
         settings = LifeSettings.from_dict(
             {
@@ -2668,13 +2522,37 @@ class GrokVideoServiceTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(calls, [])
 
-    async def test_video_does_not_retry_removed_legacy_payload(self):
+    async def test_video_rejects_unsupported_resolution_before_request(self):
         settings = LifeSettings.from_dict(
             {
                 "video_generation_config": {
                     "enabled": True,
-                    "base_url": "https://legacy.example",
+                    "base_url": "https://relay.example",
                     "api_key": "key-a",
+                    "resolution": "4K",
+                }
+            }
+        ).video_generation
+        service = GrokVideoService(settings, Path(tempfile.mkdtemp()))
+        calls = []
+
+        with self.assertRaisesRegex(ValueError, "分辨率仅支持"):
+            await service._generate_video_task(
+                _Session(calls), service._headers(), "最新格式生成", None
+            )
+
+        self.assertEqual(calls, [])
+
+    async def test_video_uses_480p_text_request_and_task_id(self):
+        settings = LifeSettings.from_dict(
+            {
+                "video_generation_config": {
+                    "enabled": True,
+                    "base_url": "https://relay.example/v1/videos",
+                    "api_key": "key-a",
+                    "model": "grok-imagine-video-custom",
+                    "duration": 4,
+                    "resolution": "480p",
                     "poll_interval_seconds": 1,
                 }
             }
@@ -2682,59 +2560,29 @@ class GrokVideoServiceTest(unittest.IsolatedAsyncioTestCase):
         service = GrokVideoService(settings, Path(tempfile.mkdtemp()))
         calls = []
 
-        class _LatestOnlySession(_Session):
+        class _UpdatedSession(_Session):
             def request(
                 self, method, url, headers=None, json=None, data=None, timeout=None
             ):
                 self.calls.append((method, url, headers or {}, json, data, timeout))
                 if method == "POST" and url.endswith("/v1/videos"):
-                    return _Response(422, text="unsupported request fields")
-                return _Response(500, text="unexpected")
-
-        session = _LatestOnlySession(calls)
-
-        with self.assertRaises(VideoAPIError):
-            await service._generate_video_task(
-                session, service._headers(), "最新格式生成", None
-            )
-
-        post_payloads = [call[3] for call in calls if call[0] == "POST"]
-        self.assertEqual(len(post_payloads), 1)
-        self.assertNotIn("size", post_payloads[0])
-
-    async def test_official_generation_endpoint_uses_duration_and_poll_base(self):
-        settings = LifeSettings.from_dict(
-            {
-                "video_generation_config": {
-                    "enabled": True,
-                    "base_url": "https://api.x.ai/v1/videos/generations",
-                    "api_key": "key-a",
-                    "duration": 10,
-                    "resolution": "720p",
-                    "poll_interval_seconds": 1,
-                }
-            }
-        ).video_generation
-        service = GrokVideoService(settings, Path(tempfile.mkdtemp()))
-        calls = []
-
-        class _OfficialSession(_Session):
-            def request(
-                self, method, url, headers=None, json=None, data=None, timeout=None
-            ):
-                self.calls.append((method, url, headers or {}, json, data, timeout))
-                if method == "POST" and url.endswith("/v1/videos/generations"):
-                    return _Response(payload={"request_id": "official-1"})
-                if method == "GET" and url.endswith("/v1/videos/official-1"):
                     return _Response(
                         payload={
-                            "status": "done",
-                            "video": {"url": "https://cdn.example/official.mp4"},
+                            "id": "task-2",
+                            "task_id": "task-2",
+                            "status": "queued",
+                        }
+                    )
+                if method == "GET" and url.endswith("/v1/videos/task-2"):
+                    return _Response(
+                        payload={
+                            "status": "completed",
+                            "video": {"url": "https://cdn.example/new.mp4"},
                         }
                     )
                 return _Response(500, text="unexpected")
 
-        session = _OfficialSession(calls)
+        session = _UpdatedSession(calls)
 
         async def fake_sleep(_seconds):
             return None
@@ -2746,27 +2594,44 @@ class GrokVideoServiceTest(unittest.IsolatedAsyncioTestCase):
         result = await service._generate_video_task(
             session,
             service._headers(),
-            "官方接口生成",
-            _real_png_bytes(640, 360),
-            aspect_ratio="16:9",
+            "文字生成",
+            None,
         )
 
-        self.assertEqual(result.url, "https://cdn.example/official.mp4")
+        self.assertEqual(result.url, "https://cdn.example/new.mp4")
         payload = calls[0][3]
-        self.assertEqual(payload["duration"], 10)
-        self.assertEqual(payload["aspect_ratio"], "16:9")
-        self.assertEqual(payload["resolution"], "720p")
-        self.assertTrue(payload["image"]["url"].startswith("data:image/png;base64,"))
-        self.assertNotIn("seconds", payload)
-        self.assertEqual(calls[1][1], "https://api.x.ai/v1/videos/official-1")
+        self.assertEqual(payload["model"], "grok-imagine-video-custom")
+        self.assertEqual(payload["seconds"], "4")
+        self.assertEqual(payload["resolution"], "480p")
+        self.assertEqual(
+            set(payload),
+            {"model", "prompt", "seconds", "aspect_ratio", "resolution"},
+        )
+        self.assertEqual(calls[1][1], "https://relay.example/v1/videos/task-2")
 
-    async def test_video_endpoint_helpers_preserve_generation_path(self):
-        endpoint = "https://api.x.ai/v1/videos/generations"
+    async def test_video_endpoint_only_accepts_current_path(self):
+        endpoint = "https://relay.example/v1/videos"
         self.assertEqual(videos_endpoint(endpoint), endpoint)
+        self.assertEqual(videos_endpoint(f"{endpoint}/generations"), "")
         self.assertEqual(
             task_status_url(endpoint, "task/1"),
-            "https://api.x.ai/v1/videos/task%2F1",
+            "https://relay.example/v1/videos/task%2F1",
         )
+
+    async def test_old_video_endpoint_reports_current_path(self):
+        settings = LifeSettings.from_dict(
+            {
+                "video_generation_config": {
+                    "enabled": True,
+                    "base_url": "https://relay.example/v1/videos/generations",
+                    "api_key": "key-a",
+                }
+            }
+        ).video_generation
+        service = GrokVideoService(settings)
+
+        with self.assertRaisesRegex(RuntimeError, "接口地址须使用 /v1/videos"):
+            await service.generate_video("下雨的街道")
 
     async def test_poll_timeout_continues_until_next_success(self):
         settings = LifeSettings.from_dict(
@@ -2959,6 +2824,21 @@ class VideoMessageChainTest(unittest.TestCase):
         chain = ProactiveSendMixin.video_message_chain(str(path))
 
         self.assertIn({"type": "video", "file": str(path)}, chain.items)
+
+    def test_webchat_video_uses_downloadable_file_attachment(self):
+        chain = ProactiveSendMixin.video_file_message_chain(
+            "https://cdn.example/video.mp4"
+        )
+
+        self.assertEqual(len(chain.items), 1)
+        self.assertEqual(chain.items[0].name, "生活视频.mp4")
+        self.assertEqual(chain.items[0].url, "https://cdn.example/video.mp4")
+
+    def test_webchat_local_video_uses_file_path(self):
+        chain = ProactiveSendMixin.video_file_message_chain("/tmp/life.mp4")
+
+        self.assertEqual(chain.items[0].file, "/tmp/life.mp4")
+        self.assertEqual(chain.items[0].url, "")
 
 
 if __name__ == "__main__":

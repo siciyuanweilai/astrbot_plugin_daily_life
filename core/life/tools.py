@@ -81,7 +81,34 @@ def parse_life_datetime(value: Any) -> datetime.datetime | None:
     return parsed
 
 
-def timeline_item_datetime(item: Any, timeline_date: Any) -> datetime.datetime | None:
+def timeline_deferred_until(
+    item: Any, timeline_date: Any, meta: dict | None = None
+) -> datetime.datetime | None:
+    """读取匹配具体节点的临时顺延时间，日程重排后不会套用到别的节点。"""
+    values = meta or {}
+    if values.get("rest_delay_date") != str(timeline_date)[:10]:
+        return None
+    if _timeline_field(item, "execution_state", "planned") in {
+        "completed", "expired", "skipped", "cancelled"
+    }:
+        return None
+    try:
+        targets = json.loads(values.get("rest_delay_targets") or "[]")
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(targets, list):
+        return None
+    identity = [_timeline_field(item, "time"), _timeline_field(item, "activity")]
+    if identity not in targets:
+        return None
+    until = parse_life_datetime(values.get("rest_delay_until"))
+    planned = parse_life_datetime(f"{str(timeline_date)[:10]} {_timeline_field(item, 'time')}")
+    return until if until and planned and until > planned else None
+
+
+def timeline_item_datetime(
+    item: Any, timeline_date: Any, *, meta: dict | None = None
+) -> datetime.datetime | None:
     date = coerce_date(timeline_date)
     if date is None:
         return None
@@ -91,7 +118,9 @@ def timeline_item_datetime(item: Any, timeline_date: Any) -> datetime.datetime |
         return None
     if not (0 <= hour <= 23 and 0 <= minute <= 59):
         return None
-    return datetime.datetime.combine(date, datetime.time(hour, minute))
+    planned = datetime.datetime.combine(date, datetime.time(hour, minute))
+    deferred = timeline_deferred_until(item, timeline_date, meta)
+    return max(planned, deferred) if deferred else planned
 
 
 def parse_schedule_time(
@@ -648,6 +677,8 @@ def get_current_timeline_status(
     timeline: list,
     current_time: datetime.datetime = None,
     timeline_date: Any = None,
+    *,
+    meta: dict | None = None,
 ) -> tuple:
     if not current_time:
         current_time = life_now()
@@ -661,7 +692,7 @@ def get_current_timeline_status(
     timed_items = []
     for item in timeline:
         if timeline_date_value:
-            item_time = timeline_item_datetime(item, timeline_date_value)
+            item_time = timeline_item_datetime(item, timeline_date_value, meta=meta)
             if item_time:
                 timed_items.append((item_time, item))
             continue
@@ -706,6 +737,7 @@ def reconcile_timeline_execution(
     *,
     evidence: str = "时间轴时钟",
     timeline_end: Any = None,
+    meta: dict | None = None,
 ) -> bool:
     """推进时间轴观察态；时钟经过只代表计划已过，不代表动作已完成。"""
     date = coerce_date(timeline_date)
@@ -716,7 +748,7 @@ def reconcile_timeline_execution(
     changed = False
     timed_items = []
     for item in timeline:
-        item_time = timeline_item_datetime(item, date)
+        item_time = timeline_item_datetime(item, date, meta=meta)
         if item_time is not None:
             timed_items.append((item_time, item))
     timed_items.sort(key=lambda entry: entry[0])
@@ -735,10 +767,19 @@ def reconcile_timeline_execution(
             timeline_end=timeline_end,
             timeline_date=date,
         )
-        if date < current_time.date():
+        deferred_until = timeline_deferred_until(item, date, meta)
+        if deferred_until and index == len(timed_items) - 1 and not _timeline_duration_minutes(item):
+            original_time = timeline_item_datetime(item, date)
+            original_end = _timeline_window_boundary(timeline_end, date, after=original_time)
+            if original_end is not None:
+                window_end = original_end + (item_time - original_time)
+        if deferred_until is not None and now_key < deferred_until:
+            target = "planned"
+            reason = "休息已顺延：用户希望晚点再休息"
+        elif item_time.date() < current_time.date():
             target = "elapsed"
             reason = "计划日期已过，尚未收到执行证据"
-        elif date > current_time.date() or item_time > now_key:
+        elif item_time > now_key:
             target = "planned"
             reason = "等待计划开始"
         elif window_end is not None and now_key >= window_end:
@@ -749,7 +790,8 @@ def reconcile_timeline_execution(
             reason = "已到达计划开始时间"
         if previous in {"completed", "expired"} and target != previous:
             continue
-        if previous == target:
+        was_deferred = _timeline_field(item, "execution_reason", "").startswith("休息已顺延")
+        if previous == target and not (was_deferred and not deferred_until):
             continue
         setattr(item, "execution_state", target)
         setattr(item, "execution_reason", reason)
@@ -759,7 +801,9 @@ def reconcile_timeline_execution(
     return changed
 
 
-def format_timeline_to_text(timeline: list) -> str:
+def format_timeline_to_text(
+    timeline: list, *, timeline_date: Any = None, meta: dict | None = None
+) -> str:
     if not timeline:
         return "暂无详细日程"
     lines = []
@@ -771,6 +815,9 @@ def format_timeline_to_text(timeline: list) -> str:
         status_str = f" [{status}]" if status else ""
         execution = _timeline_field(item, "execution_state", "planned")
         execution_str = f" [执行:{execution}]" if execution else ""
+        deferred = timeline_deferred_until(item, timeline_date, meta)
+        if deferred:
+            time_str += f" → 顺延 {deferred:%m-%d %H:%M}"
         lines.append(f"{time_str} - {act}{status_str}{execution_str}")
         travel_text = format_timeline_travel(item, previous_place=previous_place)
         if travel_text:

@@ -221,7 +221,7 @@ class ProactiveRevisitMixin:
                 state = normalize_state(day.state.as_dict())
                 lines.append(f"- 当前身心状态：{format_state_prompt(state)}")
             if getattr(day, "timeline", None):
-                schedule_window = self._format_hidden_schedule_window(day.timeline, now)
+                schedule_window = self._format_hidden_schedule_window(day.timeline, now, timeline_date=day.date, meta=day.meta)
                 if schedule_window:
                     lines.append(schedule_window)
         else:

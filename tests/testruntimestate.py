@@ -149,7 +149,7 @@ class RuntimeStateTest(unittest.TestCase):
         self.assertNotIn("回复风格约束", text)
         self.assertNotIn("[HiddenAttentionState]", text)
 
-    def test_outfit_context_ignores_transient_sleep_and_outgoing_changes(self):
+    def test_outfit_context_ignores_outgoing_but_tracks_sleep_scene(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         data = DayRecord(
             date="2026-08-21",
@@ -173,12 +173,14 @@ class RuntimeStateTest(unittest.TestCase):
         before = runtime._outfit_context_signature(data, now, "深夜")
 
         data.state.outgoing = 80
+        self.assertEqual(before, runtime._outfit_context_signature(data, now, "深夜"))
         data.state.sleep.depth = "light_sleep"
         after = runtime._outfit_context_signature(data, now, "深夜")
 
-        self.assertEqual(before, after)
+        self.assertNotEqual(before, after)
+        data.state.sleep.depth = "awake"
         data.timeline[0].place_kind = "poi"
-        self.assertNotEqual(after, runtime._outfit_context_signature(data, now, "深夜"))
+        self.assertNotEqual(before, runtime._outfit_context_signature(data, now, "深夜"))
 
     def test_outfit_context_ignores_period_and_ordinary_home_activity_progress(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
@@ -356,12 +358,12 @@ class RuntimeStateTest(unittest.TestCase):
                 "theme": "雨后散步",
                 "mood": "松弛",
                 "style": "清爽日常风",
-                    "hair_style": "松散低马尾",
-                    "hair": "黑色中长直发，低马尾，碎发自然垂落",
-                    "makeup_style": "清透自然妆",
-                    "makeup": "薄透底妆，淡粉唇色",
-                    "nails_style": "奶白色短圆甲",
-                    "nails": "短圆甲面保持奶白色，表面干净",
+                "hair_style": "松散低马尾",
+                "hair": "黑色中长直发，低马尾，碎发自然垂落",
+                "makeup_style": "清透自然妆",
+                "makeup": "薄透底妆，淡粉唇色",
+                "nails_style": "奶白色短圆甲",
+                "nails": "短圆甲面保持奶白色，表面干净",
             },
             state=LifeState.from_value(
                 {
@@ -1860,6 +1862,40 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         for coro in scheduled:
             coro.close()
 
+    async def test_invite_save_preserves_newer_state_on_revision_conflict(self):
+        today = "2026-08-06"
+        archive = DataManager()
+        await archive.save_day(
+            DayRecord(
+                date=today,
+                timeline=[TimelineItem(time="13:00", activity="在家休息")],
+                state=LifeState(
+                    energy=60,
+                    summary="初始状态",
+                    updated_at="2026-08-06 13:00",
+                ),
+            )
+        )
+
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.archive = archive
+        incoming = await archive.get_day(today)
+        incoming.meta["pending_invite_alternative"] = "傍晚一起出门"
+
+        newer = await archive.get_day(today)
+        newer.state = LifeState(
+            energy=35,
+            summary="后台刚更新的状态",
+            updated_at="2026-08-06 14:00",
+        )
+        await archive.save_day(newer)
+
+        await runtime._save_invite_day(incoming, today)
+
+        stored = await archive.get_day(today)
+        self.assertEqual(stored.state.summary, "后台刚更新的状态")
+        self.assertEqual(stored.meta["pending_invite_alternative"], "傍晚一起出门")
+
     async def test_apply_config_rebuilds_runtime_and_saves_config(self):
         class Config(dict):
             def __init__(self, *args, **kwargs):
@@ -1991,9 +2027,9 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             await runtime._prepare_residence_change(target)
 
         day = await runtime.archive.get_day("2026-08-04")
-        self.assertEqual(day.weather, "")
-        self.assertIsNone(day.weather_info.temp)
-        self.assertEqual(day.weather_last_update, 0)
+        self.assertEqual(day.weather, "旧城市 晴 30°C")
+        self.assertEqual(day.weather_info.temp, 30)
+        self.assertEqual(day.weather_last_update, 123)
         self.assertEqual(day.places, [])
         self.assertEqual(day.meta["residence_context_stale"], "true")
         self.assertEqual(day.timeline[0].activity, "去旧城市公园散步")
@@ -2006,6 +2042,35 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(runtime.domains.boundary, "2026-08-04 18:01:00")
         self.assertEqual(runtime._injection_snapshot_cache, {})
         self.assertEqual(changed_reasons, ["residence_changed"])
+
+    async def test_prepare_weather_city_change_invalidates_weather_only(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.archive = DataManager()
+        runtime._injection_snapshot_cache = {"old": object()}
+        changed_reasons = []
+        runtime.mark_page_status_changed = lambda reason="": (
+            changed_reasons.append(reason) or async_return(1)
+        )
+        target = datetime.datetime(2026, 8, 4, 18, 0)
+        await runtime.archive.save_day(
+            DayRecord(
+                date="2026-08-04",
+                weather="旧城市 晴 30°C",
+                weather_info=WeatherInfo(condition="晴", temp=30),
+                weather_last_update=123,
+                timeline=[TimelineItem(time="18:00", activity="散步")],
+            )
+        )
+
+        await runtime._prepare_weather_city_change(target)
+
+        day = await runtime.archive.get_day("2026-08-04")
+        self.assertEqual(day.weather, "")
+        self.assertIsNone(day.weather_info.temp)
+        self.assertEqual(day.weather_last_update, 0)
+        self.assertEqual(day.timeline[0].activity, "散步")
+        self.assertEqual(runtime._injection_snapshot_cache, {})
+        self.assertEqual(changed_reasons, ["weather_city_changed"])
 
     async def test_runtime_service_swap_waits_for_active_lease(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)

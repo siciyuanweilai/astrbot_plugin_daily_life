@@ -12,6 +12,7 @@ from ...life.tools import (
     build_time_context,
     format_timeline_to_text,
     get_current_timeline_status,
+    timeline_item_datetime,
 )
 from ...life.wardrobe import (
     format_outfit_component_ledger,
@@ -55,6 +56,7 @@ class StageFrameMixin:
             getattr(day, "timeline", []) or [],
             now,
             getattr(day, "date", None),
+            meta=getattr(day, "meta", None),
         )
         current_place_kind = (
             getattr(current_item, "place_kind", "")
@@ -128,11 +130,8 @@ class StageFrameMixin:
                 f"当前活动：{activity or '未知'}{f'（{status}）' if status else ''}"
             )
         if next_item:
-            time_text = (
-                getattr(next_item, "time", "")
-                if hasattr(next_item, "time")
-                else next_item.get("time", "")
-            )
+            next_time = timeline_item_datetime(next_item, day.date, meta=day.meta)
+            time_text = next_time.strftime("%m-%d %H:%M") if next_time else "待定"
             activity = (
                 getattr(next_item, "activity", "")
                 if hasattr(next_item, "activity")
@@ -141,7 +140,7 @@ class StageFrameMixin:
             parts.append(f"下一段安排：{time_text} {activity}".strip())
         if state_dict:
             parts.append(f"身体与情绪状态：{format_state_prompt(state_dict)}")
-        timeline = format_timeline_to_text(getattr(day, "timeline", []) or [])
+        timeline = format_timeline_to_text(getattr(day, "timeline", []) or [], timeline_date=day.date, meta=day.meta)
         if timeline:
             parts.append(f"全天日程背景（连续性参考）：\n{timeline}")
         parts.append(f"当前时间：{now.strftime('%Y-%m-%d %H:%M')}")

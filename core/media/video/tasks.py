@@ -35,8 +35,6 @@ _FAILED = {"failed", "expired", "error", "cancelled", "canceled", "rejected"}
 
 def task_status_url(endpoint: str, request_id: str) -> str:
     base = endpoint.rstrip("/")
-    if base.lower().endswith("/v1/videos/generations"):
-        base = base[: -len("/generations")]
     return f"{base}/{quote(str(request_id), safe='')}"
 
 

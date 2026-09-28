@@ -125,7 +125,9 @@ def videos_endpoint(raw: str) -> str:
     base = str(raw or "").strip().rstrip("/")
     if not base:
         return ""
-    if base.endswith(("/v1/videos", "/v1/videos/generations")):
+    if base.lower().endswith("/v1/videos/generations"):
+        return ""
+    if base.endswith("/v1/videos"):
         return base
     if base.endswith("/v1"):
         return f"{base}/videos"
@@ -193,7 +195,7 @@ def extract_content_url(data: Any, base_origin: str) -> str:
 def extract_request_id(data: Any) -> str:
     if not isinstance(data, dict):
         return ""
-    for key in ("request_id", "task_id", "id"):
+    for key in ("task_id", "id"):
         value = str(data.get(key) or "").strip()
         if value:
             return value

@@ -1723,6 +1723,52 @@ h2::before {
   justify-content: flex-end;
 }
 
+.template-list-reorder {
+  display: inline-flex;
+  gap: 2px;
+  align-items: center;
+}
+
+.template-list-move {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  min-height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.template-list-move:hover:not(:disabled) {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--line) 45%, transparent);
+}
+
+.template-list-move:focus-visible {
+  outline: 2px solid var(--rose);
+  outline-offset: 2px;
+}
+
+.template-list-move:disabled {
+  cursor: default;
+  opacity: 0.34;
+}
+
+.template-list-move svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
 .template-list-item-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1790,6 +1836,10 @@ h2::before {
   align-self: end;
   padding-inline: 9px;
   white-space: nowrap;
+}
+
+.template-list-item-inline > .template-list-item-actions {
+  align-self: end;
 }
 
 .template-list-item-compact .template-list-subfield {

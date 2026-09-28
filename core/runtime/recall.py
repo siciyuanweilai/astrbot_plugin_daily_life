@@ -231,13 +231,14 @@ class RecallMixin:
         source_message_id: str = "",
         raise_delivery_errors: bool = False,
         log_outbound: bool = True,
+        prefer_scope_send: bool = False,
     ) -> bool:
         if not self.can_send_for_source(
             scope, source_event=source_event, source_message_id=source_message_id
         ):
             return False
         event_sender = getattr(source_event, "send", None)
-        if callable(event_sender):
+        if callable(event_sender) and not prefer_scope_send:
             await event_sender(chain)
             if log_outbound:
                 outbound_logger = getattr(self, "log_outbound_message_async", None)

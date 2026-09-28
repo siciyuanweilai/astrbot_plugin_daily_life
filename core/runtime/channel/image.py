@@ -16,7 +16,7 @@ from ...life.appearance import (
     format_image_appearance_context,
     is_historical_appearance_request,
 )
-from ...life.appearance_history import historical_appearance_context
+from ...life.appearance_history import appearance_query, historical_appearance_context
 from ...life.tools import get_current_timeline_status
 from ...life.wardrobe import (
     normalize_outfit_decision,
@@ -67,11 +67,49 @@ class ImageGenerationExecution:
 
 class RuntimeImageMediaMixin:
     _CURRENT_APPEARANCE_PROMPT_MARKER = "当前生活状态权威造型快照"
+    _HISTORICAL_APPEARANCE_PROMPT_MARKER = "历史生活记录权威造型快照"
     _DIRECT_IMAGE_TOOLS = frozenset({"life_image_generate", "edit_life_image"})
 
     @staticmethod
     def _is_historical_appearance_request(*values: object) -> bool:
         return any(is_historical_appearance_request(value) for value in values)
+
+    def _historical_life_request_text(self, source_request: str, prompt: str) -> str:
+        now = self._runtime_now()
+        source_query = appearance_query(source_request, now)
+        prompt_query = appearance_query(prompt, now)
+        source_is_historical = is_historical_appearance_request(source_request)
+        if not source_is_historical and any(
+            cue in source_request
+            for cue in ("今天", "今晚", "现在", "刚才", "刚刚", "主题", "风格", "氛围")
+        ):
+            return ""
+        if source_is_historical and source_query[0] != "ambiguous":
+            if (
+                is_historical_appearance_request(prompt)
+                and prompt_query[0] == source_query[0]
+                and source_query[1] is None
+                and prompt_query[1] is not None
+            ):
+                return f"{source_request} {prompt}".strip()
+            return source_request
+        if is_historical_appearance_request(prompt) and prompt_query[0] != "ambiguous":
+            return f"{source_request} {prompt}".strip()
+        return source_request if source_is_historical else ""
+
+    def _apply_historical_appearance_snapshot(
+        self, prompt: str, appearance: str
+    ) -> str:
+        text = str(prompt or "").strip()
+        snapshot = str(appearance or "").strip()
+        if not snapshot or self._HISTORICAL_APPEARANCE_PROMPT_MARKER in text:
+            return text
+        constraint = (
+            f"{self._HISTORICAL_APPEARANCE_PROMPT_MARKER}：\n{snapshot}\n"
+            "这是画面所指日期和时段的真实造型；每张照片的服装、鞋袜、配饰、发型、妆容和美甲"
+            "都以同一历史记录为准。不得采用当前生活状态或镜头规划自行改写的造型。"
+        )
+        return f"{text}\n\n{constraint}" if text else constraint
 
     @classmethod
     def _active_agent_runner(cls, event: Any) -> Any:
@@ -316,6 +354,7 @@ JSON 字段：
             getattr(day, "timeline", []) or [],
             now,
             getattr(day, "date", None),
+            meta=getattr(day, "meta", None),
         )
         place_kind = (
             getattr(current_item, "place_kind", "")
@@ -1517,15 +1556,10 @@ JSON 字段：
         route = self._normalize_image_subject_route(subject_route)
         current_appearance = ""
         source_request = self._event_current_image_request_text(event)
-        historical_text = (
-            source_request
-            if is_historical_appearance_request(source_request)
-            else prompt
+        historical_text = self._historical_life_request_text(source_request, prompt)
+        historical_request = route in {"current_character", "group"} and bool(
+            historical_text
         )
-        historical_request = route in {
-            "current_character",
-            "group",
-        } and is_historical_appearance_request(historical_text)
         if current_outfit_change and historical_request:
             return "历史回现不会改变当前穿搭。请取消 current_outfit_change 后重试；若要实际换回，请先明确换装要求。"
         if current_outfit_change:
@@ -1567,6 +1601,7 @@ JSON 字段：
                 getattr(updated_day, "timeline", []) or [],
                 current_time,
                 getattr(updated_day, "date", None),
+                meta=getattr(updated_day, "meta", None),
             )
             place_kind = (
                 getattr(current_item, "place_kind", "")
@@ -1599,12 +1634,9 @@ JSON 字段：
             )
             if not historical_appearance:
                 return "没有找到能确认日期和时段的历史造型，请补充具体日期或时段；这次未生成图片。"
-            if historical_appearance:
-                prompt = (
-                    f"{prompt}\n\n{historical_appearance}\n"
-                    "这是用户明确要求回现的历史实际造型，服装、配饰和发型必须以此为准；"
-                    "不要使用今天的穿搭替换它。"
-                )
+            prompt = self._apply_historical_appearance_snapshot(
+                prompt, historical_appearance
+            )
         if not current_appearance and not historical_request:
             current_appearance = await self._current_life_appearance_snapshot(route)
         if (

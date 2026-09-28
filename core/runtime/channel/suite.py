@@ -11,7 +11,6 @@ from typing import Any
 
 from astrbot.api import logger
 
-from ...life.appearance import is_historical_appearance_request
 from ...life.people import MEDIA_PERSON_TEXT_PATHS
 from ...media.base import GROUP_IDENTITY_CONTINUITY_RULE, image_mime_and_ext
 from ...media.picture.routes import image_provider_label, requested_image_provider
@@ -346,6 +345,16 @@ class RuntimePhotoSuiteMediaMixin:
             route = self._normalize_image_subject_route(
                 str(manifest.get("subject_route") or "free")
             )
+            historical_text = self._historical_life_request_text(
+                str(manifest.get("source_request") or ""), prompt
+            )
+            if (
+                route in {"current_character", "group"}
+                and historical_text
+                and manifest.get("current_appearance")
+                and not manifest.get("historical_appearance")
+            ):
+                return "上一组照片误用了当前造型，无法直接重拍；请重新请求这组照片。"
             participant_ids = self._normalize_image_participants(
                 manifest.get("participants")
             )
@@ -388,28 +397,21 @@ class RuntimePhotoSuiteMediaMixin:
                 )
                 friend_look_persist = self._friend_look_should_persist(look_source)
             source_request = self._event_current_image_request_text(event)
-            historical_text = (
-                source_request
-                if is_historical_appearance_request(source_request)
-                else prompt
+            historical_text = self._historical_life_request_text(source_request, prompt)
+            historical_request = route in {"current_character", "group"} and bool(
+                historical_text
             )
-            historical_request = route in {
-                "current_character",
-                "group",
-            } and is_historical_appearance_request(historical_text)
             current_appearance = ""
+            historical_appearance = ""
             if historical_request:
                 historical_appearance = await self._historical_life_appearance_snapshot(
                     historical_text
                 )
                 if not historical_appearance:
                     return "没有找到能确认日期和时段的历史造型，请补充具体日期或时段；这次未生成组图。"
-                if historical_appearance:
-                    prompt = (
-                        f"{prompt}\n\n{historical_appearance}\n"
-                        "这是用户明确要求回现的历史实际造型，服装、配饰和发型必须以此为准；"
-                        "不要使用今天的穿搭替换它。"
-                    )
+                prompt = self._apply_historical_appearance_snapshot(
+                    prompt, historical_appearance
+                )
             if (
                 not historical_request
                 and not reference_image
@@ -449,6 +451,7 @@ class RuntimePhotoSuiteMediaMixin:
                     event, route
                 ),
                 "current_appearance": current_appearance,
+                "historical_appearance": historical_appearance,
                 "source_request": source_request,
                 "friend_look": friend_look,
                 "friend_look_persist": friend_look_persist,
@@ -537,11 +540,14 @@ class RuntimePhotoSuiteMediaMixin:
                 subject_route=str(manifest.get("subject_route") or "free"),
                 participants=list(manifest.get("participants") or []),
             )
+            historical_appearance = str(manifest.get("historical_appearance") or "")
             manifest["shots"] = [
                 {
                     "index": index,
                     "title": shot["title"],
-                    "prompt": shot["prompt"],
+                    "prompt": self._apply_historical_appearance_snapshot(
+                        shot["prompt"], historical_appearance
+                    ),
                     "status": "pending",
                     "path": "",
                     "attempts": 0,

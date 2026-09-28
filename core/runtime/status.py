@@ -16,10 +16,12 @@ from ..life.condition import (
     state_is_stale,
     state_log_entry,
 )
+from ..life.rest_delay import format_rest_delay_hint
 from ..life.signals import physiological_rhythm_log_from_state
 from ..life.tools import (
     extract_json_from_text,
     get_current_timeline_status,
+    timeline_deferred_until,
     timeline_item_datetime,
 )
 from ..models import DayRecord, EmotionArcRecord, LifeState
@@ -56,18 +58,25 @@ class StatusMixin:
         emotion_context: str = "",
         rhythm_context: str = "",
     ) -> str:
-        curr_act, next_act = get_current_timeline_status(data.timeline, now, data.date)
+        curr_act, next_act = get_current_timeline_status(data.timeline, now, data.date, meta=data.meta)
         activity_text = curr_act.activity if curr_act else "碎片时间"
-        next_text = f"{next_act.time} {next_act.activity}" if next_act else "无"
+        next_time = timeline_item_datetime(next_act, data.date, meta=data.meta)
+        next_text = f"{next_time:%m-%d %H:%M} {next_act.activity}" if next_act and next_time else "无"
+        rest_delay_hint = format_rest_delay_hint(data, now)
         state_log = data.state_log
         state_log_text = "\n".join(str(item) for item in state_log[-6:]) or "无"
         lifecycle_text = ""
         meta = data.meta or {}
+        deferred_ids = {
+            f"{data.date}:{index}" for index, item in enumerate(data.timeline)
+            if (until := timeline_deferred_until(item, data.date, meta)) and until > now
+        }
         future_anchors = []
         for index, item in enumerate(data.timeline):
             item_time = timeline_item_datetime(item, data.date)
             if (
                 item_time is None
+                or f"{data.date}:{index}" in deferred_ids
                 or item_time <= now.replace(tzinfo=None)
                 or item.execution_state != "planned"
             ):
@@ -88,6 +97,11 @@ class StatusMixin:
             near_term = json.loads(near_term_text) if near_term_text else []
         except (TypeError, ValueError, json.JSONDecodeError):
             near_term = []
+        if deferred_ids and isinstance(near_term, list):
+            near_term = [
+                item for item in near_term
+                if isinstance(item, dict) and item.get("anchor_id") not in deferred_ids
+            ]
         lifecycle_text = (
             "\n连续生活参数："
             f"\n- 日程基调 life_mode: {meta.get('life_mode') or '未知'}"
@@ -95,6 +109,11 @@ class StatusMixin:
             f"\n- sleep_debt: {meta.get('sleep_debt') or '0'}/10"
             f"\n- energy_carryover: {meta.get('energy_carryover') or '未知'}/100"
         )
+        if rest_delay_hint:
+            lifecycle_text += (
+                f"\n- 临时休息安排：{rest_delay_hint}。"
+                "状态判断应把用户明确的延后要求视为当前证据，不要只按原始钟点强行切换为睡眠。"
+            )
         fixed = f"""更新当前角色此刻的身体和情绪状态。日程默认不变；只有新的状态、天气或已失败动作明确使后续安排不可行时，才提出局部重排。
 
 【通用自主原则】
@@ -154,6 +173,7 @@ class StatusMixin:
 - interrupt_level 表示当前可打断等级：ordinary=普通消息也可自然进入注意，medium=熟悉用户/相关话题/异常热闹才进入，high=只有@、引用、提到我、高风险冲突或强相关事件才进入。
 - watch_state、boredom、fishing、attention_openness 和 interrupt_level 是同一个主观注意力状态机；要根据体力、困倦、忙碌、社交意愿、当前活动和触发信息自主判断，不要套固定时间或固定文本规则。
 - sleep.depth 是此刻睡眠/休息层级：awake=清醒，light_rest=浅休息但仍可能留意，light_sleep=浅睡眠且普通消息难进入，deep_sleep=深度睡眠只可能被强打断信号影响。它由能量、困意、当前活动、昨日睡眠债、时间线索和消息打断等级共同判断，不要由固定时间直接决定。
+- 用户希望晚点休息时，结合当前对话与疲惫程度调整节奏；顺延结束只是再次评估的时间，不代表已经入睡。困倦可以和继续聊天并存，不能因为陪聊把体力、睡眠债或困倦直接清零。
 - physiological_rhythm 是通用身体节律：包括精力曲线、身体状态、恢复动作、社交电量、注意力状态和可选周期字段。
 - body_condition.burden_present 是身体负荷的唯一语义开关：有负荷填 true 并让 intensity、source、recovery_actions 与期限相互一致；无负荷填 false、intensity=0。不要让消费端从 label、source、summary 或其他自然语言反推身体负荷。
 - 结合下方“状态因果线索”重新审视状态。线索只允许由已有体力、睡眠、压力或身体负荷带来连续的小幅变化；没有依据时保持稳定，不得凭日期、时段或随机性制造疾病、疼痛或情绪低潮。

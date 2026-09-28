@@ -176,6 +176,12 @@ def _install_stubs():
         def fromFileSystem(path):
             return {"type": "video", "file": str(path)}
 
+    class _File:
+        def __init__(self, name, file="", url=""):
+            self.name = name
+            self.file = file
+            self.url = url
+
     class _Record:
         def __init__(self, file=None, **kwargs):
             self.type = "record"
@@ -281,6 +287,7 @@ def _install_stubs():
     modules["astrbot.api.message_components"].At = _At
     modules["astrbot.api.message_components"].Reply = _Reply
     modules["astrbot.api.message_components"].Video = _Video
+    modules["astrbot.api.message_components"].File = _File
     modules["astrbot.api.message_components"].Record = _Record
     modules["astrbot.core"].html_renderer = _HtmlRenderer()
     modules["astrbot.api.event.filter"].EventMessageType = _EventMessageType

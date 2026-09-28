@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import datetime
 import hashlib
 import json
@@ -7,6 +8,7 @@ from typing import Any
 
 from astrbot.api import logger
 
+from ...archive import DayRevisionConflict
 from ...clock import now as life_now
 from ...models import CommitmentRecord, DayRecord, EventRecord, PlaceRecord
 from ..locks import operation_lock
@@ -14,6 +16,24 @@ from ..markers import LOG_PREFIX
 
 
 class SpineInviteMixin:
+    async def _save_invite_day(self, data: DayRecord, date_str: str) -> DayRecord:
+        """Save invite changes without overwriting a newer live state update."""
+
+        try:
+            return await self.archive.save_day(data)
+        except DayRevisionConflict as exc:
+            if "字段 state" not in str(exc) and "字段 state_log" not in str(exc):
+                raise
+
+        latest = await self.archive.get_day(date_str)
+        if latest is None:
+            raise DayRevisionConflict(f"日期 {date_str} 已被其他任务删除")
+        # Keep the newest state and retry the invite-owned changes through the
+        # normal revision merge so concurrent timeline/meta edits remain guarded.
+        data.state = copy.deepcopy(latest.state)
+        data.state_log = copy.deepcopy(latest.state_log)
+        return await self.archive.save_day(data)
+
     async def sync_outfit_after_invite(
         self,
         date_str: str,
@@ -358,7 +378,7 @@ class SpineInviteMixin:
                 )
         # 先登记已确认的邀请证据，再提交日程。这样聊天记忆后台即使同时
         # 提炼同一条消息，也会看到权威的 invite 记录，不会把地点改回旧候选。
-        await self.archive.save_day(data)
+        await self._save_invite_day(data, today_str)
         await self.archive.add_events(
             today_str,
             [
@@ -451,7 +471,7 @@ class SpineInviteMixin:
                 )
         if not alternative:
             data.meta.pop("pending_invite_alternative", None)
-        await self.archive.save_day(data)
+        await self._save_invite_day(data, today_str)
         memos_invite_items = [
             f"邀约结果：暂未接受【{sender_name}】的邀约：{invite_details}",
             f"原因：{reason}",

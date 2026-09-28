@@ -5,11 +5,13 @@ from ...config.options.basis import format_chat_style_prompt
 from ...life.appearance import format_current_appearance_context
 from ...life.calendar import format_calendar_context, format_season_context
 from ...life.condition import format_physiological_rhythm_prompt
+from ...life.rest_delay import format_rest_delay_hint, is_rest_activity
 from ...life.tools import (
     build_time_context,
     format_timeline_travel,
     get_current_timeline_status,
-    parse_time_minutes,
+    timeline_deferred_until,
+    timeline_item_datetime,
 )
 from ...models import CommitmentRecord, DayRecord
 from ...prompts import CORE_HIDDEN_CONTEXT_RULES
@@ -154,8 +156,13 @@ class LayerTextMixin:
         *,
         previous_place: str = "",
         include_travel: bool = False,
+        timeline_date: Any = None,
+        meta: dict | None = None,
     ) -> str:
         time_text = self._hidden_text(getattr(item, "time", ""), 8)
+        deferred = timeline_deferred_until(item, timeline_date, meta)
+        if deferred:
+            time_text += f" → 顺延 {deferred:%m-%d %H:%M}"
         activity = self._hidden_text(getattr(item, "activity", ""), limit)
         status = self._hidden_text(getattr(item, "status", ""), 16)
         status_text = f" [{status}]" if status else ""
@@ -171,26 +178,24 @@ class LayerTextMixin:
         return text
 
     def _format_hidden_schedule_window(
-        self, timeline: list[Any], now: datetime.datetime
+        self, timeline: list[Any], now: datetime.datetime,
+        *, timeline_date: Any = None, meta: dict | None = None,
     ) -> str:
         if not timeline:
             return ""
 
+        date = timeline_date or now.date()
         timed = sorted(
-            (
-                parse_time_minutes(getattr(item, "time", "")),
-                index,
-                item,
-            )
-            for index, item in enumerate(timeline)
+            (time, index, item) for index, item in enumerate(timeline)
+            if (time := timeline_item_datetime(item, date, meta=meta)) is not None
         )
         if not timed:
             return ""
 
-        now_minute = now.hour * 60 + now.minute
-        current_pos = 0
-        for pos, (minute, _, _) in enumerate(timed):
-            if minute <= now_minute:
+        current, _ = get_current_timeline_status(timeline, now, date, meta=meta)
+        current_pos = -1
+        for pos, (time, _, _) in enumerate(timed):
+            if time <= now:
                 current_pos = pos
             else:
                 break
@@ -199,7 +204,7 @@ class LayerTextMixin:
         index_text = "；".join(
             part
             for part in (
-                self._format_timeline_item_compact(item, limit=24)
+                self._format_timeline_item_compact(item, limit=24, timeline_date=date, meta=meta)
                 for _, _, item in timed
             )
             if part
@@ -208,11 +213,11 @@ class LayerTextMixin:
             lines.append(f"- 全天索引: {self._hidden_text(index_text, 420)}")
 
         for pos in range(max(0, current_pos - 1), min(len(timed), current_pos + 3)):
-            label = (
-                "当前"
-                if pos == current_pos
-                else ("上一段" if pos < current_pos else "接下来")
-            )
+            item = timed[pos][2]
+            if item is current:
+                label = "当前计划" if is_rest_activity(item) else "当前"
+            else:
+                label = "已过计划" if timed[pos][0] <= now else "接下来"
             previous_item = timed[pos - 1][2] if pos > 0 else None
             previous_place = (
                 str(getattr(previous_item, "place", "") or "").strip()
@@ -220,7 +225,7 @@ class LayerTextMixin:
                 else ""
             )
             lines.append(
-                f"- {label}: {self._format_timeline_item_compact(timed[pos][2], previous_place=previous_place, include_travel=True)}"
+                f"- {label}: {self._format_timeline_item_compact(item, previous_place=previous_place, include_travel=True, timeline_date=date, meta=meta)}"
             )
 
         return (
@@ -243,35 +248,49 @@ class LayerTextMixin:
             meta = data.meta or {}
             life_mode = meta.get("life_mode", "")
             sleep_mode = meta.get("sleep_mode", "")
+            delay_hint = format_rest_delay_hint(data, now)
             if life_mode in {
                 "awake",
                 "late_night",
                 "all_nighter",
                 "mixed",
             } or sleep_mode in {"late_night", "all_nighter"}:
+                activity = (
+                    f"🌙 今日生成基调: {life_mode or sleep_mode}，当前是否清醒仍按实时状态和时间轴判断"
+                )
+                if delay_hint:
+                    activity += f"；{delay_hint}"
                 return (
                     f"深夜/凌晨，日程基调 {life_mode or sleep_mode}",
-                    f"🌙 今日生成基调: {life_mode or sleep_mode}，当前是否清醒仍按实时状态和时间轴判断",
+                    activity,
                     period_cn,
                 )
+            activity = (
+                "💤 今日生成基调偏休息/低活动，结合实时状态与时间线自然判断是否清醒、困倦或已休息"
+            )
+            if delay_hint:
+                activity += f"；{delay_hint}"
             return (
                 f"深夜/凌晨，日程基调 {life_mode or sleep_mode or '延续昨日状态'}",
-                "💤 今日生成基调偏休息/低活动，结合实时状态与时间线自然判断是否清醒、困倦或已休息",
+                activity,
                 period_cn,
             )
 
         status_desc = self._get_time_status(now)
-        curr_act, next_act = get_current_timeline_status(data.timeline, now, data.date)
+        curr_act, next_act = get_current_timeline_status(data.timeline, now, data.date, meta=data.meta)
+        next_time = timeline_item_datetime(next_act, data.date, meta=data.meta)
+        next_hint = f" | 🔜 待办: {next_time:%m-%d %H:%M} {next_act.activity}" if next_act and next_time else ""
         if curr_act:
-            activity = (
-                f"📍 正在: {curr_act.activity} (状态: {curr_act.status or '平和'})"
-            )
-            if next_act:
-                activity += f" | 🔜 待办: {next_act.time} {next_act.activity}"
+            if is_rest_activity(curr_act):
+                activity = f"当前休息计划: {curr_act.activity}；是否已入睡应结合实时状态和最新对话，不能按钟点断言"
+            else:
+                activity = f"📍 正在: {curr_act.activity} (状态: {curr_act.status or '平和'})"
         else:
             activity = "⏳ 碎片时间 (无特定安排)"
-            if next_act:
-                activity += f" | 🔜 待办: {next_act.time} {next_act.activity}"
+        activity += next_hint
+        delay_hint = format_rest_delay_hint(data, now)
+        if delay_hint:
+            activity += f" | 🕒 {delay_hint}"
         return status_desc, activity, period_cn
 
     def build_hidden_life_context(
@@ -335,10 +354,18 @@ class LayerTextMixin:
 
             if data.timeline:
                 schedule_window = self._format_hidden_schedule_window(
-                    data.timeline, now
+                    data.timeline, now, timeline_date=data.date, meta=data.meta
                 )
                 if schedule_window:
                     parts.append(f"\n{schedule_window}")
+
+            delay_hint = format_rest_delay_hint(data, now)
+            if delay_hint:
+                parts.append(
+                    "\n[HiddenRestDelay] "
+                    + delay_hint
+                    + "；这是当前对话形成的临时安排，不能把原定节点当成已经发生。"
+                )
 
             weather_info = data.weather_info
             weather_str = data.weather or "未知"

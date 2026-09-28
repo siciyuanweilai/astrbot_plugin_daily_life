@@ -1781,79 +1781,6 @@
               }
             }
           },
-          "seedream": {
-            "name": "Seedream",
-            "items": {
-              "group_name": {
-                "description": "分组名称",
-                "type": "string",
-                "default": "Seedream",
-                "hint": "自定义这条文生图接口通道的名称，用于区分不同接口分组。"
-              },
-              "api_url": {
-                "description": "接口地址",
-                "type": "string",
-                "default": "",
-                "hint": "Seedream 图片接口地址。"
-              },
-              "api_key": {
-                "description": "接口密钥",
-                "type": "string",
-                "default": "",
-                "hint": "这条接口通道单独使用的密钥。"
-              },
-              "model": {
-                "description": "模型名称",
-                "type": "string",
-                "default": "seedream-5.0-pro",
-                "hint": "Seedream 图片模型名称；请填写服务端 /v1/models 返回的完整模型名。"
-              },
-              "resolution": {
-                "description": "图片尺寸",
-                "type": "string",
-                "default": "4K",
-                "options": [
-                  "1K",
-                  "2K",
-                  "4K"
-                ],
-                "hint": "Seedream 通道的图片尺寸档位。"
-              },
-              "aspect_ratio": {
-                "description": "图片比例",
-                "type": "string",
-                "default": "1:1",
-                "options": [
-                  "1:1",
-                  "1:4",
-                  "1:8",
-                  "2:3",
-                  "3:2",
-                  "3:4",
-                  "4:1",
-                  "4:3",
-                  "4:5",
-                  "5:4",
-                  "8:1",
-                  "9:16",
-                  "16:9",
-                  "21:9"
-                ],
-                "hint": "Seedream 通道的图片比例。"
-              },
-              "timeout_seconds": {
-                "description": "超时（秒）",
-                "type": "int",
-                "default": 300,
-                "slider": {
-                  "min": 10,
-                  "max": 600,
-                  "step": 10
-                },
-                "hint": "Seedream 图片通道单次请求的最长等待时间；慢速接口建议至少 300 秒。"
-              }
-            }
-          },
           "grok": {
             "name": "Grok Image",
             "items": {
@@ -2092,79 +2019,6 @@
               }
             }
           },
-          "seedream": {
-            "name": "Seedream",
-            "items": {
-              "group_name": {
-                "description": "分组名称",
-                "type": "string",
-                "default": "Seedream",
-                "hint": "自定义这条图生图接口通道的名称，用于区分不同接口分组。"
-              },
-              "api_url": {
-                "description": "接口地址",
-                "type": "string",
-                "default": "",
-                "hint": "Seedream 图片接口地址。"
-              },
-              "api_key": {
-                "description": "接口密钥",
-                "type": "string",
-                "default": "",
-                "hint": "这条接口通道单独使用的密钥。"
-              },
-              "model": {
-                "description": "模型名称",
-                "type": "string",
-                "default": "doubao-seedream-4-0-250828",
-                "hint": "Seedream 图片模型名称；请填写服务端 /v1/models 返回的完整模型名。"
-              },
-              "resolution": {
-                "description": "图片尺寸",
-                "type": "string",
-                "default": "4K",
-                "options": [
-                  "1K",
-                  "2K",
-                  "4K"
-                ],
-                "hint": "Seedream 通道的图片尺寸档位。"
-              },
-              "aspect_ratio": {
-                "description": "图片比例",
-                "type": "string",
-                "default": "1:1",
-                "options": [
-                  "1:1",
-                  "1:4",
-                  "1:8",
-                  "2:3",
-                  "3:2",
-                  "3:4",
-                  "4:1",
-                  "4:3",
-                  "4:5",
-                  "5:4",
-                  "8:1",
-                  "9:16",
-                  "16:9",
-                  "21:9"
-                ],
-                "hint": "Seedream 通道的图片比例。"
-              },
-              "timeout_seconds": {
-                "description": "超时（秒）",
-                "type": "int",
-                "default": 300,
-                "slider": {
-                  "min": 10,
-                  "max": 600,
-                  "step": 10
-                },
-                "hint": "Seedream 图片通道单次请求的最长等待时间；慢速接口建议至少 300 秒。"
-              }
-            }
-          },
           "grok": {
             "name": "Grok Image",
             "items": {
@@ -2268,7 +2122,7 @@
         "description": "模型名称",
         "type": "string",
         "default": "grok-imagine-video-1.5",
-        "hint": "Grok Imagine Video 模型名称；已有自定义模型配置会继续保留。"
+        "hint": "填写视频接口支持的模型名称。"
       },
       "duration": {
         "description": "时长（秒）",
@@ -2286,6 +2140,7 @@
         "type": "string",
         "default": "720p",
         "options": [
+          "480p",
           "720p",
           "1080p"
         ],

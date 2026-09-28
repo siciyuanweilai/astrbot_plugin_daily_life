@@ -331,6 +331,30 @@ class ToolReactionTest(unittest.IsolatedAsyncioTestCase):
             [TOOL_REACTION_PROCESSING, TOOL_REACTION_SUCCESS],
         )
 
+    async def test_general_result_media_error_requires_accepted_media_task(self):
+        for status, text, suppressed in (
+            ("pending", "LLM 响应错误: All available chat models are unavailable.", True),
+            ("error", "LLM 响应错误: All available chat models are unavailable.", False),
+            ("pending", "视频还在生成", False),
+            (None, "LLM 响应错误: All available chat models are unavailable.", False),
+        ):
+            with self.subTest(status=status, text=text):
+                runtime, event, _ = self._runtime_event()
+                tool = types.SimpleNamespace(name="life_video_generate")
+                if status:
+                    await runtime.note_tool_reaction_start(event, tool, {})
+                    await runtime.note_tool_reaction_result(
+                        event, tool, {}, json.dumps({"status": status, "media": "video"})
+                    )
+                result = types.SimpleNamespace(
+                    chain=[types.SimpleNamespace(text=text)],
+                    result_content_type="GENERAL_RESULT",
+                )
+                event.set_result(result)
+
+                self.assertEqual(runtime.suppress_media_agent_error(event), suppressed)
+                self.assertIs(event.get_result(), None if suppressed else result)
+
     async def test_contract_specific_results_do_not_use_generic_failure_matching(self):
         outcome = DailyLifeRuntime._tool_reaction_outcome
 

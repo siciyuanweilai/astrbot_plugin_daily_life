@@ -56,6 +56,13 @@ class GrokVideoService:
         text = str(prompt or "").strip()
         if not text:
             raise ValueError("缺少视频提示词")
+        if (
+            str(self.settings.base_url or "")
+            .rstrip("/")
+            .lower()
+            .endswith("/v1/videos/generations")
+        ):
+            raise RuntimeError("Grok 视频接口地址须使用 /v1/videos")
         if not self.video_endpoint:
             raise RuntimeError("Grok 视频生成缺少中转接口地址")
         if not self.settings.api_key:

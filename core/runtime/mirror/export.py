@@ -104,7 +104,7 @@ class SnapshotExportMixin:
         meta_line = self._life_context_meta_line(data.meta)
         if meta_line:
             parts.append(meta_line)
-        timeline = format_timeline_to_text(data.timeline)
+        timeline = format_timeline_to_text(data.timeline, timeline_date=data.date, meta=data.meta)
         parts.append(f"(昨日记录) {timeline}" if is_extended_night else timeline)
 
         rich_parts = await self._get_rich_context_parts(data, now, is_extended_night)

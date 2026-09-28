@@ -30,6 +30,77 @@ from runtimehelpers import (
 
 
 class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTestCase):
+    async def test_festival_photo_prompt_locks_historical_outfit_after_followup(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.context = Context(Provider([]))
+        runtime.config = LifeSettings.from_dict({})
+        runtime.archive = DataManager()
+        runtime._runtime_now = lambda: datetime.datetime(2026, 9, 27, 21)
+        runtime._media_director_current_day = lambda: async_return(
+            (
+                DayRecord(date="2026-09-27", outfit="当前睡裙"),
+                datetime.datetime(2026, 9, 27, 21),
+                False,
+            )
+        )
+        await runtime.archive.save_day(
+            DayRecord(
+                date="2026-09-25",
+                outfit="夜间睡裙",
+                outfit_history={"afternoon": "浅紫色针织裙和米白开衫"},
+            )
+        )
+        runtime._current_life_appearance_snapshot = lambda route: async_return(
+            "当前穿搭：当前睡裙"
+        )
+        prompts = []
+
+        class ImageService:
+            def can_edit_image(self):
+                return False
+
+            def first_character_reference_image(self):
+                return ""
+
+            async def generate_image(self, prompt, **kwargs):
+                prompts.append(prompt)
+                return types.SimpleNamespace(path=Path("life.png"))
+
+        runtime.media = types.SimpleNamespace(image=ImageService())
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
+        event.message_str = "你发给我看看"
+
+        result = await runtime.life_image_generate(
+            event, "中秋下午在老街拍下的生活照", subject_route="current_character"
+        )
+
+        self.assertEqual(json.loads(result)["status"], "sent")
+        self.assertIn("历史生活记录权威造型快照", prompts[0])
+        self.assertIn("浅紫色针织裙和米白开衫", prompts[0])
+        self.assertNotIn("当前睡裙", prompts[0])
+
+    def test_festival_source_and_prompt_keep_the_requested_period(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime._runtime_now = lambda: datetime.datetime(2026, 9, 27, 21)
+
+        request = runtime._historical_life_request_text(
+            "把中秋照片发给我", "中秋下午在老街拍的照片"
+        )
+
+        self.assertIn("下午", request)
+        self.assertEqual(
+            runtime._historical_life_request_text(
+                "把昨天的照片发给我", "中秋下午在老街拍的照片"
+            ),
+            "把昨天的照片发给我",
+        )
+        self.assertEqual(
+            runtime._historical_life_request_text(
+                "今天拍张中秋主题照片", "中秋下午在老街拍的照片"
+            ),
+            "",
+        )
+
     async def test_historical_image_request_uses_yesterday_daytime_outfit(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.config = LifeSettings.from_dict({})
@@ -3664,6 +3735,88 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(len(align_calls), 1)
         for coro in scheduled:
             coro.close()
+
+    async def test_photo_suite_locks_festival_outfit_in_every_shot(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        root = Path(tempfile.mkdtemp())
+        runtime.data_path = root / "daily_life.db"
+        runtime._runtime_now = lambda: datetime.datetime(2026, 9, 27, 21)
+        runtime._historical_life_appearance_snapshot = lambda request: async_return(
+            "历史回现穿搭（2026-09-25 17:00生活记录）：浅紫色针织裙和米白开衫\n"
+            "同一时刻发型名称：高马尾"
+        )
+        runtime._current_life_appearance_snapshot = lambda route: async_return(
+            "当前穿搭：当前睡裙"
+        )
+        runtime._resolve_life_image_reference_async = lambda *args, **kwargs: (
+            async_return("")
+        )
+        runtime._photo_suite_plan = lambda *args, **kwargs: async_return(
+            [
+                {"title": f"镜头 {index}", "prompt": f"老街第 {index} 张"}
+                for index in range(1, 4)
+            ]
+        )
+        scheduled = []
+        runtime._schedule_background_task = lambda coro, label="", key="": (
+            scheduled.append(coro) or True
+        )
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
+        event.message_str = "我想你发给我看"
+
+        result = await runtime.life_photo_suite_generate(
+            event,
+            "中秋下午在老街拍的三张照片",
+            count=3,
+            subject_route="current_character",
+        )
+
+        self.assertEqual(json.loads(result)["status"], "pending")
+        manifest_path = next(
+            (root / "generated" / "images" / "suites").glob("*/manifest.json")
+        )
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["current_appearance"], "")
+        self.assertIn("浅紫色针织裙和米白开衫", manifest["historical_appearance"])
+        manifest, count, indexes = await runtime._photo_suite_prepare_generation(
+            event, manifest_path, {}, None, "", False
+        )
+        self.assertEqual((count, indexes), (3, [1, 2, 3]))
+        for shot in manifest["shots"]:
+            self.assertIn("历史生活记录权威造型快照", shot["prompt"])
+            self.assertIn("浅紫色针织裙和米白开衫", shot["prompt"])
+            self.assertNotIn("当前睡裙", shot["prompt"])
+        for coro in scheduled:
+            coro.close()
+
+    async def test_old_historical_suite_with_current_outfit_cannot_retry(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        root = Path(tempfile.mkdtemp())
+        runtime.data_path = root / "daily_life.db"
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
+        manifest_dir = root / "generated" / "images" / "suites" / "old-task"
+        manifest_dir.mkdir(parents=True)
+        manifest_path = manifest_dir / "manifest.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "scope": event.unified_msg_origin,
+                    "count": 3,
+                    "prompt": "中秋下午在老街拍的照片",
+                    "source_request": "我想看你之前拍的照片",
+                    "subject_route": "current_character",
+                    "current_appearance": "当前睡裙",
+                }
+            ),
+            encoding="utf-8",
+        )
+        runtime._photo_suite_latest_manifest = lambda scope: async_return(
+            (manifest_path, json.loads(manifest_path.read_text(encoding="utf-8")))
+        )
+
+        result = await runtime.life_photo_suite_generate(event, retry_indexes=[1])
+
+        self.assertIn("误用了当前造型", result)
 
     async def test_photo_suite_background_preserves_successes_and_retries_one_slot(
         self,

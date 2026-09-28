@@ -12,6 +12,7 @@ from core.models import CommitmentRecord
 from core.life.appearance import (
     format_current_appearance_context,
     format_image_appearance_context,
+    is_historical_appearance_request,
 )
 from core.life.appearance_history import (
     appearance_query,
@@ -96,11 +97,28 @@ class AppearanceRepairTest(unittest.TestCase):
             appearance_query("昨晚的穿搭", now)[:2], ("2026-09-23", (18, 24))
         )
         self.assertEqual(appearance_query("前天的衣服", now)[0], "2026-09-22")
+        self.assertEqual(appearance_query("前两天出门", now)[0], "2026-09-22")
         self.assertEqual(
             appearance_query("9月20日下午3点的衣服", now), ("2026-09-20", (14, 18), 900)
         )
         self.assertEqual(appearance_query("2026-02-30的衣服", now)[0], "ambiguous")
         self.assertEqual(appearance_query("那天那套", now)[0], "ambiguous")
+        festival_now = dt.datetime(2026, 9, 27, 21)
+        self.assertEqual(
+            appearance_query("中秋下午在老街拍的照片", festival_now)[:2],
+            ("2026-09-25", (14, 18)),
+        )
+        self.assertEqual(
+            appearance_query("去年中秋节的穿搭", festival_now)[0],
+            "2025-10-06",
+        )
+
+    def test_festival_themed_photo_is_not_historical(self):
+        self.assertFalse(is_historical_appearance_request("拍张中秋主题照片"))
+        self.assertFalse(is_historical_appearance_request("来张中秋氛围照片"))
+        self.assertFalse(is_historical_appearance_request("今天拍的中秋主题照"))
+        self.assertTrue(is_historical_appearance_request("中秋下午拍的照片"))
+        self.assertTrue(is_historical_appearance_request("去年中秋主题照"))
 
 
 class ContinuityArchiveTest(unittest.IsolatedAsyncioTestCase):
@@ -136,6 +154,23 @@ class ContinuityArchiveTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             await historical_appearance_context(self.archive, "前天的穿搭", now), ""
         )
+
+    async def test_festival_photo_uses_recorded_afternoon_not_evening_appearance(self):
+        day = DayRecord(date="2026-09-25", outfit="睡裙", meta={"hair": "散发"})
+        day.outfit, day.meta["hair"] = "浅紫色针织裙和米白开衫", "高马尾"
+        record_appearance_snapshot(day, dt.datetime(2026, 9, 25, 16))
+        day.outfit, day.meta["hair"] = "睡裙", "散发"
+        record_appearance_snapshot(day, dt.datetime(2026, 9, 25, 21))
+        await self.archive.save_day(day)
+
+        result = await historical_appearance_context(
+            self.archive, "中秋下午的老街照片", dt.datetime(2026, 9, 27, 21)
+        )
+
+        self.assertIn("浅紫色针织裙和米白开衫", result)
+        self.assertIn("高马尾", result)
+        self.assertNotIn("睡裙", result)
+        self.assertNotIn("散发", result)
 
     async def test_timestamp_query_preserves_appearance_at_requested_time(self):
         day = DayRecord(date="2026-09-23", outfit="蓝裙", meta={"hair": "低马尾"})

@@ -9,8 +9,6 @@ def normalize_image_provider(value: str) -> str:
     provider = str(value or "").strip().lower()
     if provider in {"openai", "gpt", "gpt-image-2", "gpt_image_2"}:
         return "openai"
-    if provider == "seedream":
-        return "seedream"
     if provider in {"gemini", "gemini-image"}:
         return "gemini"
     if provider in {"grok", "grok-image", "grok-imagine-image"}:
@@ -24,7 +22,7 @@ def requested_image_provider(value: str) -> str:
         return ""
     provider = normalize_image_provider(raw)
     if not provider:
-        raise ValueError("图片接口只能指定 auto、gpt/openai/seedream、gemini 或 grok")
+        raise ValueError("图片接口只能指定 auto、gpt/openai、gemini 或 grok")
     return provider
 
 
@@ -32,23 +30,17 @@ def image_provider_label(provider: str) -> str:
     normalized = normalize_image_provider(provider)
     return {
         "openai": "GPT Image",
-        "seedream": "Seedream",
         "gemini": "Gemini",
         "grok": "Grok",
     }.get(normalized, "")
 
 
 def channel_matches_provider(channel: object, provider: str) -> bool:
-    """判断配置通道是否属于指定图片提供商。
-
-    Seedream 使用 OpenAI 兼容传输，但通过独立协议与 GPT Image 分开筛选。
-    """
+    """判断配置通道是否属于指定图片提供商。"""
     normalized = normalize_image_provider(provider)
     channel_protocol = str(getattr(channel, "protocol", "") or "").strip().lower()
     if not normalized:
         return True
-    if normalized == "seedream":
-        return channel_protocol == "seedream"
     if normalized == "openai":
         return channel_protocol == "openai"
     return channel_protocol == normalized
@@ -70,10 +62,7 @@ def has_channel(
     return any(
         str(getattr(channel, "api_url", "") or "").strip()
         and str(getattr(channel, "api_key", "") or "").strip()
-        and (
-            not protocol
-            or channel_matches_provider(channel, protocol)
-        )
+        and (not protocol or channel_matches_provider(channel, protocol))
         and (not model or str(getattr(channel, "model", "") or "").strip() == model)
         for channel in channels
     )
@@ -91,10 +80,9 @@ def make_route(
     quality: str = "medium",
 ) -> ImageRoute:
     protocol = str(protocol or "gemini").strip().lower()
-    protocol = protocol if protocol in {"gemini", "openai", "seedream", "grok"} else "gemini"
+    protocol = protocol if protocol in {"gemini", "openai", "grok"} else "gemini"
     default_model = {
         "openai": "gpt-image-2",
-        "seedream": "doubao-seedream-4-0-250828",
         "grok": "grok-imagine-image",
     }.get(protocol, "gemini-3-pro-image-preview")
     route_model = str(model or "").strip() or default_model
@@ -109,7 +97,6 @@ def make_route(
         timeout_seconds=timeout_seconds,
         origin={
             "openai": openai.origin,
-            "seedream": openai.origin,
             "grok": imagine.origin,
         }.get(protocol, gemini.origin)(api_url),
         quality=str(quality or "medium").strip().lower() or "medium",
