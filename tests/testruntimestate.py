@@ -1671,6 +1671,38 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(scheduled, [])
         self.assertIn("commitment_schedule_update", page_reasons)
 
+    async def test_immediate_media_commitment_does_not_enter_timeline(self):
+        today = "2026-08-06"
+        now = datetime.datetime(2026, 8, 6, 22, 30)
+        archive = DataManager()
+        await archive.save_day(
+            DayRecord(
+                date=today,
+                timeline=[TimelineItem(time="23:00", activity="睡前休息")],
+            )
+        )
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.archive = archive
+
+        class Composer:
+            async def reconcile_commitment_with_timeline(self, *args, **kwargs):
+                raise AssertionError("即时媒体请求不应调用日程重排")
+
+        runtime.composer = Composer()
+        for trigger_time in ("", "22:30", "22:00"):
+            commitment = CommitmentRecord(
+                content="拍个晚安视频给对方",
+                trigger_date=today,
+                trigger_time=trigger_time,
+                media_kind="video",
+            )
+            self.assertFalse(
+                await runtime.apply_commitment_to_current_day(commitment, now=now)
+            )
+        self.assertEqual(
+            (await archive.get_day(today)).timeline[0].activity, "睡前休息"
+        )
+
     async def test_retryable_commitment_failure_does_not_block_background_retry(self):
         today = "2026-08-06"
         now = datetime.datetime(2026, 8, 6, 14, 0)

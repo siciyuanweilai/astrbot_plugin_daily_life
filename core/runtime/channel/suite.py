@@ -296,6 +296,9 @@ class RuntimePhotoSuiteMediaMixin:
         retry_indexes: list[int] | None = None,
         resolution: str = "",
         provider: str = "",
+        historical_target: str = "",
+        historical_period: str = "",
+        historical_time: str = "",
     ) -> str:
         provider = requested_image_provider(provider)
         if provider:
@@ -345,12 +348,9 @@ class RuntimePhotoSuiteMediaMixin:
             route = self._normalize_image_subject_route(
                 str(manifest.get("subject_route") or "free")
             )
-            historical_text = self._historical_life_request_text(
-                str(manifest.get("source_request") or ""), prompt
-            )
             if (
                 route in {"current_character", "group"}
-                and historical_text
+                and manifest.get("historical_target")
                 and manifest.get("current_appearance")
                 and not manifest.get("historical_appearance")
             ):
@@ -397,15 +397,14 @@ class RuntimePhotoSuiteMediaMixin:
                 )
                 friend_look_persist = self._friend_look_should_persist(look_source)
             source_request = self._event_current_image_request_text(event)
-            historical_text = self._historical_life_request_text(source_request, prompt)
             historical_request = route in {"current_character", "group"} and bool(
-                historical_text
+                historical_target
             )
             current_appearance = ""
             historical_appearance = ""
             if historical_request:
                 historical_appearance = await self._historical_life_appearance_snapshot(
-                    historical_text
+                    historical_target, period=historical_period, time=historical_time
                 )
                 if not historical_appearance:
                     return "没有找到能确认日期和时段的历史造型，请补充具体日期或时段；这次未生成组图。"
@@ -452,6 +451,9 @@ class RuntimePhotoSuiteMediaMixin:
                 ),
                 "current_appearance": current_appearance,
                 "historical_appearance": historical_appearance,
+                "historical_target": historical_target,
+                "historical_period": historical_period,
+                "historical_time": historical_time,
                 "source_request": source_request,
                 "friend_look": friend_look,
                 "friend_look_persist": friend_look_persist,
@@ -760,6 +762,7 @@ class RuntimePhotoSuiteMediaMixin:
                 [str(shot.get("path") or "") for shot in successful],
                 action_type="photo",
                 evidence=f"套图已生成 {len(successful)} 张，等待投递确认",
+                source_message_id=self._event_message_id(event),
                 reply_context={
                     "media_name": "一组生活照片",
                     "request_text": str(manifest.get("prompt") or ""),

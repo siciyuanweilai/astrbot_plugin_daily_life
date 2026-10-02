@@ -3533,8 +3533,8 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         prompt = provider.prompts[0]
         self.assertIn("当前实际时间：2026-05-24 13:40", prompt)
         self.assertIn("当前时间范围：12:00-14:00", prompt)
-        self.assertIn("当前日程位置：13:20 - 坐在雨边长椅吃炸串 [慵懒满足]", prompt)
-        self.assertIn("下一项安排：15:30 - 去甜品店看看草莓慕斯 [轻松]", prompt)
+        self.assertIn("当前日程位置：05-24 13:20 - 坐在雨边长椅吃炸串 [慵懒满足]", prompt)
+        self.assertIn("下一项安排：05-24 15:30 - 去甜品店看看草莓慕斯 [轻松]", prompt)
         self.assertIn(
             "出行：从雨边长椅前往测试甜品店 · 驾车约 16 分钟 · 5.1 公里",
             prompt,
@@ -3544,7 +3544,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("未发生的未来安排只能作为预告，不能提前覆盖当前穿搭", prompt)
         self.assertLess(prompt.index("当前日程位置"), prompt.index("未发生日程预告"))
         self.assertIn(
-            "21:00 - 洗完澡换睡裙准备睡前放松 [困倦]（约 440 分钟后，尚未发生）", prompt
+            "05-24 21:00 - 洗完澡换睡裙准备睡前放松 [困倦]（约 440 分钟后，尚未发生）", prompt
         )
 
     async def test_update_outfit_does_not_apply_future_homewear_before_arrival(self):
@@ -3590,11 +3590,11 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         prompt = provider.prompts[0]
         self.assertIn("当前实际时间：2026-06-23 17:45", prompt)
         self.assertIn(
-            "当前日程位置：17:04 - 从书店出来，顺路去小超市买盒鸡蛋和一小把菠菜 [轻松]",
+            "当前日程位置：06-23 17:04 - 从书店出来，顺路去小超市买盒鸡蛋和一小把菠菜 [轻松]",
             prompt,
         )
         self.assertIn(
-            "18:20 - 回到家换下帆布鞋，换上宽松的米白色棉麻家居连衣裙 [安稳]（约 35 分钟后，尚未发生）",
+            "06-23 18:20 - 回到家换下帆布鞋，换上宽松的米白色棉麻家居连衣裙 [安稳]（约 35 分钟后，尚未发生）",
             prompt,
         )
         self.assertIn("未发生的未来安排只能作为预告，不能提前覆盖当前穿搭", prompt)
@@ -5430,6 +5430,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
                 "is_hot": False,
                 "is_cold": False,
                 "is_rainy": True,
+                "is_severe": True,
                 "is_foggy": False,
             }
         )

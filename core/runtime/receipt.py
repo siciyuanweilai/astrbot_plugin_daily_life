@@ -107,6 +107,7 @@ class RuntimeActionReceiptMixin:
         action_type: str,
         evidence: str,
         commitment_id: int = 0,
+        source_message_id: str = "",
         reply_context: dict[str, str] | None = None,
     ) -> Any:
         """在发送前登记已生成媒体，供重启后的投递恢复使用。
@@ -145,6 +146,7 @@ class RuntimeActionReceiptMixin:
                     "action_type": str(action_type or "").strip(),
                     "evidence": str(evidence or "").strip()[:500],
                     "commitment_id": max(0, int(commitment_id or 0)),
+                    "source_message_id": str(source_message_id or "").strip(),
                     "reply_context": {
                         str(key): str(value or "").strip()[:1000]
                         for key, value in dict(reply_context or {}).items()
@@ -200,10 +202,53 @@ class RuntimeActionReceiptMixin:
                         "done",
                         life_now().isoformat(timespec="seconds"),
                     )
+            elif finalized and str(outcome or "").strip() == "sent":
+                await self._settle_direct_media_commitment(payload)
             return bool(finalized)
         except Exception as exc:
             logger.warning(f"[日常生活] 媒体投递任务收束失败：{exc}")
             return False
+
+    async def direct_media_was_delivered(
+        self, scope: str, media_kind: str, message_ids: list[str]
+    ) -> bool:
+        getter = getattr(getattr(self, "archive", None), "get_durable_tasks", None)
+        if not callable(getter):
+            return False
+        ids = {str(value or "").strip() for value in message_ids if str(value or "").strip()}
+        if not ids:
+            return False
+        tasks = await getter(kind="media_delivery", limit=200)
+        expected_kinds = (
+            {"image", "images"} if media_kind == "photo" else {media_kind}
+        )
+        return any(
+            task.status == "completed"
+            and str(task.result.get("delivery") or "") in {"sent", "recovered"}
+            and str(task.payload.get("scope") or "") == scope
+            and str(task.payload.get("media_kind") or "") in expected_kinds
+            and str(task.payload.get("source_message_id") or "") in ids
+            for task in tasks
+        )
+
+    async def _settle_direct_media_commitment(self, payload: dict[str, Any]) -> None:
+        source_id = str(payload.get("source_message_id") or "").strip()
+        scope = str(payload.get("scope") or "").strip()
+        media_kind = str(payload.get("media_kind") or "").strip()
+        if not source_id or not scope or media_kind not in {"image", "images", "video"}:
+            return
+        getter = getattr(getattr(self, "archive", None), "get_open_commitments_for_message", None)
+        setter = getattr(getattr(self, "archive", None), "set_commitment_status", None)
+        if not callable(getter) or not callable(setter):
+            return
+        matches = [
+            item
+            for item in await getter(scope, source_id)
+            if item.media_kind == ("video" if media_kind == "video" else "photo")
+            and item.owner in {"当前角色", "共同"}
+        ]
+        if len(matches) == 1:
+            await setter(matches[0].id, "done", life_now().isoformat(timespec="seconds"))
 
     async def resume_durable_media_delivery(self, task: Any) -> dict[str, Any]:
         """投递重启前已生成但尚未确认发送的媒体产物。"""
@@ -274,6 +319,8 @@ class RuntimeActionReceiptMixin:
                     "done",
                     life_now().isoformat(timespec="seconds"),
                 )
+        else:
+            await self._settle_direct_media_commitment(payload)
         reply_sent = False
         reply_context = payload.get("reply_context")
         followup = getattr(self, "_send_delivered_media_followup", None)

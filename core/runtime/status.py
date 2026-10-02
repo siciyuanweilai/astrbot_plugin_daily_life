@@ -16,7 +16,7 @@ from ..life.condition import (
     state_is_stale,
     state_log_entry,
 )
-from ..life.rest_delay import format_rest_delay_hint
+from ..life.restdelay import format_rest_delay_hint
 from ..life.signals import physiological_rhythm_log_from_state
 from ..life.tools import (
     extract_json_from_text,

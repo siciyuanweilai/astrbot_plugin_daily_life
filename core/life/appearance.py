@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 import uuid
 from collections.abc import Iterable
 from typing import Any
@@ -137,85 +136,6 @@ def reference_outfit(day: Any) -> tuple[str, str]:
             period, outfit = next(iter(normalized.items()))
             return outfit, period
     return str(getattr(day, "outfit", "") or "").strip(), "current"
-
-
-def is_historical_appearance_request(value: object) -> bool:
-    """Recognize explicit requests to recreate an earlier appearance."""
-
-    text = " ".join(str(value or "").strip().split())
-    festival = bool(
-        re.search(r"(?:春节|元宵节?|端午节?|七夕节?|中秋节?|重阳节?)", text)
-    )
-    current_festival_theme = (
-        festival
-        and any(cue in text for cue in ("主题", "风格", "氛围"))
-        and any(cue in text for cue in ("今天", "今晚", "现在", "刚才", "刚刚"))
-        and not any(
-            cue in text
-            for cue in ("昨天", "前天", "去年", "前年", "那天", "之前", "旧照")
-        )
-    )
-    festival_past_cues = (
-        "早上",
-        "上午",
-        "中午",
-        "下午",
-        "傍晚",
-        "晚上",
-        "夜里",
-        "那天",
-        "当时",
-        "之前",
-        "旧照",
-        "穿搭",
-        "出门",
-        "拍下",
-        "拍的",
-        "去年",
-        "前年",
-    )
-    festival_reference = (
-        festival
-        and not current_festival_theme
-        and (
-            any(cue in text for cue in festival_past_cues)
-            or (
-                "照片" in text
-                and not any(cue in text for cue in ("主题", "风格", "氛围"))
-            )
-        )
-    )
-    return (
-        festival_reference
-        or bool(re.search(r"(?:20\d{2}[-年/])?\d{1,2}[-月/]\d{1,2}(?:日|号)?", text))
-        or any(
-            marker in text
-            for marker in (
-                "昨天",
-                "昨日",
-                "前一天",
-                "前日",
-                "前天",
-                "前两天",
-                "前几天",
-                "几天前",
-                "昨晚",
-                "昨夜",
-                "前晚",
-                "上次",
-                "那天",
-                "那套穿搭",
-                "那身",
-                "上次那套",
-                "上次穿搭",
-                "上次的穿搭",
-                "之前那套",
-                "之前那身",
-                "之前穿搭",
-                "之前的穿搭",
-            )
-        )
-    )
 
 
 def format_reference_appearance_context(day: Any, *, label: str = "历史参考") -> str:

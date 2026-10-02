@@ -159,6 +159,92 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             )
         )
 
+    async def test_life_video_background_does_not_capture_later_chat_image(self):
+        """A later image/sticker must not become the pending video's first frame."""
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        resolver_calls = []
+        first_frame_calls = []
+        video_calls = []
+
+        async def resolve_reference(*_args, **_kwargs):
+            resolver_calls.append(True)
+            return "later-chat-image.png"
+
+        async def generate_first_frame(*args, **_kwargs):
+            first_frame_calls.append(args)
+            return "captured-for-this-request.png"
+
+        async def generate_video_asset(
+            event, prompt, reference_image, **_kwargs
+        ):
+            video_calls.append(reference_image)
+            return types.SimpleNamespace(url="https://example.com/life.mp4")
+
+        runtime._resolve_life_image_reference_async = resolve_reference
+        runtime._generate_life_video_first_frame = generate_first_frame
+        runtime.generate_life_video_asset = generate_video_asset
+        request = types.SimpleNamespace(
+            subject_route="free",
+            participants=(),
+            initial_reference_image="",
+            prompt="沙发边的晚安短视频",
+            current_appearance="",
+            source_request="",
+            person_fact_context="",
+            identity_profiles={},
+            friend_look={},
+            friend_look_persist=False,
+            direct_prompt=True,
+            scope="aiocqhttp:FriendMessage:10001",
+            event=Event(unified_msg_origin="aiocqhttp:FriendMessage:10001"),
+            request_id="video-request",
+        )
+
+        execution = await runtime._execute_life_video_request(request)
+
+        self.assertEqual(resolver_calls, [])
+        self.assertEqual(len(first_frame_calls), 1)
+        self.assertEqual(video_calls, ["captured-for-this-request.png"])
+        self.assertEqual(execution.first_frame, "captured-for-this-request.png")
+
+    async def test_life_video_request_after_image_restart_uses_original_source(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.context = Context(Provider([]))
+        runtime.config = LifeSettings.from_dict({
+            "chat_style_config": {"continuous_turn_wait_seconds": 0}
+        })
+        runtime._init_continuous_turn_state()
+        scheduled = []
+        requests = []
+
+        async def background(request):
+            requests.append(request)
+
+        runtime._life_video_generate_background = background
+        runtime._schedule_background_task = lambda coro, **_kwargs: (
+            scheduled.append(coro) or True
+        )
+        first = Event(message_id="original-video")
+        first.message_str = "拍个视频看看"
+        runtime.note_continuous_turn_incoming(first)
+        await runtime.settle_continuous_turn(first)
+        runtime.prepare_continuous_turn_llm_request(first, types.SimpleNamespace())
+        runtime.note_life_video_reference_source(first)
+
+        later = Event(message_id="later-sticker")
+        later.message_items.append({
+            "type": "image", "url": "https://example.com/sticker.png"
+        })
+        runtime.note_continuous_turn_incoming(later)
+        await runtime.settle_continuous_turn(later)
+        wrapped = types.SimpleNamespace(context=types.SimpleNamespace(event=later))
+        result = await runtime.life_video_generate(wrapped, "回家路上的生活短视频")
+        self.assertEqual(json.loads(result)["status"], "pending")
+        await scheduled[0]
+        self.assertEqual(requests[0].initial_reference_image, "")
+        self.assertEqual(requests[0].source_request, "拍个视频看看")
+        self.assertFalse(requests[0].continue_last_result)
+
     async def test_webchat_video_is_persisted_as_file_attachment(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.context = Context(Provider([]))
@@ -274,7 +360,7 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         runtime._current_life_appearance_snapshot = lambda route: (_ for _ in ()).throw(
             AssertionError("historical video used current appearance")
         )
-        runtime._historical_life_appearance_snapshot = lambda request: async_return(
+        runtime._historical_life_appearance_snapshot = lambda request, **kwargs: async_return(
             "昨日回现穿搭：粉色露肩上衣搭配粉色碎花蕾丝半身短裙"
         )
         runtime._align_current_appearance_scene_prompt = lambda *args, **kwargs: (
@@ -316,6 +402,7 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             event,
             "公园里挥手",
             subject_route="current_character",
+            historical_target="2026-09-23",
         )
 
         self.assertEqual(json.loads(result)["status"], "pending")
@@ -335,7 +422,7 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         runtime.archive = DataManager()
         self._stub_media_director(runtime)
         runtime._runtime_now = lambda: datetime.datetime(2026, 9, 27, 21)
-        runtime._historical_life_appearance_snapshot = lambda request: async_return(
+        runtime._historical_life_appearance_snapshot = lambda request, **kwargs: async_return(
             "历史回现穿搭（2026-09-25）：浅紫色针织裙和米白开衫"
         )
         runtime._current_life_appearance_snapshot = lambda route: (_ for _ in ()).throw(
@@ -368,7 +455,8 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         event.message_str = "发给我看看"
 
         result = await runtime.life_video_generate(
-            event, "中秋下午老街散步的视频", subject_route="current_character"
+            event, "中秋下午老街散步的视频", subject_route="current_character",
+            historical_target="2026-09-25", historical_period="afternoon",
         )
 
         self.assertEqual(json.loads(result)["status"], "pending")

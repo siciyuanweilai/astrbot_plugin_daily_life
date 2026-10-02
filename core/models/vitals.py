@@ -298,6 +298,7 @@ class WeatherInfo:
     is_sunny: bool = False
     is_cloudy: bool = False
     is_foggy: bool = False
+    is_severe: bool = False
     outfit_hint: str = ""
     activity_hint: str = ""
     temp_desc: str = ""
@@ -317,6 +318,7 @@ class WeatherInfo:
             is_sunny=bool(raw.get("is_sunny")),
             is_cloudy=bool(raw.get("is_cloudy")),
             is_foggy=bool(raw.get("is_foggy")),
+            is_severe=bool(raw.get("is_severe")),
             outfit_hint=str(raw.get("outfit_hint") or "").strip(),
             activity_hint=str(raw.get("activity_hint") or "").strip(),
             temp_desc=str(raw.get("temp_desc") or "").strip(),
@@ -335,6 +337,7 @@ class WeatherInfo:
             "is_sunny": self.is_sunny,
             "is_cloudy": self.is_cloudy,
             "is_foggy": self.is_foggy,
+            "is_severe": self.is_severe,
             "outfit_hint": self.outfit_hint,
             "activity_hint": self.activity_hint,
             "temp_desc": self.temp_desc,

@@ -54,6 +54,9 @@ class SpineClimateMixin:
             if not weather_ok:
                 return False
 
+            classifier = getattr(getattr(self, "composer", None), "_classify_weather_condition", None)
+            if callable(classifier):
+                weather_data = await classifier(weather_data)
             analyzed = analyze_weather(weather_data)
             if analyzed.get("temp") is None:
                 return False

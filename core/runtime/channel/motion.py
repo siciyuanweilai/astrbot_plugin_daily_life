@@ -18,6 +18,13 @@ from ..markers import LOG_PREFIX
 
 
 @dataclass(frozen=True, slots=True)
+class LifeVideoReferenceSource:
+    event: Any
+    items: tuple[Any, ...]
+    continue_last_result: bool
+
+
+@dataclass(frozen=True, slots=True)
 class LifeVideoRequest:
     scope: str
     prompt: str
@@ -48,6 +55,53 @@ class LifeVideoExecution:
 
 
 class RuntimeVideoMediaMixin:
+    _VIDEO_REFERENCE_SOURCE_ATTR = "_daily_life_video_reference_source"
+
+    def note_life_video_reference_source(
+        self, event: Any, *, continue_last_result: bool = False, replace: bool = False
+    ) -> LifeVideoReferenceSource:
+        events = self._event_sources(event)
+        current_event = events[-1] if events else event
+        source = None
+        for current in events:
+            value = getattr(current, self._VIDEO_REFERENCE_SOURCE_ATTR, None)
+            if isinstance(value, LifeVideoReferenceSource):
+                source = value
+                break
+        if source is None or (replace and source.event is not current_event):
+            prepared = getattr(current_event, self._PREPARED_VISUAL_MEDIA_ATTR, [])
+            current_items = self._event_message_items(current_event)
+            incoming = getattr(current_event, self._CONTINUOUS_TURN_IMAGES_ATTR, None)
+            if replace and incoming is not None:
+                current_items = incoming.items
+                prepared = incoming.prepared
+            items = []
+            for item in current_items:
+                cached = next(
+                    (
+                        entry.get("path")
+                        for entry in prepared
+                        if entry.get("item") is item and entry.get("path")
+                    ),
+                    "",
+                )
+                items.append(
+                    {"type": "image", "path": str(cached)} if cached else item
+                )
+            source = LifeVideoReferenceSource(
+                event=current_event,
+                items=tuple(items),
+                continue_last_result=bool(continue_last_result),
+            )
+        setattr(event, self._VIDEO_REFERENCE_SOURCE_ATTR, source)
+        setattr(current_event, self._VIDEO_REFERENCE_SOURCE_ATTR, source)
+        identity = self._continuous_turn_event_identity(current_event)
+        if identity is not None:
+            batch = self._continuous_turn_batch(identity[0], identity[1])
+            if batch is not None and batch.revision == identity[2]:
+                batch.video_reference_source = source
+        return source
+
     @staticmethod
     def _video_prompt_duration_seconds(text: str) -> int:
         compact = str(text or "").strip()
@@ -256,6 +310,10 @@ class RuntimeVideoMediaMixin:
         friend_style_pool: str = "",
         friend_outfit_decision: str = "",
         continue_last_result: bool = False,
+        replace_reference_image: bool = False,
+        historical_target: str = "",
+        historical_period: str = "",
+        historical_time: str = "",
     ) -> str:
         prompt, direct_prompt = self._resolve_video_prompt(event, prompt)
         if not prompt:
@@ -267,10 +325,22 @@ class RuntimeVideoMediaMixin:
         participant_ids = self._normalize_image_participants(participants)
         if route == "group" and len(participant_ids) > 1:
             return "当前合影视频只能选择一位好友。"
-        initial_reference_image = await self._resolve_life_image_reference_async(
+        reference_source = self.note_life_video_reference_source(
             event,
-            allow_last_generated=bool(continue_last_result),
-            prefer_last_generated=bool(continue_last_result),
+            continue_last_result=continue_last_result,
+            replace=bool(replace_reference_image),
+        )
+        initial_reference_image = await self._resolve_life_image_reference_async(
+            reference_source.event,
+            current_items=reference_source.items,
+            allow_last_generated=reference_source.continue_last_result,
+            prefer_last_generated=reference_source.continue_last_result,
+        )
+        logger.info(
+            f"{LOG_PREFIX} 视频首帧来源已锁定："
+            f"消息={self._event_message_id(reference_source.event)}；"
+            f"续话沿用={'否' if reference_source.event in self._event_sources(event) else '是'}；"
+            f"参考图={'有' if initial_reference_image else '无，将生成本次首帧'}"
         )
         friend_look: dict[str, str] = {}
         friend_look_persist = False
@@ -296,15 +366,14 @@ class RuntimeVideoMediaMixin:
                 return self._friend_look_parameters_result(required)
             self._log_friend_daily_look(participant_ids[0], friend_look, look_source)
             friend_look_persist = self._friend_look_should_persist(look_source)
-        source_request = self._event_current_image_request_text(event)
-        historical_text = self._historical_life_request_text(source_request, prompt)
+        source_request = self._event_current_image_request_text(reference_source.event)
         historical_request = route in {"current_character", "group"} and bool(
-            historical_text
+            historical_target
         )
         current_appearance = ""
         if historical_request:
             historical_appearance = await self._historical_life_appearance_snapshot(
-                historical_text
+                historical_target, period=historical_period, time=historical_time
             )
             if not historical_appearance:
                 return "没有找到能确认日期和时段的历史造型，请补充具体日期或时段；这次未生成视频。"
@@ -342,7 +411,7 @@ class RuntimeVideoMediaMixin:
             source_request=source_request,
             friend_look=dict(friend_look),
             friend_look_persist=friend_look_persist,
-            continue_last_result=bool(continue_last_result),
+            continue_last_result=reference_source.continue_last_result,
             initial_reference_image=str(initial_reference_image or "").strip(),
         )
         scheduled = self._schedule_background_task(
@@ -430,13 +499,10 @@ class RuntimeVideoMediaMixin:
         participant_ids = tuple(
             self._normalize_image_participants(request.participants)
         )
-        reference_image = request.initial_reference_image
-        if not reference_image:
-            reference_image = await self._resolve_life_image_reference_async(
-                request.event,
-                allow_last_generated=request.continue_last_result,
-                prefer_last_generated=request.continue_last_result,
-            )
+        # 首帧引用已在接收请求时锁定。后台任务可能晚于后续聊天消息执行，
+        # 这里不能再从可变的 request.event 读取图片，否则会把后续图片或表情包
+        # 错当成当前视频的首帧。
+        reference_image = str(request.initial_reference_image or "").strip()
         first_frame = ""
         generation_prompt = self._apply_current_appearance_snapshot(
             request.prompt,
@@ -501,6 +567,7 @@ class RuntimeVideoMediaMixin:
             action_type="video",
             evidence="视频已生成，等待投递确认",
             commitment_id=commitment_id,
+            source_message_id=self._event_message_id(request.event),
             reply_context={
                 "media_name": media_name,
                 "request_text": request.prompt,

@@ -380,6 +380,8 @@ class InviteMixin:
         if route_anchor is not None:
             raw_timeline = raw_timeline[1:]
         audited_future = [TimelineItem.from_value(item) for item in raw_timeline]
+        for audited_item, original_item in zip(audited_future, mutable_timeline):
+            audited_item.activity_kind = original_item.activity_kind
         restored_future = self._restore_protected_timeline(
             audited_future,
             protected_timeline,
@@ -453,7 +455,7 @@ class InviteMixin:
   "response_tone": "符合关系和当下状态的简短语气描述，不写最终台词",
   "alternative_time": "可选改约时间或空字符串",
   "impact": "这次邀约对今日状态、社交意愿或后续日程的影响",
-  "timeline_edits": [{{"operation": "replace | remove | insert", "target_time": "被替换/删除节点的 HH:MM，insert 时为空", "item": {{"time": "HH:MM", "activity": "...", "status": "...", "place": "地点或空字符串", "place_kind": "home | poi | generic | transit | online | none", "place_scope": "local | travel", "place_city": "跨城目标城市或空字符串", "place_hint": "同名地点消歧信息或空字符串", "travel_mode": "walking | cycling | driving | transit 或空字符串"}}}}],
+  "timeline_edits": [{{"operation": "replace | remove | insert", "target_time": "被替换/删除节点的 HH:MM，insert 时为空", "item": {{"time": "HH:MM", "activity": "...", "activity_kind": "rest | other，依据行为含义判断", "status": "...", "place": "地点或空字符串", "place_kind": "home | poi | generic | transit | online | none", "place_scope": "local | travel", "place_city": "跨城目标城市或空字符串", "place_hint": "同名地点消歧信息或空字符串", "travel_mode": "walking | cycling | driving | transit 或空字符串"}}}}],
   "preference_points": [{{"category": "{LIFE_PREFERENCE_CATEGORY_ENUM}", "content": "可复用偏好", "weight": 0.1-1.0, "evidence": "依据"}}],
   "life_events": [{{"title": "邀约相关生活事件", "detail": "细节", "effect": "未来影响", "status": "open"}}]
 }}
@@ -639,12 +641,13 @@ JSON 输出要求：
 4. 若承诺包含同行、地点、交通或准备事项，应分别编辑必要的准备、出发、移动、活动和返回节点；不受影响的后续生活保持原样。
 5. 若承诺明确包含穿搭要求，输出 outfit_instruction，并给出适合开始换装的 outfit_effective_time；没有明确要求则留空。穿搭要求不能凭空扩写。
 6. 地点字段规则与全天日程一致：place_kind 只能是 home、poi、generic、transit、online 或 none；跨城才使用 place_scope=travel；发生移动时填写 travel_mode。
+7. 媒体承诺只安排明确约定的未来时刻；正在执行的拍摄或重试不另增日程。活动描述只写已确认的目标，不补写未经证实的姿势、环境或前置动作。
 
 严格返回 JSON：
 {{
   "should_apply": true/false,
   "reason": "是否进入当天生活的依据",
-  "timeline_edits": [{{"operation": "replace | remove | insert", "target_time": "被替换/删除节点的 HH:MM，insert 时为空", "item": {{"time": "HH:MM", "activity": "...", "status": "...", "place": "地点或空字符串", "place_kind": "home | poi | generic | transit | online | none", "place_scope": "local | travel", "place_city": "跨城目标城市或空字符串", "place_hint": "消歧信息或空字符串", "travel_mode": "walking | cycling | driving | transit 或空字符串"}}}}],
+  "timeline_edits": [{{"operation": "replace | remove | insert", "target_time": "被替换/删除节点的 HH:MM，insert 时为空", "item": {{"time": "HH:MM", "activity": "...", "activity_kind": "rest | other，依据行为含义判断", "status": "...", "place": "地点或空字符串", "place_kind": "home | poi | generic | transit | online | none", "place_scope": "local | travel", "place_city": "跨城目标城市或空字符串", "place_hint": "消歧信息或空字符串", "travel_mode": "walking | cycling | driving | transit 或空字符串"}}}}],
   "outfit_instruction": "承诺中明确确认的穿搭要求或空字符串",
   "outfit_effective_time": "HH:MM 或空字符串",
   "impact": "这项安排对当天生活的实际影响"

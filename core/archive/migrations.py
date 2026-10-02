@@ -10,7 +10,7 @@ from .tables.mind import COGNITION_INDEX_SQL, COGNITION_SQL
 
 SCHEMA_VERSION_KEY = "schema_version"
 BASELINE_SCHEMA_VERSION = 1
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 LEGACY_BASELINE_SCHEMA_FINGERPRINT = (
     "9e6243276bf6bd509f6019502e30192310da4197838bd0f7d478f0100f8750a5"
 )
@@ -53,8 +53,11 @@ PREVIOUS_V15_SCHEMA_FINGERPRINT = (
 PREVIOUS_V16_SCHEMA_FINGERPRINT = (
     "b6ec5c00a0b6eff3e54503eb390c3a39f740c2a602d934cc29188730d1f204fe"
 )
-CURRENT_SCHEMA_FINGERPRINT = (
+PREVIOUS_V17_SCHEMA_FINGERPRINT = (
     "2fa6357aa4589b6c1c7322977140312408994ef67d41804a6ab65fac00ca01df"
+)
+CURRENT_SCHEMA_FINGERPRINT = (
+    "6fc07333a7aea0ba77a5c8b0fd315bdeee6bbd8b9334df9a8be3dc5d254a7075"
 )
 
 MigrationStep = Callable[[sqlite3.Connection], None]
@@ -123,7 +126,8 @@ KNOWN_SCHEMA_VERSIONS: dict[str, int] = {
     PREVIOUS_V14_SCHEMA_FINGERPRINT: 14,
     PREVIOUS_V15_SCHEMA_FINGERPRINT: 15,
     PREVIOUS_V16_SCHEMA_FINGERPRINT: 16,
-    CURRENT_SCHEMA_FINGERPRINT: 17,
+    PREVIOUS_V17_SCHEMA_FINGERPRINT: 17,
+    CURRENT_SCHEMA_FINGERPRINT: 18,
 }
 
 
@@ -572,6 +576,21 @@ def _migrate_timeline_duration(conn: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_life_semantic_flags(conn: sqlite3.Connection) -> None:
+    """保存模型判定的活动类型和天气风险，不扫描历史描述补猜。"""
+
+    additions = {
+        "timelines": ("activity_kind", "TEXT NOT NULL DEFAULT ''"),
+        "days": ("weather_is_severe", "INTEGER NOT NULL DEFAULT 0"),
+    }
+    for table, (name, definition) in additions.items():
+        columns = {
+            str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")
+        }
+        if name not in columns:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+
+
 # 键是迁移完成后的目标版本；每个步骤只负责从前一版本升级一次。
 MIGRATIONS: dict[int, MigrationStep] = {
     2: _migrate_timeline_execution_state,
@@ -590,6 +609,7 @@ MIGRATIONS: dict[int, MigrationStep] = {
     15: _migrate_commitment_media_contract,
     16: _migrate_focus_slot_progress,
     17: _migrate_timeline_duration,
+    18: _migrate_life_semantic_flags,
 }
 
 

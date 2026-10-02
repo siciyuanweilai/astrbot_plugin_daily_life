@@ -25,7 +25,6 @@ def build_request(
             "maxOutputTokens": 8192,
             "responseModalities": ["TEXT", "IMAGE"],
             "imageConfig": image_config,
-            "responseFormat": {"image": image_config},
         },
         "safetySettings": [
             {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},

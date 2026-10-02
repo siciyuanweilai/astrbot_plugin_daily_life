@@ -14,9 +14,8 @@ from ...config.options import IMAGE_ASPECT_RATIOS
 from ...life.appearance import (
     format_current_appearance_context,
     format_image_appearance_context,
-    is_historical_appearance_request,
 )
-from ...life.appearance_history import appearance_query, historical_appearance_context
+from ...life.lookback import historical_appearance_context
 from ...life.tools import get_current_timeline_status
 from ...life.wardrobe import (
     normalize_outfit_decision,
@@ -69,33 +68,6 @@ class RuntimeImageMediaMixin:
     _CURRENT_APPEARANCE_PROMPT_MARKER = "当前生活状态权威造型快照"
     _HISTORICAL_APPEARANCE_PROMPT_MARKER = "历史生活记录权威造型快照"
     _DIRECT_IMAGE_TOOLS = frozenset({"life_image_generate", "edit_life_image"})
-
-    @staticmethod
-    def _is_historical_appearance_request(*values: object) -> bool:
-        return any(is_historical_appearance_request(value) for value in values)
-
-    def _historical_life_request_text(self, source_request: str, prompt: str) -> str:
-        now = self._runtime_now()
-        source_query = appearance_query(source_request, now)
-        prompt_query = appearance_query(prompt, now)
-        source_is_historical = is_historical_appearance_request(source_request)
-        if not source_is_historical and any(
-            cue in source_request
-            for cue in ("今天", "今晚", "现在", "刚才", "刚刚", "主题", "风格", "氛围")
-        ):
-            return ""
-        if source_is_historical and source_query[0] != "ambiguous":
-            if (
-                is_historical_appearance_request(prompt)
-                and prompt_query[0] == source_query[0]
-                and source_query[1] is None
-                and prompt_query[1] is not None
-            ):
-                return f"{source_request} {prompt}".strip()
-            return source_request
-        if is_historical_appearance_request(prompt) and prompt_query[0] != "ambiguous":
-            return f"{source_request} {prompt}".strip()
-        return source_request if source_is_historical else ""
 
     def _apply_historical_appearance_snapshot(
         self, prompt: str, appearance: str
@@ -365,7 +337,7 @@ JSON 字段：
         return format_image_appearance_context(day, scene_category=scene_category)
 
     async def _historical_life_appearance_snapshot(
-        self, request: str = "昨天的穿搭"
+        self, target: str, *, period: str = "", time: str = ""
     ) -> str:
         """Resolve the requested calendar date/period without changing live state."""
         resolver = getattr(self, "_media_director_current_day", None)
@@ -375,7 +347,7 @@ JSON 字段：
         try:
             current_day, now, _using_extended_night = await resolver()
             return await historical_appearance_context(
-                archive, request, now, current_day
+                archive, target, now, current_day, period=period, time=time
             )
         except Exception as exc:
             logger.debug(f"{LOG_PREFIX} 读取历史造型快照失败：{type(exc).__name__}")
@@ -1549,6 +1521,9 @@ JSON 字段：
         current_outfit_instruction: str = "",
         resolution: str = "",
         provider: str = "",
+        historical_target: str = "",
+        historical_period: str = "",
+        historical_time: str = "",
     ) -> str | None:
         if self._direct_image_tool_already_sent(event):
             logger.debug(f"{LOG_PREFIX} 图片工具跳过重复调用：本轮已经发送过单张图片。")
@@ -1556,9 +1531,8 @@ JSON 字段：
         route = self._normalize_image_subject_route(subject_route)
         current_appearance = ""
         source_request = self._event_current_image_request_text(event)
-        historical_text = self._historical_life_request_text(source_request, prompt)
         historical_request = route in {"current_character", "group"} and bool(
-            historical_text
+            historical_target
         )
         if current_outfit_change and historical_request:
             return "历史回现不会改变当前穿搭。请取消 current_outfit_change 后重试；若要实际换回，请先明确换装要求。"
@@ -1630,7 +1604,7 @@ JSON 字段：
 
         if historical_request:
             historical_appearance = await self._historical_life_appearance_snapshot(
-                historical_text
+                historical_target, period=historical_period, time=historical_time
             )
             if not historical_appearance:
                 return "没有找到能确认日期和时段的历史造型，请补充具体日期或时段；这次未生成图片。"
@@ -1717,6 +1691,7 @@ JSON 字段：
                 action_type="photo",
                 evidence="图片已生成，等待投递确认",
                 commitment_id=commitment_id,
+                source_message_id=self._event_message_id(event),
                 reply_context={
                     "media_name": media_name,
                     "request_text": reply_request,
@@ -1880,6 +1855,7 @@ JSON 字段：
             [str(generated.path)],
             action_type="photo",
             evidence="参考图图片已生成，等待投递确认",
+            source_message_id=self._event_message_id(event),
             reply_context={
                 "media_name": "编辑后的生活照片",
                 "request_text": prompt,

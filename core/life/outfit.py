@@ -23,7 +23,7 @@ from .appearance import (
     normalize_appearance_fact,
     strip_hair_from_outfit,
 )
-from .appearance_history import record_appearance_snapshot
+from .lookback import record_appearance_snapshot
 from .condition import format_physiological_rhythm_prompt
 from .fashion import outfit_style_contamination_reason
 from .future import future_outfit_timing_issue

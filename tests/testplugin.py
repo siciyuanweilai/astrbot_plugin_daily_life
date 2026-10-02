@@ -60,45 +60,6 @@ def patched_follow_up_runners(runners):
 
 
 class PluginLifecycleTest(unittest.IsolatedAsyncioTestCase):
-    def test_explicit_video_request_detection(self):
-        for text in (
-            "拍视频呀",
-            "那拍个外景视频",
-            "快点，我想见识下你拍视频",
-            "把这张图做成短片",
-        ):
-            with self.subTest(text=text):
-                self.assertTrue(DailyLifePlugin._is_explicit_video_request(text))
-        for text in (
-            "别拍视频了",
-            "我不想拍视频了",
-            "视频先不用拍",
-            "怎么拍视频才好看",
-            "你拍的视频怎么样了",
-            "我想看看你拍的视频",
-            "给我看张照片",
-        ):
-            with self.subTest(text=text):
-                self.assertFalse(DailyLifePlugin._is_explicit_video_request(text))
-
-    async def test_agent_done_recovers_explicit_video_request_without_tool_call(self):
-        calls = []
-
-        async def generate(event, prompt, **kwargs):
-            calls.append((event, prompt, kwargs))
-            return '{"status":"pending"}'
-
-        plugin = DailyLifePlugin.__new__(DailyLifePlugin)
-        plugin.runtime = types.SimpleNamespace(life_video_generate=generate)
-        event = Event()
-        setattr(event, plugin._EXPLICIT_VIDEO_REQUEST_ATTR, "拍视频呀")
-        response = types.SimpleNamespace(completion_text="我正忙着呢")
-
-        await plugin.on_agent_done(event, object(), response)
-        await plugin.on_agent_done(event, object(), response)
-
-        self.assertEqual(calls, [(event, "拍视频呀", {"subject_route": "current_character"})])
-
     async def test_agent_done_does_not_duplicate_called_video_tool(self):
         calls = []
 
@@ -108,7 +69,6 @@ class PluginLifecycleTest(unittest.IsolatedAsyncioTestCase):
         plugin = DailyLifePlugin.__new__(DailyLifePlugin)
         plugin.runtime = types.SimpleNamespace(life_video_generate=generate)
         event = Event()
-        setattr(event, plugin._EXPLICIT_VIDEO_REQUEST_ATTR, "拍视频呀")
         await plugin.on_using_llm_tool(
             event, types.SimpleNamespace(name="life_video_generate"), {}
         )
@@ -117,6 +77,32 @@ class PluginLifecycleTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(calls, [])
+
+    async def test_video_reference_is_captured_before_awaiting_tool_preface(self):
+        calls = []
+        event = Event()
+        started = asyncio.Event()
+
+        def capture(source, **kwargs):
+            calls.append(("capture", source, kwargs))
+
+        async def reaction(*_args):
+            started.set()
+            await asyncio.Event().wait()
+
+        plugin = DailyLifePlugin.__new__(DailyLifePlugin)
+        plugin.runtime = types.SimpleNamespace(
+            note_life_video_reference_source=capture,
+            note_tool_reaction_start=reaction,
+        )
+        task = asyncio.create_task(plugin.on_using_llm_tool(
+            event, types.SimpleNamespace(name="life_video_generate"),
+            {"continue_last_result": True},
+        ))
+        await asyncio.wait_for(started.wait(), timeout=1)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        self.assertEqual(calls, [("capture", event, {"continue_last_result": True, "replace": False})])
 
     async def test_voice_call_invite_tool_sends_notice_and_link_separately(self):
         async def create_voice_call_invite(event, *, greeting=""):
@@ -1851,12 +1837,12 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
-    async def test_webchat_video_request_uses_pre_send_error_checks(self):
-        for platform_name, enabled, message, expected in (
-            ("webchat", True, "拍视频呀", False),
-            ("webchat", True, "怎么拍视频", None),
-            ("webchat", False, "拍视频呀", None),
-            ("aiocqhttp", True, "拍视频呀", None),
+    async def test_webchat_video_request_does_not_use_text_detection(self):
+        for platform_name, enabled, message in (
+            ("webchat", True, "拍视频呀"),
+            ("webchat", True, "怎么拍视频"),
+            ("webchat", False, "拍视频呀"),
+            ("aiocqhttp", True, "拍视频呀"),
         ):
             with self.subTest(platform=platform_name, enabled=enabled, message=message):
                 async def apply_response_gate_for_event(event):
@@ -1875,7 +1861,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
 
                 await plugin.on_message_for_proactive_reply(event)
 
-                self.assertIs(event.get_extra("enable_streaming"), expected)
+                self.assertIsNone(event.get_extra("enable_streaming"))
 
     async def test_invite_tool_uses_invite_details(self):
         calls = []
@@ -2145,10 +2131,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
 
         await plugin.on_llm_request(event, request)
 
-        self.assertEqual(
-            getattr(event, plugin._EXPLICIT_VIDEO_REQUEST_ATTR), "拍视频呀"
-        )
-        self.assertIn("必须调用 life_video_generate", request.system_prompt)
+        self.assertNotIn("HiddenExplicitVideoRequest", request.system_prompt)
 
     async def test_web_search_tool_forwards_structured_source_and_dates(self):
         calls = []
@@ -2214,6 +2197,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
             current_outfit_change=False,
             current_outfit_instruction="",
             resolution="",
+            **kwargs,
         ):
             calls.append(
                 (
@@ -2240,6 +2224,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
             participants=None,
             retry_indexes=None,
             resolution="",
+            **kwargs,
         ):
             calls.append(
                 (
@@ -2292,6 +2277,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
             subject_route="free",
             participants=None,
             continue_last_result=False,
+            **kwargs,
         ):
             calls.append(
                 (

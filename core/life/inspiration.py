@@ -97,19 +97,6 @@ class StyleCatalogMixin:
         return profiles
 
     @classmethod
-    def _style_catalog_scene_values(cls, item: Any) -> list[str]:
-        """读取候选声明的场景与服装类别，用于粗粒度场景过滤。"""
-
-        attributes = cls._style_catalog_attributes(item)
-        values: list[str] = []
-        for key in ("scenes", "category", "garment_type"):
-            for value in cls._style_catalog_list(attributes.get(key), 12):
-                normalized = value.strip().lower()
-                if normalized and normalized not in values:
-                    values.append(normalized)
-        return values
-
-    @classmethod
     def _style_catalog_scene_compatible(
         cls, item: Any, scene_category: object
     ) -> bool:
@@ -130,46 +117,25 @@ class StyleCatalogMixin:
                 return role in {"home", "both", "unknown"}
             return role != "home"
 
-        values = cls._style_catalog_scene_values(item)
-        home_markers = (
-            "居家",
-            "室内",
-            "睡眠",
-            "睡衣",
-            "家居服",
-            "home",
-            "sleep",
-            "lounge",
-        )
-        outdoor_markers = (
-            "外出",
-            "户外",
-            "公共",
-            "通勤",
-            "街头",
-            "outdoor",
-            "public",
-            "commute",
-        )
-        has_home = any(
-            marker in value for value in values for marker in home_markers
-        )
-        has_outdoor = any(
-            marker in value for value in values for marker in outdoor_markers
-        )
+        declared_scenes = attributes.get("scene_categories")
+        scenes = {
+            str(value).strip().lower()
+            for value in declared_scenes
+        } if isinstance(declared_scenes, (list, tuple, set)) else set()
+        scenes.intersection_update({"home", "sleep", "outdoor", "public"})
         if scene in {"outdoor", "public"}:
             if role == "home":
                 return False
             profiles = cls._style_catalog_component_profiles(item)
             if profiles and all(profile["role"] == "home" for profile in profiles):
                 return False
-            return not (has_home and not has_outdoor)
+            return not (scenes and scenes <= {"home", "sleep"})
 
         if role == "outdoor" and not attributes.get("home_description"):
             return False
         if scene == "sleep":
-            return has_home or bool(attributes.get("home_description")) or not values
-        return not (has_outdoor and not has_home)
+            return "sleep" in scenes or "home" in scenes or bool(attributes.get("home_description")) or not scenes
+        return not (scenes and scenes <= {"outdoor", "public"})
 
     @staticmethod
     def _style_catalog_component_state(

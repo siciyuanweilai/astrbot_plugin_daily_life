@@ -16,7 +16,7 @@ from ..models import (
     LifeEpisodeRecord,
     MemoryEvidenceRecord,
 )
-from .appearance_history import record_appearance_snapshot
+from .lookback import record_appearance_snapshot
 from .signals import physiological_rhythm_log_from_state
 from .surroundings import normalize_place_names
 

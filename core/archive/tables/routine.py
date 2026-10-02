@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS days (
             meta_theme TEXT NOT NULL DEFAULT '',
             meta_mood TEXT NOT NULL DEFAULT '',
             meta_style TEXT NOT NULL DEFAULT '',
-            meta_hair TEXT NOT NULL DEFAULT ''
+            meta_hair TEXT NOT NULL DEFAULT '',
+            weather_is_severe INTEGER NOT NULL DEFAULT 0
         );
 CREATE TABLE IF NOT EXISTS timelines (
             date TEXT NOT NULL,
@@ -52,6 +53,7 @@ CREATE TABLE IF NOT EXISTS timelines (
             execution_reason TEXT NOT NULL DEFAULT '',
             execution_evidence TEXT NOT NULL DEFAULT '',
             execution_updated_at TEXT NOT NULL DEFAULT '',
+            activity_kind TEXT NOT NULL DEFAULT '',
             PRIMARY KEY(date, sort_order),
             FOREIGN KEY(date) REFERENCES days(date) ON DELETE CASCADE
         );

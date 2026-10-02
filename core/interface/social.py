@@ -83,9 +83,9 @@ class SocialCommandMixin:
                     kind="plan",
                     trigger_date=(
                         req.commitment_target_date
-                        or self._infer_manual_commitment_date(content, req.now)
+                        or self._infer_manual_commitment_date(content)
                     ),
-                    time_window="weekend" if "周末" in content else "",
+                    time_window="",
                     people=[sender_name] if sender_name else [],
                     source="manual",
                     source_session=str(getattr(event, "unified_msg_origin", "") or ""),
@@ -155,13 +155,13 @@ class SocialCommandMixin:
             target = " ".join(req.parts[4:]).strip()
             if not commitment_id or not target:
                 yield event.plain_result(
-                    "请说明要延期的承诺和新时间，例如：把 3 延期到周末。"
+                    "请说明要延期的承诺和新日期，例如：延期 3 2026-10-03。"
                 )
                 return
-            date_str = self._infer_manual_commitment_date(target, req.now)
+            date_str = self._infer_manual_commitment_date(target)
             time_str = self._infer_manual_commitment_time(target)
             if not date_str:
-                yield event.plain_result("无法识别日期，请使用 明天/周末/YYYY-MM-DD")
+                yield event.plain_result("无法识别日期，请使用 YYYY-MM-DD。")
                 return
             commitment = await self.runtime.archive.get_commitment(commitment_id)
             denial = self.permission_denial(
@@ -180,7 +180,7 @@ class SocialCommandMixin:
             ok = await self.runtime.archive.reschedule_commitment(
                 commitment_id,
                 date_str,
-                "weekend" if "周末" in target else "",
+                "",
                 trigger_time=time_str,
             )
             if ok:
@@ -211,25 +211,17 @@ class SocialCommandMixin:
             return 0
 
     @staticmethod
-    def _infer_manual_commitment_date(text: str, now: datetime.datetime) -> str:
+    def _infer_manual_commitment_date(text: str) -> str:
         text = str(text or "").strip()
         if not text:
             return ""
-        if text == "明天" or "明天" in text:
-            return (now + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-        if "周末" in text:
-            days_until_saturday = (5 - now.weekday()) % 7
-            if days_until_saturday == 0:
-                days_until_saturday = 7
-            return (now + datetime.timedelta(days=days_until_saturday)).strftime(
-                "%Y-%m-%d"
-            )
-        try:
-            return datetime.datetime.strptime(text[:10], "%Y-%m-%d").strftime(
-                "%Y-%m-%d"
-            )
-        except ValueError:
-            return ""
+        for token in text.split():
+            try:
+                date = datetime.date.fromisoformat(token.strip("，。,."))
+                return date.isoformat()
+            except ValueError:
+                continue
+        return ""
 
     @staticmethod
     def _infer_manual_commitment_time(text: str) -> str:

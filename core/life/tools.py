@@ -384,6 +384,7 @@ def analyze_weather(weather_data: Any) -> dict:
         "is_sunny": False,
         "is_cloudy": False,
         "is_foggy": False,
+        "is_severe": False,
         "outfit_hint": "",
         "activity_hint": "",
         "temp_desc": "",
@@ -431,11 +432,8 @@ def analyze_weather(weather_data: Any) -> dict:
                 result["is_cold"] = True
                 result["temp_desc"] = "严寒"
 
-        cond_str = str(cond)
-        result["is_rainy"] = any(x in cond_str for x in ["雨", "雷", "雪"])
-        result["is_sunny"] = "晴" in cond_str
-        result["is_cloudy"] = any(x in cond_str for x in ["阴", "云"])
-        result["is_foggy"] = any(x in cond_str for x in ["雾", "霾"])
+        for field in ("is_rainy", "is_sunny", "is_cloudy", "is_foggy", "is_severe"):
+            result[field] = w.get(field) is True
 
         idx_map = {
             item["key"]: item

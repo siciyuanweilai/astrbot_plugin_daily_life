@@ -188,6 +188,15 @@ class SpineInviteMixin:
             or item.time_window in {"next_chat", "next_time"}
         ):
             return False
+        if item.media_kind in {"photo", "video"}:
+            try:
+                media_at = datetime.datetime.strptime(
+                    f"{item.trigger_date} {item.trigger_time}", "%Y-%m-%d %H:%M"
+                )
+            except ValueError:
+                return False
+            if media_at <= now.replace(tzinfo=None):
+                return False
         async with operation_lock(self, f"commitment_reconcile:{today_str}:{item.id}"):
             data = await self.archive.get_day(today_str)
             if not data or not data.timeline:

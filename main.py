@@ -1,7 +1,6 @@
 import asyncio
 import inspect
 import logging
-import re
 import time
 from contextlib import asynccontextmanager
 from functools import wraps
@@ -69,33 +68,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
 
     _LLM_RESPONSE_SEEN_ATTR = "_daily_life_llm_response_seen"
     _AGENT_ERROR_SEEN_ATTR = "_daily_life_agent_error_seen"
-    _EXPLICIT_VIDEO_REQUEST_ATTR = "_daily_life_explicit_video_request"
     _VIDEO_TOOL_USED_ATTR = "_daily_life_video_tool_used"
-    _VIDEO_FALLBACK_ATTEMPTED_ATTR = "_daily_life_video_fallback_attempted"
-
-    @staticmethod
-    def _is_explicit_video_request(message: str) -> bool:
-        text = "".join(str(message or "").split())
-        if not text or not re.search(r"视频|短片", text):
-            return False
-        if re.search(
-            r"(?:别|不要|不用|不想|取消|停止).{0,6}(?:拍|录|生成|制作|做|发).{0,6}(?:视频|短片)|"
-            r"(?:视频|短片).{0,6}(?:别|不要|不用|取消|停止)",
-            text,
-        ):
-            return False
-        if re.search(r"^(?:怎么|如何|为什么).{0,8}(?:拍|录|生成|制作)(?:视频|短片)", text):
-            return False
-        if re.search(
-            r"(?:拍|录|生成|制作|做|发)的?(?:视频|短片).{0,8}(?:怎么样了|好了吗|完成了吗|在哪|呢)$",
-            text,
-        ):
-            return False
-        if re.search(r"(?:拍|录|生成|制作|做)的(?:视频|短片)", text):
-            return False
-        return bool(
-            re.search(r"(?:拍|录|生成|制作|做|发|来).{0,6}(?:视频|短片)", text)
-        )
 
     @staticmethod
     def _split_voice_call_invite_message(message: str) -> tuple[str, str | None]:
@@ -713,6 +686,32 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             date=str(date or "").strip(),
         )
 
+    @filter.llm_tool(name="life_rest_timing")
+    @_runtime_guard
+    async def tool_life_rest_timing(
+        self,
+        event: AstrMessageEvent,
+        minutes: int,
+        target_times: list[str] | None = None,
+    ):
+        """
+        用户明确要求当前角色推迟临近的休息，或结束已生效的推迟时调用。
+        根据完整对话理解用户意图；自述、转述、假设、过去或未来计划不调用。
+        从当前生活日程中选出确实属于本次休息的节点，不能修改其他活动。
+
+        Args:
+            minutes(int): 本次希望延后的分钟数，1 到 120；结束已生效的推迟时填 0。
+            target_times(list[string]): 延后时填写当前日程中休息节点的 HH:MM 时间列表；结束推迟时留空。
+        """
+        denial = self._life_permission_denial(
+            event, "adjust:rest_timing", LifeActionScope.PRIVATE
+        )
+        if denial:
+            return denial
+        return await self.runtime.apply_rest_timing(
+            event, self._tool_int(minutes, -1), target_times or []
+        )
+
     @filter.llm_tool(name="life_commitment")
     @_runtime_guard
     async def tool_life_commitment(
@@ -1222,6 +1221,9 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         use_last_reverse_prompt: bool = False,
         resolution: str = "",
         provider: str = "",
+        historical_target: str = "",
+        historical_period: str = "",
+        historical_time: str = "",
     ):
         """
         根据当前角色生活场景生成并发送一张图片。
@@ -1233,6 +1235,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         使用 subject_route 明确图片主体：current_character 当前角色本人入镜；group 当前角色与一位已配置好友合影；scene 环境/氛围/状态；object 物品/食物；free 不限定主体或完整自由提示词。
         current_character 场景中，用户没有另行指定穿搭、发型或造型风格时，应参考系统注入的当前外观状态补足可见细节；用户本轮明确要求始终优先，不能用生活背景覆盖。
         回现过去日期或节日时段的本人照片，prompt 要保留日期、节日和时段；只复现该时刻记录的造型，不要用当前穿搭补写历史照片。
+        历史回现必须填写 historical_target，日期由完整对话语义换算成 YYYY-MM-DD；“上次那套”填 last。历史时段和精确时间分别填专用字段；不能从画面主题推断成过去。
         用户明确要求当前角色实际换装、改发型、化妆/卸妆或更换美甲时，设置 current_outfit_change=true，并把用户原始外观要求放入 current_outfit_instruction；如果用户选择视觉衣橱中的整组造型，允许把同图识别出的服装、发型、妆容、美甲和配饰一起展开为本轮要求，工具会先更新真实生活外观状态，再使用更新后的同一造型生图。展开候选属于可变造型，角色人设中明确的稳定外观事实（例如自然发色）优先；只有用户原始话语明确要求改变，或已有可靠生活事实确认变化时，才允许覆盖人设。
         仅要求生成、查看、试穿效果或创作某种穿搭图片时，不得设置 current_outfit_change；这类画面不会改变当前角色的真实生活穿搭状态。
         current_outfit_change=true 时，subject_route 只能填 current_character 或 group，prompt 只描述场景、动作、构图等画面要求，不要另外编造一套当前角色服装；插件会把已保存造型锁定到画面中。
@@ -1258,6 +1261,9 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             use_last_reverse_prompt(bool): 是否使用本会话上一条图片反推提示词原文。
             resolution(string): 可选输出分辨率，只能填 1K、2K 或 4K；仅当用户明确要求输出分辨率时填写，“高清”等模糊描述不要推断，其他语境里的 1K、2K、4K 也不要误填。
             provider(string): 可选图片接口，只能填 auto、gpt、gemini 或 grok；仅当用户明确要求使用指定图片接口时填写，否则留空。
+            historical_target(string): 历史回现日期 YYYY-MM-DD，或 last 表示上次不同于当前的造型；当前照片留空。
+            historical_period(string): 历史时段枚举 dawn、morning、forenoon、noon、afternoon、evening、night、late_night、daytime、evening_to_night；不明确留空。
+            historical_time(string): 明确历史钟点 HH:MM；不明确留空。
         """
         if str(subject_route or "free").strip() == "group":
             denial = self._life_permission_denial(
@@ -1304,6 +1310,9 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             options["resolution"] = requested_resolution
         if str(provider or "").strip():
             options["provider"] = str(provider).strip()
+        options["historical_target"] = str(historical_target or "").strip()
+        options["historical_period"] = str(historical_period or "").strip()
+        options["historical_time"] = str(historical_time or "").strip()
         return await self.runtime.life_image_generate(
             event,
             "" if use_reverse_cache else str(prompt or "").strip(),
@@ -1327,6 +1336,9 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         retry_indexes: list[int] | None = None,
         resolution: str = "",
         provider: str = "",
+        historical_target: str = "",
+        historical_period: str = "",
+        historical_time: str = "",
     ):
         """
         仅当用户明确要求“拍一套”“来组照片”“多拍几张”等一组独立照片时调用；普通单张图片仍调用 life_image_generate。
@@ -1337,6 +1349,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         套图工具只使用这里声明的参数：数量参数名是 count，不要传 photo_count 或 suite_count；套图工具不接受 current_outfit_change 或 current_outfit_instruction，生成套图不会修改当前生活穿搭状态。
         current_character 套图中，用户没有另行指定穿搭、发型或造型风格时，应参考系统注入的当前外观状态；用户本轮明确要求始终优先。
         回现过去日期或节日时段的一组照片时，prompt 要保留日期、节日和时段；整组统一采用该时刻记录的造型，不要混入当前穿搭。
+        历史回现须把对话中的日期换算为 historical_target=YYYY-MM-DD，或填 last；时段和钟点使用专用字段，不按提示词字面词匹配。
         current_character 用于当前角色本人套图；group 用于当前角色与一位已配置好友的合影套图，participants 必须且只能填写系统给出的关系档案 ID。
         合影套图中把当前角色作为人物 A、好友作为人物 B，分别固定两人的服装、发型、体态和外观呈现，不能把一人的穿搭复制给另一人。
         未明确归属的单套穿搭默认只属于人物 A；好友参考图只用于确认人物 B 的身份，人物 B 的本轮穿搭和发型通过结构化参数独立确定，不根据姓名或昵称猜测性别。只有明确要求同款、情侣装或统一造型时才共享穿搭风格。
@@ -1358,6 +1371,9 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             retry_indexes(list[int]): 可选重拍位置，使用从 1 开始的序号，例如 [2, 4]；普通新套图留空。
             resolution(string): 可选输出分辨率，只能填 1K、2K 或 4K；仅当用户明确要求整组照片的输出分辨率时填写，“高清”等模糊描述不要推断。
             provider(string): 可选图片接口，只能填 auto、gpt、gemini 或 grok；仅当用户明确要求使用指定图片接口时填写，否则留空。
+            historical_target(string): 历史回现日期 YYYY-MM-DD 或 last；当前照片留空。
+            historical_period(string): 历史时段枚举 dawn、morning、forenoon、noon、afternoon、evening、night、late_night、daytime、evening_to_night。
+            historical_time(string): 明确历史钟点 HH:MM。
         """
         if str(subject_route or "free").strip() == "group":
             denial = self._life_permission_denial(
@@ -1398,6 +1414,9 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             options["resolution"] = requested_resolution
         if str(provider or "").strip():
             options["provider"] = str(provider).strip()
+        options["historical_target"] = str(historical_target or "").strip()
+        options["historical_period"] = str(historical_period or "").strip()
+        options["historical_time"] = str(historical_time or "").strip()
         return await self.runtime.life_photo_suite_generate(
             event,
             str(prompt or "").strip(),
@@ -1632,13 +1651,19 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         friend_hair: str = "",
         friend_scene_category: str = "",
         continue_last_result: bool = False,
+        replace_reference_image: bool = False,
+        historical_target: str = "",
+        historical_period: str = "",
+        historical_time: str = "",
     ):
         """
         根据当前角色生活场景生成并发送一段短视频。
         视频生成较慢且成本更高，只适合用户明确要视频、引用图转视频，或动作/镜头变化非常强的场景。
         用户已经明确要视频时，调用前可以先用角色口吻说一句简短、自然的行动确认；不能提前声称视频已经完成，
         也不要播报生成任务、首帧、模型或等待进度。工具调用后保持安静，真实视频发送后再自然补一句。
-        当前消息或引用消息里带图片时会自动作为视频首帧/参考图；普通看状态、看穿搭、发照片应优先使用图片。
+        原始视频请求或引用消息里带图片时会自动作为视频首帧/参考图；拍摄开始后的闲聊图片、表情包不会替换首帧。
+        结合完整对话语义判断后补图片的用途。只有用户明确要求更换视频参考图或用新图重新制作视频时，才设置 replace_reference_image=true。
+        闲聊图片、表情回应和没有明确更换意图的补充消息保持 replace_reference_image=false；普通看状态、看穿搭、发照片应优先使用图片。
         用户明确要求当前角色与一位已配置好友拍同框视频时，subject_route 填 group，participants 必须填写系统给出的一个关系档案 ID。
         group 模式会优先把当前消息或引用消息里的现成合影直接作为首帧；没有现成合影时，才使用双方参考图生成双人首帧。
         普通“一起拍个视频”“拍段视频看看”属于新的拍摄：即使上一轮刚发送过合影，也不要设置 continue_last_result，插件会重新生成适合视频剧情的双人首帧。
@@ -1650,6 +1675,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         用户要求让当前会话上一张已生成合影动起来，并且本轮没有发送或引用新图片时，设置 continue_last_result=true。
         当前或引用图片会被视为已经包含最终人物的完整首帧；如果只是空场景，应先生成合影图片，再基于生成结果制作视频。
         如果用户本轮已经给出完整视频提示词、分镜脚本或时间轴，prompt 必须原样保留用户全文，不要改写、摘要或翻译。
+        回现历史时根据完整对话把目标日期写入 historical_target，时段和钟点写专用字段；普通视频留空。
 
         Args:
             prompt(string): 视频画面要求；用户给出完整分镜或时间轴时必须填完整原文，例如“第1格【0-1.5秒】...第2格【1.5-3秒】...”。
@@ -1659,6 +1685,10 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             friend_hair(string): 人物 B 本次发型；新生成首帧且没有当天造型时必须与 friend_outfit 同时填写，已有当天造型时仅在本轮改变发型时填写，现成首帧时留空。
             friend_scene_category(string): 新生成首帧时人物 B 的当前场景，只能填 home、sleep、outdoor、public 或 mixed；使用现成首帧时留空。
             continue_last_result(bool): 本轮没有新图片且用户明确要求沿用上一张时，是否使用当前会话上一张成功生成的图片作为视频首帧；不能仅因上一轮刚发送过图片就设为 true。
+            replace_reference_image(bool): 根据完整对话语义确认用户明确要用后补图片替换首帧或重新制作视频时才填 true；默认 false，保留原视频请求的参考来源，普通聊天图片和表情包不能替换。
+            historical_target(string): 历史回现日期 YYYY-MM-DD 或 last；普通视频留空。
+            historical_period(string): 历史时段枚举 dawn、morning、forenoon、noon、afternoon、evening、night、late_night、daytime、evening_to_night。
+            historical_time(string): 明确历史钟点 HH:MM。
         """
         if str(subject_route or "free").strip() == "group" or participants:
             denial = self._life_permission_denial(
@@ -1672,6 +1702,8 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             "subject_route": str(subject_route or "free").strip(),
             "continue_last_result": self._tool_bool(continue_last_result),
         }
+        if self._tool_bool(replace_reference_image):
+            options["replace_reference_image"] = True
         if participants:
             options["participants"] = participants
         if str(friend_outfit or "").strip():
@@ -1680,6 +1712,9 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             options["friend_hair"] = str(friend_hair).strip()
         if str(friend_scene_category or "").strip():
             options["friend_scene_category"] = str(friend_scene_category).strip()
+        options["historical_target"] = str(historical_target or "").strip()
+        options["historical_period"] = str(historical_period or "").strip()
+        options["historical_time"] = str(historical_time or "").strip()
         return await self.runtime.life_video_generate(
             event,
             str(prompt or "").strip(),
@@ -1947,18 +1982,6 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
                 for name in MAP_LLM_TOOL_NAMES:
                     toolset.remove_tool(name)
         await self.runtime.inject_life_context(req, event)
-        request_text = str(
-            getattr(req, "prompt", "") or getattr(event, "message_str", "") or ""
-        ).strip()
-        if video_enabled and self._is_explicit_video_request(request_text):
-            setattr(event, self._EXPLICIT_VIDEO_REQUEST_ATTR, request_text)
-            req.system_prompt = (
-                str(getattr(req, "system_prompt", "") or "")
-                + "\n\n[HiddenExplicitVideoRequest]\n"
-                "用户本轮明确要求你拍摄或发送视频，必须调用 life_video_generate。"
-                "角色当下的生活情境可以决定画面、动作和拍摄方式，但不能作为拒绝拍摄的理由。"
-                "不要只用文字或图片代替视频；工具开始后等真实视频投递，再自然接话。"
-            )
 
     @filter.on_llm_response()
     @_runtime_guard
@@ -2005,25 +2028,6 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
                 logger.debug(
                     f"{LOG_PREFIX} 已抑制套图后续确认语错误，继续等待后台交付。"
                 )
-        if (
-            not agent_error
-            and getattr(event, self._EXPLICIT_VIDEO_REQUEST_ATTR, "")
-            and not getattr(event, self._VIDEO_TOOL_USED_ATTR, False)
-            and not getattr(event, self._VIDEO_FALLBACK_ATTEMPTED_ATTR, False)
-            and not self._runtime_hook_bool("stop_stale_continuous_turn_event", event)
-        ):
-            setattr(event, self._VIDEO_FALLBACK_ATTEMPTED_ATTR, True)
-            generator = getattr(self.runtime, "life_video_generate", None)
-            if callable(generator):
-                try:
-                    await generator(
-                        event,
-                        getattr(event, self._EXPLICIT_VIDEO_REQUEST_ATTR),
-                        subject_route="current_character",
-                    )
-                    logger.info(f"{LOG_PREFIX} 明确视频请求未触发工具，已补交视频生成")
-                except Exception as exc:
-                    logger.warning(f"{LOG_PREFIX} 视频请求补交失败：{exc}")
         reaction = getattr(self.runtime, "note_tool_reaction_agent_done", None)
         if callable(reaction):
             await reaction(event, response)
@@ -2036,6 +2040,19 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         tool_name = str(getattr(tool, "name", tool) or "").strip()
         if tool_name == "life_video_generate":
             setattr(event, self._VIDEO_TOOL_USED_ATTR, True)
+            capture_reference = getattr(
+                self.runtime, "note_life_video_reference_source", None
+            )
+            if callable(capture_reference):
+                capture_reference(
+                    event,
+                    continue_last_result=self._tool_bool(
+                        (tool_args or {}).get("continue_last_result", False)
+                    ),
+                    replace=self._tool_bool(
+                        (tool_args or {}).get("replace_reference_image", False)
+                    ),
+                )
         if tool_name in {
             "life_web_search",
             "life_web_fetch",
@@ -2375,16 +2392,6 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
                 trigger="连续话轮收束",
             )
             return
-        video_config = getattr(
-            getattr(self.runtime, "config", None), "video_generation", None
-        )
-        if (
-            bool(getattr(video_config, "enabled", False))
-            and event.get_platform_name() == "webchat"
-            and self._is_explicit_video_request(event.message_str)
-        ):
-            # 流式错误已发出后无法撤回，视频请求需经过发送前检查。
-            event.set_extra("enable_streaming", False)
         self._runtime_hook_call("mark_alias_directed_event_as_wake", event)
         self.runtime.note_proactive_activity(event)
         decision = await self.runtime.apply_response_gate_for_event(event)

@@ -1530,13 +1530,9 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         await service.generate_image("雨夜生活照", aspect_ratio="9:16", resolution="4k")
 
         image_config = calls[0][2]["generationConfig"]["imageConfig"]
-        response_image_config = calls[0][2]["generationConfig"]["responseFormat"][
-            "image"
-        ]
         self.assertEqual(image_config["aspectRatio"], "9:16")
         self.assertEqual(image_config["imageSize"], "4K")
-        self.assertEqual(response_image_config["aspectRatio"], "9:16")
-        self.assertEqual(response_image_config["imageSize"], "4K")
+        self.assertNotIn("responseFormat", calls[0][2]["generationConfig"])
         self.assertIn("9:16 比例图片", calls[0][2]["contents"][0]["parts"][0]["text"])
         self.assertIn("4K 分辨率", calls[0][2]["contents"][0]["parts"][0]["text"])
 

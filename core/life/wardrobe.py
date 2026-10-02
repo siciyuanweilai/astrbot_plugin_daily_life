@@ -1,5 +1,5 @@
 import json
-import re
+from difflib import SequenceMatcher
 
 OUTFIT_SCENE_CATEGORY_ENUM = "home | sleep | outdoor | public | mixed"
 OUTFIT_STYLE_POOL_ENUM = "sleep_styles | outfit_styles | mixed"
@@ -139,40 +139,20 @@ def normalize_outfit_components(value: object) -> dict[str, dict[str, str]]:
         else:
             continue
         normalized[key] = {"state": state, "description": description}
-    # A legacy main_clothing field sometimes contains the entire outfit. Keep
-    # component names disjoint so removing a coat cannot leave it in the main.
-    for key, item in normalized.items():
-        if key != "main_clothing":
-            item["description"] = re.sub(
-                r"[，,；;、\s]*(?:已(?:经)?(?:脱下|取下|摘下|放下|收起|穿上|戴上|穿着|佩戴)|待用)[。！!\s]*$",
-                "",
-                item["description"],
-            ).strip(" ，。；、")
+    # Legacy records may duplicate a structured component inside main_clothing.
     main = normalized.get("main_clothing")
     if main:
         text = main["description"]
         for key, item in normalized.items():
             if key == "main_clothing" or not item["description"]:
                 continue
-            name = item["description"]
-            suffix = re.sub(
-                r"^(?:浅|深|淡|亮|暗|米|奶)?(?:粉|蓝|白|黑|灰|绿|黄|红|紫|棕|褐|橙|杏|卡其)色",
-                "",
-                name,
-            )
-            candidates = [re.escape(name)]
-            if suffix != name and len(suffix) >= 4:
-                candidates.append(r"(?:同色)?" + re.escape(suffix))
-            text = re.sub(
-                r"(?:脚穿|脚踩|脚上穿着|身披|外搭|佩戴|戴着|背着|手提|搭配)?(?:"
-                + "|".join(candidates)
-                + r")(?:与|和|以及|及)?",
-                "",
-                text,
-            )
-        text = re.sub(r"[，,；;。]\s*[，,；;。]+", "，", text)
-        text = re.sub(r"(?:搭配|配着|与|和|以及|及)(?=[，,；;。]|$)", "", text)
-        main["description"] = text.strip(" ，,。；;、与和")
+            name = item["description"].partition("，")[0].strip(" ，。；、")
+            if not name:
+                continue
+            match = SequenceMatcher(None, text, name, autojunk=False).find_longest_match()
+            if match.size >= 3 and match.size / len(name) >= 0.65:
+                text = text[:match.a] + text[match.a + match.size:]
+        main["description"] = text.strip(" ，,。；;、")
     return normalized
 
 

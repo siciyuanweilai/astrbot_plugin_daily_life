@@ -61,6 +61,7 @@ from core.models import (
     StyleCatalogItemRecord,
     TemporaryExpressionStateRecord,
     TimelineItem,
+    WeatherInfo,
     WeekPlanRecord,
 )
 from core.sight import SightClip, SightInsight, SightVault
@@ -710,6 +711,50 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                     ).fetchall()
                 }
                 self.assertIn("duration_minutes", columns)
+                self.assertIn("activity_kind", columns)
+                self.assertIn(
+                    "weather_is_severe",
+                    {row[1] for row in archive._conn.execute("PRAGMA table_info(days)")},
+                )
+            finally:
+                archive.close()
+
+    async def test_semantic_flags_survive_reload_and_version_17_upgrade(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = f"{tmpdir}/daily_life.db"
+            archive = LifeArchive(db_path)
+            await archive.save_day(
+                DayRecord(
+                    date="2026-09-25",
+                    timeline=[TimelineItem(time="21:00", activity="休息", activity_kind="rest")],
+                    weather_info=WeatherInfo(raw="恶劣天气", is_severe=True),
+                )
+            )
+            archive.close()
+            archive = LifeArchive(db_path)
+            saved = await archive.get_day("2026-09-25")
+            self.assertEqual(saved.timeline[0].activity_kind, "rest")
+            self.assertTrue(saved.weather_info.is_severe)
+            archive.close()
+
+            conn = sqlite3.connect(db_path)
+            conn.execute("ALTER TABLE timelines DROP COLUMN activity_kind")
+            conn.execute("ALTER TABLE days DROP COLUMN weather_is_severe")
+            conn.execute("UPDATE meta SET value = '17' WHERE key = 'schema_version'")
+            conn.commit()
+            conn.close()
+            archive = LifeArchive(db_path)
+            try:
+                saved = await archive.get_day("2026-09-25")
+                self.assertEqual(saved.timeline[0].activity, "休息")
+                self.assertEqual(saved.timeline[0].activity_kind, "")
+                self.assertFalse(saved.weather_info.is_severe)
+                self.assertEqual(
+                    archive._conn.execute(
+                        "SELECT value FROM meta WHERE key = 'schema_version'"
+                    ).fetchone()[0],
+                    str(SCHEMA_VERSION),
+                )
             finally:
                 archive.close()
 

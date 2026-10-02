@@ -109,7 +109,7 @@ class DailyEngineMixin:
             if city
             else "未配置天气城市，居住地或默认人设也没有可确认的现实城市"
         )
-        weather_info = analyze_weather(weather_data)
+        weather_info = analyze_weather(await self._classify_weather_condition(weather_data))
         weather_section, constraint_section = self._build_weather_sections(weather_info)
         calendar_context = format_calendar_context(date)
         season_context = format_season_context(date)

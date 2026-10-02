@@ -371,6 +371,110 @@ class DurableRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(stored.status, "completed")
                 self.assertEqual(stored.attempts, 0)
 
+    async def test_direct_video_delivery_settles_matching_immediate_commitment(self):
+        commitment = await self.archive.save_commitment(
+            CommitmentRecord(
+                content="现在拍个视频给我",
+                trigger_date=datetime.datetime.now().strftime("%Y-%m-%d"),
+                owner="当前角色",
+                media_kind="video",
+                source_session="private:video",
+                source_message_id="video-request-1",
+            )
+        )
+        unrelated = await self.archive.save_commitment(
+            CommitmentRecord(
+                content="明天拍另一段视频",
+                trigger_date="2099-01-01",
+                trigger_time="09:00",
+                owner="当前角色",
+                media_kind="video",
+                source_session="private:video",
+                source_message_id="video-request-2",
+            )
+        )
+        scheduled = await self.archive.save_commitment(
+            CommitmentRecord(
+                content="明天再拍一段视频",
+                trigger_date="2099-01-01",
+                trigger_time="09:00",
+                owner="当前角色",
+                media_kind="video",
+                source_session="private:video",
+                source_message_id="video-request-3",
+            )
+        )
+        runtime = _MediaRuntime(self.archive, None)
+        task = await runtime.stage_durable_media_delivery(
+            "private:video",
+            "video",
+            ["https://example.com/video.mp4"],
+            action_type="video",
+            evidence="视频已生成",
+            source_message_id="video-request-1",
+        )
+
+        self.assertTrue(await runtime.finalize_durable_media_delivery(task, outcome="sent"))
+        self.assertEqual((await self.archive.get_commitment(commitment.id)).status, "done")
+        self.assertEqual((await self.archive.get_commitment(unrelated.id)).status, "active")
+        scheduled_task = await runtime.stage_durable_media_delivery(
+            "private:video",
+            "video",
+            ["https://example.com/scheduled-video.mp4"],
+            action_type="video",
+            evidence="预约视频已发送",
+            source_message_id="video-request-3",
+        )
+        self.assertTrue(
+            await runtime.finalize_durable_media_delivery(scheduled_task, outcome="sent")
+        )
+        self.assertEqual((await self.archive.get_commitment(scheduled.id)).status, "done")
+        self.assertTrue(
+            await runtime.direct_media_was_delivered(
+                "private:video", "video", ["video-request-1"]
+            )
+        )
+        self.assertFalse(
+            await runtime.direct_media_was_delivered(
+                "private:other", "video", ["video-request-1"]
+            )
+        )
+
+    async def test_direct_image_deliveries_settle_matching_photo_commitments(self):
+        runtime = _MediaRuntime(self.archive, None)
+        for media_kind in ("image", "images"):
+            with self.subTest(media_kind=media_kind):
+                message_id = f"photo-request-{media_kind}"
+                commitment = await self.archive.save_commitment(
+                    CommitmentRecord(
+                        content="拍照发给我",
+                        trigger_date=datetime.datetime.now().strftime("%Y-%m-%d"),
+                        owner="当前角色",
+                        media_kind="photo",
+                        source_session="private:photo",
+                        source_message_id=message_id,
+                    )
+                )
+                task = await runtime.stage_durable_media_delivery(
+                    "private:photo",
+                    media_kind,
+                    [f"https://example.com/{media_kind}.png"],
+                    action_type="photo",
+                    evidence="照片已生成",
+                    source_message_id=message_id,
+                )
+                self.assertTrue(
+                    await runtime.finalize_durable_media_delivery(task, outcome="sent")
+                )
+                self.assertEqual(
+                    (await self.archive.get_commitment(commitment.id)).status, "done"
+                )
+                self.assertTrue(
+                    await runtime.direct_media_was_delivered(
+                        "private:photo", "photo", [message_id]
+                    )
+                )
+
     async def test_restart_releases_active_media_for_single_recovery(self):
         video_path = Path(self.directory.name) / "active.mp4"
         video_path.write_bytes(b"fake-video")

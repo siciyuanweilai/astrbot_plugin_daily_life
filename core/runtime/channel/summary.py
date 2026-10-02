@@ -479,10 +479,13 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
         *,
         allow_last_generated: bool = False,
         prefer_last_generated: bool = False,
+        current_items: tuple[Any, ...] | None = None,
     ) -> str:
         explicit = str(reference_image or "").strip()
         current = await self._image_reference_from_items_async(
-            self._event_message_items(event)
+            list(current_items)
+            if current_items is not None
+            else self._event_message_items(event)
         )
         if current:
             return current

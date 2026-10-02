@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.3.8-ef6f8f" alt="版本 1.3.8"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.3.9-ef6f8f" alt="版本 1.3.9"></a>
   <img src="https://img.shields.io/badge/AstrBot-%3E%3D4.26%2C%3C5-4c78a8" alt="AstrBot >= 4.26,<5">
   <img src="https://img.shields.io/badge/platform-aiocqhttp%20%7C%20weixin__oc-4f8a66" alt="支持 aiocqhttp 和 weixin_oc">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-555555" alt="MIT License"></a>
@@ -29,12 +29,12 @@
 > ### 四次元未来 AI 模型 API 服务平台
 > **语言模型 · 图像生成 · 多模型聚合 · 一站式接入**  
 > 低价稳定丨多模型可选丨按张计费丨快速生成  
-> **[立即体验：https://api.scywl.cc.com](https://api.scywl.cc)**
+> **[立即体验：https://api.scywl.cc](https://api.scywl.cc)**
 
 [![Yousa Ling](https://count.getloli.com/get/@DailyLife?theme=yousa-ling)](https://github.com/siciyuanweilai/astrbot_plugin_daily_life)
 
 > [!TIP]
-> **v1.3.8 重点更新**：修复历史照片追问误用当前穿搭、休息顺延与邀约并发冲突；移除 Seedream 生图通道，为图片通道增加上移/下移箭头，并更新 Grok 视频生成与投递。完整说明见 [CHANGELOG.md](./CHANGELOG.md)。
+> **v1.3.9 重点更新**：视频首帧隔离、结构化休息与历史穿搭回现、媒体承诺回执、生活语义去关键词处理，并修复 Gemini 图片通道兼容性。完整说明见 [CHANGELOG.md](./CHANGELOG.md)。
 
 ---
 

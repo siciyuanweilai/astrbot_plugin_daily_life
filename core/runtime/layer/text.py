@@ -5,7 +5,7 @@ from ...config.options.basis import format_chat_style_prompt
 from ...life.appearance import format_current_appearance_context
 from ...life.calendar import format_calendar_context, format_season_context
 from ...life.condition import format_physiological_rhythm_prompt
-from ...life.rest_delay import format_rest_delay_hint, is_rest_activity
+from ...life.restdelay import format_rest_delay_hint, is_rest_activity
 from ...life.tools import (
     build_time_context,
     format_timeline_travel,

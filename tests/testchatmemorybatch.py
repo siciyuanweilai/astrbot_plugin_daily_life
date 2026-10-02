@@ -545,6 +545,120 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(action_items[0]["commitment_id"], commitments[0].id)
         self.assertEqual(action_items[0]["title"], "周六一起去看展")
 
+    async def test_immediate_video_request_is_not_saved_as_future_commitment(self):
+        message = ChatMemoryArchiveTest.snapshot(
+            session_id="private:1", message_id="video-now", text="拍个晚安视频"
+        )
+        message["id"] = 1
+        await self.runtime._save_batch_commitments(
+            {
+                "commitments": [
+                    {
+                        "content": "拍晚安视频给对方",
+                        "trigger_date": "2026-07-10",
+                        "time_window": "今晚",
+                        "owner": "当前角色",
+                        "media_kind": "video",
+                        "execution_mode": "immediate",
+                        "source_message_ids": ["video-now"],
+                    }
+                ]
+            },
+            {"session_id": "private:1", "messages": [message]},
+        )
+        self.assertEqual(await self.runtime.archive.get_commitments(limit=10), [])
+
+    async def test_explicit_future_video_request_is_saved(self):
+        message = ChatMemoryArchiveTest.snapshot(
+            session_id="private:1", message_id="video-tomorrow", text="明晚九点拍个视频"
+        )
+        message["id"] = 1
+        await self.runtime._save_batch_commitments(
+            {
+                "commitments": [
+                    {
+                        "content": "明晚九点拍视频",
+                        "trigger_date": "2026-07-11",
+                        "trigger_time": "21:00",
+                        "owner": "当前角色",
+                        "media_kind": "video",
+                        "execution_mode": "future",
+                        "source_message_ids": ["video-tomorrow"],
+                    }
+                ]
+            },
+            {"session_id": "private:1", "messages": [message]},
+        )
+        commitments = await self.runtime.archive.get_commitments(limit=10)
+        self.assertEqual(len(commitments), 1)
+        self.assertEqual(commitments[0].trigger_time, "21:00")
+
+    async def test_video_delivered_during_save_is_settled(self):
+        message = ChatMemoryArchiveTest.snapshot(
+            session_id="private:1", message_id="video-race", text="明晚九点拍个视频"
+        )
+        message["id"] = 1
+        checks = 0
+
+        async def delivery_check(*args):
+            nonlocal checks
+            checks += 1
+            return checks == 2
+
+        self.runtime.direct_media_was_delivered = delivery_check
+        await self.runtime._save_batch_commitments(
+            {
+                "commitments": [
+                    {
+                        "content": "明晚九点拍视频",
+                        "trigger_date": "2026-07-11",
+                        "trigger_time": "21:00",
+                        "owner": "当前角色",
+                        "media_kind": "video",
+                        "execution_mode": "future",
+                        "source_message_ids": ["video-race"],
+                    }
+                ]
+            },
+            {"session_id": "private:1", "messages": [message]},
+        )
+        commitments = await self.runtime.archive.get_commitments(status="", limit=10)
+        self.assertEqual(checks, 2)
+        self.assertEqual(len(commitments), 1)
+        self.assertEqual(commitments[0].status, "done")
+
+    async def test_delivered_video_is_not_saved_by_late_memory_batch(self):
+        message = ChatMemoryArchiveTest.snapshot(
+            session_id="private:1", message_id="video-sent", text="拍个晚安视频"
+        )
+        message["id"] = 1
+        task = await self.runtime.stage_durable_media_delivery(
+            "private:1",
+            "video",
+            ["https://example.com/video.mp4"],
+            action_type="video",
+            evidence="视频已生成",
+            source_message_id="video-sent",
+        )
+        self.assertTrue(await self.runtime.finalize_durable_media_delivery(task, outcome="sent"))
+        await self.runtime._save_batch_commitments(
+            {
+                "commitments": [
+                    {
+                        "content": "拍晚安视频给对方",
+                        "owner": "当前角色",
+                        "media_kind": "video",
+                        "execution_mode": "future",
+                        "trigger_date": "2099-01-01",
+                        "trigger_time": "22:00",
+                        "source_message_ids": ["video-sent"],
+                    }
+                ]
+            },
+            {"session_id": "private:1", "messages": [message]},
+        )
+        self.assertEqual(await self.runtime.archive.get_commitments(limit=10), [])
+
     async def test_batch_reuses_scheduled_invite_without_regressing_action_item(self):
         message = ChatMemoryArchiveTest.snapshot(
             session_id="private:1",

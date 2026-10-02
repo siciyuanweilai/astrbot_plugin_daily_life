@@ -185,6 +185,98 @@ class ContinuousTurnTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request.prompt, "照着这张参考图画\n[图片]")
         self.assertEqual(request.image_urls, ["https://example.com/reference.png"])
 
+    async def test_video_reference_survives_repeated_image_restarts(self):
+        runtime = self._runtime(continuous_turn_wait_seconds=0)
+        first = self._event("拍个视频看看", "video")
+        runtime.note_continuous_turn_incoming(first)
+        await runtime.settle_continuous_turn(first)
+        runtime.prepare_continuous_turn_llm_request(first, ProviderRequest())
+        original = runtime.note_life_video_reference_source(first)
+
+        for message_id in ("sticker", "photo"):
+            later = self._image_event(message_id, f"https://example.com/{message_id}.png")
+            runtime.note_continuous_turn_incoming(later)
+            await runtime.settle_continuous_turn(later)
+            runtime.prepare_continuous_turn_llm_request(later, ProviderRequest())
+            source = runtime.note_life_video_reference_source(later)
+            self.assertIs(source, original)
+            reference = await runtime._resolve_life_image_reference_async(
+                source.event, current_items=source.items
+            )
+            self.assertEqual(reference, "")
+            self.assertTrue(later.get_messages())
+
+        runtime.complete_continuous_turn(later)
+        fresh = self._image_event("fresh", "https://example.com/fresh.png", text="用这张生成视频")
+        runtime.note_continuous_turn_incoming(fresh)
+        await runtime.settle_continuous_turn(fresh)
+        source = runtime.note_life_video_reference_source(fresh)
+        self.assertIs(source.event, fresh)
+        self.assertEqual(
+            await runtime._resolve_life_image_reference_async(source.event, current_items=source.items),
+            "https://example.com/fresh.png",
+        )
+
+    async def test_video_reference_keeps_cached_original_image(self):
+        runtime = self._runtime(continuous_turn_wait_seconds=0)
+        first = self._image_event("video", "/temporary/original.png", text="把这张转成视频")
+        entry = {"item": first.get_messages()[0], "path": "/cache/original.png"}
+        setattr(first, runtime._PREPARED_VISUAL_MEDIA_ATTR, [entry])
+        runtime.note_continuous_turn_incoming(first)
+        await runtime.settle_continuous_turn(first)
+        runtime.prepare_continuous_turn_llm_request(first, ProviderRequest())
+        original = runtime.note_life_video_reference_source(first)
+        first.message_items.clear()
+
+        later = self._image_event("sticker", "https://example.com/sticker.png", text="给你比心")
+        runtime.note_continuous_turn_incoming(later)
+        await runtime.settle_continuous_turn(later)
+        source = runtime.note_life_video_reference_source(later)
+        self.assertIs(source, original)
+        self.assertEqual(
+            await runtime._resolve_life_image_reference_async(source.event, current_items=source.items),
+            "/cache/original.png",
+        )
+
+    async def test_video_reference_can_be_explicitly_replaced(self):
+        for text in ("用这张当视频首帧", "让这张动起来", "首帧换成这张"):
+            with self.subTest(text=text):
+                runtime = self._runtime(continuous_turn_wait_seconds=0)
+                first = self._image_event("video", "https://example.com/original.png", text="把这张转成视频")
+                runtime.note_continuous_turn_incoming(first)
+                await runtime.settle_continuous_turn(first)
+                runtime.prepare_continuous_turn_llm_request(first, ProviderRequest())
+                runtime.note_life_video_reference_source(first)
+
+                later = self._image_event("replacement", "https://example.com/replacement.png", text=text)
+                runtime.note_continuous_turn_incoming(later)
+                await runtime.settle_continuous_turn(later)
+                source = runtime.note_life_video_reference_source(later, replace=True)
+                wrapped = types.SimpleNamespace(context=types.SimpleNamespace(event=later))
+                self.assertIs(
+                    runtime.note_life_video_reference_source(wrapped, replace=True),
+                    source,
+                )
+                self.assertIs(source.event, later)
+                self.assertEqual(
+                    await runtime._resolve_life_image_reference_async(source.event, current_items=source.items),
+                    "https://example.com/replacement.png",
+                )
+
+    async def test_video_reference_requires_structured_replacement_decision(self):
+        for text in ("给你比心", "这张好看吧", "不要用这张生成视频", "用这张当视频首帧"):
+            with self.subTest(text=text):
+                runtime = self._runtime(continuous_turn_wait_seconds=0)
+                first = self._event("拍个视频看看", "video")
+                runtime.note_continuous_turn_incoming(first)
+                await runtime.settle_continuous_turn(first)
+                runtime.prepare_continuous_turn_llm_request(first, ProviderRequest())
+                original = runtime.note_life_video_reference_source(first)
+                event = self._image_event("chat", "https://example.com/sticker.png", text=text)
+                runtime.note_continuous_turn_incoming(event)
+                await runtime.settle_continuous_turn(event)
+                self.assertIs(runtime.note_life_video_reference_source(event), original)
+
     async def test_completed_image_turn_and_duplicate_id_do_not_repeat_images(self):
         runtime = self._runtime(continuous_turn_wait_seconds=0)
         first = self._image_event("image", "https://example.com/photo.png")

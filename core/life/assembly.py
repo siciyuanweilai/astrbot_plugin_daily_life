@@ -121,6 +121,7 @@ class DailyAssemblyMixin:
                     "is_sunny": weather_info.get("is_sunny"),
                     "is_cloudy": weather_info.get("is_cloudy"),
                     "is_foggy": weather_info.get("is_foggy"),
+                    "is_severe": weather_info.get("is_severe"),
                 }
             ),
             time_period=period,

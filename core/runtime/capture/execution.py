@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import datetime
 import json
-import re
 from typing import Any
 
 from ...life.tools import timeline_item_datetime
@@ -93,17 +92,7 @@ class ChatExecutionMixin:
                 continue
             evidence = str(update.get("evidence") or "").strip()
             message = str(row.get("message_text") or "")
-            if len(evidence) < 4 or evidence not in message:
-                continue
-            # Do not accept a completion substring cut out of a negated clause.
-            clauses = re.split(r"[。！？!?\n]", message)
-            relevant = next(
-                (clause for clause in clauses if evidence in clause), message
-            )
-            if re.search(
-                r"还没|没有|没(?:有)?(?:做|买|打包|完成|到|换|吃|收拾)|尚未|未完成|准备(?:去|要)|打算|如果|假如",
-                relevant,
-            ):
+            if len(evidence) < 4 or evidence != message.strip():
                 continue
             try:
                 occurred = datetime.datetime.fromisoformat(

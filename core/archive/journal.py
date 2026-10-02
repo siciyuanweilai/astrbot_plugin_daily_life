@@ -59,6 +59,7 @@ class DayArchiveMixin:
             TimelineItem(
                 time=item["time"],
                 activity=item["activity"],
+                activity_kind=item["activity_kind"],
                 status=item["status"],
                 duration_minutes=item["duration_minutes"],
                 place=item["place"],
@@ -88,7 +89,7 @@ class DayArchiveMixin:
                        place_latitude, place_longitude, place_coordinate_source,
                        travel_origin, travel_provider, travel_detail, travel_minutes,
                        travel_distance_meters, execution_state, execution_reason,
-                       execution_evidence, execution_updated_at
+                       execution_evidence, execution_updated_at, activity_kind
                 FROM timelines WHERE date = ? ORDER BY sort_order
                 """,
                 (date_str,),
@@ -161,6 +162,7 @@ class DayArchiveMixin:
             "weather_is_sunny",
             "weather_is_cloudy",
             "weather_is_foggy",
+            "weather_is_severe",
         )
         if not any(row[key] for key in keys):
             return WeatherInfo(raw=row["weather"])
@@ -176,6 +178,7 @@ class DayArchiveMixin:
             is_sunny=bool(row["weather_is_sunny"]),
             is_cloudy=bool(row["weather_is_cloudy"]),
             is_foggy=bool(row["weather_is_foggy"]),
+            is_severe=bool(row["weather_is_severe"]),
             outfit_hint=row["weather_outfit_hint"],
             activity_hint=row["weather_activity_hint"],
             temp_desc=row["weather_temp_desc"],
@@ -250,9 +253,9 @@ class DayArchiveMixin:
                 weather_temp, weather_condition, weather_temp_desc, weather_outfit_hint, weather_activity_hint,
                 weather_is_hot, weather_is_warm, weather_is_cool, weather_is_cold,
                 weather_is_rainy, weather_is_sunny, weather_is_cloudy, weather_is_foggy,
-                meta_theme, meta_mood, meta_style, meta_hair
+                meta_theme, meta_mood, meta_style, meta_hair, weather_is_severe
             )
-            VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(date) DO UPDATE SET
                 revision = days.revision + 1,
                 outfit = excluded.outfit,
@@ -276,7 +279,8 @@ class DayArchiveMixin:
                 meta_theme = excluded.meta_theme,
                 meta_mood = excluded.meta_mood,
                 meta_style = excluded.meta_style,
-                meta_hair = excluded.meta_hair
+                meta_hair = excluded.meta_hair,
+                weather_is_severe = excluded.weather_is_severe
             """,
             (
                 day.date,
@@ -302,6 +306,7 @@ class DayArchiveMixin:
                 self._text(meta.get("mood")),
                 self._text(meta.get("style")),
                 self._text(meta.get("hair")),
+                self._flag(weather_info.is_severe),
             ),
         )
         self._replace_timeline_unlocked(day.date, day.timeline)
@@ -347,8 +352,8 @@ class DayArchiveMixin:
                     place_latitude, place_longitude, place_coordinate_source,
                     travel_origin, travel_provider, travel_detail, travel_minutes,
                     travel_distance_meters, execution_state, execution_reason,
-                    execution_evidence, execution_updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    execution_evidence, execution_updated_at, activity_kind
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     date_str,
@@ -376,6 +381,7 @@ class DayArchiveMixin:
                     item.execution_reason,
                     item.execution_evidence,
                     item.execution_updated_at,
+                    item.activity_kind,
                 ),
             )
 

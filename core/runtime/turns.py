@@ -29,6 +29,7 @@ class ContinuousTurnBatch:
     message_ids: list[str] = field(default_factory=list)
     images: dict[str, ContinuousTurnImages] = field(default_factory=dict)
     generation_event: Any = None
+    video_reference_source: Any = None
     wait_seconds: float = 0.0
 
 
@@ -383,6 +384,7 @@ class ContinuousTurnMixin:
             message_ids=message_ids,
             images={key: images[key] for key in message_ids if key in images},
             generation_event=previous.generation_event if active else None,
+            video_reference_source=previous.video_reference_source if active else None,
         )
         batch_bucket[participant] = batch
         setattr(event, self._CONTINUOUS_TURN_SCOPE_ATTR, scope)
@@ -391,6 +393,11 @@ class ContinuousTurnMixin:
         setattr(event, self._CONTINUOUS_TURN_DEADLINE_ATTR, batch.deadline)
         setattr(event, self._CONTINUOUS_TURN_FOLLOW_UP_ATTR, generating)
         setattr(event, self._CONTINUOUS_TURN_RESTART_ATTR, restarts_generation)
+        if batch.video_reference_source is not None:
+            # 图片会重启图文对话，但已经开始的视频仍使用原请求的图片来源。
+            setattr(
+                event, self._VIDEO_REFERENCE_SOURCE_ATTR, batch.video_reference_source
+            )
         if restarts_generation:
             self._continuous_turn_restart_for_image(event)
         self._continuous_turn_metrics["registered"] += 1
@@ -597,6 +604,7 @@ class ContinuousTurnMixin:
         batch.message_ids.clear()
         batch.images.clear()
         batch.generation_event = None
+        batch.video_reference_source = None
         batch.last_at = time.monotonic()
         self._continuous_turn_metrics["completed"] += 1
         return True

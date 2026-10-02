@@ -485,6 +485,7 @@ class ChatMemoryBatchMixin(ChatExecutionMixin):
                 {
                     "content": "",
                     "kind": "plan",
+                    "execution_mode": "immediate|future",
                     "trigger_date": "",
                     "trigger_time": "",
                     "time_window": "",
@@ -532,6 +533,7 @@ class ChatMemoryBatchMixin(ChatExecutionMixin):
             "follow_up 只描述需要我在未来主动联系对方才能履行的承诺：我明确说稍后联系、到时通知、完成后告知或提醒对方时，action 使用 contact_person 或 remind_person；"
             "对方说以后联系我、提醒我或叫我时，owner 必须是说话人且 follow_up.action 必须是 none，绝不能反向创建我的主动联系任务。"
             "普通共同计划不等于主动联系承诺；证据没有明确要求我未来发起联系时使用 none。"
+            "现在拍、现在发、再试一次等即时媒体请求由当前工具处理，不能当作未来 commitments；若需标注 execution_mode，填 immediate 并且不要输出为承诺。"
             "群聊中无法确认应该向谁履行联系动作时 follow_up.action 使用 none，不把对某个人的承诺误发给整个群。"
             "群聊中的明确拍照或拍视频承诺属于当前群的分群承诺：若 owner=当前角色，后续只回原群投递，不是跨群广播；不要因为来源是群聊就一概丢弃。"
             "明确由我拍照或发送已有照片时 media_kind=photo，明确由我拍摄、录制或发送已有视频时 media_kind=video；视频通话及其他承诺为 none。"
@@ -548,7 +550,8 @@ class ChatMemoryBatchMixin(ChatExecutionMixin):
             "execution_updates 只同步已经发送的 assistant 消息明确陈述已完成的虚拟生活动作。对照 execution_candidates 和 open_commitments，动作类型、目标、对象及日期必须一致，编号只能来自输入。"
             "准备做、进行中、只做了一部分、条件句、否定、引用旧话、时间已过均不算完成；打包完成不代表送到，不能完成整个送达承诺。"
             "只允许当前角色自己承担的非媒体 plan；用户或共同事项不代为完成，图片/视频/发消息必须依赖实际交付回执，不能凭聊天说已经发了。"
-            "证据必须逐字引用本批消息的完整完成陈述，不能删掉否定词；worth_saving=false 也应输出有依据的执行同步。没有依据输出空数组，不猜。"
+            "evidence 必须逐字复制 source_message_id 对应的整条 assistant 消息，不得截取肯定片段；只有整条消息明确陈述目标已完成时 completed=true。"
+            "不能删掉否定词；worth_saving=false 也应输出有依据的执行同步。没有依据输出空数组，不猜。"
             "temporal_facts 只记录有明确证据、以后仍需按时间查询的结构化事实；subject 和 predicate 必须是稳定结构键，不得从措辞关键词临时拼接。"
             "对照 current_temporal_facts：新增键用 ADD，同键值改变用 UPDATE，明确失效用 INVALIDATE，没有变化用 NONE；不得省略历史变化而直接覆盖。"
             "source_message_id 必须来自输入批次，evidence_signal 只能是 reinforce 或 dispute；没有可靠消息证据就不要输出该事实。\n"
@@ -731,6 +734,11 @@ class ChatMemoryBatchMixin(ChatExecutionMixin):
         ):
             if not isinstance(raw, dict):
                 continue
+            if str(raw.get("media_kind") or "").strip().lower() in {
+                "photo",
+                "video",
+            } and str(raw.get("execution_mode") or "").strip().lower() != "future":
+                continue
             source_rows: list[dict[str, Any]] = []
             seen_row_ids: set[int] = set()
             for value in raw.get("source_message_ids", []):
@@ -746,6 +754,13 @@ class ChatMemoryBatchMixin(ChatExecutionMixin):
                 str(row.get("message_id") or row.get("id") or "").strip()
                 for row in source_rows
             ]
+            media_kind = str(raw.get("media_kind") or "").strip().lower()
+            delivery_check = getattr(self, "direct_media_was_delivered", None)
+            if media_kind in {"photo", "video"} and callable(delivery_check):
+                if await delivery_check(
+                    batch["session_id"], media_kind, source_message_ids
+                ):
+                    continue
             commitment = CommitmentRecord.from_value(
                 {
                     **raw,
@@ -765,6 +780,14 @@ class ChatMemoryBatchMixin(ChatExecutionMixin):
             ):
                 continue
             stored = await self.archive.save_commitment(commitment)
+            if media_kind in {"photo", "video"} and callable(delivery_check):
+                if await delivery_check(
+                    batch["session_id"], media_kind, source_message_ids
+                ):
+                    await self.archive.set_commitment_status(
+                        stored.id, "done", life_now().isoformat(timespec="seconds")
+                    )
+                    continue
             follow_up = raw.get("follow_up")
             follow_up = follow_up if isinstance(follow_up, dict) else {}
             follow_up_action = str(follow_up.get("action") or "none").strip()

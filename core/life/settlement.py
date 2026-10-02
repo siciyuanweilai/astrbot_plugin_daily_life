@@ -21,7 +21,7 @@ from ..models import (
     ReflectionSignal,
     ScheduleAnchor,
 )
-from .appearance_history import record_appearance_snapshot
+from .lookback import record_appearance_snapshot
 from .tools import parse_life_datetime, timeline_item_datetime
 from .wardrobe import (
     format_outfit_components,

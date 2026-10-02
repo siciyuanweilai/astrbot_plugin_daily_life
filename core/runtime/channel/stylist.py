@@ -144,6 +144,12 @@ class RuntimeStyleCatalogMixin:
         except (TypeError, ValueError):
             confidence = 0.0
         attributes = cls._style_attributes(raw)
+        if kind in {"outfit", "top", "bottom"}:
+            declared = attributes.get("scene_categories")
+            attributes["scene_categories"] = [
+                scene for scene in cls._style_list(declared, 4)
+                if scene in {"home", "sleep", "outdoor", "public"}
+            ]
         if kind in {"footwear", "accessory"}:
             home_presence = cls._style_text(
                 attributes.get("home_presence"), 16
@@ -234,6 +240,7 @@ class RuntimeStyleCatalogMixin:
 - makeup：只写可见妆容；写 finish、base、brows、eyes、cheeks、lips。
 - nails：只写可见美甲；写 shape、length、finish、colors、patterns、designs。
 - 每一类的 description 都必须能脱离原图独立使用；不可见或信息不足时 present=false。
+- outfit、top、bottom 填 scene_categories 数组，只选有视觉依据的 home、sleep、outdoor、public；无法确认时留空，不根据图片背景猜测衣服适用场景。
 - category、colors、patterns、styles、seasons、scenes、weather_fit、activity_fit 等复数字段使用短词数组。
 
 输出要求：
@@ -253,7 +260,7 @@ class RuntimeStyleCatalogMixin:
     "component_roles": [{"kind": "footwear | accessory", "name": "",
       "home_presence": "home | outdoor | both | unknown",
       "carry_mode": "worn | carried | staged | none | unknown"}],
-    "styles": [], "seasons": [], "scenes": [], "weather_fit": [],
+    "styles": [], "seasons": [], "scenes": [], "scene_categories": [], "weather_fit": [],
     "confidence": 0.0
   },
   "top": {
@@ -261,7 +268,7 @@ class RuntimeStyleCatalogMixin:
     "category": [], "garment_type": [], "layers": [], "colors": [],
     "patterns": [], "neckline": "", "sleeve": "", "length": "",
     "fit": "", "hem": "", "material_appearance": "", "thickness": "",
-    "styles": [], "seasons": [], "scenes": [], "weather_fit": [],
+    "styles": [], "seasons": [], "scenes": [], "scene_categories": [], "weather_fit": [],
     "confidence": 0.0
   },
   "bottom": {
@@ -269,7 +276,7 @@ class RuntimeStyleCatalogMixin:
     "category": [], "garment_type": [], "colors": [], "patterns": [],
     "waist": "", "length": "", "fit": "", "hem": "",
     "material_appearance": "", "thickness": "", "styles": [],
-    "seasons": [], "scenes": [], "weather_fit": [], "confidence": 0.0
+    "seasons": [], "scenes": [], "scene_categories": [], "weather_fit": [], "confidence": 0.0
   },
   "footwear": {
     "present": false, "title": "", "description": "只复现鞋子与实际可见袜子的详细衣橱视觉提示词",

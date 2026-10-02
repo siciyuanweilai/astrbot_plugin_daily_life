@@ -34,6 +34,7 @@ class LifeCommandsTest(unittest.IsolatedAsyncioTestCase):
         archive = Archive()
         runtime = types.SimpleNamespace(
             archive=archive,
+            config=LifeSettings.from_dict({}),
             _get_curr_period=lambda: "afternoon",
             _resolve_command_target_date=lambda now: async_return(
                 ("2026-05-24", False)

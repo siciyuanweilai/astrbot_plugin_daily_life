@@ -1,29 +1,15 @@
-"""Date-aware appearance lookup, using only recorded appearance facts."""
+"""Date-aware appearance lookup using recorded facts."""
 
 from __future__ import annotations
 
 import datetime as dt
 import json
-import re
 from typing import Any
-
-try:
-    from lunardate import LunarDate
-except ImportError:  # pragma: no cover - 仅在依赖尚未安装时触发
-    LunarDate = None  # type: ignore[assignment,misc]
 
 from .appearance import current_appearance_values, reference_outfit
 from .wardrobe import format_outfit_components, normalize_outfit_components
 
 _PREFIX = "appearance_snapshot:"
-_FESTIVAL_LUNAR_DATES = {
-    "春节": (1, 1),
-    "元宵": (1, 15),
-    "端午": (5, 5),
-    "七夕": (7, 7),
-    "中秋": (8, 15),
-    "重阳": (9, 9),
-}
 _PERIODS = {
     "dawn": (0, 6),
     "morning": (6, 9),
@@ -34,17 +20,6 @@ _PERIODS = {
     "night": (20, 23),
     "late_night": (23, 24),
 }
-
-
-def _festival_solar_date(year: int, month: int, day: int) -> dt.date | None:
-    if LunarDate is None:
-        return None
-    try:
-        lunar = LunarDate(year, month, day)
-        converter = getattr(lunar, "to_solar_date", None)
-        return converter() if callable(converter) else lunar.toSolarDate()
-    except (ValueError, OverflowError):
-        return None
 
 
 def record_appearance_snapshot(day: Any, observed_at: dt.datetime) -> None:
@@ -88,76 +63,34 @@ def _snapshots(day: Any) -> list[tuple[dt.datetime, dict]]:
 
 
 def appearance_query(
-    text: str, now: dt.datetime
+    target: str, now: dt.datetime, *, period: str = "", time: str = ""
 ) -> tuple[str, tuple[int, int] | None, int | None]:
-    """Return a date/last/ambiguous target, a period and an optional minute."""
-    target = ""
-    explicit = re.search(
-        r"(?:(20\d{2})[-年/])?(\d{1,2})[-月/](\d{1,2})(?:日|号)?", text
-    )
-    if explicit:
+    """Validate an explicit model-supplied date, period and clock time."""
+    target = str(target or "").strip()
+    if target != "last":
         try:
-            date = dt.date(
-                int(explicit[1] or now.year), int(explicit[2]), int(explicit[3])
-            )
-            if not explicit[1] and date > now.date():
-                date = date.replace(year=date.year - 1)
-            target = date.isoformat() if date <= now.date() else "ambiguous"
+            date = dt.date.fromisoformat(target)
         except ValueError:
             return "ambiguous", None, None
-    else:
-        for markers, offset in (
-            (("大前天",), 3),
-            (("前天", "前两天", "前日", "前晚"), 2),
-            (("昨天", "昨日", "前一天", "昨晚", "昨夜"), 1),
-            (("今天", "今日"), 0),
-        ):
-            if any(marker in text for marker in markers):
-                target = (now.date() - dt.timedelta(days=offset)).isoformat()
-                break
-    if not target:
-        festival = re.search(
-            r"(?:(20\d{2})年|(去年|前年|今年))?\s*"
-            r"(春节|元宵|端午|七夕|中秋|重阳)(?:节)?",
-            text,
-        )
-        if festival:
-            lunar_month, lunar_day = _FESTIVAL_LUNAR_DATES[festival[3]]
-            year = int(festival[1]) if festival[1] else now.year
-            year -= {"去年": 1, "前年": 2}.get(festival[2], 0)
-            date = _festival_solar_date(year, lunar_month, lunar_day)
-            if date and not festival[1] and not festival[2] and date > now.date():
-                date = _festival_solar_date(year - 1, lunar_month, lunar_day)
-            target = date.isoformat() if date and date <= now.date() else "ambiguous"
-    if not target:
-        target = "last" if "上次" in text else "ambiguous"
-    period = None
-    for markers, window in (
-        (("深夜",), (23, 24)),
-        (("凌晨",), (0, 6)),
-        (("昨晚", "昨夜", "前晚", "晚上", "夜里"), (18, 24)),
-        (("傍晚",), (18, 20)),
-        (("下午",), (14, 18)),
-        (("中午",), (12, 14)),
-        (("上午",), (9, 12)),
-        (("早上", "早晨"), (6, 9)),
-        (("白天",), (6, 18)),
-    ):
-        if any(marker in text for marker in markers):
-            period = window
-            break
-    clock = re.search(
-        r"(?<!\d)([01]?\d|2[0-3])(?:[:：](\d{2})|点(?:(\d{1,2})分?)?)", text
-    )
+        if date > now.date():
+            return "ambiguous", None, None
+    windows = {
+        **_PERIODS,
+        "daytime": (6, 18),
+        "evening_to_night": (18, 24),
+    }
+    period_value = str(period or "").strip().lower()
+    if period_value and period_value not in windows:
+        return "ambiguous", None, None
+    window = windows.get(period_value)
     minute = None
-    if clock:
-        hour, minutes = int(clock[1]), int(clock[2] or clock[3] or 0)
-        if minutes >= 60:
-            return "ambiguous", period, None
-        if period and period[0] >= 12 and hour < 12:
-            hour += 12
-        minute = hour * 60 + minutes
-    return target, period, minute
+    if time:
+        try:
+            clock = dt.time.fromisoformat(str(time))
+        except ValueError:
+            return "ambiguous", window, None
+        minute = clock.hour * 60 + clock.minute
+    return target, window, minute
 
 
 def _reference(
@@ -222,9 +155,10 @@ def _reference(
 
 
 async def historical_appearance_context(
-    archive: Any, text: str, now: dt.datetime, current_day: Any = None
+    archive: Any, target: str, now: dt.datetime, current_day: Any = None,
+    *, period: str = "", time: str = ""
 ) -> str:
-    target, period, minute = appearance_query(text, now)
+    target, period, minute = appearance_query(target, now, period=period, time=time)
     if target == "ambiguous":
         return ""
     if target == "last":

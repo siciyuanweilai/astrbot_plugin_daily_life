@@ -329,6 +329,7 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
                     "attributes": {
                         "category": "homewear",
                         "scenes": ["居家", "睡眠"],
+                        "scene_categories": ["home", "sleep"],
                         "home_description": "浅粉色吊带家居服",
                         "component_roles": [
                             {
@@ -350,6 +351,7 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
                     "attributes": {
                         "category": "daily",
                         "scenes": ["日常外出", "公共场景"],
+                        "scene_categories": ["outdoor", "public"],
                         "component_roles": [
                             {
                                 "kind": "footwear",

@@ -538,20 +538,6 @@ class LayerChainMixin:
         today_str = now.strftime("%Y-%m-%d")
         target_date_str, using_extended_night = await self.resolve_injection_target(now)
         data = await self.ensure_injection_day_data(target_date_str, now)
-        if (
-            data is not None and event is not None
-            and not self.event_was_recalled(event)
-            and (not self._event_is_group_message(event) or self._event_is_directed(event))
-            and not getattr(event, "_daily_life_rest_timing_applied", False)
-        ):
-            data = await self._apply_rest_delay_message(
-                data,
-                self._event_message_text(event),
-                now,
-                event_key=f"{self._event_session_id(event)}:{self._event_message_id(event)}"
-                if self._event_message_id(event) else "",
-            )
-            setattr(event, "_daily_life_rest_timing_applied", True)
         data = await self.maybe_update_injection_outfit(
             today_str, data, using_extended_night
         )

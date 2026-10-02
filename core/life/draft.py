@@ -123,8 +123,8 @@ class DailyDraftMixin:
   }},
   "outfit": "当前实际穿着的详细视觉描述，只写此刻身上的服装和已穿戴/携带的组成；为稍后场景准备但尚未使用的组成属于待用状态，不写入这里，不混入发型、妆容、美甲、动作或剧情",
   "timeline": [
-    {{"time": "08:15", "activity": "具体的行为描写，富有沉浸感", "status": "当前情绪/状态词", "duration_minutes": 20, "place": "家", "place_kind": "home | poi | generic | transit | online | none", "place_scope": "local | travel", "place_city": "跨城安排的目标城市，否则为空字符串", "place_hint": "同名地点消歧所需的区县、商圈或地址，否则为空字符串", "travel_mode": "walking | cycling | driving | transit 或空字符串"}},
-    {{"time": "09:30", "activity": "...", "status": "...", "duration_minutes": 120, "place": "...", "place_kind": "...", "place_scope": "...", "place_city": "...", "place_hint": "...", "travel_mode": "..."}}
+    {{"time": "08:15", "activity": "具体的行为描写，富有沉浸感", "activity_kind": "rest | other", "status": "当前情绪/状态词", "duration_minutes": 20, "place": "家", "place_kind": "home | poi | generic | transit | online | none", "place_scope": "local | travel", "place_city": "跨城安排的目标城市，否则为空字符串", "place_hint": "同名地点消歧所需的区县、商圈或地址，否则为空字符串", "travel_mode": "walking | cycling | driving | transit 或空字符串"}},
+    {{"time": "09:30", "activity": "...", "activity_kind": "rest | other", "status": "...", "duration_minutes": 120, "place": "...", "place_kind": "...", "place_scope": "...", "place_city": "...", "place_hint": "...", "travel_mode": "..."}}
   ],
   "planned_actions": [
     {{
@@ -153,6 +153,7 @@ class DailyDraftMixin:
 }}
 
 【生成要求】
+- timeline 中每个节点都要填写 activity_kind：休息、睡眠及其准备过程填 rest，其余填 other；依据行为含义判断，不凭时段固定推断。
 0. JSON 输出要求：
 {CORE_JSON_OUTPUT_RULES}
 1. 先做生活决策，再写日程：

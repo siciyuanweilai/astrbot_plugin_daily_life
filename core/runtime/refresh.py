@@ -7,12 +7,9 @@ from typing import Any
 
 from astrbot.api import logger
 
-from ..life.appearance_history import record_appearance_snapshot
+from ..life.lookback import record_appearance_snapshot
 from ..life.condition import state_is_stale
-from ..life.rest_delay import (
-    activate_rest_delay,
-    rest_timing_request,
-)
+from ..life.restdelay import activate_rest_delay
 from ..life.tools import (
     get_current_timeline_status,
     reconcile_timeline_execution,
@@ -32,30 +29,37 @@ from .markers import LOG_PREFIX
 
 
 class RefreshMixin:
-    async def _apply_rest_delay_message(
+    async def apply_rest_timing(
         self,
-        data: DayRecord,
-        text: str,
-        now: datetime.datetime,
-        *,
-        event_key: str = "",
-    ) -> DayRecord:
-        """把用户明确的晚点休息请求写入当日日记录，并保持窗口有上限。"""
-        if rest_timing_request(text) is None:
-            return data
+        event: Any,
+        minutes: int,
+        target_times: list[str],
+    ) -> str:
+        """Apply an explicit tool decision to selected schedule entries."""
+        now = self._runtime_now()
+        date, _ = await self.resolve_injection_target(now)
+        data = await self.ensure_injection_day_data(date, now)
+        if data is None:
+            return "当前没有可调整的生活日程。"
         changed = False
+        message_id = self._event_message_id(event)
+        event_key = f"{self._event_session_id(event)}:{message_id}" if message_id else ""
+        evidence = self._event_message_text(event)
 
         def apply(latest: DayRecord) -> bool:
             nonlocal changed
-            changed = activate_rest_delay(latest, text, now, event_key=event_key)
+            changed = activate_rest_delay(
+                latest, minutes, now, target_times=target_times,
+                evidence=evidence, event_key=event_key,
+            )
             return changed
 
         # 使用数据库事务更新最新记录，不覆盖并发刷新的身体状态或日程。
-        result = await self.archive.mutate_day(data.date, apply)
+        await self.archive.mutate_day(data.date, apply)
         notify = getattr(self, "mark_page_status_changed", None)
         if changed and callable(notify):
             await notify("state")
-        return result or data
+        return "休息安排已调整。" if changed else "这段休息安排目前无法调整，请根据当前状态自然回应。"
 
     async def _settle_timeline_planning(
         self,
@@ -310,13 +314,8 @@ class RefreshMixin:
             )
         except (TypeError, ValueError):
             temperature_bucket = ""
-        condition = str(weather.condition or "").strip()
-        if bool(getattr(weather, "is_rainy", False)) or any(
-            token in condition for token in ("雨", "雷", "雹")
-        ):
+        if bool(getattr(weather, "is_rainy", False)):
             weather_kind = "rain"
-        elif "雪" in condition:
-            weather_kind = "snow"
         else:
             weather_kind = "dry"
         pending_outfit, _ = self._pending_commitment_outfit(data, now)

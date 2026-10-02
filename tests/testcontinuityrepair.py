@@ -12,14 +12,14 @@ from core.models import CommitmentRecord
 from core.life.appearance import (
     format_current_appearance_context,
     format_image_appearance_context,
-    is_historical_appearance_request,
 )
-from core.life.appearance_history import (
+from core.life.lookback import (
     appearance_query,
     historical_appearance_context,
     record_appearance_snapshot,
 )
 from core.life.settlement import LifeActionMixin
+from core.life.invite import InviteMixin
 from core.life.record import DailyRecordMixin
 from core.life.wardrobe import (
     format_outfit_components,
@@ -81,6 +81,16 @@ class AppearanceRepairTest(unittest.TestCase):
         )
         self.assertEqual(format_outfit_components(result), "白衬衫，蓝牛仔裤")
 
+    def test_component_details_are_preserved_while_duplicate_main_text_is_removed(self):
+        ledger = {
+            "main_clothing": {"state": "worn", "description": "白衬衫，蓝牛仔裤，黑皮鞋"},
+            "footwear": {"state": "removed", "description": "黑皮鞋，鞋面有细纹"},
+        }
+        normalized = normalize_outfit_components(ledger)
+        self.assertEqual(normalized["footwear"]["description"], "黑皮鞋，鞋面有细纹")
+        self.assertEqual(normalized["main_clothing"]["description"], "白衬衫，蓝牛仔裤")
+        self.assertEqual(normalize_outfit_components(normalized), normalized)
+
     def test_snapshots_preserve_two_changes_in_same_period(self):
         day = DayRecord(date="2026-09-23", outfit="蓝裙", meta={"hair": "低马尾"})
         record_appearance_snapshot(day, dt.datetime(2026, 9, 23, 15, 10))
@@ -91,37 +101,44 @@ class AppearanceRepairTest(unittest.TestCase):
             sum(key.startswith("appearance_snapshot:") for key in day.meta), 2
         )
 
-    def test_calendar_query_handles_dates_night_and_invalid_dates(self):
+    def test_calendar_query_validates_structured_dates_and_periods(self):
         now = dt.datetime(2026, 9, 24, 0, 30)
         self.assertEqual(
-            appearance_query("昨晚的穿搭", now)[:2], ("2026-09-23", (18, 24))
+            appearance_query("2026-09-23", now, period="evening_to_night")[:2],
+            ("2026-09-23", (18, 24)),
         )
-        self.assertEqual(appearance_query("前天的衣服", now)[0], "2026-09-22")
-        self.assertEqual(appearance_query("前两天出门", now)[0], "2026-09-22")
+        self.assertEqual(appearance_query("2026-09-22", now)[0], "2026-09-22")
         self.assertEqual(
-            appearance_query("9月20日下午3点的衣服", now), ("2026-09-20", (14, 18), 900)
+            appearance_query("2026-09-20", now, period="afternoon", time="15:00"),
+            ("2026-09-20", (14, 18), 900),
         )
-        self.assertEqual(appearance_query("2026-02-30的衣服", now)[0], "ambiguous")
+        self.assertEqual(appearance_query("2026-02-30", now)[0], "ambiguous")
         self.assertEqual(appearance_query("那天那套", now)[0], "ambiguous")
-        festival_now = dt.datetime(2026, 9, 27, 21)
-        self.assertEqual(
-            appearance_query("中秋下午在老街拍的照片", festival_now)[:2],
-            ("2026-09-25", (14, 18)),
-        )
-        self.assertEqual(
-            appearance_query("去年中秋节的穿搭", festival_now)[0],
-            "2025-10-06",
-        )
-
-    def test_festival_themed_photo_is_not_historical(self):
-        self.assertFalse(is_historical_appearance_request("拍张中秋主题照片"))
-        self.assertFalse(is_historical_appearance_request("来张中秋氛围照片"))
-        self.assertFalse(is_historical_appearance_request("今天拍的中秋主题照"))
-        self.assertTrue(is_historical_appearance_request("中秋下午拍的照片"))
-        self.assertTrue(is_historical_appearance_request("去年中秋主题照"))
+        self.assertEqual(appearance_query("2026-09-25", now)[0], "ambiguous")
+        self.assertEqual(appearance_query("2026-09-23", now, period="unknown")[0], "ambiguous")
+        self.assertEqual(appearance_query("2026-09-23", now, time="25:00")[0], "ambiguous")
 
 
 class ContinuityArchiveTest(unittest.IsolatedAsyncioTestCase):
+    async def test_location_audit_preserves_activity_kind_on_edited_node(self):
+        async def audit(payload, **_):
+            item = dict(payload["timeline"][0])
+            item.pop("activity_kind")
+            item["place"] = "新地点"
+            return {"timeline": [item]}, ""
+
+        mixin = InviteMixin()
+        mixin.domains = SimpleNamespace(audit_daily_locations=audit)
+        changed, _, reason = await mixin._audit_future_timeline(
+            past_timeline=[],
+            mutable_timeline=[TimelineItem(time="21:00", activity="躺下休息", activity_kind="rest")],
+            protected_timeline=[],
+            current_places=[],
+        )
+        self.assertEqual(reason, "")
+        self.assertEqual(changed[0].activity_kind, "rest")
+        self.assertEqual(changed[0].place, "新地点")
+
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.archive = LifeArchive(Path(self.temp.name) / "life.db")
@@ -144,15 +161,19 @@ class ContinuityArchiveTest(unittest.IsolatedAsyncioTestCase):
             )
         )
         now = dt.datetime(2026, 9, 24, 0, 30)
-        result = await historical_appearance_context(self.archive, "昨晚的穿搭", now)
+        result = await historical_appearance_context(
+            self.archive, "2026-09-23", now, period="evening_to_night"
+        )
         self.assertIn("2026-09-23", result)
         self.assertNotIn("白裙", result)
         self.assertNotIn("睡前散发", result)
-        result = await historical_appearance_context(self.archive, "昨天傍晚", now)
+        result = await historical_appearance_context(
+            self.archive, "2026-09-23", now, period="evening"
+        )
         self.assertIn("蓝裙", result)
         self.assertNotIn("睡衣", result)
         self.assertEqual(
-            await historical_appearance_context(self.archive, "前天的穿搭", now), ""
+            await historical_appearance_context(self.archive, "2026-09-22", now), ""
         )
 
     async def test_festival_photo_uses_recorded_afternoon_not_evening_appearance(self):
@@ -164,7 +185,8 @@ class ContinuityArchiveTest(unittest.IsolatedAsyncioTestCase):
         await self.archive.save_day(day)
 
         result = await historical_appearance_context(
-            self.archive, "中秋下午的老街照片", dt.datetime(2026, 9, 27, 21)
+            self.archive, "2026-09-25", dt.datetime(2026, 9, 27, 21),
+            period="afternoon",
         )
 
         self.assertIn("浅紫色针织裙和米白开衫", result)
@@ -179,7 +201,8 @@ class ContinuityArchiveTest(unittest.IsolatedAsyncioTestCase):
         record_appearance_snapshot(day, dt.datetime(2026, 9, 23, 16, 20))
         await self.archive.save_day(day)
         result = await historical_appearance_context(
-            self.archive, "9月23日下午3点30分", dt.datetime(2026, 9, 24, 12)
+            self.archive, "2026-09-23", dt.datetime(2026, 9, 24, 12),
+            period="afternoon", time="15:30",
         )
         self.assertIn("蓝裙", result)
         self.assertIn("低马尾", result)
@@ -192,7 +215,7 @@ class ContinuityArchiveTest(unittest.IsolatedAsyncioTestCase):
         record_appearance_snapshot(day, dt.datetime(2026, 9, 24, 11))
         await self.archive.save_day(day)
         result = await historical_appearance_context(
-            self.archive, "上次穿搭", dt.datetime(2026, 9, 24, 12), day
+            self.archive, "last", dt.datetime(2026, 9, 24, 12), day
         )
         self.assertIn("蓝裙", result)
         self.assertNotIn("白衬衫", result)
@@ -242,7 +265,7 @@ class ContinuityArchiveTest(unittest.IsolatedAsyncioTestCase):
                     "completed": True,
                     "commitment_ids": [commitment.id],
                     "source_message_id": "m1",
-                    "evidence": "把小桌收拾好了",
+                    "evidence": message,
                     "action_id": "",
                 }
             ],
@@ -284,14 +307,14 @@ class ContinuityArchiveTest(unittest.IsolatedAsyncioTestCase):
             sum(key.startswith("appearance_snapshot:") for key in saved.meta), 2
         )
         history = await historical_appearance_context(
-            self.archive, "9月24日10点", dt.datetime(2026, 9, 24, 13)
+            self.archive, "2026-09-24", dt.datetime(2026, 9, 24, 13),
+            time="10:00",
         )
         self.assertIn("蓝裙", history)
         self.assertNotIn("白衬衫", history)
 
-    async def test_completion_rejects_negation_wrong_owner_media_scope_and_future(self):
+    async def test_completion_rejects_unconfirmed_wrong_owner_media_scope_and_future(self):
         for kwargs in (
-            {"message": "我还没有把小桌收拾好了"},
             {"role": "user"},
             {"owner": "说话人"},
             {"owner": "共同"},
@@ -310,11 +333,18 @@ class ContinuityArchiveTest(unittest.IsolatedAsyncioTestCase):
                     (await self.archive.get_commitment(item.id)).status, "scheduled"
                 )
 
+        item, runtime, batch, payload = await self._execution(
+            message="我还没有收拾小桌。"
+        )
+        payload["execution_updates"][0]["completed"] = False
+        self.assertEqual(await runtime._save_batch_execution_updates(payload, batch), 0)
+        self.assertEqual((await self.archive.get_commitment(item.id)).status, "scheduled")
+
     async def test_completion_rejects_invented_evidence_and_unlisted_ids(self):
         item, runtime, batch, payload = await self._execution()
         payload["execution_updates"][0]["evidence"] = "任务已经全部完成"
         self.assertEqual(await runtime._save_batch_execution_updates(payload, batch), 0)
-        payload["execution_updates"][0]["evidence"] = "把小桌收拾好了"
+        payload["execution_updates"][0]["evidence"] = "我已经把小桌收拾好了。"
         batch["open_commitments"] = []
         self.assertEqual(await runtime._save_batch_execution_updates(payload, batch), 0)
 
@@ -388,9 +418,10 @@ class ContinuityArchiveTest(unittest.IsolatedAsyncioTestCase):
             side_effect=AssertionError("must not generate")
         )
         result = await runtime.life_image_generate(
-            SimpleNamespace(), "昨天衣服", subject_route="current_character"
+            SimpleNamespace(), "昨天衣服", subject_route="current_character",
+            historical_target="2026-09-23",
         )
         self.assertIn("未生成", result)
         runtime._historical_life_appearance_snapshot.assert_awaited_once_with(
-            "前天的穿搭再现一下"
+            "2026-09-23", period="", time=""
         )

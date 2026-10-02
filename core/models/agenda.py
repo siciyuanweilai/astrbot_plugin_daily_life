@@ -27,6 +27,7 @@ TIMELINE_TERMINAL_STATES = frozenset(
 class TimelineItem:
     time: str = ""
     activity: str = ""
+    activity_kind: str = ""
     status: str = ""
     duration_minutes: int = 0
     place: str = ""
@@ -60,6 +61,12 @@ class TimelineItem:
         return TimelineItem(
             time=str(raw.get("time") or "").strip(),
             activity=str(raw.get("activity") or "").strip(),
+            activity_kind=(
+                kind
+                if (kind := str(raw.get("activity_kind") or "").strip().lower())
+                in {"rest", "other"}
+                else ""
+            ),
             status=str(raw.get("status") or "").strip(),
             duration_minutes=min(
                 1440, _non_negative_int(raw.get("duration_minutes"))
@@ -93,6 +100,7 @@ class TimelineItem:
         return {
             "time": self.time,
             "activity": self.activity,
+            "activity_kind": self.activity_kind,
             "status": self.status,
             "duration_minutes": self.duration_minutes,
             "place": self.place,

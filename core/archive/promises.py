@@ -253,6 +253,21 @@ class CommitmentArchiveMixin:
 
         return await self._run_db(read)
 
+    async def get_open_commitments_for_message(
+        self, scope: str, message_id: str
+    ) -> list[CommitmentRecord]:
+        def read():
+            rows = self._conn.execute(
+                """SELECT * FROM commitments
+                WHERE source_session = ? AND source_message_id = ?
+                AND status IN ('active', 'scheduled', 'pending')
+                ORDER BY id""",
+                (scope, message_id),
+            ).fetchall()
+            return [self._compose_commitment(row) for row in rows]
+
+        return await self._run_db(read)
+
     async def complete_simulated_commitment(
         self,
         commitment_id: int,

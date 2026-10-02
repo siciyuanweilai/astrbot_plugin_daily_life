@@ -74,6 +74,7 @@ JSON 输出要求：
   "time_window": "morning|daytime|night|weekend|next_chat|next_time 或空字符串",
   "owner": "当前角色|说话人|共同|未定",
   "media_kind": "none|photo|video",
+  "execution_mode": "immediate|future",
   "people": ["相关人物名"],
   "place": "相关地点或空",
   "confidence": 0.0
@@ -83,6 +84,8 @@ JSON 输出要求：
 - “明天提醒我...” kind=reminder，trigger_date 填明天。
 - “周末一起...” kind=plan，trigger_date 优先填本周六，time_window=weekend。
 - “下次再聊这个/回头继续说” kind=followup，trigger_date 为空，time_window=next_chat。
+- “现在拍/发给我看看/重新试下”等即时媒体请求由当前工具执行，不属于未来承诺；即使尚未发送成功，也输出 {{"has_commitment": false}}。只有明确留到稍后或另一天的约定才记录。
+- 媒体约定只有明确属于未来安排才填 execution_mode=future；即时请求填 immediate，不能保存为承诺。
 - confidence 低于 0.7 时也可以输出，但系统不会自动保存。
 - 若承诺明确由当前角色拍照或发送已有照片，media_kind=photo；明确拍摄、录制或发送已有视频，media_kind=video；视频通话和非媒体承诺均为 none。不能靠系统在后续重读原话判断媒体类型。
 - 媒体承诺只有明确到 YYYY-MM-DD HH:MM 才能自动执行；日期或时段不明确时保留空 trigger_time，后续作为待确认承诺，不得擅自补时间。
@@ -217,11 +220,39 @@ JSON 输出要求：
                 or commitment.confidence < self.config.commitments.min_confidence
             ):
                 return None
+            if (
+                commitment.media_kind in {"photo", "video"}
+                and str(payload.get("execution_mode") or "").strip().lower()
+                != "future"
+            ):
+                return None
             if sender_name and sender_name not in commitment.people:
                 commitment.people.insert(0, sender_name)
+            delivery_check = getattr(self, "direct_media_was_delivered", None)
+            if commitment.media_kind in {"photo", "video"} and callable(
+                delivery_check
+            ):
+                if await delivery_check(
+                    commitment.source_session,
+                    commitment.media_kind,
+                    [commitment.source_message_id],
+                ):
+                    return None
             if self.event_was_recalled(event, log_skip=True):
                 return None
             saved = await self.archive.save_commitment(commitment)
+            if commitment.media_kind in {"photo", "video"} and callable(
+                delivery_check
+            ):
+                if await delivery_check(
+                    commitment.source_session,
+                    commitment.media_kind,
+                    [commitment.source_message_id],
+                ):
+                    await self.archive.set_commitment_status(
+                        saved.id, "done", life_now().isoformat(timespec="seconds")
+                    )
+                    return None
             apply_to_day = getattr(self, "apply_commitment_to_current_day", None)
             if callable(apply_to_day):
                 try:
