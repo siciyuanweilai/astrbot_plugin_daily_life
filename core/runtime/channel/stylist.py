@@ -147,13 +147,12 @@ class RuntimeStyleCatalogMixin:
         if kind in {"outfit", "top", "bottom"}:
             declared = attributes.get("scene_categories")
             attributes["scene_categories"] = [
-                scene for scene in cls._style_list(declared, 4)
+                scene
+                for scene in cls._style_list(declared, 4)
                 if scene in {"home", "sleep", "outdoor", "public"}
             ]
         if kind in {"footwear", "accessory"}:
-            home_presence = cls._style_text(
-                attributes.get("home_presence"), 16
-            ).lower()
+            home_presence = cls._style_text(attributes.get("home_presence"), 16).lower()
             attributes["home_presence"] = (
                 home_presence
                 if home_presence in STYLE_CATALOG_HOME_PRESENCE
@@ -413,8 +412,7 @@ class RuntimeStyleCatalogMixin:
 
     async def _remove_unused_style_catalog_image(self, path_text: str) -> None:
         path = (
-            runtime_data_root(getattr(self, "data_path", None))
-            / STYLE_CATALOG_DIR_NAME
+            runtime_data_root(getattr(self, "data_path", None)) / STYLE_CATALOG_DIR_NAME
         )
         try:
             candidate = await asyncio.to_thread(Path(path_text).expanduser().resolve)
@@ -520,10 +518,7 @@ class RuntimeStyleCatalogMixin:
         }
         if require_complete_clothing and not (
             analyzed_by_kind.get("outfit")
-            or (
-                analyzed_by_kind.get("top")
-                and analyzed_by_kind.get("bottom")
-            )
+            or (analyzed_by_kind.get("top") and analyzed_by_kind.get("bottom"))
         ):
             await self._remove_unused_style_catalog_image(cached_image or image)
             return []
@@ -607,7 +602,10 @@ class RuntimeStyleCatalogMixin:
             if generation_mode == "image_to_image"
             else "人物不绑定任何现有角色或身份，不使用任何角色形象参考图。"
         )
-        request_text = self._style_text(requirement, 1000) or "请自由构思一套自然、真实、适合日常生活的完整造型。"
+        request_text = (
+            self._style_text(requirement, 1000)
+            or "请自由构思一套自然、真实、适合日常生活的完整造型。"
+        )
         variation = (
             f"这是本批次第 {sequence}/{total} 张，在不改变用户需求和完整造型要求的前提下，"
             "自行探索一组不同但合理的细节。"
@@ -863,21 +861,89 @@ class RuntimeStyleCatalogMixin:
         note: str = "",
         kind: str = "auto",
     ) -> str:
-        normalized_kind = self._style_text(kind, 16).lower()
-        if normalized_kind not in _STYLE_KINDS:
-            normalized_kind = "auto"
+        existing = self._background_tool_existing_result(event, "life_style_learn")
+        if existing:
+            return existing
+        snapshot = self._snapshot_media_event(event)
+        images = await self._style_learning_images(
+            snapshot, reference_image, reference_images
+        )
+        if not images:
+            return ToolResultText(
+                "没有找到可学习的图片。请发送、引用或提供一张商品/造型图片。",
+                status="failed",
+                media="style_catalog",
+            )
+        snapshot._daily_life_locked_style_images = tuple(images)
+        return self._submit_background_tool(
+            snapshot,
+            event,
+            lambda: self._life_style_learn_inline(
+                snapshot, source_url=source_url, note=note, kind=kind
+            ),
+            tool_name="life_style_learn",
+            media="style_catalog",
+            label="视觉衣橱学习",
+            category="vision",
+            failure_text="这次衣橱学习没有完成。",
+        )
+
+    async def _style_learning_images(
+        self, event: Any, reference_image: str, reference_images: list[str] | None
+    ) -> list[str]:
         requested = [self._style_text(item, 1500) for item in (reference_images or [])]
         if self._style_text(reference_image, 1500):
             requested.insert(0, self._style_text(reference_image, 1500))
         images: list[str] = []
-        for value in requested[:6]:
-            resolved = await self._resolve_life_image_reference_async(event, value)
-            if resolved and resolved not in images:
-                images.append(resolved)
+        if requested:
+            for value in requested[:6]:
+                value = getattr(event, "_daily_life_cached_image_references", {}).get(
+                    value, value
+                )
+                if (
+                    value
+                    and value not in images
+                    and await self._life_image_reference_is_usable(value)
+                ):
+                    images.append(value)
+            return images
+        for item in self._event_message_items(event):
+            if "image" not in self._event_component_kind(item):
+                continue
+            value = await self._image_reference_from_items_async([item])
+            if value and value not in images:
+                images.append(value)
+            if len(images) >= 6:
+                break
         if not images:
-            resolved = await self._resolve_life_image_reference_async(event, "")
-            if resolved:
-                images.append(resolved)
+            value = await self._resolve_life_image_reference_async(
+                event, "", current_items=()
+            )
+            if value:
+                images.append(value)
+        return images
+
+    async def _life_style_learn_inline(
+        self,
+        event: Any,
+        reference_image: str = "",
+        *,
+        reference_images: list[str] | None = None,
+        source_url: str = "",
+        note: str = "",
+        kind: str = "auto",
+    ) -> str:
+        normalized_kind = self._style_text(kind, 16).lower()
+        if normalized_kind not in _STYLE_KINDS:
+            normalized_kind = "auto"
+        locked = getattr(event, "_daily_life_locked_style_images", None)
+        images = (
+            list(locked)
+            if locked is not None
+            else await self._style_learning_images(
+                event, reference_image, reference_images
+            )
+        )
         if not images:
             return ToolResultText(
                 "没有找到可学习的图片。请发送、引用或提供一张商品/造型图片。",

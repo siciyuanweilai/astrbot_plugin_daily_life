@@ -1220,7 +1220,8 @@ class ProactiveCommitmentScheduleTest(unittest.IsolatedAsyncioTestCase):
         tasks = await self.archive.get_durable_tasks(kind="proactive_commitment")
 
         self.assertTrue(scheduled)
-        self.assertEqual(tasks[0].available_at, "2026-08-13 17:55:00")
+        self.assertEqual(tasks[0].available_at, "2026-08-13 15:00:00")
+        self.assertTrue(tasks[0].payload["shared_activity_contact"])
         self.assertFalse(tasks[0].payload["settle_commitment"])
 
     async def test_co_present_explicit_promise_is_spoken_instead_of_silently_completed(

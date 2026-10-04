@@ -9,7 +9,6 @@ from astrbot.api import logger
 
 from .markers import LOG_PREFIX
 
-
 TOOL_REACTION_PROCESSING = 125
 TOOL_REACTION_SUCCESS = 79
 TOOL_REACTION_FAILED = 106
@@ -23,6 +22,7 @@ TOOL_REACTION_NAMES = frozenset(
         "life_video_generate",
         "life_video_understand",
         "life_video_note",
+        "life_style_learn",
         "life_web_search",
         "life_web_fetch",
         "life_web_map",
@@ -34,19 +34,23 @@ TOOL_REACTION_NAMES = frozenset(
 
 BACKGROUND_TOOL_REACTION_NAMES = frozenset(
     {
+        "life_image_generate",
+        "edit_life_image",
         "life_photo_suite_generate",
         "life_video_generate",
         "life_web_research",
+        "life_video_note",
+        "life_style_learn",
     }
 )
-DIRECT_DELIVERY_TOOL_REACTION_NAMES = frozenset(
-    {"life_image_generate", "edit_life_image", "life_video_note"}
-)
+DIRECT_DELIVERY_TOOL_REACTION_NAMES = frozenset()
 MEDIA_AGENT_ERROR_TOOL_NAMES = frozenset(
     {
         "life_image_generate",
         "edit_life_image",
         "life_photo_suite_generate",
+        "life_video_note",
+        "life_style_learn",
         "life_video_generate",
     }
 )
@@ -59,6 +63,7 @@ _TOOL_MEDIA_CONTRACTS = {
     "life_image_reverse_prompt": "image_reverse_prompt",
     "life_video_understand": "video_understanding",
     "life_video_note": "video_note",
+    "life_style_learn": "style_catalog",
 }
 
 
@@ -278,6 +283,22 @@ class ToolReactionMixin:
         tool_state["active"] -= 1
         state["active"] = max(int(state.get("active") or 0) - 1, 0)
         outcome = self._tool_reaction_outcome(tool_name, tool_result)
+        if outcome == "pending" and tool_name in {
+            "life_video_note",
+            "life_style_learn",
+        }:
+            marker = self._background_tool_request(event, tool_name)
+            status = marker.get("status") if marker else ""
+            if status in {"sent", "failed", "cancelled"}:
+                outcome = "success" if status == "sent" else status
+        if outcome == "pending" and tool_name in {
+            "life_image_generate",
+            "edit_life_image",
+        }:
+            marker = getattr(event, "_daily_life_image_request", None)
+            status = marker.get("status") if isinstance(marker, dict) else ""
+            if status in {"sent", "failed", "cancelled"}:
+                outcome = "success" if status == "sent" else status
         if outcome == "pending":
             tool_state["pending"] += 1
             state["pending_background"] += 1
@@ -323,9 +344,7 @@ class ToolReactionMixin:
         role = getattr(role, "value", role)
         role = str(role or "").strip().lower()
         state["agent_failed"] = not bool(state.get("agent_error_suppressed")) and (
-            role in {"err", "error"} or bool(
-            getattr(response, "is_error", False)
-            )
+            role in {"err", "error"} or bool(getattr(response, "is_error", False))
         )
         self._touch_tool_reaction_state(state)
         return await self._try_finish_tool_reaction(event, state)
@@ -496,12 +515,22 @@ class ToolReactionMixin:
             return cls._tool_reaction_structured_outcome(structured_status)
         raw = cls._tool_reaction_result_value(value)
         payload = cls._tool_reaction_json_payload(raw)
+        if (
+            tool_name in {"life_video_note", "life_style_learn"}
+            and isinstance(payload, dict)
+            and payload.get("media") == contract_media
+        ):
+            return cls._tool_reaction_structured_outcome(
+                str(payload.get("status") or "")
+            )
+
+        if tool_name in {"life_image_generate", "edit_life_image"}:
+            if isinstance(payload, dict) and payload.get("status") == "pending":
+                return "pending"
+            return cls._image_tool_reaction_outcome(raw, payload)
 
         if tool_name in BACKGROUND_TOOL_REACTION_NAMES:
             return cls._background_tool_reaction_outcome(payload)
-
-        if tool_name in {"life_image_generate", "edit_life_image"}:
-            return cls._image_tool_reaction_outcome(raw, payload)
 
         if tool_name in _TOOL_MEDIA_CONTRACTS:
             return "failed"
@@ -528,9 +557,7 @@ class ToolReactionMixin:
         return "failed"
 
     @staticmethod
-    def _image_tool_reaction_outcome(
-        raw: str, payload: dict[str, Any] | None
-    ) -> str:
+    def _image_tool_reaction_outcome(raw: str, payload: dict[str, Any] | None) -> str:
         if isinstance(payload, dict) and payload.get("status") == "sent":
             return "success"
         if raw.startswith("原消息已撤回"):
@@ -584,8 +611,10 @@ class ToolReactionMixin:
     def _tool_reaction_sequence_text(value: list[Any] | tuple[Any, ...]) -> str:
         texts: list[str] = []
         for item in value:
-            current = item.get("text") if isinstance(item, dict) else getattr(
-                item, "text", None
+            current = (
+                item.get("text")
+                if isinstance(item, dict)
+                else getattr(item, "text", None)
             )
             if isinstance(current, str) and current.strip():
                 texts.append(current.strip())

@@ -46,6 +46,7 @@ class ContinuousTurnMixin:
     _CONTINUOUS_TURN_FOLLOW_UP_ATTR = "_daily_life_continuous_turn_follow_up"
     _CONTINUOUS_TURN_IMAGES_ATTR = "_daily_life_continuous_turn_images"
     _CONTINUOUS_TURN_RESTART_ATTR = "_daily_life_continuous_turn_restart"
+    _MEDIA_CHAT_TOKEN_ATTR = "_daily_life_media_chat_token"
     _CONTINUOUS_TURN_MAX_MESSAGES = 12
     _CONTINUOUS_TURN_MAX_CHARS = 4000
     _CONTINUOUS_TURN_ACTIVE_SECONDS = 90.0
@@ -158,7 +159,7 @@ class ContinuousTurnMixin:
             setter("agent_stop_requested", True)
         self.stop_stale_continuous_turn_event(source)
         getter = getattr(self, "_active_agent_runner", None)
-        runner = getter(event) if callable(getter) else None
+        runner = getter(source) if callable(getter) else None
         runner_event = getattr(
             getattr(getattr(runner, "run_context", None), "context", None),
             "event",
@@ -293,6 +294,17 @@ class ContinuousTurnMixin:
         return min(max_tail_wait, max(base_wait, cadence_wait))
 
     def note_continuous_turn_incoming(self, event: Any) -> bool:
+        scope, participant = self._continuous_turn_identity(event)
+        if scope:
+            store = getattr(self, "_media_chat_tokens", None)
+            if not isinstance(store, dict):
+                store = {}
+                self._media_chat_tokens = store
+            token = self._continuous_turn_message_id(event)
+            store[(scope, participant)] = token
+            setattr(event, self._MEDIA_CHAT_TOKEN_ATTR, (scope, participant, token))
+            if len(store) > 2048:
+                store.pop(next(iter(store)))
         if not self._continuous_turn_eligible(event):
             return False
         scope, participant = self._continuous_turn_identity(event)
@@ -426,6 +438,22 @@ class ContinuousTurnMixin:
             return True
         scope, participant, revision = identity
         return self._continuous_turn_revision(scope, participant) == revision
+
+    def media_request_is_current_turn(self, event: Any) -> bool:
+        """Return whether a background media request still belongs to the active turn.
+
+        Media delivery must survive a newer message, but its old follow-up must not
+        be inserted into the newer conversation turn.
+        """
+        for source in self._event_sources(event):
+            token = getattr(source, self._MEDIA_CHAT_TOKEN_ATTR, None)
+            if isinstance(token, tuple) and len(token) == 3:
+                store = getattr(self, "_media_chat_tokens", {})
+                return store.get(token[:2]) == token[2]
+        identity = self._continuous_turn_event_identity(event)
+        if identity is None:
+            return True
+        return self.continuous_turn_event_is_current(event)
 
     @staticmethod
     def _continuous_turn_stop_event(event: Any) -> None:

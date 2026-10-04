@@ -20,6 +20,8 @@ from ..models import (
     ReflectionDecision,
     ReflectionSignal,
     ScheduleAnchor,
+    normalize_timeline_day_offsets,
+    timeline_item_minutes,
 )
 from .lookback import record_appearance_snapshot
 from .tools import parse_life_datetime, timeline_item_datetime
@@ -27,6 +29,8 @@ from .wardrobe import (
     format_outfit_components,
     merge_outfit_components,
     normalize_outfit_components,
+    normalize_outfit_scene_category,
+    resolve_outfit_style_pool,
     serialize_outfit_components,
 )
 
@@ -345,8 +349,19 @@ class LifeActionMixin:
             action_components = normalize_outfit_components(
                 (action.payload or {}).get("outfit_components")
             )
+            if not action_components and action.target:
+                action_components["main_clothing"] = {
+                    "state": "worn", "description": action.target
+                }
+            main = action_components.get("main_clothing")
+            previous_main = existing_components.get("main_clothing")
+            full_change = bool(
+                main
+                and main.get("state") == "worn"
+                and main.get("description") != (previous_main or {}).get("description")
+            )
             components = merge_outfit_components(
-                existing_components,
+                {} if full_change else existing_components,
                 action_components,
             )
             component_outfit = format_outfit_components(components)
@@ -359,6 +374,12 @@ class LifeActionMixin:
             day.meta["outfit_fact_evidence"] = action.action_id
             if action_components:
                 day.meta["outfit_components"] = serialize_outfit_components(components)
+            scene = normalize_outfit_scene_category(
+                action.payload.get("scene_category"), default=""
+            )
+            if scene:
+                day.meta["outfit_scene_category"] = scene
+                day.meta["outfit_style_pool"] = resolve_outfit_style_pool(scene)
             record_appearance_snapshot(
                 day, datetime.datetime.fromisoformat(committed_at)
             )
@@ -382,6 +403,8 @@ class LifeActionMixin:
                 day.meta["style_catalog_reference_ids"] = ",".join(
                     str(item_id) for item_id in catalog_ids
                 )
+            elif full_change:
+                day.meta.pop("style_catalog_reference_ids", None)
         if action.action_type in {"move", "travel"} and action.target:
             previous_place = str((day.meta or {}).get("current_place") or "").strip()
             if previous_place:
@@ -1119,12 +1142,11 @@ class LifeActionMixin:
         """
         maximum = max(4, min(6, int(maximum)))
         candidates: list[tuple[int, int]] = []
+        normalize_timeline_day_offsets(day.timeline)
         for index, item in enumerate(day.timeline):
-            try:
-                parsed = datetime.datetime.strptime(item.time, "%H:%M")
-            except (TypeError, ValueError):
-                continue
-            candidates.append((parsed.hour * 60 + parsed.minute, index))
+            minutes = timeline_item_minutes(item)
+            if minutes is not None:
+                candidates.append((minutes, index))
         candidates.sort(key=lambda item: (item[0], item[1]))
 
         if len(candidates) > maximum:
@@ -1145,6 +1167,7 @@ class LifeActionMixin:
                 ScheduleAnchor(
                     anchor_id=f"{day.date}:{source_index}",
                     time=item.time,
+                    day_offset=item.day_offset,
                     activity=item.activity,
                     status=item.status,
                     source_index=source_index,
@@ -1180,11 +1203,8 @@ class LifeActionMixin:
         horizon_minutes = max(1, min(720, int(horizon_minutes)))
         refined = []
         for anchor in self.extract_schedule_anchors(day):
-            try:
-                anchor_time = datetime.datetime.strptime(
-                    f"{day.date} {anchor.time}", "%Y-%m-%d %H:%M"
-                )
-            except (TypeError, ValueError):
+            anchor_time = timeline_item_datetime(anchor, day.date)
+            if anchor_time is None:
                 continue
             remaining = (
                 anchor_time - current_time.replace(tzinfo=None)
@@ -1270,14 +1290,11 @@ class LifeActionMixin:
                     reason=f"锚点已经开始或收束：{original_id}",
                     revised_at=revised_at,
                 )
-            try:
-                old_time = datetime.datetime.strptime(
-                    f"{day.date} {timeline_item.time}", "%Y-%m-%d %H:%M"
-                )
-                new_time = datetime.datetime.strptime(
-                    f"{day.date} {replacement.time}", "%Y-%m-%d %H:%M"
-                )
-            except (TypeError, ValueError):
+            if replacement.day_offset is None:
+                replacement.day_offset = timeline_item.day_offset
+            old_time = timeline_item_datetime(timeline_item, day.date)
+            new_time = timeline_item_datetime(replacement, day.date)
+            if old_time is None or new_time is None:
                 return PlanRevision(
                     reason=f"锚点时间格式无效：{original_id}",
                     revised_at=revised_at,
@@ -1296,12 +1313,10 @@ class LifeActionMixin:
 
         proposed_times = []
         for index, item in enumerate(day.timeline):
-            value = prepared[index].time if index in prepared else item.time
-            try:
-                parsed = datetime.datetime.strptime(value, "%H:%M")
-            except (TypeError, ValueError):
-                continue
-            proposed_times.append(parsed.hour * 60 + parsed.minute)
+            value = prepared[index] if index in prepared else item
+            minutes = timeline_item_minutes(value)
+            if minutes is not None:
+                proposed_times.append(minutes)
         if proposed_times != sorted(proposed_times) or len(proposed_times) != len(
             set(proposed_times)
         ):
@@ -1315,6 +1330,7 @@ class LifeActionMixin:
         for source_index, replacement in prepared.items():
             timeline_item = day.timeline[source_index]
             timeline_item.time = replacement.time
+            timeline_item.day_offset = replacement.day_offset
             timeline_item.activity = replacement.activity
             timeline_item.status = replacement.status or timeline_item.status
             timeline_item.execution_reason = "日程局部重排"

@@ -77,7 +77,6 @@ def make_route(
     resolution: str,
     aspect_ratio: str,
     timeout_seconds: int,
-    quality: str = "medium",
 ) -> ImageRoute:
     protocol = str(protocol or "gemini").strip().lower()
     protocol = protocol if protocol in {"gemini", "openai", "grok"} else "gemini"
@@ -99,5 +98,4 @@ def make_route(
             "openai": openai.origin,
             "grok": imagine.origin,
         }.get(protocol, gemini.origin)(api_url),
-        quality=str(quality or "medium").strip().lower() or "medium",
     )

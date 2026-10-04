@@ -1028,6 +1028,13 @@ h2::before {
   font-variant-numeric: tabular-nums;
 }
 
+.timeline-edit-time {
+  display: grid;
+  align-self: start;
+  gap: 8px;
+  min-inline-size: 0;
+}
+
 .timeline-edit-fields {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(88px, 0.2fr) minmax(120px, 0.32fr) auto;
@@ -1725,38 +1732,51 @@ h2::before {
 
 .template-list-reorder {
   display: inline-flex;
-  gap: 2px;
   align-items: center;
+  overflow: hidden;
+  border: 1px solid rgba(223, 95, 149, 0.28);
+  border-radius: 8px;
+  background: linear-gradient(180deg, var(--paper-solid), rgba(255, 240, 246, 0.78));
+  box-shadow: var(--inset);
 }
 
 .template-list-move {
   display: inline-grid;
   place-items: center;
-  width: 34px;
-  min-width: 34px;
-  height: 34px;
-  min-height: 34px;
+  width: 30px;
+  min-width: 30px;
+  height: 32px;
+  min-height: 32px;
   padding: 0;
   border: 0;
-  border-radius: 7px;
-  color: var(--muted);
+  border-radius: 0;
+  color: var(--rose-strong);
   background: transparent;
   cursor: pointer;
+  box-shadow: none;
+  transition: color 150ms ease, background 150ms ease;
+}
+
+.template-list-move + .template-list-move {
+  border-left: 1px solid rgba(223, 95, 149, 0.2);
 }
 
 .template-list-move:hover:not(:disabled) {
-  color: var(--ink);
-  background: color-mix(in srgb, var(--line) 45%, transparent);
+  color: var(--rose-strong);
+  background: rgba(255, 129, 151, 0.16);
 }
 
 .template-list-move:focus-visible {
+  position: relative;
+  z-index: 1;
   outline: 2px solid var(--rose);
-  outline-offset: 2px;
+  outline-offset: -3px;
 }
 
 .template-list-move:disabled {
-  cursor: default;
-  opacity: 0.34;
+  cursor: not-allowed;
+  color: var(--muted);
+  opacity: 0.42;
 }
 
 .template-list-move svg {
@@ -1766,7 +1786,7 @@ h2::before {
   stroke: currentColor;
   stroke-linecap: round;
   stroke-linejoin: round;
-  stroke-width: 2;
+  stroke-width: 2.4;
 }
 
 .template-list-item-grid {
@@ -1798,8 +1818,7 @@ h2::before {
     minmax(0, 1.2fr)
     minmax(54px, 72px)
     minmax(58px, 76px)
-    minmax(68px, 80px)
-    minmax(68px, 82px);
+    minmax(68px, 80px);
   gap: 6px;
   align-items: end;
 }
@@ -1850,8 +1869,7 @@ h2::before {
   .template-list-item-compact
     .template-list-subfield:is(
       [data-template-field="resolution"],
-      [data-template-field="aspect_ratio"],
-      [data-template-field="quality"]
+      [data-template-field="aspect_ratio"]
     )
     .life-select-menu {
     left: auto;

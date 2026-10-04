@@ -9,7 +9,11 @@ import chinese_calendar
 from ..clock import TIMEZONE
 from ..clock import now as life_now
 from ..config.vocab import TIME_PERIOD_CN, WEEKDAY_NAMES
-from ..models import TIMELINE_EXECUTION_STATES
+from ..models import (
+    TIMELINE_EXECUTION_STATES,
+    normalize_timeline_day_offsets,
+    timeline_item_minutes,
+)
 
 
 # ==================== 节假日及调休感知 ====================
@@ -102,7 +106,7 @@ def timeline_deferred_until(
     if identity not in targets:
         return None
     until = parse_life_datetime(values.get("rest_delay_until"))
-    planned = parse_life_datetime(f"{str(timeline_date)[:10]} {_timeline_field(item, 'time')}")
+    planned = timeline_item_datetime(item, timeline_date)
     return until if until and planned and until > planned else None
 
 
@@ -112,14 +116,11 @@ def timeline_item_datetime(
     date = coerce_date(timeline_date)
     if date is None:
         return None
-    try:
-        hour, minute = map(int, _timeline_field(item, "time", "").split(":", 1))
-    except (TypeError, ValueError):
+    minutes = timeline_item_minutes(item)
+    if minutes is None:
         return None
-    if not (0 <= hour <= 23 and 0 <= minute <= 59):
-        return None
-    planned = datetime.datetime.combine(date, datetime.time(hour, minute))
-    deferred = timeline_deferred_until(item, timeline_date, meta)
+    planned = datetime.datetime.combine(date, datetime.time()) + datetime.timedelta(minutes=minutes)
+    deferred = timeline_deferred_until(item, timeline_date, meta) if meta else None
     return max(planned, deferred) if deferred else planned
 
 
@@ -646,7 +647,7 @@ def _timeline_window_boundary(
     if not (0 <= hour <= 23 and 0 <= minute <= 59):
         return None
     boundary = datetime.datetime.combine(timeline_date, datetime.time(hour, minute))
-    if boundary <= after:
+    while boundary <= after:
         boundary += datetime.timedelta(days=1)
     return boundary
 
@@ -682,10 +683,11 @@ def get_current_timeline_status(
         current_time = life_now()
     if not timeline or not isinstance(timeline, list):
         return None, None
-
     current_item = None
     next_item = None
     timeline_date_value = coerce_date(timeline_date)
+    if timeline_date_value:
+        normalize_timeline_day_offsets(timeline)
 
     timed_items = []
     for item in timeline:
@@ -695,8 +697,9 @@ def get_current_timeline_status(
                 timed_items.append((item_time, item))
             continue
         try:
-            h, m = map(int, _timeline_field(item, "time", "00:00").split(":"))
-            timed_items.append((h * 60 + m, item))
+            minutes = timeline_item_minutes(item)
+            if minutes is not None:
+                timed_items.append((minutes, item))
         except (TypeError, ValueError):
             continue
 
@@ -741,6 +744,7 @@ def reconcile_timeline_execution(
     date = coerce_date(timeline_date)
     if not timeline or date is None:
         return False
+    normalize_timeline_day_offsets(timeline)
 
     now_key = current_time
     changed = False
@@ -774,15 +778,15 @@ def reconcile_timeline_execution(
         if deferred_until is not None and now_key < deferred_until:
             target = "planned"
             reason = "休息已顺延：用户希望晚点再休息"
-        elif item_time.date() < current_time.date():
-            target = "elapsed"
-            reason = "计划日期已过，尚未收到执行证据"
         elif item_time > now_key:
             target = "planned"
             reason = "等待计划开始"
         elif window_end is not None and now_key >= window_end:
             target = "elapsed"
             reason = "计划时段已过，尚未收到执行证据"
+        elif window_end is None and item_time.date() < current_time.date():
+            target = "elapsed"
+            reason = "计划日期已过，尚未收到执行证据"
         else:
             target = "active"
             reason = "已到达计划开始时间"
@@ -804,10 +808,14 @@ def format_timeline_to_text(
 ) -> str:
     if not timeline:
         return "暂无详细日程"
+    normalize_timeline_day_offsets(timeline)
     lines = []
     previous_place = ""
     for item in timeline:
         time_str = _timeline_field(item, "time")
+        if timeline_item_minutes(item) is not None and timeline_item_minutes(item) >= 1440:
+            effective = timeline_item_datetime(item, timeline_date)
+            time_str = effective.strftime("%m-%d %H:%M") if effective else f"次日 {time_str}"
         act = _timeline_field(item, "activity")
         status = _timeline_field(item, "status")
         status_str = f" [{status}]" if status else ""

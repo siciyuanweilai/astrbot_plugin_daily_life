@@ -70,6 +70,17 @@ class ContinuousTurnTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request.prompt, "明天下雨\n记得带伞出门")
         self.assertIn("同一个话轮", request.system_prompt)
 
+    def test_media_request_is_current_turn_tracks_newer_message(self):
+        runtime = self._runtime(continuous_turn_wait_seconds=0)
+        first = self._event("拍一张生活照", "media")
+        later = self._event("刚才那件事继续说", "later")
+
+        runtime.note_continuous_turn_incoming(first)
+        self.assertTrue(runtime.media_request_is_current_turn(first))
+        runtime.note_continuous_turn_incoming(later)
+        self.assertFalse(runtime.media_request_is_current_turn(first))
+        self.assertTrue(runtime.media_request_is_current_turn(later))
+
     @classmethod
     def _image_event(cls, message_id, *sources, text=""):
         event = cls._event(text, message_id)

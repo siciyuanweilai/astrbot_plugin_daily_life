@@ -512,7 +512,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         runtime._rewrite_life_image_prompt_for_policy_retry = rewrite
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
 
-        result = await runtime.edit_life_image(
+        result = await runtime._edit_life_image_inline(
             event, "保留姿势，换成咖啡店生活照", str(reference)
         )
 
@@ -552,7 +552,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
         event.message_str = "参考这张改成咖啡店生活照，横版 16:9"
 
-        result = await runtime.edit_life_image(
+        result = await runtime._edit_life_image_inline(
             event, "改成咖啡店生活照", str(reference)
         )
 
@@ -591,7 +591,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         }
 
         self.assertTrue(runtime.note_recalled_message(recall_event))
-        result = await runtime.life_image_generate(event, "雨夜生活照")
+        result = await runtime._life_image_generate_inline(event, "雨夜生活照")
 
         self.assertEqual(result, "原消息已撤回，已取消图片发送。")
         self.assertEqual(runtime.context.sent_messages, [])
@@ -609,6 +609,42 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             event.unified_msg_origin,
             chain,
             source_event=event,
+        )
+
+        self.assertTrue(sent)
+        self.assertEqual(event.sent_messages, [chain])
+        self.assertEqual(runtime.context.sent_messages, [])
+
+    async def test_webchat_background_media_uses_session_delivery(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.context = Context(Provider([]))
+        event = Event(
+            platform_name="webchat",
+            unified_msg_origin="webchat:FriendMessage:webchat!tester!image-check",
+        )
+        snapshot = runtime._snapshot_media_event(event)
+        chain = types.SimpleNamespace(items=[{"type": "image", "file": "life.png"}])
+
+        sent = await runtime.send_message_if_not_recalled(
+            event.unified_msg_origin, chain, source_event=snapshot
+        )
+
+        self.assertTrue(sent)
+        self.assertEqual(event.sent_messages, [])
+        self.assertEqual(runtime.context.sent_messages, [(event.unified_msg_origin, chain)])
+        self.assertFalse(getattr(event, "_daily_life_media_scope_delivery", False))
+
+    async def test_webchat_current_request_keeps_event_delivery(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.context = Context(Provider([]))
+        event = Event(
+            platform_name="webchat",
+            unified_msg_origin="webchat:FriendMessage:webchat!tester!image-check",
+        )
+        chain = types.SimpleNamespace(items=[{"type": "image", "file": "life.png"}])
+
+        sent = await runtime.send_message_if_not_recalled(
+            event.unified_msg_origin, chain, source_event=event
         )
 
         self.assertTrue(sent)
@@ -780,7 +816,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         event.message_str = "照着这张构图拍你和示例好友的合影"
         prompt = "保留窗边并肩坐着的构图，当前角色在左，示例好友在右"
 
-        result = await runtime.edit_life_image(
+        result = await runtime._edit_life_image_inline(
             event,
             prompt,
             participants=["profile:friend"],
@@ -874,7 +910,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         )
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
 
-        await runtime.life_image_generate(event, "拍一张现在的生活照")
+        await runtime._life_image_generate_inline(event, "拍一张现在的生活照")
 
         prompt = provider.prompts[0]
         self.assertIn("当前活动：坐在雨边长椅吃炸串", prompt)
@@ -948,7 +984,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         event = Event(unified_msg_origin=scope)
         event.message_str = "拍张照看看"
 
-        await runtime.life_image_generate(event, "拍一张现在的生活照")
+        await runtime._life_image_generate_inline(event, "拍一张现在的生活照")
 
         prompt = provider.prompts[0]
         self.assertIn("最近对话场景锚点", prompt)
@@ -982,7 +1018,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         )
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
 
-        result = await runtime.edit_life_image(
+        result = await runtime._edit_life_image_inline(
             event, "改成咖啡店生活照", "https://example.com/ref.png"
         )
 
@@ -1026,7 +1062,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             event.unified_msg_origin: "D:/tmp/last-generated.png"
         }
 
-        result = await runtime.edit_life_image(
+        result = await runtime._edit_life_image_inline(
             event, "换成雨夜房间氛围", continue_last_result=True
         )
 
@@ -1067,7 +1103,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         event.message_items = [CurrentImage()]
         event.message_obj.message = event.message_items
 
-        result = await runtime.edit_life_image(event, "换成雨夜房间氛围")
+        result = await runtime._edit_life_image_inline(event, "换成雨夜房间氛围")
 
         self.assertEqual(json.loads(result)["action"], "edit")
         self.assertEqual(
@@ -1100,7 +1136,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             event.unified_msg_origin: "D:/tmp/last-generated.png"
         }
 
-        result = await runtime.edit_life_image(
+        result = await runtime._edit_life_image_inline(
             event, "换成雨夜房间氛围", continue_last_result=True
         )
 
@@ -1143,7 +1179,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         ]
         event.message_obj.message = event.message_items
 
-        result = await runtime.edit_life_image(event, "换成雨夜房间氛围")
+        result = await runtime._edit_life_image_inline(event, "换成雨夜房间氛围")
 
         self.assertEqual(json.loads(result)["action"], "edit")
         self.assertEqual(
@@ -1157,7 +1193,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         runtime.media = types.SimpleNamespace(image=types.SimpleNamespace())
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
 
-        result = await runtime.edit_life_image(event, "换成雨夜房间氛围")
+        result = await runtime._edit_life_image_inline(event, "换成雨夜房间氛围")
 
         self.assertEqual(result, "请先发送或引用一张要参考的图片。")
 
@@ -1180,7 +1216,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             cached.write_bytes(b"image")
             runtime._life_media_last_images = {event.unified_msg_origin: str(cached)}
 
-            result = await runtime.edit_life_image(
+            result = await runtime._edit_life_image_inline(
                 event,
                 "不要外套",
                 "https://example.com/old-reference.png",
@@ -1218,7 +1254,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             cached.write_bytes(b"image")
             runtime._life_media_last_images = {event.unified_msg_origin: str(cached)}
 
-            result = await runtime.edit_life_image(event, "再调亮一点")
+            result = await runtime._edit_life_image_inline(event, "再调亮一点")
 
         self.assertEqual(json.loads(result)["action"], "edit")
         self.assertEqual(edit_calls[0][1], str(cached))
@@ -1243,7 +1279,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             expired = Path(temp_dir) / "deleted-astrbot-temp.png"
             runtime._life_media_last_images = {event.unified_msg_origin: str(cached)}
 
-            result = await runtime.edit_life_image(event, "不要外套", str(expired))
+            result = await runtime._edit_life_image_inline(event, "不要外套", str(expired))
 
         self.assertEqual(json.loads(result)["action"], "edit")
         self.assertEqual(edit_calls[0][1], str(cached))
@@ -1260,7 +1296,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
                 "aiocqhttp:GroupMessage:20002": str(cached)
             }
 
-            result = await runtime.edit_life_image(
+            result = await runtime._edit_life_image_inline(
                 event, "继续改", continue_last_result=True
             )
 
@@ -1274,7 +1310,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         expired = str(Path(tempfile.mkdtemp()) / "deleted-generated.png")
         runtime._life_media_last_images = {event.unified_msg_origin: expired}
 
-        result = await runtime.edit_life_image(
+        result = await runtime._edit_life_image_inline(
             event, "继续改", continue_last_result=True
         )
 
@@ -1300,7 +1336,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         )
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
 
-        result = await runtime.edit_life_image(
+        result = await runtime._edit_life_image_inline(
             event,
             "继续改",
             continue_last_result=True,
@@ -1328,7 +1364,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
         expired = str(Path(tempfile.mkdtemp()) / "deleted-astrbot-temp.png")
 
-        result = await runtime.edit_life_image(
+        result = await runtime._edit_life_image_inline(
             event,
             "不要外套",
             expired,
@@ -1359,7 +1395,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
         event.message_str = "窗边生活照"
 
-        result = await runtime.edit_life_image(event, "窗边生活照")
+        result = await runtime._edit_life_image_inline(event, "窗边生活照")
 
         self.assertEqual(result, "请先发送或引用一张要参考的图片。")
         self.assertEqual(generate_calls, [])
@@ -1387,7 +1423,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         )
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
 
-        result = await runtime.edit_life_image(
+        result = await runtime._edit_life_image_inline(
             event,
             "窗边生活照",
             generate_without_reference=True,

@@ -14,6 +14,7 @@ from ..labels import (
     schedule_tone_label,
     sleep_mode_label,
 )
+from ..models import normalize_timeline_day_offsets
 from ..models.coerce import compact_explanation_text
 from ..prompts import cache_friendly_prompt
 from .appearance import (
@@ -23,10 +24,10 @@ from .appearance import (
     normalize_appearance_fact,
     strip_hair_from_outfit,
 )
-from .lookback import record_appearance_snapshot
 from .condition import format_physiological_rhythm_prompt
 from .fashion import outfit_style_contamination_reason
 from .future import future_outfit_timing_issue
+from .lookback import record_appearance_snapshot
 from .tools import (
     extract_json_from_text,
     format_timeline_travel,
@@ -216,6 +217,8 @@ class OutfitMixin:
         if source == "occurred_schedule":
             timeline_time = str(evidence.get("timeline_time") or "").strip()
             for item in context.get("occurred_timeline_items", []):
+                if getattr(item, "execution_state", "planned") != "completed":
+                    continue
                 item_time = str(getattr(item, "time", "") or "").strip()
                 if not timeline_time or item_time != timeline_time:
                     continue
@@ -287,6 +290,7 @@ class OutfitMixin:
     ) -> tuple[str, str]:
         if not timeline:
             return "暂无已发生日程", "暂无未发生日程"
+        normalize_timeline_day_offsets(timeline)
 
         now_minutes = current_time.hour * 60 + current_time.minute
         past_lines: list[str] = []
@@ -406,7 +410,7 @@ class OutfitMixin:
             f"当前时间线索：{get_time_period_cn(target_period)}",
             f"当前日程位置：{current_timeline}",
             f"下一项安排：{next_timeline}",
-            f"已发生日程：\n{past_timeline}",
+            f"已到时段的日程（仅已确认完成的节点属于事实）：\n{past_timeline}",
             f"未发生日程预告：\n{future_timeline}",
         ]
         return "\n".join(lines)
@@ -551,7 +555,7 @@ class OutfitMixin:
 10. 用户明确提出穿搭要求时，在不违背当前真实场景和天气的前提下优先执行，不能用 keep 回避。
 11. 只返回穿搭决策，不得改写时间轴、实时状态、主题、地点、事件或睡眠信息。
 12. change_evidence 只描述本轮更换主体服装的事实依据，证据发生时间必须晚于当前穿搭确认时间：
-- 已发生日程明确记载已经换装时，kind=explicit_outfit_change、source=occurred_schedule，timeline_time 填对应节点时间，quote 必须原样摘录该节点中明确确认换装的短句。
+- 只有 execution_state=completed 的日程明确确认已经换装时，kind=explicit_outfit_change、source=occurred_schedule，timeline_time 填对应节点时间，quote 必须原样摘录该节点中明确确认换装的短句。到点、已过和当前计划均不算完成证据。
 - 实时生活状态明确记载已经换装时，kind=explicit_outfit_change、source=live_state，quote 必须原样摘录实时状态中的确认短句。
 - 只是基于舒适度自主建议换装时，kind=comfort_adjustment、source=autonomous；场景变化但没有已发生换装事实时使用 scene_transition；没有变化依据时使用 none。不得把未来安排、普通活动或换装建议标成已经换装。
 13. 本轮提供视觉衣橱候选且自主决定产生新主体服装时，必须选择一条完整套装，或同时选择上装与下装；采用编号写入 catalog_reference_ids。长期偏好只能帮助比较候选，不能直接改写成具体衣服。用户本轮明确指定衣服时不受此限制。
@@ -801,6 +805,7 @@ class OutfitMixin:
             )
             if catalog_issue:
                 logger.warning(f"[穿搭更新] 已忽略脱离衣橱的新穿搭：{catalog_issue}")
+                context["catalog_selection_issue"] = catalog_issue
                 return None
         else:
             catalog_appearance = await self._style_catalog_reference_appearance(
@@ -817,8 +822,19 @@ class OutfitMixin:
         if component_only_partial_change:
             generated_components.pop("main_clothing", None)
             catalog_components.pop("main_clothing", None)
+        full_change = decision in {"change", "sleepwear", "outdoor"}
+        if (
+            full_change
+            and generated_outfit
+            and "main_clothing" not in generated_components
+            and "main_clothing" not in catalog_components
+        ):
+            generated_components["main_clothing"] = {
+                "state": "worn",
+                "description": generated_outfit,
+            }
         effective_components = merge_outfit_components(
-            old_components, generated_components
+            {} if full_change else old_components, generated_components
         )
         effective_components = merge_outfit_components(
             effective_components,
@@ -1213,19 +1229,21 @@ class OutfitMixin:
                 provider = await self._get_provider(provider_id)
                 if not provider:
                     return None
-                completion_text = await self._call_llm_text(
-                    provider,
-                    prompt,
-                    update_session_id,
-                    primary_provider_id=provider_id,
-                )
-                if not completion_text:
-                    return None
-                if should_abort and should_abort():
-                    return None
-
-                result = extract_json_from_text(completion_text)
-                if result:
+                for attempt in range(2):
+                    if should_abort and should_abort():
+                        return None
+                    completion_text = await self._call_llm_text(
+                        provider,
+                        prompt,
+                        update_session_id,
+                        primary_provider_id=provider_id,
+                    )
+                    if not completion_text or (should_abort and should_abort()):
+                        return None
+                    result = extract_json_from_text(completion_text)
+                    if not result:
+                        return None
+                    context.pop("catalog_selection_issue", None)
                     updated = await self._apply_outfit_update_result(
                         result,
                         date_str=date_str,
@@ -1241,6 +1259,14 @@ class OutfitMixin:
                             f"[穿搭更新] 完成：日期={date_str}；日程保持不变；"
                             f"耗时={time.monotonic() - started_at:.2f} 秒"
                         )
+                    issue = context.get("catalog_selection_issue")
+                    if updated is None and issue and attempt == 0:
+                        prompt += (
+                            f"\n上一轮衣橱选择未通过校验：{issue}。"
+                            "请按本次换装用途，从上方详细候选或服装简表中重新选择"
+                            "实际采用的完整服装编号，重新返回完整 JSON。"
+                        )
+                        continue
                     return updated
             except DayRevisionConflict as exc:
                 logger.debug(f"[穿搭更新] 模型结果已过期，保留较新的穿搭：{exc}")

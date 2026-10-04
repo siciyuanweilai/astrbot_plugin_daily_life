@@ -1,6 +1,7 @@
 # ruff: noqa: I001
 import asyncio
 import datetime
+import json
 import re
 import sqlite3
 import tempfile
@@ -69,6 +70,55 @@ from support import LifeArchive, LifeSettings
 
 
 class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
+    async def test_timeline_edits_keep_outfit_action_on_original_activity(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(f"{tmpdir}/daily_life.db")
+            try:
+                day = DayRecord(
+                    date="2026-10-03",
+                    timeline=[
+                        TimelineItem(time="21:00", activity="拉伸", place_kind="home"),
+                        TimelineItem(time="21:30", activity="洗澡换睡衣", place_kind="home"),
+                    ],
+                )
+                day.meta["planned_life_actions"] = (
+                    '[{"action_id":"bedtime","action_type":"change_outfit","timeline_index":1}]'
+                )
+                await archive.save_day(day)
+                day.timeline.insert(0, TimelineItem(time="20:00", activity="晚餐"))
+                await archive.save_day(day)
+                saved = await archive.get_day(day.date)
+                action = json.loads(saved.meta["planned_life_actions"])[0]
+                self.assertEqual(action["timeline_index"], 2)
+                self.assertEqual(saved.timeline[2].activity, "洗澡换睡衣")
+
+                await archive.replace_day_timeline(day.date, saved.timeline[:2])
+                removed = await archive.get_day(day.date)
+                self.assertIsNone(json.loads(removed.meta["planned_life_actions"])[0]["timeline_index"])
+            finally:
+                archive.close()
+
+    async def test_timeline_deduplication_rebinds_planned_actions(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(f"{tmpdir}/daily_life.db")
+            try:
+                day = DayRecord(
+                    date="2026-10-03",
+                    timeline=[
+                        TimelineItem(time="20:00", activity="回家"),
+                        TimelineItem(time="20:10", activity="回家"),
+                        TimelineItem(time="21:00", activity="换睡衣"),
+                    ],
+                    meta={"planned_life_actions": '[{"action_id":"bedtime","action_type":"change_outfit","timeline_index":2}]'},
+                )
+                await archive.save_day(day)
+                saved = await archive.get_day(day.date)
+                self.assertEqual(len(saved.timeline), 2)
+                self.assertEqual(json.loads(saved.meta["planned_life_actions"])[0]["timeline_index"], 1)
+                self.assertEqual(saved.timeline[1].activity, "换睡衣")
+            finally:
+                archive.close()
+
     async def test_duplicate_event_write_closes_implicit_transaction(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             archive = LifeArchive(f"{tmpdir}/daily_life.db")

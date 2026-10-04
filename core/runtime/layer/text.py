@@ -160,6 +160,9 @@ class LayerTextMixin:
         meta: dict | None = None,
     ) -> str:
         time_text = self._hidden_text(getattr(item, "time", ""), 8)
+        planned = timeline_item_datetime(item, timeline_date)
+        if planned and (getattr(item, "day_offset", 0) or 0):
+            time_text = planned.strftime("%m-%d %H:%M")
         deferred = timeline_deferred_until(item, timeline_date, meta)
         if deferred:
             time_text += f" → 顺延 {deferred:%m-%d %H:%M}"
@@ -185,6 +188,7 @@ class LayerTextMixin:
             return ""
 
         date = timeline_date or now.date()
+        current, _ = get_current_timeline_status(timeline, now, date, meta=meta)
         timed = sorted(
             (time, index, item) for index, item in enumerate(timeline)
             if (time := timeline_item_datetime(item, date, meta=meta)) is not None
@@ -192,7 +196,6 @@ class LayerTextMixin:
         if not timed:
             return ""
 
-        current, _ = get_current_timeline_status(timeline, now, date, meta=meta)
         current_pos = -1
         for pos, (time, _, _) in enumerate(timed):
             if time <= now:
@@ -214,8 +217,13 @@ class LayerTextMixin:
 
         for pos in range(max(0, current_pos - 1), min(len(timed), current_pos + 3)):
             item = timed[pos][2]
-            if item is current:
-                label = "当前计划" if is_rest_activity(item) else "当前"
+            execution_state = getattr(item, "execution_state", "planned")
+            if execution_state == "completed":
+                label = "已确认完成"
+            elif execution_state in {"skipped", "cancelled", "expired"}:
+                label = "已跳过或取消"
+            elif item is current:
+                label = "当前"
             else:
                 label = "已过计划" if timed[pos][0] <= now else "接下来"
             previous_item = timed[pos - 1][2] if pos > 0 else None
@@ -224,13 +232,20 @@ class LayerTextMixin:
                 if previous_item is not None
                 else ""
             )
-            lines.append(
-                f"- {label}: {self._format_timeline_item_compact(item, previous_place=previous_place, include_travel=True, timeline_date=date, meta=meta)}"
+            compact = self._format_timeline_item_compact(
+                item,
+                previous_place=previous_place,
+                include_travel=True,
+                timeline_date=date,
+                meta=meta,
             )
+            current_marker = "（当前计划）" if item is current else ""
+            lines.append(f"- {label}: {compact}{current_marker}")
 
         return (
             "[HiddenScheduleWindow]\n"
             "普通聊天只参考当前窗口；用户明确询问全天安排、时间冲突或邀约时，再按全天索引自然回答。\n"
+            "当前计划、已过计划和全天索引都不是执行证据；只有已确认完成的节点可当作发生过。小动作可以依当前场景自然展开，不能照未来文案声称已睡着、已换衣或已经和对方做过某事。\n"
             + "\n".join(lines)
         )
 

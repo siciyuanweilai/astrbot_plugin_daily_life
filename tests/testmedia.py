@@ -789,7 +789,6 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
                             "model": "gpt-image-2",
                             "resolution": "2K",
                             "aspect_ratio": "16:9",
-                            "quality": "high",
                             "timeout_seconds": 180,
                         }
                     ],
@@ -814,12 +813,12 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[0][1]["Authorization"], "Bearer relay-key")
         self.assertEqual(calls[0][2]["model"], "gpt-image-2")
         self.assertEqual(calls[0][2]["size"], "2048x1136")
-        self.assertEqual(calls[0][2]["quality"], "high")
+        self.assertNotIn("quality", calls[0][2])
         self.assertIn("雨夜生活照", calls[0][2]["prompt"])
         self.assertIsNone(calls[0][3])
         self.assertEqual(_timeout_total(calls[0][4]), 180)
 
-    def test_siciyuanweilai_gpt_text_request_uses_standard_quality_and_base64(self):
+    def test_siciyuanweilai_gpt_text_request_omits_quality_and_uses_base64(self):
         route = ImageRoute(
             api_url="https://siciyuanweilai.com",
             api_key="relay-key",
@@ -830,7 +829,6 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
             aspect_ratio="1:1",
             timeout_seconds=120,
             origin="https://siciyuanweilai.com",
-            quality="high",
         )
 
         request = openai_image.build_request(
@@ -848,7 +846,6 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
                 "size": "1024x1024",
                 "n": 1,
                 "response_format": "b64_json",
-                "quality": "high",
             },
         )
         self.assertNotIn("extra_fields", request.payload)
@@ -858,7 +855,7 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-    def test_openai_edit_request_includes_quality_multipart_field(self):
+    def test_openai_edit_request_omits_quality_multipart_field(self):
         route = ImageRoute(
             api_url="https://openai-relay.example/v1",
             api_key="relay-key",
@@ -869,7 +866,6 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
             aspect_ratio="1:1",
             timeout_seconds=120,
             origin="https://openai-relay.example",
-            quality="low",
         )
         request = openai_image.build_request(
             route,
@@ -887,7 +883,7 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertIsNotNone(request.form)
-        self.assertEqual(_form_field(request.form, "quality"), "low")
+        self.assertIsNone(_form_field(request.form, "quality"))
         self.assertEqual(_form_field(request.form, "image"), b"reference")
         self.assertEqual(request.reference_image_count, 1)
 
@@ -936,7 +932,6 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
                 ),
                 "size": "1024x1024",
                 "n": 1,
-                "quality": "medium",
                 "response_format": "b64_json",
                 "images": [
                     {
@@ -951,28 +946,31 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
             },
         )
 
-    def test_siciyuanweilai_gpt_json_quality_and_reference_contract(self):
+    def test_gpt_json_reference_contract_without_quality(self):
         for api_url in (
+            "https://api.scywl.cc",
+            "https://api.scywl.cc/v1",
+            "https://api.scywl.cc/v1/images/generations",
+            "https://api.scywl.cc/v1/images/edits",
             "https://siciyuanweilai.com",
             "https://siciyuanweilai.com/v1",
             "https://www.siciyuanweilai.com/v1/images/edits",
         ):
-            for quality in ("low", "medium", "high"):
+            for model in ("gpt-image-2", "gpt-image-2.5"):
                 for reference_count in (0, 1, 2):
                     with self.subTest(
-                        api_url=api_url, quality=quality, references=reference_count
+                        api_url=api_url, model=model, references=reference_count
                     ):
                         route = ImageRoute(
                             api_url=api_url,
                             api_key="test-key",
-                            model="gpt-image-2",
+                            model=model,
                             label="GPT Image",
                             protocol="openai",
                             resolution="1K",
                             aspect_ratio="1:1",
                             timeout_seconds=300,
-                            origin="https://siciyuanweilai.com",
-                            quality=quality,
+                            origin=api_url,
                         )
                         references = [
                             (b"first-reference", "image/png"),
@@ -993,7 +991,8 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
                         )
 
                         self.assertIsNone(request.form)
-                        self.assertEqual(request.payload["quality"], quality)
+                        self.assertEqual(request.payload["model"], model)
+                        self.assertNotIn("quality", request.payload)
                         self.assertEqual(request.payload["response_format"], "b64_json")
                         self.assertNotIn("extra_fields", request.payload)
                         self.assertNotIn("image", request.payload)
@@ -1826,7 +1825,7 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(calls[0][2])
         self.assertIsNotNone(calls[0][3])
 
-    async def test_siciyuanweilai_edit_image_posts_application_json(self):
+    async def test_gpt_image_25_edit_image_posts_application_json_without_quality(self):
         output_bytes = _real_png_bytes(16, 16)
         reference = Path(tempfile.mkdtemp()) / "reference.png"
         reference.write_bytes(_real_png_bytes(32, 32))
@@ -1849,6 +1848,8 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
                     return _Response(
                         status=503, text="image task storage is unavailable"
                     )
+                if "quality" in json or "extra_fields" in json:
+                    return _Response(status=400, text="unsupported image options")
                 return _Response(
                     payload={
                         "data": [
@@ -1868,10 +1869,9 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
                     "edit_channels": [
                         {
                             "__template_key": "openai",
-                            "api_url": "https://siciyuanweilai.com/v1",
+                            "api_url": "https://api.scywl.cc/v1",
                             "api_key": "relay-key",
-                            "model": "gpt-image-2",
-                            "quality": "low",
+                            "model": "gpt-image-2.5",
                         }
                     ],
                 }
@@ -1888,11 +1888,12 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         generated = await service.edit_image("换成雨夜窗边", str(reference))
 
         self.assertTrue(generated.path.exists())
-        self.assertEqual(calls[0][0], "https://siciyuanweilai.com/v1/images/edits")
+        self.assertEqual(calls[0][0], "https://api.scywl.cc/v1/images/edits")
         self.assertIsNotNone(calls[0][2])
         self.assertIsNone(calls[0][3])
         self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0][2]["quality"], "low")
+        self.assertEqual(calls[0][2]["model"], "gpt-image-2.5")
+        self.assertNotIn("quality", calls[0][2])
         self.assertEqual(calls[0][2]["response_format"], "b64_json")
         self.assertEqual(generated.path.read_bytes(), output_bytes)
         image_url = calls[0][2]["images"][0]["image_url"]

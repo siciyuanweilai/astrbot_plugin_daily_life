@@ -20,9 +20,10 @@ from ...prompts import (
 from ...sources.dispatch import PermanentScopeDeliveryError, ScopeDeliveryError
 from ..capture.jsonclean import call_pure_json
 from ..markers import LOG_PREFIX
+from .rendezvous import SharedActivityContactMixin
 
 
-class ProactiveFollowupMixin:
+class ProactiveFollowupMixin(SharedActivityContactMixin):
     """把当前角色明确许下的未来联系承诺接入持久执行队列。"""
 
     _FOLLOW_UP_ACTIONS = {"contact_person", "remind_person"}
@@ -59,50 +60,6 @@ class ProactiveFollowupMixin:
             "retry_after_minutes": max(0, retry_after),
             "expression_intent": intent,
         }
-
-    async def reconcile_scheduled_invite_contacts(
-        self, now: datetime.datetime | None = None
-    ) -> int:
-        """为升级前已接受但尚未登记行前联系的邀约补建任务。"""
-
-        now = now or life_now()
-        getter = getattr(self.archive, "get_commitments", None)
-        if not callable(getter):
-            return 0
-        scheduled = await getter(status="scheduled", limit=30)
-        existing_tasks = await self.archive.get_durable_tasks(
-            kind="proactive_commitment", limit=200
-        )
-        existing_keys = {str(item.task_key or "") for item in existing_tasks}
-        created = 0
-        for commitment in scheduled:
-            if str(getattr(commitment, "source", "") or "") != "invite":
-                continue
-            if f"invite_contact:{commitment.id}" in existing_keys:
-                continue
-            day = await self.archive.get_day(str(commitment.trigger_date or ""))
-            if day is None:
-                continue
-            future = []
-            for item in day.timeline:
-                try:
-                    point = datetime.datetime.strptime(
-                        f"{day.date} {item.time}", "%Y-%m-%d %H:%M"
-                    )
-                except (TypeError, ValueError):
-                    continue
-                if point > now:
-                    future.append(item)
-            if not future:
-                continue
-            if await self.schedule_invite_contact(
-                commitment,
-                timeline_edits=[{"item": future[0].as_dict()}],
-                observed_at=now,
-            ):
-                created += 1
-                existing_keys.add(f"invite_contact:{commitment.id}")
-        return created
 
     @staticmethod
     def _follow_up_execute_at(value: Any) -> datetime.datetime | None:
@@ -574,64 +531,6 @@ class ProactiveFollowupMixin:
         )
         return True
 
-    async def schedule_invite_contact(
-        self,
-        commitment: CommitmentRecord,
-        *,
-        timeline_edits: Any,
-        observed_at: datetime.datetime,
-    ) -> bool:
-        """为已接受邀约的首个受影响节点登记一次行前联系。"""
-
-        if (
-            not commitment.id
-            or not commitment.source_session
-            or ":GroupMessage:" in commitment.source_session
-            or not isinstance(timeline_edits, list)
-        ):
-            return False
-        candidates: list[datetime.datetime] = []
-        for edit in timeline_edits:
-            if not isinstance(edit, dict):
-                continue
-            item = edit.get("item")
-            if not isinstance(item, dict):
-                continue
-            time_text = str(item.get("time") or "").strip()
-            if not time_text:
-                continue
-            try:
-                point = datetime.datetime.strptime(
-                    f"{commitment.trigger_date} {time_text}", "%Y-%m-%d %H:%M"
-                )
-            except ValueError:
-                continue
-            if point > observed_at:
-                candidates.append(point)
-        if not candidates:
-            return False
-        first_node_at = min(candidates)
-        if first_node_at <= observed_at + datetime.timedelta(minutes=10):
-            return False
-        execute_at = first_node_at - datetime.timedelta(minutes=5)
-        await self.archive.enqueue_durable_task(
-            f"invite_contact:{commitment.id}",
-            "proactive_commitment",
-            {
-                "scope": commitment.source_session,
-                "commitment_id": commitment.id,
-                "action": "contact_person",
-                "message_goal": "在共同安排开始前，自然联系对方确认准备或会合进度",
-                "execute_at": execute_at.strftime("%Y-%m-%d %H:%M:%S"),
-                "source_message_id": commitment.source_message_id,
-                "settle_commitment": False,
-            },
-            priority=90,
-            available_at=execute_at.strftime("%Y-%m-%d %H:%M:%S"),
-            max_attempts=4,
-        )
-        return True
-
     async def _proactive_commitment_relationship(self, scope: str) -> Any | None:
         getter = getattr(self.archive, "get_relationships_for_target", None)
         if not callable(getter):
@@ -760,6 +659,8 @@ class ProactiveFollowupMixin:
                 "outcome": commitment.status,
                 "reason": "承诺已经进入终态",
             }
+        if payload.get("shared_activity_contact") is True:
+            return await self._run_shared_activity_contact(task, commitment)
         now = life_now()
         expires_at = self._follow_up_execute_at(payload.get("expires_at"))
         if expires_at is not None and now > expires_at:

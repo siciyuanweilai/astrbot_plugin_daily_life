@@ -87,6 +87,7 @@ class BackgroundTaskScheduler:
         key: str = "",
         category: str = "",
         lease_factory: Callable[[], AbstractAsyncContextManager] | None = None,
+        on_cancel: Callable[[], None] | None = None,
     ) -> bool:
         task_name = self._task_name(label, key)
         category = self._normalize_category(category, label=label, key=key)
@@ -122,7 +123,9 @@ class BackgroundTaskScheduler:
         if label:
             task.set_name(label)
         self.tasks.add(task)
-        task.add_done_callback(lambda done_task: self._on_done(done_task, label, key))
+        task.add_done_callback(
+            lambda done_task: self._on_done(done_task, label, key, on_cancel)
+        )
         return True
 
     def _accept_schedule(
@@ -245,7 +248,14 @@ class BackgroundTaskScheduler:
     def _category_for_key(key: str) -> str:
         value = str(key or "")
         if value.startswith(
-            ("sight:", "bili:", "life_video:", "life_suite:", "photo_suite:")
+            (
+                "sight:",
+                "bili:",
+                "life_video:",
+                "life_image:",
+                "life_suite:",
+                "photo_suite:",
+            )
         ):
             return "video"
         if value.startswith(
@@ -254,7 +264,13 @@ class BackgroundTaskScheduler:
             return "vision"
         return "normal"
 
-    def _on_done(self, done_task: asyncio.Task, label: str, key: str) -> None:
+    def _on_done(
+        self,
+        done_task: asyncio.Task,
+        label: str,
+        key: str,
+        on_cancel: Callable[[], None] | None = None,
+    ) -> None:
         self.tasks.discard(done_task)
         if key:
             self.keys.discard(key)
@@ -268,6 +284,8 @@ class BackgroundTaskScheduler:
                 source_coro = getattr(done_task, _TASK_SOURCE_CORO_ATTR, None)
                 if source_coro is not None:
                     self._close_coro(source_coro)
+            if on_cancel is not None:
+                on_cancel()
         except Exception as exc:
             self._failed_counts[category] = (
                 int(self._failed_counts.get(category, 0)) + 1
@@ -325,6 +343,7 @@ class BackgroundTaskMixin:
         label: str = "",
         key: str = "",
         category: str = "",
+        on_cancel: Callable[[], None] | None = None,
     ) -> bool:
         scheduler = self._background_scheduler_for_runtime()
         lease_factory = getattr(self, "runtime_service_lease", None)
@@ -334,6 +353,7 @@ class BackgroundTaskMixin:
             key=key,
             category=category,
             lease_factory=lease_factory if callable(lease_factory) else None,
+            on_cancel=on_cancel,
         )
 
     def _background_gate_for_label(self, label: str = "") -> asyncio.Semaphore:

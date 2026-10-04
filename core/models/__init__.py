@@ -4,6 +4,8 @@ from .agenda import (
     DayRecord,
     TimelineItem,
     deduplicate_timeline_items,
+    normalize_timeline_day_offsets,
+    timeline_item_minutes,
 )
 from .catalog import (
     STYLE_CATALOG_CARRY_MODES,
@@ -174,6 +176,8 @@ __all__ = [
     "TIMELINE_TERMINAL_STATES",
     "TimelineItem",
     "deduplicate_timeline_items",
+    "normalize_timeline_day_offsets",
+    "timeline_item_minutes",
     "WeatherInfo",
     "WeekPlanRecord",
 ]

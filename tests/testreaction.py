@@ -1,14 +1,13 @@
 import json
 import unittest
 
-from runtimehelpers import DailyLifeRuntime, Event, types
-
+from core.outcome import ToolResultText
 from core.runtime.reaction import (
     TOOL_REACTION_FAILED,
     TOOL_REACTION_PROCESSING,
     TOOL_REACTION_SUCCESS,
 )
-from core.outcome import ToolResultText
+from runtimehelpers import DailyLifeRuntime, Event, types
 
 
 class ReactionBot:
@@ -31,14 +30,14 @@ class ToolReactionTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_sync_tool_waits_for_final_reply_delivery(self):
         runtime, event, bot = self._runtime_event()
-        tool = types.SimpleNamespace(name="life_image_generate")
+        tool = types.SimpleNamespace(name="life_image_reverse_prompt")
 
         await runtime.note_tool_reaction_start(event, tool, {"prompt": "雨夜"})
         await runtime.note_tool_reaction_result(
             event,
             tool,
             {},
-            json.dumps({"status": "sent", "media": "image"}),
+            ToolResultText("反推完成", status="ok", media="image_reverse_prompt"),
         )
 
         self.assertEqual(
@@ -96,7 +95,8 @@ class ToolReactionTest(unittest.IsolatedAsyncioTestCase):
             json.dumps({"status": "pending", "media": "video"}),
         )
         await runtime.note_tool_reaction_agent_done(
-            event, types.SimpleNamespace(completion_text="视频生成后再说", result_chain=None)
+            event,
+            types.SimpleNamespace(completion_text="视频生成后再说", result_chain=None),
         )
         await runtime.finish_tool_reaction(event, "life_video_generate", success=True)
 
@@ -154,7 +154,9 @@ class ToolReactionTest(unittest.IsolatedAsyncioTestCase):
             [TOOL_REACTION_PROCESSING, TOOL_REACTION_SUCCESS],
         )
 
-    async def test_partial_search_failure_with_usable_result_finishes_successfully(self):
+    async def test_partial_search_failure_with_usable_result_finishes_successfully(
+        self,
+    ):
         runtime, event, bot = self._runtime_event()
         tool = types.SimpleNamespace(name="life_web_search")
 
@@ -294,9 +296,7 @@ class ToolReactionTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertTrue(
-            runtime.suppress_media_agent_error(
-                event, types.SimpleNamespace(role="err")
-            )
+            runtime.suppress_media_agent_error(event, types.SimpleNamespace(role="err"))
         )
         self.assertIsNone(event.get_result())
         await runtime.note_tool_reaction_agent_done(
@@ -317,9 +317,7 @@ class ToolReactionTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertTrue(
-            runtime.suppress_media_agent_error(
-                event, types.SimpleNamespace(role="err")
-            )
+            runtime.suppress_media_agent_error(event, types.SimpleNamespace(role="err"))
         )
         self.assertIsNone(event.get_result())
         await runtime.note_tool_reaction_agent_done(
@@ -333,8 +331,16 @@ class ToolReactionTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_general_result_media_error_requires_accepted_media_task(self):
         for status, text, suppressed in (
-            ("pending", "LLM 响应错误: All available chat models are unavailable.", True),
-            ("error", "LLM 响应错误: All available chat models are unavailable.", False),
+            (
+                "pending",
+                "LLM 响应错误: All available chat models are unavailable.",
+                True,
+            ),
+            (
+                "error",
+                "LLM 响应错误: All available chat models are unavailable.",
+                False,
+            ),
             ("pending", "视频还在生成", False),
             (None, "LLM 响应错误: All available chat models are unavailable.", False),
         ):
@@ -344,7 +350,10 @@ class ToolReactionTest(unittest.IsolatedAsyncioTestCase):
                 if status:
                     await runtime.note_tool_reaction_start(event, tool, {})
                     await runtime.note_tool_reaction_result(
-                        event, tool, {}, json.dumps({"status": status, "media": "video"})
+                        event,
+                        tool,
+                        {},
+                        json.dumps({"status": status, "media": "video"}),
                     )
                 result = types.SimpleNamespace(
                     chain=[types.SimpleNamespace(text=text)],
@@ -383,9 +392,7 @@ class ToolReactionTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             outcome(
                 "life_video_note",
-                ToolResultText(
-                    "总结已发送。", status="sent", media="video_note"
-                ),
+                ToolResultText("总结已发送。", status="sent", media="video_note"),
             ),
             "success",
         )

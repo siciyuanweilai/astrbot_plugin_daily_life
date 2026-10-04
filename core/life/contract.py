@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from statistics import median
 
+from ..models import normalize_timeline_day_offsets, timeline_item_minutes
 from ..prompts import cache_friendly_prompt
 from .fashion import outfit_style_contamination_reason
 
@@ -63,6 +64,19 @@ class DailyContractMixin:
         if not isinstance(timeline, list) or not timeline:
             self._set_validation_issue("timeline_empty")
             return False, "timeline 不能为空"
+        for item in timeline:
+            if not isinstance(item, dict):
+                self._set_validation_issue("timeline_invalid")
+                return False, "timeline 节点必须是对象"
+            offset = item.get("day_offset")
+            if offset is not None and (not isinstance(offset, int) or isinstance(offset, bool) or not 0 <= offset <= 7):
+                self._set_validation_issue("timeline_invalid")
+                return False, "timeline.day_offset 必须是 0 到 7 的整数"
+        normalize_timeline_day_offsets(timeline)
+        valid_minutes = [minutes for item in timeline if (minutes := timeline_item_minutes(item)) is not None]
+        if valid_minutes != sorted(valid_minutes):
+            self._set_validation_issue("timeline_invalid")
+            return False, "timeline 必须按日期及时间递增排列"
         if expected_coverage:
             self._apply_derived_timeline_audit(payload, expected_coverage)
         contract_ok, contract_reason = self._validate_generation_contract(
@@ -476,19 +490,9 @@ class DailyContractMixin:
         return minutes_list
 
     def _timeline_unwrapped_minutes(self, timeline: object) -> list[int]:
-        raw_minutes = self._timeline_raw_minutes(timeline)
-        if not raw_minutes:
-            return []
-
-        unwrapped = [raw_minutes[0]]
-        offset = 0
-        for minutes in raw_minutes[1:]:
-            candidate = minutes + offset
-            if candidate < unwrapped[-1]:
-                offset += DAY_MINUTES
-                candidate = minutes + offset
-            unwrapped.append(candidate)
-        return unwrapped
+        items = timeline if isinstance(timeline, list) else []
+        normalize_timeline_day_offsets(items)
+        return [minutes for item in items if (minutes := timeline_item_minutes(item)) is not None]
 
     @staticmethod
     def _timeline_item_duration(item: object) -> int:

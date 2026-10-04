@@ -219,6 +219,30 @@
     rgba(43, 29, 40, 0.92);
 }
 
+[data-theme="dark"] .template-list-reorder {
+  border-color: rgba(255, 204, 229, 0.28);
+  background: linear-gradient(180deg, rgba(55, 36, 50, 0.98), rgba(36, 26, 36, 0.96));
+}
+
+[data-theme="dark"] .template-list-move {
+  color: var(--life-dark-accent-strong);
+  background: transparent;
+  box-shadow: none;
+}
+
+[data-theme="dark"] .template-list-move + .template-list-move {
+  border-left-color: rgba(255, 204, 229, 0.2);
+}
+
+[data-theme="dark"] .template-list-move:hover:not(:disabled) {
+  color: var(--life-dark-accent-strong);
+  background: rgba(255, 129, 151, 0.18);
+}
+
+[data-theme="dark"] .template-list-move:disabled {
+  color: var(--muted);
+}
+
 [data-theme="dark"] .life-select-trigger {
   border-color: rgba(255, 204, 229, 0.3);
   color: var(--life-dark-text);

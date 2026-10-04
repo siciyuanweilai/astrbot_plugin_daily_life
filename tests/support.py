@@ -607,6 +607,7 @@ class DataManager:
         self.commitments = {}
         self.day_commitments = {}
         self.next_commitment_id = 1
+        self.durable_tasks = {}
         self.relationships = {}
         self.relationship_contacts = {}
         self.chat_summaries = {}
@@ -934,6 +935,13 @@ class DataManager:
             item = self.commitments.get(commitment_id)
             if item and item.status == "active":
                 item.status = "scheduled"
+
+    async def enqueue_durable_task(self, task_key, kind, payload, **kwargs):
+        self.durable_tasks.setdefault(task_key, types.SimpleNamespace(
+            task_key=task_key, kind=kind, payload=copy.deepcopy(payload),
+            status="pending", result={}, **kwargs,
+        ))
+        return self.durable_tasks[task_key]
 
     async def add_events(self, date_str, events):
         for event in events or []:

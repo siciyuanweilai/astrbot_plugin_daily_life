@@ -1,8 +1,11 @@
 import asyncio
 import contextlib
+import copy
 import hashlib
 import html
 import json
+import os
+import shutil
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -949,30 +952,97 @@ class SightMixin(SightCleanupMixin, SightIdentityMixin):
     async def life_video_note(
         self, event: Any, target: str = "", style: str = "professional"
     ) -> Any:
-        clips = await self._sight_clips_from_event_async(event, target)
-        if clips:
-            insight = await self._understand_sight_clip(
-                event, clips[0], purpose="professional"
-            )
-        else:
-            recent = await self._sight_recent_for_event(event, limit=1)
-            insight = recent[0] if recent else None
-        if not insight:
-            return self._sight_plain_result(
-                event,
+        existing = self._background_tool_existing_result(event, "life_video_note")
+        if existing:
+            return existing
+        snapshot = self._snapshot_media_event(event)
+        clips = await self._sight_clips_from_event_async(snapshot, target)
+        recent = [] if clips else await self._sight_recent_for_event(snapshot, limit=1)
+        if not clips and not recent:
+            return ToolResultText(
                 "没有找到可总结的视频。请直接发送视频、引用视频，或提供视频文件/直链。",
+                status="failed",
+                media="video_note",
+            )
+        snapshot._daily_life_locked_video_note = (
+            await self._lock_video_note_source(clips[0]) if clips else None,
+            copy.deepcopy(recent[0]) if recent else None,
+        )
+        return self._submit_background_tool(
+            snapshot,
+            event,
+            lambda: self._life_video_note_inline(snapshot, target, style),
+            tool_name="life_video_note",
+            media="video_note",
+            label="视频专业总结",
+            category="video",
+            failure_text="这次视频总结没有完成。",
+        )
+
+    async def _lock_video_note_source(self, clip: SightClip) -> SightClip:
+        locked = copy.deepcopy(clip)
+        if not locked.source or locked.source.startswith(
+            ("http://", "https://", "data:")
+        ):
+            return locked
+
+        def preserve_local_video() -> str:
+            source = Path(locked.source).expanduser()
+            if not source.is_file():
+                return ""
+            cache_dir = sight_cache_dir(getattr(self, "data_path", None)) / "media"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            target = cache_dir / f"note_{uuid.uuid4().hex}{source.suffix}"
+            try:
+                os.link(source, target)
+            except OSError:
+                shutil.copyfile(source, target)
+            return str(target)
+
+        preserved = await asyncio.to_thread(preserve_local_video)
+        if preserved:
+            locked.metadata.setdefault("original_source", locked.source)
+            locked.source = preserved
+        return locked
+
+    async def _life_video_note_inline(
+        self, event: Any, target: str = "", style: str = "professional"
+    ) -> Any:
+        locked = getattr(event, "_daily_life_locked_video_note", None)
+        if locked is None:
+            clips = await self._sight_clips_from_event_async(event, target)
+            recent = [] if clips else await self._sight_recent_for_event(event, limit=1)
+            clip = clips[0] if clips else None
+            insight = recent[0] if recent else None
+        else:
+            clip, insight = locked
+        if clip is not None:
+            insight = await self._understand_sight_clip(
+                event, clip, purpose="professional"
+            )
+        if not insight:
+            return ToolResultText(
+                "没有找到可总结的视频。请直接发送视频、引用视频，或提供视频文件/直链。",
+                status="failed",
+                media="video_note",
             )
         if insight.status == "failed":
             detail = insight.error or insight.summary or "没有拿到可确认的视频内容"
-            return self._sight_plain_result(event, f"视频总结失败：{detail}")
+            return ToolResultText(
+                f"视频总结失败：{detail}", status="failed", media="video_note"
+            )
         note_unavailable = professional_note_unavailable_reason(insight, style=style)
         if note_unavailable:
-            return self._sight_plain_result(event, f"视频总结失败：{note_unavailable}")
+            return ToolResultText(
+                f"视频总结失败：{note_unavailable}", status="failed", media="video_note"
+            )
         try:
             markdown = await self._compose_sight_note_with_timeout(insight, style=style)
         except SightNoteError as exc:
-            return self._sight_plain_result(
-                event, f"视频总结失败：{str(exc) or '总结模型生成失败'}"
+            return ToolResultText(
+                f"视频总结失败：{str(exc) or '总结模型生成失败'}",
+                status="failed",
+                media="video_note",
             )
         insight = await self._cache_sight_note_markdown(insight, markdown, style=style)
         delivery_started = time.monotonic()
@@ -988,7 +1058,9 @@ class SightMixin(SightCleanupMixin, SightIdentityMixin):
                 media="video_note",
             )
             if sent
-            else self._sight_plain_result(event, markdown)
+            else ToolResultText(
+                "视频总结未能送达。", status="failed", media="video_note"
+            )
         )
 
     async def _understand_sight_clip(
@@ -1886,6 +1958,9 @@ class SightMixin(SightCleanupMixin, SightIdentityMixin):
         ):
             return False
         self._mark_sight_note_sent(event)
+        marker = self._background_tool_request(event, "life_video_note")
+        if marker is not None:
+            marker["status"] = "sent"
         self.note_structured_bot_message(
             scope, status_text, source_event=source_event or event, media="图片"
         )

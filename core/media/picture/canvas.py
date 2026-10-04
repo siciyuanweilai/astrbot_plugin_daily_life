@@ -1242,7 +1242,6 @@ class GeminiImageService:
             timeout_seconds=route.timeout_seconds,
             origin=route.origin,
             resolution_source=resolution_source,
-            quality=route.quality,
         )
 
     @staticmethod
@@ -1318,7 +1317,6 @@ class GeminiImageService:
                 channel.resolution,
                 channel.aspect_ratio,
                 channel.timeout_seconds,
-                getattr(channel, "quality", "medium"),
             )
             for index, channel in enumerate(
                 (

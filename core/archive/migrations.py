@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import hashlib
 import json
 import sqlite3
@@ -10,7 +11,7 @@ from .tables.mind import COGNITION_INDEX_SQL, COGNITION_SQL
 
 SCHEMA_VERSION_KEY = "schema_version"
 BASELINE_SCHEMA_VERSION = 1
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 LEGACY_BASELINE_SCHEMA_FINGERPRINT = (
     "9e6243276bf6bd509f6019502e30192310da4197838bd0f7d478f0100f8750a5"
 )
@@ -56,9 +57,10 @@ PREVIOUS_V16_SCHEMA_FINGERPRINT = (
 PREVIOUS_V17_SCHEMA_FINGERPRINT = (
     "2fa6357aa4589b6c1c7322977140312408994ef67d41804a6ab65fac00ca01df"
 )
-CURRENT_SCHEMA_FINGERPRINT = (
+PREVIOUS_V18_SCHEMA_FINGERPRINT = (
     "6fc07333a7aea0ba77a5c8b0fd315bdeee6bbd8b9334df9a8be3dc5d254a7075"
 )
+CURRENT_SCHEMA_FINGERPRINT = "5c85572e593924bac14c74f5e9de4fb3e30f07966678db9301b274b209dda20b"
 
 MigrationStep = Callable[[sqlite3.Connection], None]
 
@@ -127,7 +129,8 @@ KNOWN_SCHEMA_VERSIONS: dict[str, int] = {
     PREVIOUS_V15_SCHEMA_FINGERPRINT: 15,
     PREVIOUS_V16_SCHEMA_FINGERPRINT: 16,
     PREVIOUS_V17_SCHEMA_FINGERPRINT: 17,
-    CURRENT_SCHEMA_FINGERPRINT: 18,
+    PREVIOUS_V18_SCHEMA_FINGERPRINT: 18,
+    CURRENT_SCHEMA_FINGERPRINT: 19,
 }
 
 
@@ -591,6 +594,62 @@ def _migrate_life_semantic_flags(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
 
+def _migrate_timeline_day_offsets(conn: sqlite3.Connection) -> None:
+    """Restore midnight dates from the saved life window, retaining action bindings."""
+    from ..models import (
+        TimelineItem,
+        normalize_timeline_day_offsets,
+        timeline_item_minutes,
+    )
+    from .timeline import rebind_planned_actions
+
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(timelines)")}
+    if "day_offset" in columns:
+        return
+    conn.execute("ALTER TABLE timelines ADD COLUMN day_offset INTEGER NOT NULL DEFAULT 0")
+    for (date_str,) in conn.execute("SELECT DISTINCT date FROM timelines").fetchall():
+        rows = conn.execute(
+            "SELECT sort_order, time, activity, place, place_kind, place_scope, "
+            "execution_state, execution_updated_at FROM timelines WHERE date = ? ORDER BY sort_order",
+            (date_str,),
+        ).fetchall()
+        items = [TimelineItem(time=r[1], activity=r[2], place=r[3], place_kind=r[4], place_scope=r[5]) for r in rows]
+        meta = dict(conn.execute("SELECT key, value FROM day_meta WHERE date = ?", (date_str,)).fetchall())
+        anchor = timeline_item_minutes({"time": meta.get("life_window_start")})
+        if anchor is not None:
+            for item in items:
+                minutes = timeline_item_minutes(item)
+                item.day_offset = int(minutes < anchor) if minutes is not None else 0
+        else:
+            normalize_timeline_day_offsets(items)
+        ordered = sorted(zip(rows, items), key=lambda pair: timeline_item_minutes(pair[1]) or 0)
+        if not any(item.day_offset for item in items):
+            continue
+        # Temporary negative positions avoid collisions with the composite primary key.
+        conn.execute("UPDATE timelines SET sort_order = -sort_order - 1 WHERE date = ?", (date_str,))
+        for index, (row, item) in enumerate(ordered):
+            conn.execute(
+                "UPDATE timelines SET sort_order = ?, day_offset = ? WHERE date = ? AND sort_order = ?",
+                (index, item.day_offset, date_str, -row[0] - 1),
+            )
+            try:
+                observed = datetime.datetime.fromisoformat(row[7])
+                planned_date = datetime.date.fromisoformat(date_str) + datetime.timedelta(days=item.day_offset or 0)
+            except (TypeError, ValueError):
+                continue
+            if item.day_offset and row[6] in {"active", "elapsed"} and observed.date() < planned_date:
+                conn.execute(
+                    "UPDATE timelines SET execution_state = 'planned', execution_reason = '', "
+                    "execution_evidence = '', execution_updated_at = '' WHERE date = ? AND sort_order = ?",
+                    (date_str, index),
+                )
+        before = meta.get("planned_life_actions")
+        rebind_planned_actions(meta, items, [item for _, item in ordered])
+        if meta.get("planned_life_actions") != before:
+            conn.execute("UPDATE day_meta SET value = ? WHERE date = ? AND key = 'planned_life_actions'", (meta["planned_life_actions"], date_str))
+        conn.execute("UPDATE days SET revision = revision + 1 WHERE date = ?", (date_str,))
+
+
 # 键是迁移完成后的目标版本；每个步骤只负责从前一版本升级一次。
 MIGRATIONS: dict[int, MigrationStep] = {
     2: _migrate_timeline_execution_state,
@@ -610,6 +669,7 @@ MIGRATIONS: dict[int, MigrationStep] = {
     16: _migrate_focus_slot_progress,
     17: _migrate_timeline_duration,
     18: _migrate_life_semantic_flags,
+    19: _migrate_timeline_day_offsets,
 }
 
 

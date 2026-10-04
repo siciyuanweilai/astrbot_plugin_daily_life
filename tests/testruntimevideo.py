@@ -174,9 +174,7 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             first_frame_calls.append(args)
             return "captured-for-this-request.png"
 
-        async def generate_video_asset(
-            event, prompt, reference_image, **_kwargs
-        ):
+        async def generate_video_asset(event, prompt, reference_image, **_kwargs):
             video_calls.append(reference_image)
             return types.SimpleNamespace(url="https://example.com/life.mp4")
 
@@ -210,9 +208,9 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
     async def test_life_video_request_after_image_restart_uses_original_source(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.context = Context(Provider([]))
-        runtime.config = LifeSettings.from_dict({
-            "chat_style_config": {"continuous_turn_wait_seconds": 0}
-        })
+        runtime.config = LifeSettings.from_dict(
+            {"chat_style_config": {"continuous_turn_wait_seconds": 0}}
+        )
         runtime._init_continuous_turn_state()
         scheduled = []
         requests = []
@@ -232,9 +230,9 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         runtime.note_life_video_reference_source(first)
 
         later = Event(message_id="later-sticker")
-        later.message_items.append({
-            "type": "image", "url": "https://example.com/sticker.png"
-        })
+        later.message_items.append(
+            {"type": "image", "url": "https://example.com/sticker.png"}
+        )
         runtime.note_continuous_turn_incoming(later)
         await runtime.settle_continuous_turn(later)
         wrapped = types.SimpleNamespace(context=types.SimpleNamespace(event=later))
@@ -360,8 +358,8 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         runtime._current_life_appearance_snapshot = lambda route: (_ for _ in ()).throw(
             AssertionError("historical video used current appearance")
         )
-        runtime._historical_life_appearance_snapshot = lambda request, **kwargs: async_return(
-            "昨日回现穿搭：粉色露肩上衣搭配粉色碎花蕾丝半身短裙"
+        runtime._historical_life_appearance_snapshot = lambda request, **kwargs: (
+            async_return("昨日回现穿搭：粉色露肩上衣搭配粉色碎花蕾丝半身短裙")
         )
         runtime._align_current_appearance_scene_prompt = lambda *args, **kwargs: (
             _ for _ in ()
@@ -422,8 +420,8 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         runtime.archive = DataManager()
         self._stub_media_director(runtime)
         runtime._runtime_now = lambda: datetime.datetime(2026, 9, 27, 21)
-        runtime._historical_life_appearance_snapshot = lambda request, **kwargs: async_return(
-            "历史回现穿搭（2026-09-25）：浅紫色针织裙和米白开衫"
+        runtime._historical_life_appearance_snapshot = lambda request, **kwargs: (
+            async_return("历史回现穿搭（2026-09-25）：浅紫色针织裙和米白开衫")
         )
         runtime._current_life_appearance_snapshot = lambda route: (_ for _ in ()).throw(
             AssertionError("festival video used current appearance")
@@ -455,8 +453,11 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         event.message_str = "发给我看看"
 
         result = await runtime.life_video_generate(
-            event, "中秋下午老街散步的视频", subject_route="current_character",
-            historical_target="2026-09-25", historical_period="afternoon",
+            event,
+            "中秋下午老街散步的视频",
+            subject_route="current_character",
+            historical_target="2026-09-25",
+            historical_period="afternoon",
         )
 
         self.assertEqual(json.loads(result)["status"], "pending")
@@ -498,8 +499,12 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
 
         self.assertEqual(json.loads(result)["status"], "pending")
         await scheduled[0][2]
-        self.assertEqual(runtime.context.sent_messages[0][0], event.unified_msg_origin)
-        self.assertEqual(len(runtime.context.sent_messages), 1)
+        self.assertEqual(runtime.context.sent_messages, [])
+        self.assertEqual(len(event.sent_messages), 1)
+        self.assertEqual(event.sent_messages[0].items[0]["type"], "video")
+        self.assertEqual(
+            event.sent_messages[0].items[0]["file"], "https://example.com/life.mp4"
+        )
 
     async def test_life_video_generate_uses_directed_prompt_and_reference_image(self):
         provider = Provider(

@@ -337,6 +337,7 @@ class SocialCommandMixin:
                 CommitmentRecord(
                     content=req.param_full,
                     trigger_date=req.target_date_str,
+                    owner="共同",
                     people=[sender_name] if sender_name else [],
                     status="active",
                     confidence=1.0,
@@ -352,16 +353,14 @@ class SocialCommandMixin:
                 await self.runtime.archive.link_commitments_to_day(
                     req.target_date_str, [accepted_commitment.id]
                 )
-                schedule_contact = getattr(
-                    self.runtime, "schedule_invite_contact", None
-                )
-                if callable(schedule_contact):
-                    await schedule_contact(
-                        accepted_commitment,
-                        timeline_edits=decision.get("timeline_edits"),
-                        observed_at=req.now,
-                    )
             await self.runtime.archive.save_day(data)
+            schedule_contact = getattr(self.runtime, "schedule_invite_contact", None)
+            if accepted_commitment.id and callable(schedule_contact):
+                await schedule_contact(
+                    accepted_commitment,
+                    timeline_edits=decision.get("timeline_edits"),
+                    observed_at=req.now,
+                )
             await self.runtime.archive.add_events(
                 req.target_date_str,
                 [

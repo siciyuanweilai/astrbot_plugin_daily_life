@@ -263,8 +263,8 @@ class StyleCatalogMixin:
     ) -> list[int]:
         """修复自主换装漏填或只填半套时的衣橱引用。
 
-        模型提供的完整引用优先；只有引用缺失、失效或无法组成完整穿搭时，
-        才从当前启用候选中选一套完整套装，或选择一件上装加一件下装。
+        模型提供的完整引用优先；引用缺失时只补齐唯一可用的完整套装，
+        或唯一的上装与下装组合。多套可选时必须由模型重新判断。
         """
 
         item_ids = self._style_catalog_reference_ids(value)
@@ -301,30 +301,28 @@ class StyleCatalogMixin:
 
         try:
             outfits = await getter(kind="outfit", status="active", limit=64)
-            for outfit in outfits or []:
-                if not self._style_catalog_scene_compatible(outfit, scene_category):
-                    continue
-                outfit_id = int(getattr(outfit, "id", 0) or 0)
-                if outfit_id > 0:
-                    return [outfit_id]
+            outfit_ids = [
+                int(getattr(outfit, "id", 0) or 0)
+                for outfit in outfits or []
+                if self._style_catalog_scene_compatible(outfit, scene_category)
+                and int(getattr(outfit, "id", 0) or 0) > 0
+            ]
+            if len(outfit_ids) == 1:
+                return outfit_ids
+            if outfit_ids:
+                return []
             tops = await getter(kind="top", status="active", limit=64)
             bottoms = await getter(kind="bottom", status="active", limit=64)
-            top = next(
-                (
-                    item
-                    for item in tops or []
-                    if self._style_catalog_scene_compatible(item, scene_category)
-                ),
-                None,
-            )
-            bottom = next(
-                (
-                    item
-                    for item in bottoms or []
-                    if self._style_catalog_scene_compatible(item, scene_category)
-                ),
-                None,
-            )
+            tops = [
+                item for item in tops or []
+                if self._style_catalog_scene_compatible(item, scene_category)
+            ]
+            bottoms = [
+                item for item in bottoms or []
+                if self._style_catalog_scene_compatible(item, scene_category)
+            ]
+            top = tops[0] if len(tops) == 1 else None
+            bottom = bottoms[0] if len(bottoms) == 1 else None
             top_id = int(getattr(top, "id", 0) or 0) if top else 0
             bottom_id = int(getattr(bottom, "id", 0) or 0) if bottom else 0
             if top_id > 0 and bottom_id > 0:
@@ -373,7 +371,7 @@ class StyleCatalogMixin:
             return ""
         safe_limit = max(1, min(limit, 24))
         candidates = await getter(
-            status="active", limit=max(64, safe_limit * len(STYLE_CATALOG_KINDS))
+            status="active", limit=500
         )
         grouped = {
             kind: [item for item in candidates if getattr(item, "kind", "") == kind]
@@ -414,6 +412,20 @@ class StyleCatalogMixin:
             "只有实际采用对应类别时才改变该外观组成；局部换衣不能自动改掉发型、妆容或美甲。",
         ]
         lines.extend(self._style_catalog_item_line(item) for item in items)
+        detailed_ids = {item.id for item in items}
+        clothing_index = [
+            item for item in candidates
+            if item.kind in STYLE_CATALOG_CLOTHING_KINDS and item.id not in detailed_ids
+        ]
+        if clothing_index:
+            lines.append("其余可选服装简表：可按类别、用途和场景选择编号；采用后系统会读取该候选的完整外观，不能另造衣服。")
+            for item in clothing_index:
+                attributes = self._style_catalog_attributes(item)
+                category = "、".join(self._style_catalog_list(attributes.get("category"), 4))
+                scenes = "、".join(self._style_catalog_list(attributes.get("scenes"), 4))
+                material = "、".join(self._style_catalog_list(attributes.get("material_appearance"), 3))
+                title = " ".join(str(item.title or "").split())[:80]
+                lines.append(f"- #{item.id} [{item.kind}] {title}；类别：{category}；场景：{scenes}；材质：{material}")
         return "\n".join(lines)
 
     async def _style_catalog_reference_appearance(

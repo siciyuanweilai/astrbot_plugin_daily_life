@@ -1721,7 +1721,7 @@
                 "description": "模型名称",
                 "type": "string",
                 "default": "gpt-image-2",
-                "hint": "GPT Image 图片模型名称，默认使用 gpt-image-2。"
+                "hint": "手动填写接口支持的 GPT Image 模型名称，例如 gpt-image-2 或 gpt-image-2.5。"
               },
               "resolution": {
                 "description": "图片尺寸",
@@ -1751,22 +1751,6 @@
                   "21:9"
                 ],
                 "hint": "gpt-image-2 仅使用支持的比例；请求会映射到固定合法尺寸。"
-              },
-              "quality": {
-                "description": "图片质量",
-                "type": "string",
-                "default": "medium",
-                "options": [
-                  "low",
-                  "medium",
-                  "high"
-                ],
-                "option_labels": {
-                  "low": "低",
-                  "medium": "中",
-                  "high": "高"
-                },
-                "hint": "GPT Image 使用质量档位。"
               },
               "timeout_seconds": {
                 "description": "超时（秒）",
@@ -1959,7 +1943,7 @@
                 "description": "模型名称",
                 "type": "string",
                 "default": "gpt-image-2",
-                "hint": "GPT Image 图片模型名称，默认使用 gpt-image-2。"
+                "hint": "手动填写接口支持的 GPT Image 模型名称，例如 gpt-image-2 或 gpt-image-2.5。"
               },
               "resolution": {
                 "description": "图片尺寸",
@@ -1989,22 +1973,6 @@
                   "21:9"
                 ],
                 "hint": "gpt-image-2 仅使用支持的比例；请求会映射到固定合法尺寸。"
-              },
-              "quality": {
-                "description": "图片质量",
-                "type": "string",
-                "default": "medium",
-                "options": [
-                  "low",
-                  "medium",
-                  "high"
-                ],
-                "option_labels": {
-                  "low": "低",
-                  "medium": "中",
-                  "high": "高"
-                },
-                "hint": "GPT Image 使用质量档位。"
               },
               "timeout_seconds": {
                 "description": "超时（秒）",

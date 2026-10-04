@@ -30,6 +30,9 @@ class _StyleCatalogRuntime(RuntimeStyleCatalogMixin):
         del event
         return str(value or "/tmp/test-style.jpg")
 
+    async def _life_image_reference_is_usable(self, value):
+        return bool(value)
+
     async def _persist_style_catalog_image(self, image, *, source_url=""):
         del image, source_url
         return "/tmp/cached-style.jpg", "b" * 64
@@ -183,9 +186,7 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
                         }
                     )
 
-                result = await runtime.life_style_catalog_list(
-                    None, kind="outfit"
-                )
+                result = await runtime.life_style_catalog_list(None, kind="outfit")
 
                 self.assertIn("共 15 个已启用候选", result)
                 self.assertIn("套装 11", result)
@@ -253,20 +254,24 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
             )
             runtime = _StyleCatalogComposer(archive)
             try:
-                missing, missing_reason = (
-                    await runtime._style_catalog_new_outfit_selection([])
+                (
+                    missing,
+                    missing_reason,
+                ) = await runtime._style_catalog_new_outfit_selection([])
+                (
+                    partial,
+                    partial_reason,
+                ) = await runtime._style_catalog_new_outfit_selection([top.id])
+                (
+                    complete,
+                    complete_reason,
+                ) = await runtime._style_catalog_new_outfit_selection(
+                    [top.id, bottom.id]
                 )
-                partial, partial_reason = (
-                    await runtime._style_catalog_new_outfit_selection([top.id])
-                )
-                complete, complete_reason = (
-                    await runtime._style_catalog_new_outfit_selection(
-                        [top.id, bottom.id]
-                    )
-                )
-                one_piece, one_piece_reason = (
-                    await runtime._style_catalog_new_outfit_selection([outfit.id])
-                )
+                (
+                    one_piece,
+                    one_piece_reason,
+                ) = await runtime._style_catalog_new_outfit_selection([outfit.id])
 
                 self.assertEqual(missing, {})
                 self.assertIn("必须选择", missing_reason)
@@ -276,9 +281,7 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("浅蓝色短袖上衣", complete["outfit"])
                 self.assertIn("白色高腰半身裙", complete["outfit"])
                 self.assertEqual(one_piece_reason, "")
-                self.assertEqual(
-                    one_piece["outfit"], "蓝色短上衣搭配白色半身裙"
-                )
+                self.assertEqual(one_piece["outfit"], "蓝色短上衣搭配白色半身裙")
             finally:
                 archive.close()
 
@@ -318,7 +321,9 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 archive.close()
 
-    async def test_autonomous_new_outfit_reference_filters_scene_incompatible_candidates(self):
+    async def test_autonomous_new_outfit_reference_filters_scene_incompatible_candidates(
+        self,
+    ):
         with tempfile.TemporaryDirectory() as tmpdir:
             archive = LifeArchive(f"{tmpdir}/daily_life.db")
             home = await archive.upsert_style_catalog_item(
@@ -453,6 +458,30 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("[妆容]", context)
                 self.assertIn("[美甲]", context)
                 self.assertIn("避免把高偏好候选穿成固定制服", context)
+            finally:
+                archive.close()
+
+    async def test_catalog_context_includes_clothing_outside_detailed_selection(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = LifeArchive(f"{tmpdir}/daily_life.db")
+            try:
+                await archive.upsert_style_catalog_item({
+                    "kind": "outfit", "title": "优先外出裙", "description": "外出裙装",
+                    "preference_score": 1.0, "source_image_hash": "a" * 64,
+                })
+                sleepwear = await archive.upsert_style_catalog_item({
+                    "kind": "outfit", "title": "棉质睡衣套装", "description": "棉质家居睡衣",
+                    "attributes": {"category": ["睡衣"], "scenes": ["睡眠"]},
+                    "source_image_hash": "b" * 64,
+                })
+                runtime = _StyleCatalogComposer(archive)
+                context = await runtime._style_catalog_context(limit=1)
+                self.assertIn("其余可选服装简表", context)
+                self.assertIn(f"#{sleepwear.id} [outfit] 棉质睡衣套装", context)
+                self.assertIn("场景：睡眠", context)
+                self.assertEqual(
+                    await runtime._style_catalog_resolve_new_outfit_reference_ids([]), []
+                )
             finally:
                 archive.close()
 
@@ -631,7 +660,10 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
                     runtime.generated_calls[0][0],
                 )
                 self.assertNotIn("联网灵感", runtime.generated_calls[0][0])
-                self.assertEqual({item.kind for item in items}, {"outfit", "top", "bottom", "hair", "makeup", "nails"})
+                self.assertEqual(
+                    {item.kind for item in items},
+                    {"outfit", "top", "bottom", "hair", "makeup", "nails"},
+                )
                 self.assertTrue(
                     all(item.source_kind == "generated_style_image" for item in items)
                 )
@@ -739,9 +771,7 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(runtime.generated_calls, [])
                 self.assertEqual(len(runtime.edited_calls), 1)
                 self.assertEqual(runtime.edited_calls[0][1], "/tmp/character.jpg")
-                self.assertFalse(
-                    runtime.edited_calls[0][2]["preserve_reference_ratio"]
-                )
+                self.assertFalse(runtime.edited_calls[0][2]["preserve_reference_ratio"])
                 self.assertIn("忽略参考图已有的服装", runtime.edited_calls[0][0])
             finally:
                 archive.close()
@@ -849,7 +879,7 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
             image_path = Path(tmpdir) / "test-style.jpg"
             image_path.write_bytes(b"test-image")
             try:
-                result = await runtime.life_style_learn(
+                result = await runtime._life_style_learn_inline(
                     event, str(image_path), kind="auto"
                 )
                 items = await archive.get_style_catalog_items(limit=10)
@@ -900,7 +930,9 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
             image_path = Path(tmpdir) / "test-style.jpg"
             image_path.write_bytes(b"test-image")
             try:
-                await runtime.life_style_learn(event, str(image_path), kind="outfit")
+                await runtime._life_style_learn_inline(
+                    event, str(image_path), kind="outfit"
+                )
                 items = await archive.get_style_catalog_items(status="", limit=10)
                 self.assertEqual(items[0].status, "pending")
                 self.assertEqual(await archive.get_style_catalog_items(limit=10), [])
@@ -917,7 +949,7 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
                     "description": "浅色日常造型",
                     "source_scope": "private:test-user",
                     "source_image_hash": "d" * 64,
-                "attributes": {},
+                    "attributes": {},
                     "confidence": 0.9,
                 }
             )
@@ -1013,7 +1045,9 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("description 就是供衣橱展示、检索和后续生图", contract)
         self.assertIn('"home_presence": "home | outdoor | both | unknown"', contract)
-        self.assertIn('"carry_mode": "worn | carried | staged | none | unknown"', contract)
+        self.assertIn(
+            '"carry_mode": "worn | carried | staged | none | unknown"', contract
+        )
         self.assertNotIn('"visual_prompt"', contract)
         self.assertNotIn('"image_summary"', contract)
 

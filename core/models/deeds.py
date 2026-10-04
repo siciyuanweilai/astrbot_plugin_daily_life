@@ -366,6 +366,7 @@ class ScheduleAnchor:
     refinement_state: str = "anchor"
     replaces_anchor_id: str = ""
     evidence: str = ""
+    day_offset: int | None = None
 
     @staticmethod
     def from_value(value: Any) -> ScheduleAnchor:
@@ -384,9 +385,14 @@ class ScheduleAnchor:
             source_index = int(raw.get("source_index", -1))
         except (TypeError, ValueError):
             source_index = -1
+        try:
+            day_offset = max(0, int(raw["day_offset"])) if raw.get("day_offset") is not None else None
+        except (TypeError, ValueError):
+            day_offset = None
         return ScheduleAnchor(
             anchor_id=_text(raw.get("anchor_id"), 100),
             time=_text(raw.get("time"), 5),
+            day_offset=day_offset,
             activity=_text(raw.get("activity"), 200),
             status=_text(raw.get("status"), 120),
             source_index=source_index,
@@ -404,6 +410,7 @@ class ScheduleAnchor:
         """
         return {
             "anchor_id": self.anchor_id,
+            "day_offset": self.day_offset,
             "time": self.time,
             "activity": self.activity,
             "status": self.status,

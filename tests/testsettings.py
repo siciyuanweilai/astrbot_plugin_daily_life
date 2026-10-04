@@ -804,7 +804,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertEqual(edit_channel.resolution, "2K")
         self.assertEqual(edit_channel.timeout_seconds, 300)
 
-    def test_image_channel_quality_is_normalized(self):
+    def test_gpt_image_channels_accept_manual_models_without_quality(self):
         config = LifeSettings.from_dict(
             {
                 "image_generation_config": {
@@ -812,25 +812,29 @@ class LifeSettingsTest(unittest.TestCase):
                     "text_channels": [
                         {
                             "__template_key": "openai",
-                            "api_url": "https://quality.example",
-                            "api_key": "quality-key",
-                            "quality": "HIGH",
+                            "api_url": "https://images.example",
+                            "api_key": "text-key",
+                            "model": "gpt-image-2.5",
                         }
                     ],
                     "edit_channels": [
                         {
                             "__template_key": "openai",
-                            "api_url": "https://fallback.example",
-                            "api_key": "fallback-key",
-                            "quality": "unsupported",
+                            "api_url": "https://images.example",
+                            "api_key": "edit-key",
+                            "model": "gpt-image-2.5",
                         }
                     ],
                 }
             }
         )
 
-        self.assertEqual(config.image_generation.text_channels[0].quality, "high")
-        self.assertEqual(config.image_generation.edit_channels[0].quality, "medium")
+        for channel in (
+            config.image_generation.text_channels[0],
+            config.image_generation.edit_channels[0],
+        ):
+            self.assertEqual(channel.model, "gpt-image-2.5")
+            self.assertFalse(hasattr(channel, "quality"))
 
     def test_creative_wardrobe_settings_parse_direct_request_options(self):
         config = LifeSettings.from_dict(
@@ -1238,6 +1242,9 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertEqual(openai_channel_items["timeout_seconds"]["default"], 300)
         for list_key in ("text_channels", "edit_channels"):
             self.assertNotIn("nai", image_items[list_key]["templates"])
+            self.assertNotIn(
+                "quality", image_items[list_key]["templates"]["openai"]["items"]
+            )
         grok_text_items = image_items["text_channels"]["templates"]["grok"]["items"]
         grok_edit_items = image_items["edit_channels"]["templates"]["grok"]["items"]
         for grok_items in (grok_text_items, grok_edit_items):
@@ -1611,10 +1618,10 @@ class LifeSettingsTest(unittest.TestCase):
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertIn("version: 1.3.9", metadata)
+        self.assertIn("version: 1.4.0", metadata)
         self.assertIn('astrbot_version: ">=4.26,<5"', metadata)
-        self.assertIn("version-1.3.9", readme)
-        self.assertIn("v1.3.9 重点更新", readme)
+        self.assertIn("version-1.4.0", readme)
+        self.assertIn("v1.4.0 重点更新", readme)
         self.assertIn("创意衣橱生成", readme)
         self.assertIn("文生图不使用角色参考图", readme)
         self.assertIn("不读取联网灵感或固定风格池", readme)
@@ -1626,6 +1633,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertNotIn("用户明确要求联网寻找灵感时", readme)
         self.assertNotIn("图片 → 创意衣橱", readme)
         self.assertNotIn("SiliconFlow", readme)
+        self.assertIn("v1.4.0 · 2026-10-04", changelog)
         self.assertIn("v1.3.9 · 2026-10-02", changelog)
         self.assertIn("v1.3.8 · 2026-09-28", changelog)
         self.assertIn("v1.3.7 · 2026-09-25", changelog)
@@ -1671,6 +1679,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertIn("上移、下移箭头", release_138)
         self.assertNotIn("连续图文与主动回应", release_138)
         self.assertNotIn("images[].image_url", release_138)
+        self.assertLess(changelog.index("v1.4.0"), changelog.index("v1.3.9"))
         self.assertLess(changelog.index("v1.3.9"), changelog.index("v1.3.8"))
         self.assertLess(changelog.index("v1.3.8"), changelog.index("v1.3.7"))
         self.assertLess(changelog.index("v1.3.7"), changelog.index("v1.3.6"))

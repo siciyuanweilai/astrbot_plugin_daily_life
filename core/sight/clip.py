@@ -33,6 +33,7 @@ class SightClip:
             or platform_id
             or provisional_identity
             or self.file_id
+            or self.metadata.get("original_source")
             or self.source
             or self.message_id
             or "unknown"
@@ -50,7 +51,7 @@ class SightClip:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, value: dict[str, Any]) -> "SightClip":
+    def from_dict(cls, value: dict[str, Any]) -> SightClip:
         return cls(
             scope=str(value.get("scope") or ""),
             message_id=str(value.get("message_id") or ""),
@@ -112,7 +113,7 @@ class SightInsight:
         }
 
     @classmethod
-    def from_dict(cls, value: dict[str, Any]) -> "SightInsight | None":
+    def from_dict(cls, value: dict[str, Any]) -> SightInsight | None:
         clip_value = value.get("clip")
         if not isinstance(clip_value, dict):
             return None

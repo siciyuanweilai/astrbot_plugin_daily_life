@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from ...clock import now as life_now
-from ...models import TimelineItem
+from ...models import (
+    TimelineItem,
+    normalize_timeline_day_offsets,
+    timeline_item_minutes,
+)
 
 _TIMELINE_CONTEXT_DEFAULTS = {
     "place": "",
@@ -29,6 +33,9 @@ class PortalLineMixin:
             raise ValueError("时间轴必须是数组")
         timeline = []
         for index, raw_item in enumerate(raw_timeline, start=1):
+            offset = raw_item.get("day_offset") if isinstance(raw_item, dict) else getattr(raw_item, "day_offset", None)
+            if offset is not None and (not isinstance(offset, int) or isinstance(offset, bool) or not 0 <= offset <= 7):
+                raise ValueError(f"第 {index} 条日程日期无效")
             item = TimelineItem.from_value(raw_item)
             if not item.time or not item.activity:
                 raise ValueError(f"第 {index} 条时间轴缺少时间或活动")
@@ -42,8 +49,11 @@ class PortalLineMixin:
             if not (0 <= hour <= 23 and 0 <= minute <= 59):
                 raise ValueError(f"第 {index} 条时间超出范围")
             item.time = f"{hour:02d}:{minute:02d}"
+            if item.day_offset is None:
+                item.day_offset = 0
             timeline.append(item)
-        timeline.sort(key=lambda item: item.time)
+        normalize_timeline_day_offsets(timeline)
+        timeline.sort(key=lambda item: timeline_item_minutes(item) or 0)
         return timeline
 
     async def page_timeline_save(self):
@@ -60,8 +70,9 @@ class PortalLineMixin:
                     if index >= len(existing.timeline):
                         break
                     previous = existing.timeline[index]
-                    if (item.time, item.activity) != (
+                    if (item.time, item.day_offset, item.activity) != (
                         previous.time,
+                        previous.day_offset or 0,
                         previous.activity,
                     ):
                         continue

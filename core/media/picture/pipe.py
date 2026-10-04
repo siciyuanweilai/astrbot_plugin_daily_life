@@ -16,7 +16,6 @@ class ImageRoute:
     timeout_seconds: int
     origin: str
     resolution_source: str = "通道配置"
-    quality: str = "medium"
 
 
 @dataclass(slots=True)

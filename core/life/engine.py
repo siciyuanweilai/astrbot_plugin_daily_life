@@ -5,6 +5,7 @@ import uuid
 from astrbot.api import logger
 
 from ..clock import now as life_now
+from ..models import normalize_timeline_day_offsets
 from .appearance import current_appearance_values, persona_appearance_values
 from .calendar import format_calendar_context, format_season_context
 from .people import DAILY_PERSON_TEXT_PATHS
@@ -280,6 +281,7 @@ class DailyEngineMixin:
         check_time = context.get("check_time")
         timeline = result.get("timeline")
         if isinstance(timeline, list) and check_time is not None:
+            normalize_timeline_day_offsets(timeline)
             occurred = []
             for item in timeline:
                 if not isinstance(item, dict):
@@ -361,7 +363,10 @@ class DailyEngineMixin:
                 else {}
             )
             place_kind = str(timeline_item.get("place_kind") or "").strip()
-            action_scene_category = scene_category_for_place_kind(place_kind)
+            action_scene_category = normalize_outfit_scene_category(
+                payload.get("scene_category"),
+                default=scene_category_for_place_kind(place_kind),
+            )
             action_components = normalize_outfit_components(
                 payload.get("outfit_components")
             )
@@ -398,12 +403,6 @@ class DailyEngineMixin:
                         action_appearance.pop("outfit_components", None)
                 action_issue = ""
             else:
-                action_reference_ids = (
-                    await self._style_catalog_resolve_new_outfit_reference_ids(
-                        action_reference_ids,
-                        scene_category=action_scene_category,
-                    )
-                )
                 (
                     action_appearance,
                     action_issue,
@@ -429,6 +428,7 @@ class DailyEngineMixin:
             )
             if component_ledger:
                 payload["outfit_components"] = component_ledger
+            payload["scene_category"] = action_scene_category
             if action_appearance.get("outfit"):
                 action_visible_outfit = format_outfit_components(
                     json.loads(component_ledger) if component_ledger else {}

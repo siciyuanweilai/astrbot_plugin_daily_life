@@ -49,6 +49,7 @@ class TimelineItem:
     execution_reason: str = ""
     execution_evidence: str = ""
     execution_updated_at: str = ""
+    day_offset: int | None = None
 
     @staticmethod
     def from_value(value: Any) -> TimelineItem:
@@ -60,6 +61,10 @@ class TimelineItem:
             execution_state = "planned"
         return TimelineItem(
             time=str(raw.get("time") or "").strip(),
+            day_offset=(
+                _non_negative_int(raw["day_offset"])
+                if raw.get("day_offset") is not None else None
+            ),
             activity=str(raw.get("activity") or "").strip(),
             activity_kind=(
                 kind
@@ -99,6 +104,7 @@ class TimelineItem:
     def as_dict(self) -> dict[str, Any]:
         return {
             "time": self.time,
+            "day_offset": self.day_offset,
             "activity": self.activity,
             "activity_kind": self.activity_kind,
             "status": self.status,
@@ -135,6 +141,38 @@ def _timeline_clock_minutes(value: str) -> int | None:
     return hour * 60 + minute
 
 
+def timeline_item_minutes(item: Any) -> int | None:
+    """Return a node's minutes relative to its life day, retaining midnight."""
+    time = item.get("time", "") if isinstance(item, dict) else getattr(item, "time", "")
+    offset = item.get("day_offset") if isinstance(item, dict) else getattr(item, "day_offset", None)
+    minutes = _timeline_clock_minutes(time)
+    return minutes + _non_negative_int(offset) * 1440 if minutes is not None else None
+
+
+def normalize_timeline_day_offsets(values: list) -> None:
+    """Resolve unspecified dates in generation order before any clock sorting."""
+    previous = None
+    for item in values:
+        raw_offset = item.get("day_offset") if isinstance(item, dict) else getattr(item, "day_offset", None)
+        minutes = timeline_item_minutes(item)
+        if minutes is None:
+            continue
+        offset = _non_negative_int(raw_offset)
+        if raw_offset is None and previous is not None:
+            offset = previous // 1440
+            if minutes % 1440 + offset * 1440 < previous:
+                offset += 1
+        # Keep the legacy empty value for ordinary same-day nodes.  A concrete
+        # offset is only needed once a node crosses midnight (or was supplied
+        # explicitly), which avoids rewriting unrelated timelines on save.
+        if raw_offset is not None or offset > 0:
+            if isinstance(item, dict):
+                item["day_offset"] = offset
+            else:
+                item.day_offset = offset
+        previous = minutes % 1440 + offset * 1440
+
+
 def _timeline_duplicate_key(item: TimelineItem) -> tuple[str, ...]:
     return (
         item.activity.strip(),
@@ -159,6 +197,7 @@ def deduplicate_timeline_items(
     """
 
     result: list[TimelineItem] = []
+    normalize_timeline_day_offsets(values)
     maximum_gap = max(0, int(maximum_gap_minutes or 0))
     for value in values:
         item = TimelineItem.from_value(value)
@@ -166,8 +205,8 @@ def deduplicate_timeline_items(
         if result and _timeline_duplicate_key(result[-1]) == _timeline_duplicate_key(
             copied
         ):
-            previous_minutes = _timeline_clock_minutes(result[-1].time)
-            current_minutes = _timeline_clock_minutes(copied.time)
+            previous_minutes = timeline_item_minutes(result[-1])
+            current_minutes = timeline_item_minutes(copied)
             if (
                 previous_minutes is not None
                 and current_minutes is not None

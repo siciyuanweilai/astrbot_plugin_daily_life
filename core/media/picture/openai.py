@@ -85,14 +85,12 @@ def build_request(
         headers["X-Client-Request-ID"] = f"daily-life-{uuid4().hex}"
     size = size_for(resolution, aspect_ratio, model=route.model)
     images = inline_images(parts)
-    if siciyuanweilai and route.model.strip().lower() == "gpt-image-2":
-        # 同一地址下的模型可使用不同协议；GPT Image 2 接收标准图片对象。
+    if siciyuanweilai:
         payload = {
             "model": route.model,
             "prompt": prompt_from_parts(parts),
             "size": size,
             "n": 1,
-            "quality": route.quality,
             # 直接接收图片，避免 URL 模式依赖服务端的图片链接存储。
             "response_format": "b64_json",
         }
@@ -113,46 +111,16 @@ def build_request(
             "prompt": prompt_from_parts(parts),
             "size": size,
         }
-        if siciyuanweilai:
-            payload.update({"n": 1, "response_format": "url"})
-            payload["extra_fields"] = {"quality": route.quality.upper()}
-        else:
-            payload["quality"] = route.quality
         return ImageRequest(
             url=f"{base}/images/generations",
             headers=headers,
             payload=payload,
         )
 
-    if siciyuanweilai:
-        extra_fields = {
-            "guidances": {
-                "image_reference": [
-                    {"image": {"id": f"{{{{upload:{index}}}}}"}}
-                    for index in range(len(images))
-                ],
-            },
-        }
-        extra_fields["quality"] = route.quality.upper()
-        return ImageRequest(
-            url=f"{base}/images/edits",
-            headers=headers,
-            payload={
-                "model": route.model,
-                "prompt": prompt_from_parts(parts),
-                "size": size,
-                "n": 1,
-                "extra_fields": extra_fields,
-                "image": [image_data_url(image, mime) for image, mime in images],
-            },
-            reference_image_count=len(images),
-        )
-
     form = form_data()
     form.add_field("model", route.model)
     form.add_field("prompt", prompt_from_parts(parts))
     form.add_field("size", size)
-    form.add_field("quality", route.quality)
     form.add_field("response_format", "url")
     for index, (image_bytes, mime_type) in enumerate(images, start=1):
         _, ext = image_mime_and_ext(image_bytes)
@@ -180,7 +148,7 @@ def is_siciyuanweilai(api_url: str) -> bool:
         host = (urlsplit(normalize_openai_base_url(api_url)).hostname or "").lower()
     except ValueError:
         return False
-    return host in {"siciyuanweilai.com", "www.siciyuanweilai.com"}
+    return host in {"api.scywl.cc", "siciyuanweilai.com", "www.siciyuanweilai.com"}
 
 
 def image_data_url(image_bytes: bytes, mime_type: str) -> str:

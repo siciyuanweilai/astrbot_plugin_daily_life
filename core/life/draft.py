@@ -135,7 +135,7 @@ class DailyDraftMixin:
       "duration_minutes": 30,
       "preconditions": [{{"field": "state.energy", "operator": "gte", "expected": 20}}],
       "effects": [{{"field": "energy", "operation": "add", "value": -5}}],
-      "payload": {{"结构化领域参数": "只填写该动作实际需要的数据；change_outfit 必须附 outfit_components，记录本次实际变化后的组成状态账本"}},
+      "payload": {{"结构化领域参数": "只填写该动作实际需要的数据；change_outfit 必须附 scene_category（home | sleep | outdoor | public | mixed）和 outfit_components，记录换装用途与实际变化后的组成状态账本"}},
       "evidence": "对应的日程节点和生活决策依据",
       "source": "daily_plan"
     }}
@@ -199,6 +199,8 @@ class DailyDraftMixin:
 - 清醒整日计划如果从睡眠穿搭开始，应在首个持续家务、学习、工作、运动、社交、拍摄或外出活动前自然安排晨间换装；恢复日、继续睡眠或明确休养可以保持睡眠穿搭。换装必须同时写入 timeline 与 planned_actions，并从视觉衣橱选择日间造型。
 4. timeline 要求 (关键)：
 {self.config.timeline_prompt}
+- 每个节点填写 day_offset：目标生活日期当天为 0，跨午夜后的次日为 1；time 仍写 HH:MM，按完整日期时间递增排列。
+- 未来节点只描述拟进行的活动、准备与合理持续时间，不预写已经完成的结果、必然出现的情绪或困意，也不替对方安排尚未确认的动作。休息是否开始应结合届时聊天、体力和困意重新判断。
 - 系统会根据 timeline 自动检查时间覆盖，不需要输出额外时间覆盖说明。
 - 正常整日生成需要形成从较早生活起点到晚间或睡前收束的自然跨度；目标时段生成只写目标时段。
 - duration_minutes 只表示该节点主要活动的自然持续时间，不等于到下一节点的全部间隔；持续期间若发生吃饭、移动、换装、休息或场景变化，仍要单独写节点。
@@ -216,6 +218,7 @@ class DailyDraftMixin:
 - 任何穿戴组成从 worn、carried、staged 到 removed 的实际变化，都必须在发生的节点输出 change_outfit 并更新 outfit_components；尚未发生的未来组成只能保留为 staged，不能提前并入当前 target。
 - 仅换鞋、增减外层、拿起或放下随身包属于局部穿戴调整，target 必须保留原主体服装，不得借局部调整重写成整套新衣服。
 - 本轮提供视觉衣橱候选时，change_outfit 的 payload.catalog_reference_ids 必须填写该次换装实际采用的衣橱服装编号；如果组合上装和下装，至少同时填写对应的上装与下装编号。系统会用衣橱详细描述校正 target，不能只把衣橱当作灵感后另写一套衣服。
+- 每次 change_outfit 必须独立填写 payload.scene_category；洗浴后准备睡眠的换装填写 sleep，日间居家填写 home。按该次换装用途选择衣橱编号，不能把当天白天的编号复制给睡前换装；遗漏或无效的引用必须重新选择，不会自动采用列表首件。
 - action_id 在不同日期和节点间必须唯一；effects 只写该动作真实会改变的数值状态。
 - 若一个动作完成即可完整兑现输入中某条当前角色的非媒体承诺，可在 payload.commitment_ids 填该承诺编号；只完成承诺的一部分时不得关联，不能把打包等同于送达，不能填未提供的编号。没有对应承诺用空数组。
 - payload 只用于明确的领域数据：cook 的 ingredients、purchase 的 items 使用 {{"name":"名称","quantity":1,"unit":"可选单位"}} 数组；只有明确属于家庭食材、会用于后续烹饪的采购项才放入 purchase.payload.pantry_items，格式同上；普通物品、纪念品、家居用品和杂货仍放在 items，不得写入 pantry_items；meal/cook/order_food 可填 meal_type 和 place；move/travel 可填 origin、destination、travel_mode；chore 的 cadence_days 使用非负整数、effort 使用 1-5 整数；exercise 的 intensity 使用 1-5 整数。

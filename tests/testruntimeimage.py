@@ -70,7 +70,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
         event.message_str = "你发给我看看"
 
-        result = await runtime.life_image_generate(
+        result = await runtime._life_image_generate_inline(
             event, "中秋下午在老街拍下的生活照", subject_route="current_character",
             historical_target="2026-09-25", historical_period="afternoon",
         )
@@ -162,7 +162,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
         event.message_str = "把昨天那套穿搭再现一下"
 
-        result = await runtime.life_image_generate(
+        result = await runtime._life_image_generate_inline(
             event,
             "昨天生日外出时的粉色裙装生活照",
             subject_route="current_character",
@@ -230,7 +230,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             _ACTIVE_AGENT_RUNNERS={scope: runner}
         )
         try:
-            result = await runtime.life_image_generate(event, "再次拍一张")
+            result = await runtime._life_image_generate_inline(event, "再次拍一张")
         finally:
             image_module._astrbot_follow_up = old_follow_up
 
@@ -421,7 +421,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
         prompt = "保留角色本人身份，但改成与人设不同的身体比例"
 
-        result = await runtime.edit_life_image(
+        result = await runtime._edit_life_image_inline(
             event, prompt, "https://example.com/reference.png"
         )
 
@@ -459,7 +459,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         )
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
 
-        result = await runtime.life_image_generate(
+        result = await runtime._life_image_generate_inline(
             event, "雨夜生活照", provider="gemini"
         )
 
@@ -481,7 +481,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         )
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
 
-        result = await runtime.life_image_generate(event, "雨夜生活照")
+        result = await runtime._life_image_generate_inline(event, "雨夜生活照")
 
         self.assertEqual(json.loads(result)["status"], "sent")
         self.assertEqual(json.loads(result)["media"], "image")
@@ -577,7 +577,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
 
         runtime._isolate_outfit_change_scene_prompt = isolate_scene
 
-        result = await runtime.life_image_generate(
+        result = await runtime._life_image_generate_inline(
             event,
             "站在门口展示浅黄色夏日连衣裙，手拿小风扇，柔和自然光",
             subject_route="current_character",
@@ -692,7 +692,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         )
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
 
-        result = await runtime.life_image_generate(
+        result = await runtime._life_image_generate_inline(
             event,
             "站在门口准备出门",
             subject_route="current_character",
@@ -719,7 +719,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         full_prompt = "生成一张高度写实的竖版 9:16 古风 POV，雨后古镇青石板小巷，油纸伞，衣袖牵引，胶片写实质感，保留这句唯一细节"
         event.message_str = f"  {full_prompt}"
 
-        result = await runtime.life_image_generate(event, "雨后古镇少女撑伞")
+        result = await runtime._life_image_generate_inline(event, "雨后古镇少女撑伞")
 
         self.assertEqual(json.loads(result)["status"], "sent")
         self.assertEqual(image_prompts, [(full_prompt, {"aspect_ratio": "9:16"})])
@@ -756,7 +756,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             "站在洗手间镜子前准备洗漱，暖黄色灯光，夜晚居家氛围，生活随手抓拍镜头。"
         )
 
-        result = await runtime.life_image_generate(event, agent_prompt)
+        result = await runtime._life_image_generate_inline(event, agent_prompt)
 
         self.assertEqual(json.loads(result)["status"], "sent")
         self.assertEqual(director_prompts, [agent_prompt])
@@ -782,7 +782,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         )
         runtime._remember_reverse_prompt_for_scope(event, reverse_prompt)
 
-        result = await runtime.life_image_generate(
+        result = await runtime._life_image_generate_inline(
             event, "", use_last_reverse_prompt=True
         )
 
@@ -817,7 +817,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         )
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
 
-        result = await runtime.life_image_generate(
+        result = await runtime._life_image_generate_inline(
             event, "", use_last_reverse_prompt=True
         )
 
@@ -852,7 +852,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             event, reverse_prompt, "D:/tmp/reverse.png"
         )
 
-        result = await runtime.life_image_generate(
+        result = await runtime._life_image_generate_inline(
             event, "", use_last_reverse_prompt=True
         )
 
@@ -888,7 +888,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             event, reverse_prompt, "D:/tmp/reverse.png"
         )
 
-        result = await runtime.life_image_generate(event, reverse_prompt)
+        result = await runtime._life_image_generate_inline(event, reverse_prompt)
 
         self.assertEqual(json.loads(result)["status"], "sent")
         self.assertEqual(image_prompts, [(reverse_prompt, {})])
@@ -909,7 +909,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
         event.message_str = "雨后古镇青石板小巷，暖黄色灯笼光，月白淡粉汉服，第一视角斜俯拍，手机夜间抓拍胶片质感"
 
-        result = await runtime.life_image_generate(event, "雨后古镇少女撑伞")
+        result = await runtime._life_image_generate_inline(event, "雨后古镇少女撑伞")
 
         self.assertEqual(json.loads(result)["status"], "sent")
         self.assertEqual(image_prompts, [event.message_str])
@@ -932,7 +932,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             "雨后古镇青石板小巷，第一视角斜俯拍，竖版 9:16，手机夜间抓拍胶片质感"
         )
 
-        result = await runtime.life_image_generate(event, "雨后古镇少女撑伞")
+        result = await runtime._life_image_generate_inline(event, "雨后古镇少女撑伞")
 
         self.assertEqual(json.loads(result)["status"], "sent")
         self.assertEqual(calls, [(event.message_str, {"aspect_ratio": "9:16"})])
@@ -953,7 +953,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
         event.message_str = "雨后古镇生活照，输出 4K 图片"
 
-        result = await runtime.life_image_generate(event, "备用提示词")
+        result = await runtime._life_image_generate_inline(event, "备用提示词")
 
         self.assertEqual(json.loads(result)["status"], "sent")
         self.assertEqual(calls, [("备用提示词", {"resolution": "4K"})])
@@ -974,7 +974,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
         event.message_str = "雨后古镇生活照，输出 4K 图片"
 
-        result = await runtime.life_image_generate(event, "备用提示词", resolution="2K")
+        result = await runtime._life_image_generate_inline(event, "备用提示词", resolution="2K")
 
         self.assertEqual(json.loads(result)["status"], "sent")
         self.assertEqual(calls, [("备用提示词", {"resolution": "2K"})])
@@ -1023,7 +1023,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             unified_msg_origin=source_event.unified_msg_origin, group_id="20001"
         )
 
-        result = await runtime.life_image_generate(tool_event, "古风灯会街巷少女递花灯")
+        result = await runtime._life_image_generate_inline(tool_event, "古风灯会街巷少女递花灯")
 
         self.assertEqual(json.loads(result)["status"], "sent")
         self.assertEqual(image_prompts, [(full_prompt, {"aspect_ratio": "9:16"})])
@@ -1054,7 +1054,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
         event.message_str = "/拍张现在"
 
-        result = await runtime.life_image_generate(event, "拍一张当前生活照")
+        result = await runtime._life_image_generate_inline(event, "拍一张当前生活照")
 
         self.assertEqual(json.loads(result)["status"], "sent")
         self.assertEqual(director_prompts, ["拍一张当前生活照"])
@@ -1086,7 +1086,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
         event.message_str = "拍张现在"
 
-        result = await runtime.life_image_generate(event, "拍一张当前生活照")
+        result = await runtime._life_image_generate_inline(event, "拍一张当前生活照")
 
         self.assertEqual(json.loads(result)["status"], "sent")
         self.assertEqual(director_prompts, ["拍一张当前生活照"])
@@ -1127,7 +1127,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
         event.message_str = "请按角色本人参考图再拍一张"
 
-        result = await runtime.life_image_generate(event, "拍一张角色本人参考图")
+        result = await runtime._life_image_generate_inline(event, "拍一张角色本人参考图")
 
         self.assertEqual(json.loads(result)["status"], "sent")
         self.assertEqual(generate_calls, [])
@@ -1177,7 +1177,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
         event.message_str = "拍一下窗外"
 
-        result = await runtime.life_image_generate(event, "拍一张窗外雨夜")
+        result = await runtime._life_image_generate_inline(event, "拍一张窗外雨夜")
 
         self.assertEqual(json.loads(result)["status"], "sent")
         self.assertEqual(generate_calls, [("导演整理：拍一张窗外雨夜", {})])
@@ -1218,7 +1218,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
         event.message_str = "拍一下窗外"
 
-        result = await runtime.life_image_generate(event, "拍一张窗外雨夜")
+        result = await runtime._life_image_generate_inline(event, "拍一张窗外雨夜")
 
         self.assertEqual(json.loads(result)["status"], "sent")
         self.assertEqual(generate_calls, [("导演整理：拍一张窗外雨夜", {})])
@@ -1259,7 +1259,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
         event.message_str = "画图"
 
-        result = await runtime.life_image_generate(event, "角色本人坐在窗边")
+        result = await runtime._life_image_generate_inline(event, "角色本人坐在窗边")
 
         self.assertEqual(json.loads(result)["status"], "sent")
         self.assertEqual(generate_calls, [])
@@ -1290,7 +1290,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
         event.message_str = "我在聊天里提到 / 这个符号，但不是图片直给命令"
 
-        result = await runtime.life_image_generate(event, "模型整理后的图片提示词")
+        result = await runtime._life_image_generate_inline(event, "模型整理后的图片提示词")
 
         self.assertEqual(json.loads(result)["status"], "sent")
         self.assertEqual(image_prompts, ["模型整理后的图片提示词"])
@@ -1307,7 +1307,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         )
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
 
-        result = await runtime.life_image_generate(event, "雨夜生活照")
+        result = await runtime._life_image_generate_inline(event, "雨夜生活照")
 
         self.assertIn("图片生成失败：超时", result)
         self.assertEqual(runtime.context.sent_messages, [])
@@ -1339,7 +1339,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         runtime._rewrite_life_image_prompt_for_policy_retry = rewrite
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
 
-        result = await runtime.life_image_generate(event, "雨夜生活照")
+        result = await runtime._life_image_generate_inline(event, "雨夜生活照")
 
         self.assertEqual(json.loads(result)["status"], "sent")
         self.assertEqual(prompts, ["雨夜生活照", "雨夜生活照，自然生活化表达"])
@@ -1373,7 +1373,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             str(message)
         )
         try:
-            result = await runtime.life_image_generate(event, "雨夜生活照")
+            result = await runtime._life_image_generate_inline(event, "雨夜生活照")
         finally:
             image_channel.logger.warning = old_warning
 
@@ -1412,7 +1412,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             str(message)
         )
         try:
-            result = await runtime.life_image_generate(event, "雨夜生活照")
+            result = await runtime._life_image_generate_inline(event, "雨夜生活照")
         finally:
             image_channel.logger.warning = old_warning
 
@@ -1460,7 +1460,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             str(message)
         )
         try:
-            result = await runtime.life_image_generate(event, "雨夜生活照")
+            result = await runtime._life_image_generate_inline(event, "雨夜生活照")
         finally:
             image_channel.logger.info = old_info
             image_channel.logger.debug = old_debug
@@ -1638,7 +1638,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             context=types.SimpleNamespace(event=event)
         )
 
-        result = await runtime.life_image_generate(wrapped_event, "咖喱店生活照")
+        result = await runtime._life_image_generate_inline(wrapped_event, "咖喱店生活照")
 
         self.assertEqual(json.loads(result)["status"], "sent")
         self.assertEqual(runtime.context.sent_messages[0][0], event.unified_msg_origin)
@@ -1734,7 +1734,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         )
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
 
-        result = await runtime.life_image_generate(event, "雨夜沙发上随手拍")
+        result = await runtime._life_image_generate_inline(event, "雨夜沙发上随手拍")
 
         self.assertEqual(json.loads(result)["status"], "sent")
         self.assertIn("雨夜客厅", image_prompts[0])
@@ -2075,7 +2075,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
         event.message_str = "20多岁亚洲女性夏日写真，完整服装细节，竖版全身构图。海边露台，阳光明亮，生活化拍摄。"
 
-        result = await runtime.life_image_generate(event, "备用提示词", resolution="4k")
+        result = await runtime._life_image_generate_inline(event, "备用提示词", resolution="4k")
 
         self.assertEqual(json.loads(result)["status"], "sent")
         self.assertEqual(generate_calls, [(event.message_str, {"resolution": "4K"})])
@@ -2124,7 +2124,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             "1girl, full body portrait, vertical composition, looking at camera"
         )
 
-        result = await runtime.life_image_generate(event, "备用提示词")
+        result = await runtime._life_image_generate_inline(event, "备用提示词")
 
         self.assertEqual(json.loads(result)["status"], "sent")
         self.assertEqual(image_prompts, [(event.message_str, {})])
@@ -2180,7 +2180,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             "\u5750\u5728\u5ba2\u5385\u6c99\u53d1\u4e0a\u6367\u7740\u4e00\u7897\u7eff\u8c46\u6c99\u5fae\u7b11\u3002"
         )
 
-        result = await runtime.life_image_generate(
+        result = await runtime._life_image_generate_inline(
             event, prompt, subject_route="current_character"
         )
 
@@ -2234,7 +2234,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             "\u534a\u8eab\u6784\u56fe\uff0c\u771f\u5b9e\u751f\u6d3b\u6293\u62cd\u611f\u3002"
         )
 
-        result = await runtime.life_image_generate(
+        result = await runtime._life_image_generate_inline(
             event, prompt, subject_route="current_character"
         )
 
@@ -2276,7 +2276,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
         event.message_str = "拍张现在的照片"
 
-        result = await runtime.life_image_generate(
+        result = await runtime._life_image_generate_inline(
             event,
             "公园长椅上的生活照，穿浅蓝色衬衫和帆布鞋",
             subject_route="current_character",
@@ -2394,7 +2394,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         event.message_str = "拍张你和示例好友的合影"
         prompt = "当前角色在左，示例好友在右，在书店窗边自然自拍"
 
-        result = await runtime.life_image_generate(
+        result = await runtime._life_image_generate_inline(
             event,
             prompt,
             subject_route="group",
@@ -2436,7 +2436,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         )
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
 
-        result = await runtime.life_image_generate(
+        result = await runtime._life_image_generate_inline(
             event,
             "人物 B 穿深灰色家居服，在客厅和人物 A 合影",
             subject_route="group",
@@ -2460,7 +2460,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             )
         )
 
-        partial_result = await runtime.life_image_generate(
+        partial_result = await runtime._life_image_generate_inline(
             event,
             "客厅合影",
             subject_route="group",
@@ -2497,7 +2497,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         outfit = "深蓝色短袖衬衫搭配浅灰直筒长裤和白色休闲鞋"
         hair = "黑色短发自然梳理，额前保留轻薄碎发"
 
-        first = await runtime.life_image_generate(
+        first = await runtime._life_image_generate_inline(
             event,
             "傍晚书店窗边合影",
             subject_route="group",
@@ -2507,7 +2507,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             friend_scene_category="public",
             friend_style_pool="outfit_styles",
         )
-        second = await runtime.life_image_generate(
+        second = await runtime._life_image_generate_inline(
             event,
             "走到书店另一排书架再拍一张",
             subject_route="group",
@@ -2515,7 +2515,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             friend_scene_category="public",
         )
         changed_outfit = "浅灰色连帽卫衣搭配深蓝色运动长裤和白色运动鞋"
-        third = await runtime.life_image_generate(
+        third = await runtime._life_image_generate_inline(
             event,
             "回到公园入口再拍一张",
             subject_route="group",
@@ -2656,7 +2656,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         )
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
 
-        result = await runtime.life_image_generate(
+        result = await runtime._life_image_generate_inline(
             event,
             "雨后街边合影",
             subject_route="group",
@@ -2741,7 +2741,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             "搞怪而温馨的睡前生活照，镜头带有一点手抖的糊感和颗粒感"
         )
 
-        result = await runtime.life_image_generate(event, prompt)
+        result = await runtime._life_image_generate_inline(event, prompt)
 
         self.assertEqual(json.loads(result)["status"], "sent")
         self.assertEqual(generate_calls, [])
@@ -2796,7 +2796,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         )
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
 
-        result = await runtime.life_image_generate(event, "雨夜沙发上随手拍")
+        result = await runtime._life_image_generate_inline(event, "雨夜沙发上随手拍")
 
         self.assertEqual(json.loads(result)["status"], "sent")
         self.assertEqual(image_prompts, ["雨夜沙发上随手拍"])
@@ -2853,7 +2853,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         )
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
 
-        result = await runtime.life_image_generate(
+        result = await runtime._life_image_generate_inline(
             event, "测试市窗边，红色外套，9:16竖版全身，保留手里的书"
         )
 
@@ -3192,7 +3192,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
 
         runtime.media = types.SimpleNamespace(image=ImageService())
 
-        generate_result = await runtime.life_image_generate(
+        generate_result = await runtime._life_image_generate_inline(
             event, "", use_last_reverse_prompt=True
         )
 
@@ -3715,6 +3715,13 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
         self.assertIn("白色短袖搭配深蓝色长裤", manifest["current_appearance"])
         self.assertEqual(manifest["source_request"], "拍三张现在的生活照")
+        self.assertEqual(align_calls, [])
+        runtime._photo_suite_plan = lambda event, prompt, count, **kwargs: async_return(
+            runtime._photo_suite_fallback_plan(prompt, count, "current_character")
+        )
+        manifest, _, _ = await runtime._photo_suite_prepare_generation(
+            event, manifests[0], None, None, "", False
+        )
         self.assertNotIn("红色连衣裙", manifest["prompt"])
         self.assertEqual(len(align_calls), 1)
         for coro in scheduled:

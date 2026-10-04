@@ -5,21 +5,12 @@ import types
 import unittest
 from unittest.mock import ANY, AsyncMock, patch
 
-from support import (
-    ActionBot,
-    AltProvider,
-    ContactNameResolver,
-    PersonaManager,
-    PlatformManager,
-    Provider,
-    make_composer,
-)
 from core.archive import DayRevisionConflict
+from core.facts import PersonFact, PersonFactContext, apply_string_replacements
 from core.life import LifeBackgroundComposer
 from core.life.audit import DailyLocationAuditMixin
-from core.life.reliability import NonRetryableProviderError
 from core.life.people import DAILY_PERSON_TEXT_PATHS
-from core.facts import PersonFact, PersonFactContext, apply_string_replacements
+from core.life.reliability import NonRetryableProviderError
 from core.life.surroundings import (
     choose_place_candidates,
     format_world_prompt,
@@ -28,8 +19,8 @@ from core.life.surroundings import (
 from core.models import (
     ChatSummaryRecord,
     CommitmentRecord,
-    DayRecord,
     DailyReviewRecord,
+    DayRecord,
     EventRecord,
     FocusSlotRecord,
     LifeEpisodeRecord,
@@ -40,9 +31,67 @@ from core.models import (
     PreferenceRecord,
     TimelineItem,
 )
+from support import (
+    ActionBot,
+    AltProvider,
+    ContactNameResolver,
+    PersonaManager,
+    PlatformManager,
+    Provider,
+    make_composer,
+)
 
 
 class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
+    async def test_planned_outfit_without_catalog_reference_requires_repair(self):
+        composer, _, _, archive = make_composer([])
+        await archive.upsert_style_catalog_item(
+            {
+                "kind": "outfit",
+                "title": "日间碎花裙",
+                "description": "浅蓝色碎花连衣裙",
+                "source_image_hash": "c" * 64,
+            }
+        )
+        action = {
+            "action_type": "change_outfit",
+            "target": "棉质睡衣",
+            "timeline_index": 0,
+            "payload": {"scene_category": "sleep"},
+        }
+        result, issue = await composer._persist_daily_generation_success(
+            {
+                "timeline": [{"time": "22:00", "place_kind": "home"}],
+                "planned_actions": [action],
+            },
+            date=datetime.datetime(2026, 10, 3, 8),
+            context={"manual_extra": ""},
+        )
+
+        self.assertIsNone(result)
+        self.assertIn("计划换装未采用衣橱候选", issue)
+        self.assertEqual(action["target"], "棉质睡衣")
+
+    async def test_planned_outfit_uses_declared_sleep_scene_instead_of_home_place(self):
+        composer, _, _, _ = make_composer([])
+        selection = AsyncMock(return_value=({}, "测试：需要重新选择"))
+        action = {
+            "action_type": "change_outfit",
+            "timeline_index": 0,
+            "payload": {"scene_category": "sleep", "catalog_reference_ids": [7]},
+        }
+        with patch.object(composer, "_style_catalog_new_outfit_selection", selection):
+            await composer._persist_daily_generation_success(
+                {
+                    "timeline": [{"time": "22:00", "place_kind": "home"}],
+                    "planned_actions": [action],
+                },
+                date=datetime.datetime(2026, 10, 3, 8),
+                context={"manual_extra": ""},
+            )
+
+        selection.assert_awaited_once_with([7], scene_category="sleep")
+
     async def test_previous_context_prefers_daytime_outfit_over_late_night_snapshot(self):
         composer, _, _, archive = make_composer([])
         await archive.save_day(
@@ -2405,6 +2454,18 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
                     "style": "清爽白日外出风",
                     "hair_style": "高马尾",
                     "hair": "黑色长发高高扎成马尾",
+                    "outfit_components": json.dumps(
+                        {
+                            "main_clothing": {
+                                "state": "worn",
+                                "description": "白色短袖T恤配浅蓝牛仔短裤",
+                            },
+                            "outer_layer": {"state": "worn", "description": "出门外套"},
+                            "carried_accessories": {
+                                "state": "carried", "description": "外出包",
+                            },
+                        }
+                    ),
                 },
                 state=LifeState(summary="回家冲澡后已经换上睡裙，正在放松"),
             )
@@ -2424,6 +2485,16 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(stored.meta["outfit_decision"], "sleepwear")
         self.assertEqual(stored.meta["outfit_style_pool"], "sleep_styles")
+        components = json.loads(stored.meta["outfit_components"])
+        self.assertEqual(components["main_clothing"]["description"], stored.outfit)
+        self.assertNotIn("outer_layer", components)
+        self.assertNotIn("carried_accessories", components)
+        from core.runtime.refresh import RefreshMixin
+
+        RefreshMixin._synchronize_outfit_with_schedule(
+            stored, datetime.datetime(2026, 8, 7, 21, 20)
+        )
+        self.assertEqual(stored.outfit, "浅薄荷绿吊带睡裙，宽松轻盈，裙摆垂顺，赤足放松")
         self.assertEqual(stored.meta["style"], "清爽居家睡裙风")
         self.assertEqual(
             stored.meta["outfit_reason"],
@@ -2475,6 +2546,35 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         stored = await archive.get_day("2026-08-16")
         self.assertEqual(stored.outfit, "米白色缎面蕾丝吊带睡裙")
         self.assertEqual(stored.meta["style_catalog_reference_ids"], "1")
+
+    async def test_autonomous_outfit_change_reasks_model_for_ambiguous_catalog(self):
+        composer, provider, _, archive = make_composer([])
+        await archive.upsert_style_catalog_item({
+            "kind": "outfit", "title": "外出裙", "description": "日间碎花裙",
+            "source_image_hash": "a" * 64,
+        })
+        sleepwear = await archive.upsert_style_catalog_item({
+            "kind": "outfit", "title": "棉质睡衣", "description": "米白色棉质睡衣",
+            "source_image_hash": "b" * 64,
+        })
+        response = {
+            "outfit_decision": "sleepwear", "current_outfit_basis": "stored",
+            "scene_category": "sleep", "style_pool": "sleep_styles",
+            "component_review": {"main_clothing": "adjust"},
+            "outfit": "米白色棉质睡衣", "catalog_reference_ids": [],
+        }
+        provider.responses.append(json.dumps(response))
+        response["catalog_reference_ids"] = [sleepwear.id]
+        provider.responses.append(json.dumps(response))
+        await archive.save_day(DayRecord(date="2026-10-03", outfit="日间穿搭"))
+        updated = await composer.update_outfit(
+            "2026-10-03", "night", current_time=datetime.datetime(2026, 10, 3, 22, 10)
+        )
+        self.assertIsNotNone(updated)
+        self.assertEqual(updated.outfit, "米白色棉质睡衣")
+        self.assertEqual(updated.meta["style_catalog_reference_ids"], str(sleepwear.id))
+        self.assertEqual(len(provider.prompts), 2)
+        self.assertIn("重新选择", provider.prompts[-1])
 
     async def test_autonomous_outfit_change_uses_catalog_description_as_authority(
         self,
@@ -2818,6 +2918,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
                     TimelineItem(
                         time="21:10",
                         activity="洗漱后已经换上米白色棉质睡裙，准备休息",
+                        execution_state="completed",
                     )
                 ],
                 meta={

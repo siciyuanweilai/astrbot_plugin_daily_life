@@ -417,7 +417,7 @@ class ContinuityArchiveTest(unittest.IsolatedAsyncioTestCase):
         runtime._prepare_image_generation_plan = AsyncMock(
             side_effect=AssertionError("must not generate")
         )
-        result = await runtime.life_image_generate(
+        result = await runtime._life_image_generate_inline(
             SimpleNamespace(), "昨天衣服", subject_route="current_character",
             historical_target="2026-09-23",
         )

@@ -17,7 +17,6 @@ DEFAULT_VOLCENGINE_SAMPLE_RATE = 24000
 DEFAULT_VOLCENGINE_FORMAT = "mp3"
 IMAGE_PROTOCOLS = {"gemini", "openai", "grok"}
 IMAGE_RESOLUTIONS = {"1K", "2K", "4K"}
-IMAGE_QUALITIES = {"low", "medium", "high"}
 REALTIME_OFFICIAL_SEARCH_TYPES = {
     "web",
     "web_summary",
@@ -68,7 +67,6 @@ class ImageApiChannel:
     resolution: str = "4K"
     aspect_ratio: str = "1:1"
     timeout_seconds: int = 300
-    quality: str = "medium"
 
 
 @dataclass(slots=True)
@@ -103,16 +101,11 @@ def _image_aspect_ratio(value: Any) -> str:
     return aspect_ratio if aspect_ratio in IMAGE_ASPECT_RATIOS else "1:1"
 
 
-def _image_quality(value: Any) -> str:
-    quality = as_str(value, "medium").strip().lower() or "medium"
-    return quality if quality in IMAGE_QUALITIES else "medium"
-
-
 def _image_channels(value: Any) -> list[ImageApiChannel]:
     if not isinstance(value, list):
         return []
     result: list[ImageApiChannel] = []
-    seen: set[tuple[str, str, str, str, str, str, str, int]] = set()
+    seen: set[tuple[str, str, str, str, str, str, int]] = set()
     for raw in value:
         if not isinstance(raw, dict):
             continue
@@ -139,7 +132,6 @@ def _image_channels(value: Any) -> list[ImageApiChannel]:
         )
         resolution = _image_resolution(raw.get("resolution"), protocol)
         aspect_ratio = _image_aspect_ratio(raw.get("aspect_ratio", "1:1"))
-        quality = _image_quality(raw.get("quality", "medium"))
         timeout_seconds = as_int(raw.get("timeout_seconds", 300), 300, 10, 600)
         if not api_url or not api_key:
             continue
@@ -150,7 +142,6 @@ def _image_channels(value: Any) -> list[ImageApiChannel]:
             protocol,
             resolution,
             aspect_ratio,
-            quality,
             timeout_seconds,
         )
         if key in seen:
@@ -166,7 +157,6 @@ def _image_channels(value: Any) -> list[ImageApiChannel]:
                 resolution=resolution,
                 aspect_ratio=aspect_ratio,
                 timeout_seconds=timeout_seconds,
-                quality=quality,
             )
         )
     return result

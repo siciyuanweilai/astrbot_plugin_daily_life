@@ -1,5 +1,4 @@
 import asyncio
-import logging
 import sys
 import threading
 import types
@@ -149,57 +148,6 @@ class PluginLifecycleTest(unittest.IsolatedAsyncioTestCase):
                 "https://voice.example.invalid/call/<token>",
             ],
         )
-
-    def test_model_sdk_debug_logs_are_suppressed(self):
-        astrbot_logger = logging.getLogger("astrbot")
-        previous_filters = list(astrbot_logger.filters)
-        previous = {
-            name: logging.getLogger(name).level
-            for name in plugin_module.SENSITIVE_SDK_LOG_LEVELS
-        }
-        try:
-            for name in previous:
-                logging.getLogger(name).setLevel(logging.DEBUG)
-
-            DailyLifePlugin._protect_model_request_logs()
-
-            self.assertEqual(logging.getLogger("openai").level, logging.WARNING)
-            self.assertEqual(logging.getLogger("httpcore").level, logging.WARNING)
-            self.assertEqual(logging.getLogger("httpx").level, logging.INFO)
-            filters = [
-                item
-                for item in astrbot_logger.filters
-                if getattr(
-                    item,
-                    plugin_module._SensitiveProviderPayloadFilter._MARKER,
-                    False,
-                )
-            ]
-            self.assertEqual(len(filters), 1)
-            sensitive_record = logging.LogRecord(
-                "astrbot",
-                logging.DEBUG,
-                "/AstrBot/astrbot/core/provider/sources/openai_source.py",
-                583,
-                "completion: %s",
-                ("完整模型响应",),
-                None,
-            )
-            normal_record = logging.LogRecord(
-                "astrbot",
-                logging.DEBUG,
-                "/AstrBot/astrbot/core/runtime/task.py",
-                1,
-                "普通调试日志",
-                (),
-                None,
-            )
-            self.assertFalse(filters[0].filter(sensitive_record))
-            self.assertTrue(filters[0].filter(normal_record))
-        finally:
-            for name, level in previous.items():
-                logging.getLogger(name).setLevel(level)
-            astrbot_logger.filters[:] = previous_filters
 
     def test_response_gate_outcome_logs_action_summary(self):
         plugin = DailyLifePlugin.__new__(DailyLifePlugin)
@@ -471,10 +419,14 @@ class PluginLifecycleTest(unittest.IsolatedAsyncioTestCase):
                 "DailyLifeCommandCenter",
                 lambda runtime: types.SimpleNamespace(runtime=runtime),
             ),
+            patch.object(
+                plugin._log_guard, "close", wraps=plugin._log_guard.close
+            ) as close_guard,
         ):
             with self.assertRaisesRegex(RuntimeError, "接口注册失败"):
                 await plugin.initialize()
 
+            close_guard.assert_called_once_with()
             self.assertIsNone(plugin.runtime)
             self.assertIsNone(plugin.commands)
             self.assertTrue(runtimes[0].terminated)
@@ -488,7 +440,9 @@ class PluginLifecycleTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_terminate_is_safe_before_and_after_initialize(self):
         plugin = DailyLifePlugin(types.SimpleNamespace(), {})
-        await plugin.terminate()
+        with patch.object(plugin._log_guard, "close") as close_guard:
+            await plugin.terminate()
+        close_guard.assert_called_once_with()
 
         calls = []
 
@@ -500,6 +454,45 @@ class PluginLifecycleTest(unittest.IsolatedAsyncioTestCase):
         await plugin.terminate()
 
         self.assertEqual(calls, ["terminated"])
+
+    async def test_database_preparation_failure_removes_log_guard(self):
+        plugin = DailyLifePlugin(types.SimpleNamespace(), {})
+        with (
+            patch.object(plugin._log_guard, "install") as install_guard,
+            patch.object(plugin._log_guard, "close") as close_guard,
+            patch.object(
+                plugin, "_prepare_database", side_effect=RuntimeError("数据库不可用")
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "数据库不可用"):
+                await plugin.initialize()
+
+        install_guard.assert_called_once_with()
+        close_guard.assert_called_once_with()
+        self.assertIsNone(plugin.runtime)
+
+    async def test_shutdown_failure_removes_log_guard(self):
+        for failing_stage in ("begin_shutdown", "terminate"):
+            with self.subTest(stage=failing_stage):
+                plugin = DailyLifePlugin(types.SimpleNamespace(), {})
+
+                async def begin_shutdown():
+                    if failing_stage == "begin_shutdown":
+                        raise RuntimeError("关闭失败")
+
+                async def terminate():
+                    if failing_stage == "terminate":
+                        raise RuntimeError("关闭失败")
+
+                plugin.runtime = types.SimpleNamespace(
+                    begin_shutdown=begin_shutdown, terminate=terminate
+                )
+                with patch.object(plugin._log_guard, "close") as close_guard:
+                    with self.assertRaisesRegex(RuntimeError, "关闭失败"):
+                        await plugin.terminate()
+
+                close_guard.assert_called_once_with()
+                self.assertIsNone(plugin.runtime)
 
 
 class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):

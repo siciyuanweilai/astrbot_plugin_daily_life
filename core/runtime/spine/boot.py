@@ -444,6 +444,9 @@ class SpineBootMixin:
         reconcile_videos = getattr(self, "reconcile_commitment_video_tasks", None)
         if callable(reconcile_videos):
             await reconcile_videos()
+        reconcile_contacts = getattr(self, "reconcile_scheduled_invite_contacts", None)
+        if callable(reconcile_contacts):
+            await reconcile_contacts()
         await self.archive.recover_expired_durable_tasks()
         tasks = await self.archive.lease_durable_tasks(
             owner,
@@ -513,6 +516,7 @@ class SpineBootMixin:
                         str(result.get("retry_at") or ""),
                         owner=owner,
                         reason=str(result.get("reason") or "等待任务条件成立"),
+                        progress=result.get("progress"),
                     )
                     continue
                 await self.archive.complete_durable_task(
@@ -531,9 +535,6 @@ class SpineBootMixin:
     async def _run_durable_task_worker(self) -> None:
         """启动时收束重启前遗留的任务；任务类型由运行时显式注册。"""
         try:
-            reconcile = getattr(self, "reconcile_scheduled_invite_contacts", None)
-            if callable(reconcile):
-                await reconcile()
             await self._run_durable_tasks_once()
         except asyncio.CancelledError:
             raise

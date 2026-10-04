@@ -1,22 +1,261 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import datetime
 import json
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from astrbot.api import logger
+from astrbot.api.message_components import Image
 
 from ...paths import expand_path, path_is_file, path_size
 from ...prompts import CORE_MEDIA_REPLY_RULES, cache_friendly_prompt
+from ...sources.platforms import event_platform_names
 from ..delivery import BackgroundTextMode
 from ..markers import LOG_PREFIX
 
 
 class RuntimeMediaCommonMixin:
     _MEDIA_CADENCE_TTL_SECONDS = 6 * 60 * 60
+
+    def _background_tool_request(self, event: Any, tool_name: str) -> dict | None:
+        for source in self._event_sources(event):
+            requests = getattr(source, "_daily_life_background_tool_requests", {})
+            marker = requests.get(tool_name)
+            if isinstance(marker, dict):
+                return marker
+        return None
+
+    def _background_tool_existing_result(
+        self, event: Any, tool_name: str
+    ) -> str | None:
+        marker = self._background_tool_request(event, tool_name)
+        if marker and marker.get("status") in {"pending", "sent"}:
+            return json.dumps(
+                {
+                    "status": marker["status"],
+                    "media": marker["media"],
+                    "deduplicated": True,
+                },
+                ensure_ascii=False,
+            )
+        return None
+
+    def _submit_background_tool(
+        self,
+        event: Any,
+        source_event: Any,
+        work: Callable[[], Awaitable],
+        *,
+        tool_name: str,
+        media: str,
+        label: str,
+        category: str,
+        failure_text: str,
+    ) -> str:
+        existing = self._background_tool_existing_result(source_event, tool_name)
+        if existing:
+            return existing
+        scope = self._event_session_id(event)
+        source_id = self._event_message_id(source_event) or f"event:{id(source_event)}"
+        marker = {"status": "pending", "media": media}
+
+        def cancel_request() -> None:
+            if marker["status"] != "sent":
+                marker["status"] = "cancelled"
+                self.cancel_tool_reaction(event, tool_name)
+
+        if not self._schedule_background_task(
+            self._deliver_background_tool(event, work, marker, tool_name, failure_text),
+            label=label,
+            key=f"background_tool:{tool_name}:{scope}:{source_id}",
+            category=category,
+            on_cancel=cancel_request,
+        ):
+            return json.dumps(
+                {
+                    "status": "failed",
+                    "media": media,
+                    "reason": "任务队列暂时繁忙，请稍后重试",
+                },
+                ensure_ascii=False,
+            )
+        for source in [event, *self._event_sources(source_event)]:
+            requests = dict(
+                getattr(source, "_daily_life_background_tool_requests", {}) or {}
+            )
+            requests[tool_name] = marker
+            source._daily_life_background_tool_requests = requests
+        self._release_media_chat_turn(source_event)
+        return json.dumps(
+            {
+                "status": "pending",
+                "media": media,
+                "response_timing": "after_delivery",
+                "response_stance": "已受理，尚未完成；结束本次工具轮次，不要等待、重复调用或提前声称结果已完成。后续消息正常聊天，实际结果会独立送达。",
+            },
+            ensure_ascii=False,
+        )
+
+    async def _deliver_background_tool(
+        self,
+        event: Any,
+        work: Callable[[], Awaitable],
+        marker: dict,
+        tool_name: str,
+        failure_text: str,
+    ) -> None:
+        try:
+            if not self.can_send_for_source(
+                self._event_session_id(event), source_event=event
+            ):
+                marker["status"] = "cancelled"
+                self.cancel_tool_reaction(event, tool_name)
+                return
+            result = await work()
+            status = str(getattr(result, "status", "") or "")
+            if marker["status"] == "sent" or status == "sent":
+                marker["status"] = "sent"
+            elif status == "cancelled" or not self.can_send_for_source(
+                self._event_session_id(event), source_event=event
+            ):
+                marker["status"] = "cancelled"
+                self.cancel_tool_reaction(event, tool_name)
+                return
+            elif status == "ok":
+                text = str(result or "").strip()
+                sent = bool(text) and await self.send_background_text(
+                    self._event_session_id(event),
+                    text,
+                    mode=BackgroundTextMode.DIRECT,
+                    source_event=event,
+                    source=f"{marker['media']}_result",
+                )
+                marker["status"] = "sent" if sent else "failed"
+                if sent:
+                    await self._append_assistant_history(
+                        self._event_session_id(event), text
+                    )
+            else:
+                marker["status"] = "failed"
+                if self.media_request_is_current_turn(event):
+                    await self.send_background_text(
+                        self._event_session_id(event),
+                        str(result or failure_text),
+                        mode=BackgroundTextMode.DIRECT,
+                        source_event=event,
+                        source="background_tool_failure",
+                    )
+            await self.finish_tool_reaction(
+                event, tool_name, success=marker["status"] == "sent"
+            )
+        except asyncio.CancelledError:
+            if marker["status"] != "sent":
+                marker["status"] = "cancelled"
+                self.cancel_tool_reaction(event, tool_name)
+            raise
+        except Exception as exc:
+            logger.warning(
+                f"{LOG_PREFIX} {tool_name} 后台处理失败：{self._media_error_summary(exc)}"
+            )
+            if marker["status"] == "sent":
+                await self.finish_tool_reaction(event, tool_name, success=True)
+                return
+            marker["status"] = "failed"
+            await self.finish_tool_reaction(event, tool_name, success=False)
+            if self.media_request_is_current_turn(event):
+                await self.send_background_text(
+                    self._event_session_id(event),
+                    failure_text,
+                    mode=BackgroundTextMode.DIRECT,
+                    source_event=event,
+                    source="background_tool_failure",
+                )
+
+    def hold_background_tool_final_text(self, event: Any) -> bool:
+        if not any(
+            getattr(source, "_daily_life_background_tool_requests", {})
+            for source in self._event_sources(event)
+        ):
+            return False
+        result = getattr(event, "get_result", lambda: None)()
+        if not self._is_llm_result_object(result):
+            return False
+        clearer = getattr(event, "clear_result", None)
+        if callable(clearer):
+            clearer()
+        return True
+
+    def _release_media_chat_turn(self, event: Any) -> None:
+        self.complete_continuous_turn(event)
+        sources = self._event_sources(event)
+        original = sources[-1] if sources else event
+        runner = self._active_agent_runner(original)
+        follow_up = self._follow_up_module()
+        unregister = getattr(follow_up, "unregister_active_runner", None)
+        if runner is None or not callable(unregister):
+            return
+        # Existing follow-ups resume as independent turns; later messages must
+        # not be consumed by the media request's final confirmation response.
+        release = getattr(runner, "_resolve_unconsumed_follow_ups", None)
+        if callable(release):
+            release()
+        unregister(self._event_session_id(original), runner)
+
+    def _snapshot_media_event(self, event: Any) -> Any:
+        sources = self._event_sources(event)
+        original = sources[-1] if sources else event
+        snapshot = copy.copy(original)
+        snapshot._extras = dict(getattr(original, "_extras", {}) or {})
+        # WebChat's original request stream can close before background delivery.
+        snapshot._daily_life_media_scope_delivery = (
+            "webchat" in event_platform_names(original)
+        )
+        items = self._event_message_items(original)
+        copied_items = copy.deepcopy(items)
+        prepared = getattr(original, self._PREPARED_VISUAL_MEDIA_ATTR, [])
+        snapshot._daily_life_cached_image_references = {}
+        for index, item in enumerate(items):
+            cached = next(
+                (
+                    entry.get("path")
+                    for entry in prepared
+                    if entry.get("item") is item and entry.get("path")
+                ),
+                "",
+            )
+            if cached:
+                copied_items[index] = Image.fromFileSystem(str(cached))
+                payload = self._message_media_payload(item)
+                for key in ("path", "file", "url", "image"):
+                    if payload.get(key):
+                        snapshot._daily_life_cached_image_references[payload[key]] = (
+                            str(cached)
+                        )
+        message_obj = getattr(original, "message_obj", None)
+        if message_obj is not None:
+            snapshot.message_obj = copy.copy(message_obj)
+            snapshot.message_obj.message = copied_items
+        if hasattr(original, "message_items"):
+            snapshot.message_items = copied_items
+        setattr(
+            snapshot,
+            self._PREPARED_VISUAL_MEDIA_ATTR,
+            [
+                {**entry, "item": copied_items[index]}
+                for entry in prepared
+                for index, item in enumerate(items)
+                if entry.get("item") is item
+            ],
+        )
+        snapshot._daily_life_locked_image_prompt_text = self._event_image_prompt_text(
+            event
+        )
+        return snapshot
 
     @staticmethod
     def _parse_delivered_media_reply(value: Any) -> str:
@@ -107,6 +346,10 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
         source_event: Any = None,
         source: str = "media_followup",
     ) -> bool:
+        current_turn = getattr(self, "media_request_is_current_turn", None)
+        if callable(current_turn) and not current_turn(source_event):
+            logger.debug(f"{LOG_PREFIX} 跳过过期媒体补话：后续消息已经接管当前话轮。")
+            return False
         text = await self._generate_delivered_media_reply(
             scope,
             media_name=media_name,
@@ -115,6 +358,8 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
             guidance=guidance,
         )
         if not text:
+            return False
+        if callable(current_turn) and not current_turn(source_event):
             return False
         try:
             sent = await self.send_background_text(
@@ -131,13 +376,15 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
             return False
         if not sent:
             return False
-        try:
-            await self._append_assistant_history(scope, text)
-        except Exception as exc:
-            logger.debug(
-                f"{LOG_PREFIX} 媒体送达补话历史记录失败："
-                f"{self._media_error_summary(exc)}"
-            )
+        current_turn = getattr(self, "media_request_is_current_turn", None)
+        if not callable(current_turn) or current_turn(source_event):
+            try:
+                await self._append_assistant_history(scope, text)
+            except Exception as exc:
+                logger.debug(
+                    f"{LOG_PREFIX} 媒体送达补话历史记录失败："
+                    f"{self._media_error_summary(exc)}"
+                )
         return True
 
     @staticmethod

@@ -895,6 +895,16 @@ class CognitionArchiveMixin:
 
         return await self._run_db(dbwork)
 
+    async def get_durable_task(self, task_key: str) -> DurableTaskRecord | None:
+        def dbwork() -> DurableTaskRecord | None:
+            row = self._conn.execute(
+                "SELECT * FROM durable_tasks WHERE task_key = ?",
+                (self._text(task_key),),
+            ).fetchone()
+            return self._compose_durable_task(row) if row else None
+
+        return await self._run_db(dbwork)
+
     async def recover_expired_durable_tasks(self, *, now: str = "") -> int:
         """释放过期租约并终止超过重试上限的任务。
 
@@ -1255,8 +1265,13 @@ class CognitionArchiveMixin:
         *,
         owner: str = "",
         reason: str = "",
+        progress: dict[str, Any] | None = None,
     ) -> bool:
         """把条件尚未满足的已租用任务延期，不记作执行失败。"""
+
+        result = {"outcome": "deferred", "reason": self._text(reason)}
+        if isinstance(progress, dict):
+            result["progress"] = progress
 
         def dbwork() -> bool:
             clauses = ["id = ?", "status = 'leased'"]
@@ -1274,10 +1289,7 @@ class CognitionArchiveMixin:
                 + " AND ".join(clauses),
                 (
                     self._text(available_at) or self._cognition_now(),
-                    self._cognition_json(
-                        {"outcome": "deferred", "reason": self._text(reason)},
-                        default={},
-                    ),
+                    self._cognition_json(result, default={}),
                     *params,
                 ),
             )

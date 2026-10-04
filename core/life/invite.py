@@ -4,7 +4,14 @@ import uuid
 
 from astrbot.api import logger
 
-from ..models import CommitmentRecord, LifeState, PlaceRecord, TimelineItem
+from ..models import (
+    CommitmentRecord,
+    LifeState,
+    PlaceRecord,
+    TimelineItem,
+    normalize_timeline_day_offsets,
+    timeline_item_minutes,
+)
 from ..prompts import (
     CORE_AUTONOMY_RULES,
     CORE_JSON_OUTPUT_RULES,
@@ -14,12 +21,13 @@ from ..prompts import (
 )
 from .condition import format_state_prompt
 from .people import INVITE_PERSON_TEXT_PATHS
-from .tools import extract_json_from_text
+from .tools import extract_json_from_text, timeline_item_datetime
 
 
 class InviteMixin:
     _TIMELINE_AUDIT_ROUTE_FIELDS = (
         "time",
+        "day_offset",
         "travel_mode",
         "travel_origin",
         "travel_provider",
@@ -81,6 +89,7 @@ class InviteMixin:
     def _split_timeline_at(
         current_timeline: list,
         current_time: datetime.datetime,
+        timeline_date: str | None = None,
     ) -> tuple[list[TimelineItem], list[TimelineItem]]:
         """按当前时间拆分已经发生和尚未发生的时间轴。
 
@@ -92,18 +101,15 @@ class InviteMixin:
             已发生节点和未来节点组成的二元组。
         """
 
-        now_mins = current_time.hour * 60 + current_time.minute
+        normalized = [TimelineItem.from_value(item) for item in current_timeline]
+        normalize_timeline_day_offsets(normalized)
         past_timeline: list[TimelineItem] = []
         future_timeline: list[TimelineItem] = []
-        for item in current_timeline:
-            timeline_item = TimelineItem.from_value(item)
-            try:
-                hour, minute = map(int, timeline_item.time.split(":"))
-                if hour * 60 + minute <= now_mins:
-                    past_timeline.append(timeline_item)
-                else:
-                    future_timeline.append(timeline_item)
-            except (TypeError, ValueError):
+        for timeline_item in normalized:
+            point = timeline_item_datetime(timeline_item, timeline_date or current_time.date())
+            if point is not None and point <= current_time:
+                past_timeline.append(timeline_item)
+            else:
                 future_timeline.append(timeline_item)
         return past_timeline, future_timeline
 
@@ -212,6 +218,8 @@ class InviteMixin:
                 item = TimelineItem.from_value(raw.get("item"))
                 if cls._timeline_minutes(item.time) is None or not item.activity:
                     continue
+                if item.day_offset is None:
+                    item.day_offset = next(value.day_offset for value in working if value.time == target_time)
                 targeted_times.add(target_time)
                 working = [value for value in working if value.time != target_time]
                 working.append(item)
@@ -222,16 +230,19 @@ class InviteMixin:
             item = TimelineItem.from_value(raw.get("item"))
             if cls._timeline_minutes(item.time) is None or not item.activity:
                 continue
+            if item.day_offset is None:
+                item.day_offset = 0
             working.append(item)
             applied += 1
         if not applied:
             return None, [], "模型返回的时间轴编辑均无效"
-        seen_times: set[str] = set()
+        seen_times: set[tuple[int, str]] = set()
         for item in working:
-            if item.time in seen_times:
+            identity = (item.day_offset or 0, item.time)
+            if identity in seen_times:
                 return None, [], f"时间轴编辑产生重复时间：{item.time}"
-            seen_times.add(item.time)
-        working.sort(key=lambda item: cls._timeline_minutes(item.time) or 0)
+            seen_times.add(identity)
+        working.sort(key=lambda item: timeline_item_minutes(item) or 0)
         protected = [
             cls._copy_timeline_item(item)
             for item in original_items
@@ -248,7 +259,7 @@ class InviteMixin:
     ) -> list[TimelineItem]:
         """合并地图审计结果，同时保留未参与编辑节点的生活事实。"""
 
-        protected_by_time = {item.time: item for item in protected}
+        protected_by_time = {(item.day_offset or 0, item.time): item for item in protected}
         restored: list[TimelineItem] = []
         audited_items = [cls._copy_timeline_item(item) for item in timeline]
         baseline_items = [
@@ -256,7 +267,7 @@ class InviteMixin:
         ]
         for index, audited in enumerate(audited_items):
             before = baseline_items[index] if index < len(baseline_items) else None
-            original = protected_by_time.get(before.time) if before else None
+            original = protected_by_time.get((before.day_offset or 0, before.time)) if before else None
             if original is None:
                 restored.append(audited)
                 continue
@@ -272,7 +283,7 @@ class InviteMixin:
                 if place_changed or audited_value not in {"", None}:
                     setattr(merged, field_name, audited_value)
             restored.append(merged)
-        restored.sort(key=lambda item: cls._timeline_minutes(item.time) or 0)
+        restored.sort(key=lambda item: timeline_item_minutes(item) or 0)
         return restored
 
     @classmethod
@@ -412,7 +423,7 @@ class InviteMixin:
         current_places: list | None = None,
     ):
         past_timeline, future_timeline = self._split_timeline_at(
-            current_timeline, current_time
+            current_timeline, current_time, date_str
         )
 
         persona = await self._get_persona()
@@ -440,6 +451,7 @@ class InviteMixin:
    - insert：target_time 留空，在 item 中给出需要新增的完整节点。
    - 同一段出行需要同步调整准备、出发、同行活动和返程时，应分别列出必要编辑；无关的用餐、休息和晚间安排保持原样。
    - item.activity 要自然写清楚和邀请者一起做什么，并填写结构化地点。
+   - item.day_offset 必须填写：生活日期当天为 0，次日为 1；不能把午夜后的活动排到早晨之前。
    - place_kind 只能是 home、poi、generic、transit、online 或 none。
    - 普通本地活动使用 place_scope=local；明确跨城活动使用 place_scope=travel 并填写 place_city。
    - 从上一处可定位地点移动到当前地点时填写 travel_mode；地点未变化时留空。
@@ -614,7 +626,7 @@ JSON 输出要求：
         """
 
         past_timeline, future_timeline = self._split_timeline_at(
-            current_timeline, current_time
+            current_timeline, current_time, date_str
         )
         persona = await self._get_persona()
         person_facts = await self._build_person_fact_context(
@@ -642,10 +654,12 @@ JSON 输出要求：
 5. 若承诺明确包含穿搭要求，输出 outfit_instruction，并给出适合开始换装的 outfit_effective_time；没有明确要求则留空。穿搭要求不能凭空扩写。
 6. 地点字段规则与全天日程一致：place_kind 只能是 home、poi、generic、transit、online 或 none；跨城才使用 place_scope=travel；发生移动时填写 travel_mode。
 7. 媒体承诺只安排明确约定的未来时刻；正在执行的拍摄或重试不另增日程。活动描述只写已确认的目标，不补写未经证实的姿势、环境或前置动作。
+8. shared_activity 仅在证据明确双方已确认一起参与活动时为 true；单方计划、普通提醒和媒体交付不得视为共同活动。
 
 严格返回 JSON：
 {{
   "should_apply": true/false,
+  "shared_activity": true/false,
   "reason": "是否进入当天生活的依据",
   "timeline_edits": [{{"operation": "replace | remove | insert", "target_time": "被替换/删除节点的 HH:MM，insert 时为空", "item": {{"time": "HH:MM", "activity": "...", "activity_kind": "rest | other，依据行为含义判断", "status": "...", "place": "地点或空字符串", "place_kind": "home | poi | generic | transit | online | none", "place_scope": "local | travel", "place_city": "跨城目标城市或空字符串", "place_hint": "消歧信息或空字符串", "travel_mode": "walking | cycling | driving | transit 或空字符串"}}}}],
   "outfit_instruction": "承诺中明确确认的穿搭要求或空字符串",

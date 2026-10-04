@@ -5,14 +5,6 @@ import json
 from unittest.mock import AsyncMock
 
 from core.config.options import LifeSettings
-from core.runtime.voicecall.manager import (
-    VoiceCallInvite,
-    _rtc_function_calls,
-)
-from core.runtime.voicecall.videocall import (
-    RtcVoiceCallManager,
-    VoiceCallInvite as RtcVoiceCallInvite,
-)
 from core.runtime.voicecall.rtc import (
     RtcTokenBuilder,
     callback_signature_present,
@@ -20,6 +12,13 @@ from core.runtime.voicecall.rtc import (
     decode_callback_message,
 )
 from core.runtime.voicecall.rtcweb import rtc_page
+from core.runtime.voicecall.videocall import (
+    RtcVoiceCallManager,
+    _rtc_function_calls,
+)
+from core.runtime.voicecall.videocall import (
+    VoiceCallInvite as RtcVoiceCallInvite,
+)
 
 
 class _Runtime:
@@ -400,7 +399,7 @@ def test_rtc_page_contains_optional_camera_track_flow() -> None:
     assert "https://api.nycnm.cn/api/v2/bizhi1" in page
     assert "https://api.nycnm.cn/api/v2/bizhi2" in page
     assert "voice_call=" in page
-    assert "body[data-wallpaper=\"ready\"]::before" in page
+    assert 'body[data-wallpaper="ready"]::before' in page
     assert "const resetStartButton = () =>" in page
     assert "const markEndedButton = () =>" in page
     assert "markEndedButton(); setStatus(finalStatus)" in page
@@ -410,7 +409,7 @@ def test_rtc_page_contains_optional_camera_track_flow() -> None:
     assert "await finish(false, '通话已结束', finalHint)" in page
     assert page.count('<div class="meter"') == 1
     assert page.count('<div class="meter" aria-hidden="true"><i></i>') == 1
-    assert page.count('<i></i>') >= 5
+    assert page.count("<i></i>") >= 5
     assert "video_enabled" in page
     assert "startVideoCapture" in page
     assert "setVideoCaptureDevice" in page
@@ -418,8 +417,8 @@ def test_rtc_page_contains_optional_camera_track_flow() -> None:
     assert "dblclick" in page
     assert "双击切换前后摄像头" in page
     assert "header-badge" not in page
-    assert "data-lucide=\"video\"" not in page
-    assert "data-facing=\"environment\"" in page
+    assert 'data-lucide="video"' not in page
+    assert 'data-facing="environment"' in page
     assert "publishStream(api.MediaType.VIDEO)" in page
     assert "fetch('/rtc/start/'" in page
     assert "已进入房间，等待 Bot 接入" not in page

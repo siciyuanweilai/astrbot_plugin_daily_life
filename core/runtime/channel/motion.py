@@ -85,9 +85,7 @@ class RuntimeVideoMediaMixin:
                     ),
                     "",
                 )
-                items.append(
-                    {"type": "image", "path": str(cached)} if cached else item
-                )
+                items.append({"type": "image", "path": str(cached)} if cached else item)
             source = LifeVideoReferenceSource(
                 event=current_event,
                 items=tuple(items),
@@ -382,17 +380,9 @@ class RuntimeVideoMediaMixin:
             )
         elif not initial_reference_image:
             current_appearance = await self._current_life_appearance_snapshot(route)
-        if (
-            current_appearance
-            and not historical_request
-            and route in {"current_character", "group"}
-        ):
-            prompt = await self._align_current_appearance_scene_prompt(
-                prompt,
-                source_request,
-                route,
-            )
         request_id = self._register_life_video_request(scope, prompt, event)
+        source_event = event
+        event = self._snapshot_media_event(event)
         request = LifeVideoRequest(
             scope=scope,
             prompt=prompt,
@@ -430,6 +420,7 @@ class RuntimeVideoMediaMixin:
                 },
                 ensure_ascii=False,
             )
+        self._release_media_chat_turn(source_event)
         return json.dumps(
             {
                 "status": "pending",
@@ -504,8 +495,13 @@ class RuntimeVideoMediaMixin:
         # 错当成当前视频的首帧。
         reference_image = str(request.initial_reference_image or "").strip()
         first_frame = ""
+        prompt = request.prompt
+        if request.current_appearance and route in {"current_character", "group"}:
+            prompt = await self._align_current_appearance_scene_prompt(
+                prompt, request.source_request, route
+            )
         generation_prompt = self._apply_current_appearance_snapshot(
-            request.prompt,
+            prompt,
             request.current_appearance,
             route,
             source_request=request.source_request,
@@ -792,16 +788,7 @@ class RuntimeVideoMediaMixin:
             ).strip()
             if request_id and request_id in requests:
                 return requests[request_id]
-        scope = self._event_session_id(event)
-        if not scope:
-            return None
-        candidates = [
-            item
-            for item in requests.values()
-            if str(item.get("scope") or "") == scope
-            and time.monotonic() - float(item.get("created_at") or 0) <= 20
-        ]
-        return candidates[-1] if candidates else None
+        return None
 
     def _finish_life_video_request(self, request_id: str) -> None:
         request_id = str(request_id or "").strip()
@@ -851,9 +838,21 @@ class RuntimeVideoMediaMixin:
                     f"{LOG_PREFIX} 视频失败，图片发送失败：{self._media_error_summary(exc)}"
                 )
 
+        current_turn = getattr(self, "media_request_is_current_turn", None)
+        stale_turn = callable(current_turn) and not current_turn(event)
+        if stale_turn:
+            logger.debug(
+                f"{LOG_PREFIX} 跳过过期视频失败补话：后续消息已经接管当前话轮。"
+            )
+            if isinstance(marker, dict):
+                marker["failure_reply_sent"] = False
+                marker["fallback_photo_sent"] = photo_sent
+            return photo_sent
         text = await self._generate_life_video_failure_text(
             event, prompt, error, photo_sent=photo_sent
         )
+        if callable(current_turn) and not current_turn(event):
+            return photo_sent
         if not text:
             text = self._life_video_failure_fallback_text(photo_sent)
         try:
@@ -866,12 +865,13 @@ class RuntimeVideoMediaMixin:
             )
             text_sent = False
         if text_sent:
-            try:
-                await self._append_assistant_history(scope, text)
-            except Exception as exc:
-                logger.debug(
-                    f"{LOG_PREFIX} 视频失败补话历史记录失败：{self._media_error_summary(exc)}"
-                )
+            if not callable(current_turn) or current_turn(event):
+                try:
+                    await self._append_assistant_history(scope, text)
+                except Exception as exc:
+                    logger.debug(
+                        f"{LOG_PREFIX} 视频失败补话历史记录失败：{self._media_error_summary(exc)}"
+                    )
             if isinstance(marker, dict):
                 marker["failure_reply_sent"] = True
         if isinstance(marker, dict):
@@ -947,8 +947,14 @@ class RuntimeVideoMediaMixin:
         event: Any,
         request_id: str,
     ) -> bool:
+        current_turn = getattr(self, "media_request_is_current_turn", None)
+        if callable(current_turn) and not current_turn(event):
+            logger.debug(f"{LOG_PREFIX} 跳过过期视频补话：后续消息已经接管当前话轮。")
+            return False
         text = await self._generate_life_video_followup_text(event, prompt, summary)
         if not text:
+            return False
+        if callable(current_turn) and not current_turn(event):
             return False
         text_sent = await self._send_life_video_text(
             scope, text, source_event=event, source="video_followup"
@@ -956,7 +962,8 @@ class RuntimeVideoMediaMixin:
         if text_sent:
             if event is not None:
                 setattr(event, "_daily_life_media_reply_sent", True)
-            await self._append_assistant_history(scope, text)
+            if not callable(current_turn) or current_turn(event):
+                await self._append_assistant_history(scope, text)
         return text_sent
 
     async def _generate_life_video_followup_text(

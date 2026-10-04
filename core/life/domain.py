@@ -21,7 +21,7 @@ from .audit import DailyLocationAuditMixin
 from .locator import DailyLocationPlanningMixin
 from .maps import create_map_client, map_provider_label, normalize_map_provider
 from .residence import PersonaResidence
-from .tools import get_week_id
+from .tools import get_week_id, timeline_item_datetime
 
 _TRAVEL_SPEED_METERS_PER_SECOND = {
     "walking": 1.25,
@@ -629,7 +629,8 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
             return
         for action in actions:
             item = day.timeline[action.timeline_index]
-            started_at = self._timeline_datetime(day.date, item.time)
+            point = timeline_item_datetime(item, day.date, meta=day.meta)
+            started_at = point.strftime("%Y-%m-%d %H:%M:%S") if point else ""
             duration_seconds = max(0, action.duration_minutes) * 60
             ended_at = ""
             if item.execution_state in {

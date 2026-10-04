@@ -205,14 +205,7 @@ class RuntimePhotoSuiteMediaMixin:
             ).strip()
             if request_id and request_id in requests:
                 return requests[request_id]
-        scope = self._event_session_id(event)
-        candidates = [
-            item
-            for item in requests.values()
-            if str(item.get("scope") or "") == scope
-            and time.monotonic() - float(item.get("created_at") or 0) <= 20
-        ]
-        return candidates[-1] if candidates else None
+        return None
 
     def _photo_suite_finish_request(self, request_id: str) -> None:
         request_id = str(request_id or "").strip()
@@ -417,16 +410,6 @@ class RuntimePhotoSuiteMediaMixin:
                 and not continue_last_result
             ):
                 current_appearance = await self._current_life_appearance_snapshot(route)
-            if (
-                current_appearance
-                and not historical_request
-                and route in {"current_character", "group"}
-            ):
-                prompt = await self._align_current_appearance_scene_prompt(
-                    prompt,
-                    source_request,
-                    route,
-                )
             task_id = uuid.uuid4().hex
             task_dir = self._photo_suite_root() / task_id
             manifest_path = task_dir / "manifest.json"
@@ -465,11 +448,21 @@ class RuntimePhotoSuiteMediaMixin:
             self._photo_suite_last_tasks()[scope] = str(manifest_path)
 
         assert manifest is not None and manifest_path is not None
+        media_event = self._snapshot_media_event(event)
+        if not manifest.get("shots"):
+            media_event._daily_life_locked_suite_reference = (
+                await self._resolve_life_image_reference_async(
+                    media_event,
+                    initial_reference_image,
+                    allow_last_generated=initial_continue_last_result,
+                    prefer_last_generated=initial_continue_last_result,
+                )
+            )
         request_id = self._photo_suite_register_request(scope, prompt, event, task_dir)
         scheduled = self._schedule_background_task(
             self._photo_suite_generate_background(
                 scope,
-                event,
+                media_event,
                 request_id,
                 manifest_path,
                 retry_indexes=retry_values,
@@ -487,6 +480,7 @@ class RuntimePhotoSuiteMediaMixin:
                 media="photo_suite",
             )
         self._disable_photo_suite_tool_for_active_turn(event)
+        self._release_media_chat_turn(event)
         return json.dumps(
             {
                 "status": "pending",
@@ -511,16 +505,30 @@ class RuntimePhotoSuiteMediaMixin:
             raise RuntimeError("套图任务记录不可用")
         count = self._photo_suite_count(manifest.get("count"))
         if not manifest.get("shots"):
-            reference = await self._resolve_life_image_reference_async(
-                event,
-                initial_reference_image,
-                allow_last_generated=bool(continue_last_result),
-                prefer_last_generated=bool(continue_last_result),
+            locked = getattr(event, "_daily_life_locked_suite_reference", None)
+            reference = (
+                str(locked)
+                if locked is not None
+                else await self._resolve_life_image_reference_async(
+                    event,
+                    initial_reference_image,
+                    allow_last_generated=bool(continue_last_result),
+                    prefer_last_generated=bool(continue_last_result),
+                )
             )
             manifest["reference_path"] = await self._photo_suite_stabilize_reference(
                 reference, manifest_path.parent
             )
             planning_prompt = str(manifest.get("prompt") or "")
+            route = self._normalize_image_subject_route(manifest.get("subject_route"))
+            if manifest.get("current_appearance") and route in {
+                "current_character",
+                "group",
+            }:
+                planning_prompt = await self._align_current_appearance_scene_prompt(
+                    planning_prompt, str(manifest.get("source_request") or ""), route
+                )
+                manifest["prompt"] = planning_prompt
             planning_prompt = self._apply_current_appearance_snapshot(
                 planning_prompt,
                 str(manifest.get("current_appearance") or ""),
@@ -1236,6 +1244,8 @@ shots 数量必须与要求一致。shared 只写整组共同内容，不得写�
         is_retry: bool,
         error: str = "",
     ) -> bool:
+        if not self.media_request_is_current_turn(event):
+            return False
         text = await self._photo_suite_followup_text(
             event,
             prompt=prompt,
@@ -1246,6 +1256,8 @@ shots 数量必须与要求一致。shared 只写整组共同内容，不得写�
             is_retry=is_retry,
             error=error,
         )
+        if not self.media_request_is_current_turn(event):
+            return False
         if not text:
             if sent_count and is_retry:
                 text = "这张重新拍好了。"
@@ -1268,7 +1280,7 @@ shots 数量必须与要求一致。shared 只写整组共同内容，不得写�
                 f"{LOG_PREFIX} 套图补话发送失败：{self._media_error_summary(exc)}"
             )
             return False
-        if sent:
+        if sent and self.media_request_is_current_turn(event):
             await self._append_assistant_history(scope, text)
         return sent
 

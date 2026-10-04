@@ -1616,6 +1616,9 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             CommitmentRecord(
                 content="傍晚一起去老街，换上适合同行的外出穿搭",
                 trigger_date=today,
+                owner="共同",
+                source="chat",
+                source_session="test:FriendMessage:joint-plan",
                 people=["测试对象"],
             )
         )
@@ -1669,6 +1672,9 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             (await archive.get_commitment(commitment.id)).status, "scheduled"
         )
         self.assertEqual(scheduled, [])
+        contact = archive.durable_tasks[f"invite_contact:{commitment.id}"]
+        self.assertTrue(contact.payload["shared_activity_contact"])
+        self.assertEqual(contact.available_at, "2026-08-06 14:00:00")
         self.assertIn("commitment_schedule_update", page_reasons)
 
     async def test_immediate_media_commitment_does_not_enter_timeline(self):

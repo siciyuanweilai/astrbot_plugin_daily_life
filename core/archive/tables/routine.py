@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS timelines (
             date TEXT NOT NULL,
             sort_order INTEGER NOT NULL,
             time TEXT NOT NULL DEFAULT '',
+            day_offset INTEGER NOT NULL DEFAULT 0,
             activity TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL DEFAULT '',
             duration_minutes INTEGER NOT NULL DEFAULT 0,

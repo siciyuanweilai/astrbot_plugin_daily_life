@@ -8,6 +8,7 @@ from typing import Any
 
 from astrbot.api import logger
 
+from ..models import normalize_timeline_day_offsets, timeline_item_minutes
 from .routing import (
     LOCAL_SCOPE_MAX_TRAVEL_MINUTES,
     ROUTE_MODES,
@@ -97,6 +98,8 @@ class DailyLocationAuditMixin:
         timeline = revised.get("timeline")
         if not isinstance(timeline, list):
             return payload, ""
+        normalize_timeline_day_offsets(timeline)
+        original_end = timeline_item_minutes(timeline[-1]) if timeline else None
 
         home_city = str(home_location.get("city") or "").strip()
         home_coordinate = home_location.get("coordinate")
@@ -136,6 +139,17 @@ class DailyLocationAuditMixin:
         )
         if issue:
             return payload, issue
+
+        shifted_end = timeline_item_minutes(timeline[-1]) if timeline else None
+        plan = (revised.get("life_decision") or {}).get("day_plan") or {}
+        window = plan.get("life_window") or {}
+        window_end = timeline_item_minutes({"time": window.get("end")})
+        if original_end is not None and shifted_end is not None and shifted_end > original_end and window_end is not None:
+            start = timeline_item_minutes({"time": window.get("start")})
+            if start is not None and window_end < start:
+                window_end += 1440
+            corrected = (window_end + shifted_end - original_end) % 1440
+            window["end"] = f"{corrected // 60:02d}:{corrected % 60:02d}"
 
         issue = self._synchronize_travel_actions(
             revised,
@@ -703,24 +717,9 @@ class DailyLocationAuditMixin:
             地点转换列表、按时间轴索引组织的路线和失败原因。
         """
 
-        unwrapped_minutes: list[int | None] = []
-        last_unwrapped = None
-        day_offset = 0
-        for entry in entries:
-            parts = str(entry["item"].get("time") or "").split(":", 1)
-            try:
-                minutes = int(parts[0]) * 60 + int(parts[1])
-            except (IndexError, TypeError, ValueError):
-                minutes = None
-            if minutes is None or not 0 <= minutes < 24 * 60:
-                unwrapped_minutes.append(None)
-                continue
-            candidate = minutes + day_offset
-            if last_unwrapped is not None and candidate < last_unwrapped:
-                day_offset += 24 * 60
-                candidate = minutes + day_offset
-            unwrapped_minutes.append(candidate)
-            last_unwrapped = candidate
+        items = [entry["item"] for entry in entries]
+        normalize_timeline_day_offsets(items)
+        unwrapped_minutes = [timeline_item_minutes(item) for item in items]
 
         transitions: list[dict[str, Any]] = []
         previous = None
@@ -1136,6 +1135,7 @@ class DailyLocationAuditMixin:
                 continue
             shifted = minutes + shift_minutes
             unwrapped_minutes[index] = shifted
+            entries[index]["item"]["day_offset"] = shifted // (24 * 60)
             clock_minutes = shifted % (24 * 60)
             entries[index]["item"]["time"] = (
                 f"{clock_minutes // 60:02d}:{clock_minutes % 60:02d}"

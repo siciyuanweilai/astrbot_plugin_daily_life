@@ -238,6 +238,9 @@ class RecallMixin:
         ):
             return False
         event_sender = getattr(source_event, "send", None)
+        prefer_scope_send = prefer_scope_send or bool(
+            getattr(source_event, "_daily_life_media_scope_delivery", False)
+        )
         if callable(event_sender) and not prefer_scope_send:
             await event_sender(chain)
             if log_outbound:

@@ -14,6 +14,7 @@ from ..life.tools import (
     resolve_daily_hint,
     resolve_daily_suggested,
     timeline_deferred_until,
+    timeline_item_datetime,
 )
 from ..life.wardrobe import (
     format_outfit_components,
@@ -1084,9 +1085,14 @@ class PageViewMixin:
             if item is None:
                 return None
             record = item.as_dict()
+            effective = timeline_item_datetime(item, data.date, meta=data.meta)
+            if effective:
+                record["scheduled_at"] = effective.isoformat(sep=" ", timespec="minutes")
+                record["display_time"] = effective.strftime("%m-%d %H:%M") if effective.date().isoformat() != data.date else effective.strftime("%H:%M")
             deferred = timeline_deferred_until(item, data.date, data.meta)
             if deferred:
                 record["time"] = deferred.strftime("%H:%M")
+                record["day_offset"] = (deferred.date() - datetime.date.fromisoformat(data.date)).days
                 record["execution_reason"] = f"原定 {item.time}，顺延至 {deferred:%m-%d %H:%M}；{record['execution_reason']}"
             return record
 

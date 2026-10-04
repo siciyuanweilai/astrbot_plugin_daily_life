@@ -11,8 +11,11 @@ from ..models import (
     TimelineItem,
     WeatherInfo,
     deduplicate_timeline_items,
+    normalize_timeline_day_offsets,
+    timeline_item_minutes,
 )
 from .revision import merge_day_records
+from .timeline import rebind_planned_actions
 
 
 class DayArchiveMixin:
@@ -58,6 +61,9 @@ class DayArchiveMixin:
         timeline = [
             TimelineItem(
                 time=item["time"],
+                # Keep the legacy in-memory representation for same-day nodes;
+                # only an actual next-day offset needs to be exposed to callers.
+                day_offset=(item["day_offset"] or None),
                 activity=item["activity"],
                 activity_kind=item["activity_kind"],
                 status=item["status"],
@@ -84,7 +90,7 @@ class DayArchiveMixin:
             )
             for item in self._conn.execute(
                 """
-                SELECT time, activity, status, duration_minutes, place, place_kind, place_scope,
+                SELECT time, day_offset, activity, status, duration_minutes, place, place_kind, place_scope,
                        place_city, place_hint, travel_mode, place_address,
                        place_latitude, place_longitude, place_coordinate_source,
                        travel_origin, travel_provider, travel_detail, travel_minutes,
@@ -243,7 +249,18 @@ class DayArchiveMixin:
         )
 
     def _set_day_unlocked(self, day: DayRecord) -> int:
+        baseline = day._baseline
+        if (
+            baseline
+            and day.meta.get("planned_life_actions")
+            == (baseline.get("meta") or {}).get("planned_life_actions")
+        ):
+            rebind_planned_actions(day.meta, baseline.get("timeline") or [], day.timeline)
+        previous_timeline = day.timeline
+        normalize_timeline_day_offsets(previous_timeline)
         day.timeline = deduplicate_timeline_items(day.timeline)
+        day.timeline.sort(key=lambda item: timeline_item_minutes(item) or 0)
+        rebind_planned_actions(day.meta, previous_timeline, day.timeline)
         weather_info = day.weather_info
         meta = day.meta
         self._conn.execute(
@@ -352,8 +369,8 @@ class DayArchiveMixin:
                     place_latitude, place_longitude, place_coordinate_source,
                     travel_origin, travel_provider, travel_detail, travel_minutes,
                     travel_distance_meters, execution_state, execution_reason,
-                    execution_evidence, execution_updated_at, activity_kind
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    execution_evidence, execution_updated_at, activity_kind, day_offset
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     date_str,
@@ -382,6 +399,7 @@ class DayArchiveMixin:
                     item.execution_evidence,
                     item.execution_updated_at,
                     item.activity_kind,
+                    item.day_offset or 0,
                 ),
             )
 

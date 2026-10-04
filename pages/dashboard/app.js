@@ -956,7 +956,7 @@ function renderTimelineDisplay(timeline) {
   el.timelineList.replaceChildren(
     ...timeline.map((item, index) => {
       const li = node("li", "timeline-item");
-      li.append(node("div", "time", clean(item.time, TIMELINE_TIME_EMPTY_TEXT)));
+      li.append(node("div", "time", clean(item.display_time || item.time, TIMELINE_TIME_EMPTY_TEXT)));
       const body = node("div");
       body.append(node("div", "timeline-activity", clean(item.activity)));
       if (Number(item.duration_minutes || 0) > 0) {
@@ -993,6 +993,18 @@ function timelineEditorRow(item, index) {
   time.dataset.timelineField = "time";
   time.dataset.index = String(index);
   const body = node("div", "timeline-edit-fields");
+  const dayOffset = document.createElement("select");
+  for (let offset = 0; offset <= Math.max(1, Number(item.day_offset || 0)); offset += 1) {
+    const option = document.createElement("option");
+    option.value = String(offset);
+    option.textContent = offset === 0 ? "当天" : offset === 1 ? "次日" : `${offset} 天后`;
+    dayOffset.append(option);
+  }
+  dayOffset.value = String(Math.max(0, Number(item.day_offset || 0)));
+  dayOffset.title = "日程日期";
+  dayOffset.setAttribute("aria-label", dayOffset.title);
+  dayOffset.dataset.timelineField = "day_offset";
+  dayOffset.dataset.index = String(index);
   const activity = document.createElement("textarea");
   activity.rows = 2;
   activity.value = clean(item.activity, "");
@@ -1025,7 +1037,9 @@ function timelineEditorRow(item, index) {
     renderTimelineEditor();
   });
   body.append(activity, duration, status, remove);
-  li.append(time, body);
+  const timing = node("div", "timeline-edit-time");
+  timing.append(dayOffset, time);
+  li.append(timing, body);
   return li;
 }
 
@@ -1035,8 +1049,8 @@ function updateTimelineDraftFromInputs() {
     const index = Number(input.dataset.index);
     const field = input.dataset.timelineField;
     if (!Number.isInteger(index) || !next[index] || !field) return;
-    next[index][field] = field === "duration_minutes"
-      ? Math.max(0, Math.min(1440, Number(input.value || 0)))
+    next[index][field] = field === "duration_minutes" || field === "day_offset"
+      ? Math.max(0, Math.min(field === "duration_minutes" ? 1440 : 7, Math.trunc(Number(input.value || 0))))
       : input.value.trim();
   });
   state.timelineDraft = next;

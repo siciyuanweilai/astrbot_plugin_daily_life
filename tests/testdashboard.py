@@ -5410,7 +5410,7 @@ if (state.configTextPending || timerCalls !== 1) {
         self.assertIn("const TODAY_FACT_EMPTY_TEXT = {", app)
         self.assertIn("function renderEmptyTodayFacts()", app)
         self.assertIn("percent === null ? METER_EMPTY_TEXT", app)
-        self.assertIn("clean(item.time, TIMELINE_TIME_EMPTY_TEXT)", app)
+        self.assertIn("clean(item.display_time || item.time, TIMELINE_TIME_EMPTY_TEXT)", app)
         self.assertIn(": CURRENT_ACTIVITY_EMPTY_TEXT", app)
         self.assertIn(
             "el.todayWeekPlan.textContent = TODAY_FACT_EMPTY_TEXT.todayWeekPlan", app

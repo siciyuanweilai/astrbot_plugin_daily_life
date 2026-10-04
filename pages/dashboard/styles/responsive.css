@@ -241,7 +241,6 @@
   .template-list-item-compact .template-list-subfield:is(
       [data-template-field="resolution"],
       [data-template-field="aspect_ratio"],
-      [data-template-field="quality"],
       [data-template-field="timeout_seconds"]
     ) {
     grid-column: span 2;

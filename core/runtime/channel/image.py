@@ -33,6 +33,7 @@ from ...media.picture.routes import (
 )
 from ...paths import runtime_data_root
 from ...prompts import CORE_JSON_OUTPUT_RULES, cache_friendly_prompt
+from ..delivery import BackgroundTextMode
 from ..locks import operation_lock
 from ..markers import LOG_PREFIX
 from ..stage.error import MediaPromptExtractionError
@@ -89,7 +90,18 @@ class RuntimeImageMediaMixin:
         runners = getattr(follow_up, "_ACTIVE_AGENT_RUNNERS", None)
         if not isinstance(runners, dict):
             return None
-        return runners.get(str(getattr(event, "unified_msg_origin", "") or ""))
+        runner = runners.get(str(getattr(event, "unified_msg_origin", "") or ""))
+        source = getattr(
+            getattr(getattr(runner, "run_context", None), "context", None),
+            "event",
+            None,
+        )
+        if source is not None and source is not event:
+            if not cls._event_message_id(event) or cls._event_message_id(
+                source
+            ) != cls._event_message_id(event):
+                return None
+        return runner
 
     @classmethod
     def _direct_image_tool_already_sent(cls, event: Any) -> bool:
@@ -1134,6 +1146,9 @@ JSON 字段：
         ).strip()
 
     def _event_image_prompt_text(self, event: Any) -> str:
+        locked = getattr(event, "_daily_life_locked_image_prompt_text", None)
+        if locked is not None:
+            return str(locked)
         text = self._event_current_image_request_text(event)
         scope = self._event_session_id(event)
         store = getattr(self, "_life_media_source_events", None)
@@ -1358,10 +1373,12 @@ JSON 字段：
             resolution = self._image_prompt_resolution(event_prompt)
         participant_ids = self._normalize_image_participants(participants)
         if use_last_reverse_prompt:
-            (
-                resolved_prompt,
-                aspect_ratio,
-            ) = await self._resolve_last_reverse_image_prompt_async(event)
+            locked = getattr(event, "_daily_life_locked_reverse_prompt", None)
+            resolved_prompt, aspect_ratio = (
+                locked
+                if locked is not None
+                else await self._resolve_last_reverse_image_prompt_async(event)
+            )
             if not resolution:
                 resolution = self._image_prompt_resolution(resolved_prompt)
             return ImageGenerationPlan(
@@ -1505,6 +1522,175 @@ JSON 字段：
         return ImageGenerationExecution(generated, directed_prompt)
 
     async def life_image_generate(
+        self, event: Any, prompt: str, **options: Any
+    ) -> str | None:
+        if int(getattr(event, "_daily_life_commitment_id", 0) or 0) > 0:
+            # Durable commitment execution already runs outside the chat runner
+            # and must wait for real delivery before marking the promise done.
+            return await self._life_image_generate_inline(event, prompt, **options)
+        for source in self._event_sources(event):
+            marker = getattr(source, "_daily_life_image_request", None)
+            if isinstance(marker, dict) and marker.get("status") in {"pending", "sent"}:
+                return json.dumps(
+                    {
+                        "status": marker["status"],
+                        "media": "image",
+                        "deduplicated": True,
+                    },
+                    ensure_ascii=False,
+                )
+        snapshot = self._snapshot_media_event(event)
+        snapshot._daily_life_image_tool_name = "life_image_generate"
+        if options.get("use_last_reverse_prompt"):
+            snapshot._daily_life_locked_reverse_prompt = (
+                await self._resolve_last_reverse_image_prompt_async(snapshot)
+            )
+        route = self._normalize_image_subject_route(
+            options.get("subject_route", "free")
+        )
+        if not options.get("current_outfit_change") and not options.get(
+            "historical_target"
+        ):
+            snapshot._daily_life_locked_appearance = (
+                await self._current_life_appearance_snapshot(route)
+            )
+        return self._submit_background_image(
+            snapshot,
+            event,
+            lambda: self._life_image_generate_inline(snapshot, prompt, **options),
+            action="generate",
+        )
+
+    def _submit_background_image(
+        self,
+        event: Any,
+        source_event: Any,
+        work: Callable[[], Awaitable],
+        *,
+        action: str,
+    ) -> str:
+        marker = {"status": "pending", "action": action}
+        tool_name = str(
+            getattr(event, "_daily_life_image_tool_name", "life_image_generate")
+        )
+        source_id = self._event_message_id(source_event) or f"event:{id(source_event)}"
+        scope = self._event_session_id(event)
+        scheduled = self._schedule_background_task(
+            self._background_image_delivery(event, work, marker, tool_name),
+            label="生活图片生成" if action == "generate" else "生活图片编辑",
+            key=f"life_image:{scope}:{source_id}",
+        )
+        if not scheduled:
+            return json.dumps(
+                {
+                    "status": "failed",
+                    "media": "image",
+                    "reason": "图片后台任务队列暂时繁忙，请稍后重试",
+                },
+                ensure_ascii=False,
+            )
+        for source in [event, *self._event_sources(source_event)]:
+            setattr(source, "_daily_life_image_request", marker)
+        self._disable_direct_image_tools_for_active_turn(source_event)
+        self._release_media_chat_turn(source_event)
+        return json.dumps(
+            {
+                "status": "pending",
+                "media": "image",
+                "action": action,
+                "response_timing": "after_delivery",
+                "response_stance": "本次图片已交给独立任务；结束本次工具轮次，不再调用图片工具或提前声称已发送。后续聊天正常回应。",
+            },
+            ensure_ascii=False,
+        )
+
+    async def _background_image_delivery(
+        self, event: Any, work: Callable[[], Awaitable], marker: dict, tool_name: str
+    ) -> None:
+        try:
+            result = await work()
+            try:
+                payload = json.loads(str(result or ""))
+            except (TypeError, ValueError):
+                payload = {}
+            if marker["status"] == "cancelled":
+                self.cancel_tool_reaction(event, tool_name)
+                return
+            if marker["status"] == "sent" or (
+                isinstance(payload, dict) and payload.get("status") == "sent"
+            ):
+                marker["status"] = "sent"
+                await self.finish_tool_reaction(event, tool_name, success=True)
+                if not getattr(event, "_daily_life_media_reply_sent", False):
+                    await self._send_delivered_media_followup(
+                        self._event_session_id(event),
+                        media_name="生活照片",
+                        request_text=self._event_current_image_request_text(event),
+                        delivery_text="图片已成功送达",
+                        source_event=event,
+                        source="image_followup",
+                    )
+            else:
+                marker["status"] = "failed"
+                await self.finish_tool_reaction(event, tool_name, success=False)
+                failure_text = str(result or "这次图片没有拍成。")
+                if (
+                    isinstance(payload, dict)
+                    and payload.get("status") == "needs_parameters"
+                ):
+                    failure_text = "这次合影还缺少好友的穿搭或发型，暂时没有拍成。"
+                if self.media_request_is_current_turn(event):
+                    await self.send_background_text(
+                        self._event_session_id(event),
+                        failure_text,
+                        mode=BackgroundTextMode.DIRECT,
+                        source_event=event,
+                        source="image_failure",
+                    )
+        except asyncio.CancelledError:
+            marker["status"] = "cancelled"
+            self.cancel_tool_reaction(event, tool_name)
+            raise
+        except Exception as exc:
+            if marker["status"] == "sent":
+                logger.warning(
+                    f"{LOG_PREFIX} 图片已投递，后处理记录失败：{self._media_error_summary(exc)}"
+                )
+                return
+            marker["status"] = "failed"
+            await self.finish_tool_reaction(event, tool_name, success=False)
+            logger.warning(
+                f"{LOG_PREFIX} 图片后台任务失败：{self._media_error_summary(exc)}"
+            )
+            if self.media_request_is_current_turn(event):
+                await self.send_background_text(
+                    self._event_session_id(event),
+                    "这次图片没有拍成。",
+                    mode=BackgroundTextMode.DIRECT,
+                    source_event=event,
+                    source="image_failure",
+                )
+
+    def hold_life_image_final_text(self, event: Any) -> bool:
+        marker = next(
+            (
+                getattr(source, "_daily_life_image_request", None)
+                for source in self._event_sources(event)
+                if isinstance(getattr(source, "_daily_life_image_request", None), dict)
+            ),
+            None,
+        )
+        if not marker:
+            return False
+        result = getattr(event, "get_result", lambda: None)()
+        if not self._is_llm_result_object(result):
+            return False
+        clearer = getattr(event, "clear_result", None)
+        if callable(clearer):
+            clearer()
+        return True
+
+    async def _life_image_generate_inline(
         self,
         event: Any,
         prompt: str,
@@ -1530,7 +1716,6 @@ JSON 字段：
             return self._duplicate_direct_image_result()
         route = self._normalize_image_subject_route(subject_route)
         current_appearance = ""
-        source_request = self._event_current_image_request_text(event)
         historical_request = route in {"current_character", "group"} and bool(
             historical_target
         )
@@ -1612,7 +1797,12 @@ JSON 字段：
                 prompt, historical_appearance
             )
         if not current_appearance and not historical_request:
-            current_appearance = await self._current_life_appearance_snapshot(route)
+            locked = getattr(event, "_daily_life_locked_appearance", None)
+            current_appearance = (
+                str(locked)
+                if locked is not None
+                else await self._current_life_appearance_snapshot(route)
+            )
         if (
             current_appearance
             and not historical_request
@@ -1667,6 +1857,19 @@ JSON 字段：
             friend_look_persist = self._friend_look_should_persist(look_source)
             plan.prompt = self._friend_look_prompt(plan.prompt, friend_look)
             plan.prompt += await self._build_person_fact_injection_context(event)
+        work = self._generate_and_deliver_life_image(
+            event, plan, friend_look, friend_look_persist
+        )
+        return await work
+
+    async def _generate_and_deliver_life_image(
+        self,
+        event: Any,
+        plan: ImageGenerationPlan,
+        friend_look: dict[str, str],
+        friend_look_persist: bool,
+    ) -> str:
+        scope = self._event_session_id(event)
         started_at = time.monotonic()
         try:
             execution = await self._execute_image_generation_plan(event, plan)
@@ -1704,12 +1907,18 @@ JSON 字段：
                 self.image_message_chain(generated.path),
                 source_event=event,
             ):
+                marker = getattr(event, "_daily_life_image_request", None)
+                if isinstance(marker, dict):
+                    marker["status"] = "cancelled"
                 await self.finalize_durable_media_delivery(
                     delivery_task,
                     outcome="cancelled",
                     detail="原消息已撤回，取消图片投递",
                 )
                 return "原消息已撤回，已取消图片发送。"
+            marker = getattr(event, "_daily_life_image_request", None)
+            if isinstance(marker, dict):
+                marker["status"] = "sent"
             self.note_structured_bot_message(
                 scope, "[图片已发送]", source_event=event, media="图片"
             )
@@ -1868,12 +2077,18 @@ JSON 字段：
             self.image_message_chain(generated.path),
             source_event=event,
         ):
+            marker = getattr(event, "_daily_life_image_request", None)
+            if isinstance(marker, dict):
+                marker["status"] = "cancelled"
             await self.finalize_durable_media_delivery(
                 delivery_task,
                 outcome="cancelled",
                 detail="原消息已撤回，取消参考图图片投递",
             )
             return "原消息已撤回，已取消图片发送。"
+        marker = getattr(event, "_daily_life_image_request", None)
+        if isinstance(marker, dict):
+            marker["status"] = "sent"
         self.note_structured_bot_message(
             scope, "[图片已发送]", source_event=event, media="图片"
         )
@@ -1899,6 +2114,39 @@ JSON 字段：
         return self._image_delivery_result("edit")
 
     async def edit_life_image(
+        self, event: Any, prompt: str, reference_image: str = "", **options: Any
+    ) -> str | None:
+        for source in self._event_sources(event):
+            marker = getattr(source, "_daily_life_image_request", None)
+            if isinstance(marker, dict) and marker.get("status") in {"pending", "sent"}:
+                return json.dumps(
+                    {
+                        "status": marker["status"],
+                        "media": "image",
+                        "deduplicated": True,
+                    },
+                    ensure_ascii=False,
+                )
+        snapshot = self._snapshot_media_event(event)
+        snapshot._daily_life_image_tool_name = "edit_life_image"
+        snapshot._daily_life_locked_edit_reference = (
+            await self._resolve_life_image_reference_async(
+                snapshot,
+                reference_image,
+                allow_last_generated=True,
+                prefer_last_generated=bool(options.get("continue_last_result")),
+            )
+        )
+        return self._submit_background_image(
+            snapshot,
+            event,
+            lambda: self._edit_life_image_inline(
+                snapshot, prompt, reference_image, **options
+            ),
+            action="edit",
+        )
+
+    async def _edit_life_image_inline(
         self,
         event: Any,
         prompt: str,
@@ -1937,11 +2185,16 @@ JSON 字段：
         scope = self._event_session_id(event)
         if not scope:
             return "当前会话不可发送图片。"
-        reference = await self._resolve_life_image_reference_async(
-            event,
-            reference_image,
-            allow_last_generated=True,
-            prefer_last_generated=bool(continue_last_result),
+        locked = getattr(event, "_daily_life_locked_edit_reference", None)
+        reference = (
+            str(locked)
+            if locked is not None
+            else await self._resolve_life_image_reference_async(
+                event,
+                reference_image,
+                allow_last_generated=True,
+                prefer_last_generated=bool(continue_last_result),
+            )
         )
         if not reference:
             logger.debug(
@@ -1955,16 +2208,42 @@ JSON 字段：
                 logger.debug(
                     f"{LOG_PREFIX} 图片编辑未找到参考图，已按工具参数改走文生图。"
                 )
-                return await self.life_image_generate(
+                return await self._life_image_generate_inline(
                     event,
                     prompt,
                     subject_route="group" if group_request else "free",
                     participants=participant_ids,
                     resolution=resolution,
+                    provider=provider,
                 )
             if continue_last_result or str(reference_image or "").strip():
                 return "当前会话没有可继续修改的图片，请重新发送或引用原图。"
             return "请先发送或引用一张要参考的图片。"
+        work = self._edit_and_deliver_life_image(
+            event,
+            prompt,
+            reference,
+            participant_ids,
+            aspect_ratio,
+            resolution,
+            provider,
+            direct_prompt=direct_prompt,
+        )
+        return await work
+
+    async def _edit_and_deliver_life_image(
+        self,
+        event: Any,
+        prompt: str,
+        reference: str,
+        participant_ids: list[str],
+        aspect_ratio: str,
+        resolution: str,
+        provider: str,
+        *,
+        direct_prompt: bool,
+    ) -> str:
+        scope = self._event_session_id(event)
         started_at = time.monotonic()
         try:
             execution = await self._execute_image_edit(

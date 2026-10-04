@@ -1,6 +1,9 @@
 import datetime
 from typing import Any
 
+from ..models import normalize_timeline_day_offsets, timeline_item_minutes
+from .tools import timeline_item_datetime
+
 
 def _field(item: Any, key: str) -> str:
     if hasattr(item, key):
@@ -35,11 +38,7 @@ def _date(value: object) -> datetime.date | None:
 
 
 def _datetime_on_date(item: Any, date_value: object) -> datetime.datetime | None:
-    date = _date(date_value)
-    minutes = _minutes(_field(item, "time"))
-    if date is None or minutes is None:
-        return None
-    return datetime.datetime.combine(date, datetime.time(minutes // 60, minutes % 60))
+    return timeline_item_datetime(item, date_value)
 
 
 def _normalize_text(value: object) -> str:
@@ -114,6 +113,7 @@ def future_outfit_timing_issue(
 ) -> str:
     if not str(outfit or "").strip() or not isinstance(timeline, list):
         return ""
+    normalize_timeline_day_offsets(timeline)
     for item in timeline:
         if current_time is not None and timeline_date is not None:
             item_time = _datetime_on_date(item, timeline_date)
@@ -122,7 +122,7 @@ def future_outfit_timing_issue(
         else:
             if current_minutes is None:
                 return ""
-            item_minutes = _minutes(_field(item, "time"))
+            item_minutes = timeline_item_minutes(item)
             if item_minutes is None or item_minutes <= current_minutes:
                 continue
         activity = _field(item, "activity")

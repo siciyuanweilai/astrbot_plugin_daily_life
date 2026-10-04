@@ -1,6 +1,5 @@
 import asyncio
 import inspect
-import logging
 import time
 from contextlib import asynccontextmanager
 from functools import wraps
@@ -25,6 +24,7 @@ from .core.interface import (
     LifeActionProposal,
     LifeActionScope,
 )
+from .core.logguard import ProviderLogGuard
 from .core.runtime import PLUGIN_ID, DailyLifeRuntime
 from .core.runtime.markers import LOG_PREFIX
 from .core.runtime.sender import install_expressive_send_message_tool
@@ -36,31 +36,6 @@ MAP_LLM_TOOL_NAMES = (
     "life_place_detail",
     "life_outing_plan",
 )
-SENSITIVE_SDK_LOG_LEVELS = {
-    "openai": logging.WARNING,
-    "anthropic": logging.WARNING,
-    "google.genai": logging.WARNING,
-    "google.generativeai": logging.WARNING,
-    "httpcore": logging.WARNING,
-    "httpx": logging.INFO,
-}
-
-
-class _SensitiveProviderPayloadFilter(logging.Filter):
-    """隐藏 Provider 调试日志中的完整请求和响应正文。"""
-
-    _MARKER = "_daily_life_sensitive_provider_payload_filter"
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        if record.levelno != logging.DEBUG:
-            return True
-        source = str(getattr(record, "pathname", "") or "").replace("\\", "/")
-        if "/core/provider/sources/" not in source:
-            return True
-        message = record.getMessage().lstrip().lower()
-        return not (
-            message.startswith("completion:") or message.startswith("response:")
-        )
 
 
 class DailyLifePlugin(DailyLifeDashboardMixin, Star):
@@ -102,10 +77,12 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             stopper()
 
     _SEND_PIPELINE_STOP_HOOKS = (
+        "hold_background_tool_final_text",
         "suppress_recalled_event_result",
         "suppress_intermediate_tool_result",
         "suppress_final_silent_tool_result",
         "suppress_sight_note_followup",
+        "hold_life_image_final_text",
         "hold_life_video_final_text",
         "hold_life_photo_suite_final_text",
         "suppress_media_agent_error",
@@ -200,38 +177,26 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         self._terminating = False
         self._external_search_turns: dict[str, None] = {}
         self._runtime_contract_validated = False
-
-    @staticmethod
-    def _protect_model_request_logs() -> None:
-        """阻止第三方 SDK 在 AstrBot 控制台 sink 中输出完整请求体。"""
-        for name, level in SENSITIVE_SDK_LOG_LEVELS.items():
-            logging.getLogger(name).setLevel(level)
-        astrbot_logger = logging.getLogger("astrbot")
-        if not any(
-            getattr(item, _SensitiveProviderPayloadFilter._MARKER, False)
-            for item in astrbot_logger.filters
-        ):
-            payload_filter = _SensitiveProviderPayloadFilter()
-            setattr(payload_filter, _SensitiveProviderPayloadFilter._MARKER, True)
-            astrbot_logger.addFilter(payload_filter)
+        self._log_guard = ProviderLogGuard()
 
     async def initialize(self):
         async with self._initialize_lock:
             if self.runtime is not None and self.commands is not None:
                 return
-            self._protect_model_request_logs()
-            data_path = await asyncio.to_thread(self._prepare_database)
-            runtime = DailyLifeRuntime(
-                self._plugin_context,
-                self._plugin_config,
-                data_path,
-                defer_start=True,
-            )
+            runtime = None
             registered_apis = getattr(self._plugin_context, "registered_web_apis", None)
             api_snapshot = (
                 list(registered_apis) if isinstance(registered_apis, list) else None
             )
             try:
+                self._log_guard.install()
+                data_path = await asyncio.to_thread(self._prepare_database)
+                runtime = DailyLifeRuntime(
+                    self._plugin_context,
+                    self._plugin_config,
+                    data_path,
+                    defer_start=True,
+                )
                 self._terminating = False
                 self._validate_runtime_contract(runtime)
                 await runtime.initialize()
@@ -248,9 +213,12 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
                 if api_snapshot is not None and isinstance(registered_apis, list):
                     registered_apis[:] = api_snapshot
                 try:
-                    await runtime.terminate()
+                    if runtime is not None:
+                        await runtime.terminate()
                 except Exception as cleanup_exc:
                     logger.error(f"[日常生活] 初始化回滚清理失败：{cleanup_exc}")
+                finally:
+                    self._log_guard.close()
                 raise
 
     def _prepare_database(self) -> Path:
@@ -260,29 +228,30 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
 
     async def terminate(self):
         runtime = self.runtime
-        async with self._external_condition:
-            self._terminating = True
-        begin_shutdown = getattr(runtime, "begin_shutdown", None)
-        if callable(begin_shutdown):
-            await begin_shutdown()
         try:
             async with self._external_condition:
-                await asyncio.wait_for(
-                    self._external_condition.wait_for(
-                        lambda: self._external_users == 0
-                    ),
-                    timeout=EXTERNAL_LEASE_SHUTDOWN_TIMEOUT_SECONDS,
+                self._terminating = True
+            begin_shutdown = getattr(runtime, "begin_shutdown", None)
+            if callable(begin_shutdown):
+                await begin_shutdown()
+            try:
+                async with self._external_condition:
+                    await asyncio.wait_for(
+                        self._external_condition.wait_for(
+                            lambda: self._external_users == 0
+                        ),
+                        timeout=EXTERNAL_LEASE_SHUTDOWN_TIMEOUT_SECONDS,
+                    )
+            except TimeoutError:
+                logger.warning(
+                    f"[日常生活] 等待外部调用结束超时：仍有 {self._external_users} 个调用；"
+                    "将取消未完成的外部调用后继续关闭插件资源"
                 )
-        except TimeoutError:
-            logger.warning(
-                f"[日常生活] 等待外部调用结束超时：仍有 {self._external_users} 个调用；"
-                "将取消未完成的外部调用后继续关闭插件资源"
-            )
-            await self._cancel_external_calls()
-        try:
+                await self._cancel_external_calls()
             if runtime is not None:
                 await runtime.terminate()
         finally:
+            self._log_guard.close()
             self._runtime_contract_validated = False
             self.runtime = None
             self.commands = None
@@ -1231,6 +1200,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         普通聊天里角色自己自然产生“想让对方看看这个瞬间”的分享意愿时，用户没有先索要也可以主动调用；画面应能传达文字之外的状态、气氛、细节或情绪，不能为了展示工具而生成，也不要先询问用户是否想看。
         用户已经明确要图片时，调用前可以先用角色口吻说一句简短、自然的行动确认；不能提前声称图片已经完成，
         也不要提及模型、任务、缓存、图片导演、文生图或图生图等内部过程。图片发送后再根据结果自然补一句，也可以不补。
+        返回 pending 表示已受理，尚未送达；结束本次工具轮次，后续消息正常聊天，不要等待、重复调用或提前声称照片已发送。
         如果用户本轮已经给出完整图片提示词且 current_outfit_change=false，除单独填写 provider 外，prompt 必须原样保留画面要求，不要改写、摘要或另想场景；不要把协议选择语句混入画面提示词。
         使用 subject_route 明确图片主体：current_character 当前角色本人入镜；group 当前角色与一位已配置好友合影；scene 环境/氛围/状态；object 物品/食物；free 不限定主体或完整自由提示词。
         current_character 场景中，用户没有另行指定穿搭、发型或造型风格时，应参考系统注入的当前外观状态补足可见细节；用户本轮明确要求始终优先，不能用生活背景覆盖。
@@ -1440,6 +1410,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         根据参考图生成并发送一张新的生活图片；适合用户发图、引用图或明确给出图片链接/路径后再改图。
         用户已经明确要修改图片时，调用前可以先用角色口吻说一句简短、自然的行动确认；不能提前声称已经改好，
         也不要说明参考图解析、模型调用或生成流程。图片发送后再根据结果自然补一句，也可以不补。
+        返回 pending 表示已受理，尚未送达；结束本次工具轮次，后续消息正常聊天，不要等待、重复调用或提前声称图片已改好。
         reference_image 留空时会自动尝试当前消息或引用消息里的图片。
         用户说“继续改”“再改一下”“修改上一张”或要求在刚生成的版本上继续调整，并且本轮没有发送或引用新图片时，
         continue_last_result 必须设为 true，让工具使用当前会话上一张成功生成的图片；不要复用历史消息里的 AstrBot 临时图片路径。
@@ -1528,6 +1499,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         完整套装、上装、下装、鞋袜、配饰、发型、妆容与美甲会按图片可见内容分别保存；候选只用于以后需要新造型时参考，不会改变当前真实穿搭。
         用户只是询问图片内容、要求生成图片或真实换装时不要调用本工具。
         不会搜索或抓取网页；用户需要自行发送、引用或明确提供可读取的图片。
+        工具会独立完成图片识别和入库；返回 pending 时结束本次工具轮次，不要等待、重复调用或声称已学习完成。后续消息正常聊天，实际候选结果会独立发送。
 
         Args:
             reference_image(string): 一张可学习图片的路径或直链；留空时自动使用当前或引用消息里的图片。
@@ -1750,6 +1722,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         """
         把用户当前发送、引用、指定或最近已理解的视频整理成专业 Markdown 长文总结，并交给 AstrBot 文转图发送。
         只在用户明确需要“专业总结、长文总结、详细分析、总结成图、转图总结”时调用；普通询问视频内容时使用 life_video_understand。
+        工具会在后台识别、转写、生成并发送总结；返回 pending 时结束本次工具轮次，不要等待、重复调用或声称总结已完成，后续消息正常聊天。
         专业总结按照视频转写配置使用本地 ASR 或必剪，并结合关键画面证据；按视频实际议题组织背景、论点、事实、数据、分析、风险和建议，以段落、重点列表和引用形成紧凑笔记。长内容会逐个处理全部时间窗，广告与无关片段不会生成章节；关键画面不会插入成品，没有音频但画面可确认时仍可生成。
         调用后不要再额外复述总结正文。
 

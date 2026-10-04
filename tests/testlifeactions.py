@@ -199,6 +199,38 @@ class LifeActionTest(unittest.TestCase):
         self.assertEqual(components["footwear"]["state"], "removed")
         self.assertEqual(components["carried_accessories"]["state"], "removed")
 
+    def test_full_outfit_change_replaces_previous_component_ledger(self):
+        for explicit_components in (True, False):
+            with self.subTest(explicit_components=explicit_components):
+                day = DayRecord(
+                    date="2026-10-03",
+                    outfit="外出裙装；外套；单肩包",
+                    meta={
+                        "outfit_components": json.dumps({
+                            "main_clothing": {"state": "worn", "description": "外出裙装"},
+                            "outer_layer": {"state": "worn", "description": "外套"},
+                            "carried_accessories": {"state": "carried", "description": "单肩包"},
+                        }),
+                        "style_catalog_reference_ids": "17",
+                    },
+                )
+                payload = {"scene_category": "sleep"}
+                if explicit_components:
+                    payload["outfit_components"] = {
+                        "main_clothing": {"state": "worn", "description": "棉质睡衣"}
+                    }
+                outcome = self.engine.settle_life_action(
+                    day,
+                    {"action_id": "bedtime-change", "action_type": "change_outfit", "target": "棉质睡衣", "payload": payload},
+                    now=datetime.datetime(2026, 10, 3, 22, 10),
+                )
+                self.assertEqual(outcome.status, "committed")
+                self.assertEqual(day.outfit, "棉质睡衣")
+                self.assertEqual(set(json.loads(day.meta["outfit_components"])), {"main_clothing"})
+                self.assertEqual(day.meta["outfit_scene_category"], "sleep")
+                self.assertEqual(day.meta["outfit_style_pool"], "sleep_styles")
+                self.assertNotIn("style_catalog_reference_ids", day.meta)
+
     def test_daily_plan_change_outfit_uses_action_target_as_current_fact(self):
         day = DayRecord(
             date="2026-08-01",

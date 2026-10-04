@@ -277,6 +277,15 @@ class SpineInviteMixin:
             await self.archive.save_day(data)
             if item.id:
                 await self.archive.link_commitments_to_day(today_str, [item.id])
+                schedule_contact = getattr(self, "schedule_invite_contact", None)
+                if callable(schedule_contact) and (
+                    item.owner == "共同" or decision.get("shared_activity") is True
+                ):
+                    await schedule_contact(
+                        item,
+                        timeline_edits=decision.get("timeline_edits"),
+                        observed_at=now,
+                    )
             await self.archive.add_events(
                 today_str,
                 [
@@ -365,6 +374,7 @@ class SpineInviteMixin:
             CommitmentRecord(
                 content=invite_details,
                 trigger_date=today_str,
+                owner="共同",
                 people=[sender_name],
                 status="active",
                 confidence=1.0,
@@ -378,16 +388,16 @@ class SpineInviteMixin:
             await self.archive.link_commitments_to_day(
                 today_str, [accepted_commitment.id]
             )
-            schedule_contact = getattr(self, "schedule_invite_contact", None)
-            if callable(schedule_contact):
-                await schedule_contact(
-                    accepted_commitment,
-                    timeline_edits=decision.get("timeline_edits"),
-                    observed_at=now,
-                )
         # 先登记已确认的邀请证据，再提交日程。这样聊天记忆后台即使同时
         # 提炼同一条消息，也会看到权威的 invite 记录，不会把地点改回旧候选。
         await self._save_invite_day(data, today_str)
+        schedule_contact = getattr(self, "schedule_invite_contact", None)
+        if accepted_commitment.id and callable(schedule_contact):
+            await schedule_contact(
+                accepted_commitment,
+                timeline_edits=decision.get("timeline_edits"),
+                observed_at=now,
+            )
         await self.archive.add_events(
             today_str,
             [

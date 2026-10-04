@@ -624,9 +624,7 @@ class SemanticSegmentRuntimeMixin:
             configured_timeout = max(
                 1.0,
                 min(
-                    float(
-                        getattr(settings, "semantic_timeout_seconds", 8.0) or 8.0
-                    ),
+                    float(getattr(settings, "semantic_timeout_seconds", 8.0) or 8.0),
                     20.0,
                 ),
             )
@@ -1193,8 +1191,8 @@ class SemanticSegmentRuntimeMixin:
                     )
                     for segment in natural_segments
                 ),
-            source="natural",
-            valid=True,
+                source="natural",
+                valid=True,
             )
             natural_plan = self._semantic_segment_clean_plan_punctuation(
                 source_event, natural_plan, source_text
@@ -1256,6 +1254,25 @@ class SemanticSegmentRuntimeMixin:
         source: str = "background",
         raise_delivery_errors: bool = False,
     ) -> bool:
+        current_media_turn = getattr(self, "media_request_is_current_turn", None)
+        media_followup = source in {
+            "media_followup",
+            "image_followup",
+            "image_failure",
+            "video_followup",
+            "video_failure",
+            "photo_suite_followup",
+            "commitment_photo_followup",
+            "background_tool_failure",
+        } and callable(current_media_turn)
+        if media_followup and not current_media_turn(source_event):
+            return False
+        proactive_guard = getattr(self, "_proactive_send_is_current", None)
+        proactive = source in {"proactive", "proactive_voice_call"} and callable(
+            proactive_guard
+        )
+        if proactive and not proactive_guard(source_event):
+            return False
         segments = list(plan.segments)
         if not segments:
             return False
@@ -1295,10 +1312,14 @@ class SemanticSegmentRuntimeMixin:
                 ),
                 sleep=asyncio.sleep,
                 is_current=lambda: (
-                    not enabled
-                    or (
-                        int(revisions.get(scope, 0)) == revision
-                        and int(epochs.get(scope, 0)) == epoch
+                    (not media_followup or current_media_turn(source_event))
+                    and (not proactive or proactive_guard(source_event))
+                    and (
+                        not enabled
+                        or (
+                            int(revisions.get(scope, 0)) == revision
+                            and int(epochs.get(scope, 0)) == epoch
+                        )
                     )
                 ),
                 send=lambda chain: sender(
@@ -1323,7 +1344,9 @@ class SemanticSegmentRuntimeMixin:
             )
         )
         if outcome.status == "cancelled":
-            self._semantic_segment_metrics["cancelled"] += 1
+            metrics = getattr(self, "_semantic_segment_metrics", None)
+            if isinstance(metrics, dict):
+                metrics["cancelled"] += 1
             logger.info(
                 f"{LOG_PREFIX} 后台文字后续分段已取消：已发送 "
                 f"{outcome.sent_count}/{len(segments)} 条。"

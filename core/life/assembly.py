@@ -9,17 +9,18 @@ from ..models import (
     PlaceRecord,
     TimelineItem,
     WeatherInfo,
+    normalize_timeline_day_offsets,
 )
 from .appearance import normalize_appearance_fact, strip_hair_from_outfit
 from .condition import normalize_state, state_log_entry
 from .surroundings import normalize_event_items
 from .wardrobe import (
     format_outfit_components,
+    normalize_outfit_components,
     normalize_outfit_decision,
     normalize_outfit_scene_category,
-    normalize_outfit_components,
-    serialize_outfit_components,
     resolve_outfit_style_pool,
+    serialize_outfit_components,
 )
 
 
@@ -38,6 +39,7 @@ class DailyAssemblyMixin:
         timeline = [
             TimelineItem.from_value(item) for item in result.get("timeline", [])
         ]
+        normalize_timeline_day_offsets(timeline)
         events = [
             event
             for event in (
