@@ -221,9 +221,8 @@ class PortalBaseMixin:
             except ValueError:
                 timeout = 25.0
             version = await self.runtime.wait_page_status_changed(since, timeout)
-            # The runtime counter is process-local. After a plugin reload it
-            # can move backwards while an open page still sends the previous,
-            # larger version. Return a fresh snapshot in that case.
+            # 运行时计数器仅在当前进程有效。插件重载后计数器可能减小，
+            # 而已打开的页面仍传入原先较大的版本号，此时返回最新快照。
             if version < since:
                 status = await self._build_page_status()
                 status["changed"] = True

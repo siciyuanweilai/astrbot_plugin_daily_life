@@ -22,6 +22,41 @@ from .pipe import ImageRequest, ImageRoute
 _TIER_MAX_EDGES = {"1K": 1024, "2K": 2048, "4K": 3840}
 _MAX_TOTAL_PIXELS = 3840 * 2160
 _SIZE_ALIGNMENT = 8
+_HOSTED_GPT_MODELS = {
+    "gpt-image-2",
+    "gpt-image-2.5",
+    "gpt-image-2.5-flare",
+    "gpt-image-2.5-sunburst",
+}
+# 这些接口按精确尺寸划分档位，而非按最长边划分。
+_HOSTED_GPT_SIZES = {
+    "1K": {
+        "1:1": "1024x1024",
+        "2:3": "1024x1536",
+        "3:2": "1536x1024",
+        "3:4": "1152x1536",
+        "4:3": "1536x1152",
+        "9:16": "864x1536",
+        "16:9": "1536x864",
+        "1:3": "512x1536",
+        "3:1": "1536x512",
+        "3:7": "864x2016",
+        "7:3": "2016x864",
+    },
+    "2K": {
+        "1:1": "2048x2048",
+        "2:3": "2048x3072",
+        "3:2": "3072x2048",
+        "3:4": "1536x2048",
+        "4:3": "2048x1536",
+        "4:5": "2048x2560",
+        "5:4": "2560x2048",
+        "9:16": "1152x2048",
+        "16:9": "2048x1152",
+        "1:3": "1024x3072",
+        "3:1": "3072x1024",
+    },
+}
 _GPT_IMAGE_2_SIZES = {
     "1K": {
         "2:3": "848x1264",
@@ -81,9 +116,11 @@ def build_request(
     headers = {"Authorization": f"Bearer {route.api_key}"}
     siciyuanweilai = is_siciyuanweilai(route.api_url)
     if siciyuanweilai:
-        # Keep the request traceable and idempotent at the gateway.
-        headers["X-Client-Request-ID"] = f"daily-life-{uuid4().hex}"
-    size = size_for(resolution, aspect_ratio, model=route.model)
+    # 确保请求在网关侧可追踪且具有幂等性。
+        request_id = f"daily-life-{uuid4().hex}"
+        headers["X-Client-Request-ID"] = request_id
+        headers["Idempotency-Key"] = request_id
+    size = size_for(resolution, aspect_ratio, model=route.model, api_url=route.api_url)
     images = inline_images(parts)
     if siciyuanweilai:
         payload = {
@@ -200,10 +237,19 @@ def size_for(
     aspect_ratio: str,
     *,
     model: str = "gpt-image-2",
+    api_url: str = "",
 ) -> str:
     resolution = str(resolution or "").strip().upper()
     if resolution not in _TIER_MAX_EDGES:
         raise ValueError("图片输出分辨率只能是 1K、2K 或 4K")
+    if _uses_hosted_gpt_sizes(model, api_url):
+        if resolution == "4K":
+            return _generic_size_for(resolution, aspect_ratio)
+        return _HOSTED_GPT_SIZES[resolution][
+            supported_aspect_ratio(
+                model, aspect_ratio, api_url=api_url, resolution=resolution
+            )
+        ]
     if str(model or "").strip().lower() == "gpt-image-2":
         return _GPT_IMAGE_2_SIZES[resolution][
             supported_aspect_ratio(model, aspect_ratio)
@@ -211,11 +257,34 @@ def size_for(
     return _generic_size_for(resolution, aspect_ratio)
 
 
-def supported_aspect_ratio(model: str, aspect_ratio: str) -> str:
+def _uses_hosted_gpt_sizes(model: str, api_url: str) -> bool:
+    return str(model or "").strip().lower() in _HOSTED_GPT_MODELS and is_siciyuanweilai(
+        api_url
+    )
+
+
+def uses_async_tasks(route: ImageRoute) -> bool:
+    return route.protocol == "openai" and _uses_hosted_gpt_sizes(
+        route.model, route.api_url
+    )
+
+
+def supported_aspect_ratio(
+    model: str,
+    aspect_ratio: str,
+    *,
+    api_url: str = "",
+    resolution: str = "1K",
+) -> str:
     ratio, width_ratio, height_ratio = _normalized_ratio(aspect_ratio)
-    if str(model or "").strip().lower() != "gpt-image-2":
+    if _uses_hosted_gpt_sizes(model, api_url):
+        supported = _HOSTED_GPT_SIZES.get(str(resolution or "").strip().upper())
+        if supported is None:
+            return ratio
+    elif str(model or "").strip().lower() == "gpt-image-2":
+        supported = _GPT_IMAGE_2_SIZES["1K"]
+    else:
         return ratio
-    supported = _GPT_IMAGE_2_SIZES["1K"]
     if ratio in supported:
         return ratio
     target = width_ratio / height_ratio

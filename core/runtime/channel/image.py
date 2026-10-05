@@ -351,7 +351,7 @@ JSON 字段：
     async def _historical_life_appearance_snapshot(
         self, target: str, *, period: str = "", time: str = ""
     ) -> str:
-        """Resolve the requested calendar date/period without changing live state."""
+        """解析请求指定的日期和时段，不改变实时状态。"""
         resolver = getattr(self, "_media_director_current_day", None)
         archive = getattr(self, "archive", None)
         if not callable(resolver) or not callable(getattr(archive, "get_day", None)):
@@ -937,6 +937,7 @@ JSON 字段：
         protocol: str = "",
         model: str = "",
         identity_profile: str = "",
+        include_character_reference: bool | None = None,
     ) -> Any:
         resolution = str(
             resolution or ""
@@ -954,6 +955,8 @@ JSON 字段：
                 options["model"] = model
             if identity_profile:
                 options["identity_profile"] = identity_profile
+            if include_character_reference is not None:
+                options["include_character_reference"] = include_character_reference
             return await self.media.image.edit_image(
                 safe_prompt,
                 reference_image,
@@ -1525,8 +1528,8 @@ JSON 字段：
         self, event: Any, prompt: str, **options: Any
     ) -> str | None:
         if int(getattr(event, "_daily_life_commitment_id", 0) or 0) > 0:
-            # Durable commitment execution already runs outside the chat runner
-            # and must wait for real delivery before marking the promise done.
+            # 持久化承诺任务已在聊天 Runner 之外执行，
+            # 必须等待实际投递完成后才能将承诺标记为完成。
             return await self._life_image_generate_inline(event, prompt, **options)
         for source in self._event_sources(event):
             marker = getattr(source, "_daily_life_image_request", None)
@@ -1614,6 +1617,9 @@ JSON 字段：
             except (TypeError, ValueError):
                 payload = {}
             if marker["status"] == "cancelled":
+                self.cancel_tool_reaction(event, tool_name)
+                return
+            if isinstance(payload, dict) and payload.get("status") == "pending":
                 self.cancel_tool_reaction(event, tool_name)
                 return
             if marker["status"] == "sent" or (
@@ -1869,6 +1875,20 @@ JSON 字段：
         friend_look: dict[str, str],
         friend_look_persist: bool,
     ) -> str:
+        return await self.track_image_generation(
+            event,
+            self._generate_and_deliver_life_image_tracked(
+                event, plan, friend_look, friend_look_persist
+            ),
+        )
+
+    async def _generate_and_deliver_life_image_tracked(
+        self,
+        event: Any,
+        plan: ImageGenerationPlan,
+        friend_look: dict[str, str],
+        friend_look_persist: bool,
+    ) -> str:
         scope = self._event_session_id(event)
         started_at = time.monotonic()
         try:
@@ -1893,6 +1913,7 @@ JSON 字段：
                 [str(generated.path)],
                 action_type="photo",
                 evidence="图片已生成，等待投递确认",
+                source_event=event,
                 commitment_id=commitment_id,
                 source_message_id=self._event_message_id(event),
                 reply_context={
@@ -1919,6 +1940,9 @@ JSON 字段：
             marker = getattr(event, "_daily_life_image_request", None)
             if isinstance(marker, dict):
                 marker["status"] = "sent"
+            await self.finalize_durable_media_delivery(
+                delivery_task, outcome="sent", detail="图片已发送"
+            )
             self.note_structured_bot_message(
                 scope, "[图片已发送]", source_event=event, media="图片"
             )
@@ -1955,14 +1979,12 @@ JSON 字段：
                     source="commitment_photo_followup",
                 )
                 setattr(event, "_daily_life_media_reply_sent", reply_sent)
-            await self.finalize_durable_media_delivery(
-                delivery_task,
-                outcome="sent",
-                detail="图片已发送",
-            )
             logger.info(f"{LOG_PREFIX} 图片已发送：{summary}")
             return self._image_delivery_result("generate")
         except Exception as exc:
+            pending = await self.pending_image_generation_result(event, exc)
+            if pending:
+                return pending
             error = self._media_error_summary(exc)
             logger.warning(f"{LOG_PREFIX} 图片生成或发送失败：{error}")
             return self._image_tool_failure_text("图片生成", error)
@@ -2043,6 +2065,7 @@ JSON 字段：
             preserve_reference_ratio=not bool(aspect_ratio),
             protocol=provider,
             identity_profile=identity_profile,
+            include_character_reference=needs_character_reference,
         )
         return ImageGenerationExecution(
             generated=generated,
@@ -2064,6 +2087,7 @@ JSON 字段：
             [str(generated.path)],
             action_type="photo",
             evidence="参考图图片已生成，等待投递确认",
+            source_event=event,
             source_message_id=self._event_message_id(event),
             reply_context={
                 "media_name": "编辑后的生活照片",
@@ -2089,6 +2113,9 @@ JSON 字段：
         marker = getattr(event, "_daily_life_image_request", None)
         if isinstance(marker, dict):
             marker["status"] = "sent"
+        await self.finalize_durable_media_delivery(
+            delivery_task, outcome="sent", detail="参考图图片已发送"
+        )
         self.note_structured_bot_message(
             scope, "[图片已发送]", source_event=event, media="图片"
         )
@@ -2104,11 +2131,6 @@ JSON 字段：
                 source="image_delivery",
                 artifact_path=str(generated.path),
             )
-        await self.finalize_durable_media_delivery(
-            delivery_task,
-            outcome="sent",
-            detail="参考图图片已发送",
-        )
         summary = await self._media_result_summary(generated.path, started_at)
         logger.info(f"{LOG_PREFIX} 参考图生成结果已发送：{summary}")
         return self._image_delivery_result("edit")
@@ -2243,6 +2265,32 @@ JSON 字段：
         *,
         direct_prompt: bool,
     ) -> str:
+        return await self.track_image_generation(
+            event,
+            self._edit_and_deliver_life_image_tracked(
+                event,
+                prompt,
+                reference,
+                participant_ids,
+                aspect_ratio,
+                resolution,
+                provider,
+                direct_prompt=direct_prompt,
+            ),
+        )
+
+    async def _edit_and_deliver_life_image_tracked(
+        self,
+        event: Any,
+        prompt: str,
+        reference: str,
+        participant_ids: list[str],
+        aspect_ratio: str,
+        resolution: str,
+        provider: str,
+        *,
+        direct_prompt: bool,
+    ) -> str:
         scope = self._event_session_id(event)
         started_at = time.monotonic()
         try:
@@ -2270,6 +2318,9 @@ JSON 字段：
                 started_at,
             )
         except Exception as exc:
+            pending = await self.pending_image_generation_result(event, exc)
+            if pending:
+                return pending
             error = self._media_error_summary(exc)
             logger.warning(f"{LOG_PREFIX} 参考图生成或发送失败：{error}")
             return self._image_tool_failure_text("参考图生成", error)

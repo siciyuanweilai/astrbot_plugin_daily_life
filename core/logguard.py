@@ -13,7 +13,7 @@ _SDK_QUIET_LEVELS = {
 
 
 class ProviderLogGuard:
-    """Filter verbose model logs through AstrBot's existing output handlers."""
+    """通过 AstrBot 现有输出处理器过滤冗长的模型日志。"""
 
     def __init__(self) -> None:
         self._handlers: list[Any] = []
@@ -24,8 +24,8 @@ class ProviderLogGuard:
             return
         current = logger
         visited: set[int] = set()
-        # The API logger may route to a plugin logger. Ancestor handlers also
-        # carry framework Provider and SDK logs, even without plugin propagation.
+        # API logger 可能指向插件 logger。即使插件不传播日志，
+        # 父级处理器也可能接收框架 Provider 和 SDK 的日志。
         while current is not None and id(current) not in visited:
             visited.add(id(current))
             for handler in getattr(current, "handlers", ()):

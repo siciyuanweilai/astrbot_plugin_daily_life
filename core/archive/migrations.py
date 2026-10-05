@@ -595,7 +595,7 @@ def _migrate_life_semantic_flags(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_timeline_day_offsets(conn: sqlite3.Connection) -> None:
-    """Restore midnight dates from the saved life window, retaining action bindings."""
+    """根据已保存的生活时间窗口恢复跨午夜日期，并保留动作绑定。"""
     from ..models import (
         TimelineItem,
         normalize_timeline_day_offsets,
@@ -625,7 +625,7 @@ def _migrate_timeline_day_offsets(conn: sqlite3.Connection) -> None:
         ordered = sorted(zip(rows, items), key=lambda pair: timeline_item_minutes(pair[1]) or 0)
         if not any(item.day_offset for item in items):
             continue
-        # Temporary negative positions avoid collisions with the composite primary key.
+        # 临时使用负数位置，避免复合主键冲突。
         conn.execute("UPDATE timelines SET sort_order = -sort_order - 1 WHERE date = ?", (date_str,))
         for index, (row, item) in enumerate(ordered):
             conn.execute(

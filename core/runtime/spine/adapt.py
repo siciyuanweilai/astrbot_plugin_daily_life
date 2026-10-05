@@ -65,10 +65,12 @@ class SpineAdaptMixin:
         *,
         previous_rhythm_running: bool,
     ) -> None:
-        await self._begin_runtime_service_swap()
+        binding = self._runtime_service_binding()
+        candidate_token = binding.set(candidate)
+        voice_call = getattr(self, "voice_call", None)
+        reconfigure_voice_call = getattr(voice_call, "reconfigure", None)
+        voice_attempted = False
         try:
-            previous.rhythm.stop()
-            self._install_runtime_services(candidate)
             domain_initializer = getattr(
                 getattr(candidate, "domains", None), "initialize", None
             )
@@ -79,19 +81,36 @@ class SpineAdaptMixin:
             )
             if callable(restore_research):
                 await restore_research()
+            if callable(reconfigure_voice_call):
+                voice_attempted = True
+                await reconfigure_voice_call()
             self._prune_disabled_proactive_candidates()
             for key in list(getattr(self, "_proactive_idle_candidates", {})):
                 self._schedule_proactive_idle_evaluation(key)
             self._injection_snapshot_cache = {}
+            previous.rhythm.stop()
+            candidate.rhythm.start()
+            self._install_runtime_services(candidate)
         # 配置切换取消也必须恢复上一组服务，随后继续抛出。
         except BaseException:
             candidate.rhythm.stop()
             self._install_runtime_services(previous)
             if previous_rhythm_running:
                 previous.rhythm.start()
+            if voice_attempted:
+                binding.set(previous)
+                try:
+                    from ..voicecall import VoiceCallManager
+
+                    if isinstance(voice_call, VoiceCallManager):
+                        await reconfigure_voice_call(force=True)
+                    else:
+                        await reconfigure_voice_call()
+                except Exception as exc:
+                    logger.error(f"{LOG_PREFIX} 恢复原语音服务失败：{exc}")
             raise
         finally:
-            await self._end_runtime_service_swap()
+            binding.reset(candidate_token)
 
     @staticmethod
     def _residence_address(config: LifeSettings) -> str:
@@ -173,6 +192,14 @@ class SpineAdaptMixin:
             logger.warning(f"{LOG_PREFIX} 居住地变化后的生活背景刷新失败：{exc}")
 
     async def apply_config(self, next_config: dict[str, Any]) -> LifeSettings:
+        binding = self._runtime_service_binding()
+        token = binding.set(None)
+        try:
+            return await self._apply_config(next_config)
+        finally:
+            binding.reset(token)
+
+    async def _apply_config(self, next_config: dict[str, Any]) -> LifeSettings:
         if not isinstance(next_config, dict):
             raise ValueError("配置必须是对象")
         if not isinstance(self.raw_config, dict):
@@ -180,24 +207,17 @@ class SpineAdaptMixin:
 
         payload = copy.deepcopy(next_config)
         parsed = LifeSettings.from_dict(payload)
-        previous_config = copy.deepcopy(dict(self.raw_config))
-        previous_address = self._residence_address(self.config)
-        next_address = self._residence_address(parsed)
-        residence_changed = previous_address != next_address
-        weather_city_changed = self._weather_city(self.config) != self._weather_city(
-            parsed
-        )
-
         async with self.generation_lock:
+            previous_config = copy.deepcopy(dict(self.raw_config))
+            previous_address = self._residence_address(self.config)
+            next_address = self._residence_address(parsed)
+            residence_changed = previous_address != next_address
+            weather_city_changed = self._weather_city(
+                self.config
+            ) != self._weather_city(parsed)
             previous_services = self._current_runtime_services()
             previous_rhythm_running = self._rhythm_running(previous_services)
             candidate = self._build_runtime_services(parsed, payload)
-            try:
-                candidate.rhythm.start()
-            except Exception:
-                await self._close_runtime_services(candidate)
-                raise
-
             try:
                 await self._write_runtime_config(payload)
                 await self._swap_runtime_services(
@@ -205,22 +225,16 @@ class SpineAdaptMixin:
                     previous_services,
                     previous_rhythm_running=previous_rhythm_running,
                 )
-                voice_call = getattr(self, "voice_call", None)
-                reconfigure_voice_call = getattr(voice_call, "reconfigure", None)
-                if callable(reconfigure_voice_call):
-                    await reconfigure_voice_call()
             # 写配置或服务替换被取消时，保持配置与运行服务一致。
             except BaseException:
                 candidate.rhythm.stop()
                 await self._restore_runtime_config(previous_config)
-                await self._close_runtime_services(candidate)
+                await self._retire_runtime_services(candidate)
                 raise
 
-            await self._close_runtime_services(previous_services)
+            await self._retire_runtime_services(previous_services)
 
-        target = build_time_context(
-            life_now(), self.config.schedule_time
-        ).business_now
+        target = build_time_context(life_now(), self.config.schedule_time).business_now
         if residence_changed:
             await self._prepare_residence_change(target)
             self._schedule_background_task(

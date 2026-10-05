@@ -142,7 +142,7 @@ def _timeline_clock_minutes(value: str) -> int | None:
 
 
 def timeline_item_minutes(item: Any) -> int | None:
-    """Return a node's minutes relative to its life day, retaining midnight."""
+    """返回节点相对于所属生活日的分钟数，并保留跨午夜信息。"""
     time = item.get("time", "") if isinstance(item, dict) else getattr(item, "time", "")
     offset = item.get("day_offset") if isinstance(item, dict) else getattr(item, "day_offset", None)
     minutes = _timeline_clock_minutes(time)
@@ -150,7 +150,7 @@ def timeline_item_minutes(item: Any) -> int | None:
 
 
 def normalize_timeline_day_offsets(values: list) -> None:
-    """Resolve unspecified dates in generation order before any clock sorting."""
+    """按生成顺序补全未指定的日期，再按时刻排序。"""
     previous = None
     for item in values:
         raw_offset = item.get("day_offset") if isinstance(item, dict) else getattr(item, "day_offset", None)
@@ -162,9 +162,8 @@ def normalize_timeline_day_offsets(values: list) -> None:
             offset = previous // 1440
             if minutes % 1440 + offset * 1440 < previous:
                 offset += 1
-        # Keep the legacy empty value for ordinary same-day nodes.  A concrete
-        # offset is only needed once a node crosses midnight (or was supplied
-        # explicitly), which avoids rewriting unrelated timelines on save.
+        # 普通同日节点保留原有空值，仅在跨午夜或显式指定时填写具体偏移，
+        # 避免保存时改写无关的时间轴。
         if raw_offset is not None or offset > 0:
             if isinstance(item, dict):
                 item["day_offset"] = offset

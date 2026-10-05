@@ -7,8 +7,9 @@ from typing import Any
 from astrbot.api import logger
 
 from ...clock import now as life_now
-from ...life.condition import classify_message_interrupt, message_can_interrupt
+from ...config.options.basis import format_chat_style_prompt
 from ...life.calendar import format_calendar_context, format_season_context
+from ...life.condition import classify_message_interrupt, message_can_interrupt
 from ...life.tools import (
     build_time_context,
     format_timeline_to_text,
@@ -104,7 +105,9 @@ class SnapshotExportMixin:
         meta_line = self._life_context_meta_line(data.meta)
         if meta_line:
             parts.append(meta_line)
-        timeline = format_timeline_to_text(data.timeline, timeline_date=data.date, meta=data.meta)
+        timeline = format_timeline_to_text(
+            data.timeline, timeline_date=data.date, meta=data.meta
+        )
         parts.append(f"(昨日记录) {timeline}" if is_extended_night else timeline)
 
         rich_parts = await self._get_rich_context_parts(data, now, is_extended_night)
@@ -623,6 +626,18 @@ class SnapshotExportMixin:
                 reply_effects, [*behavior_feedback, *session_behavior_feedback]
             ),
             "terms": self._share_terms_payload(terms),
+        }
+
+    def get_share_chat_style(self) -> dict[str, Any]:
+        """仅导出配置中的表达软偏好，不携带会话记忆或发送规则。"""
+        style = getattr(self.config, "chat_style", None)
+        if not style or not bool(getattr(style, "enabled", False)):
+            return {"enabled": False, "prompt": ""}
+        return {
+            "enabled": True,
+            "prompt": format_chat_style_prompt(
+                getattr(style, "casual_short_prompt", "")
+            ),
         }
 
     async def get_share_context(self, target_umo: str = "") -> dict[str, Any]:

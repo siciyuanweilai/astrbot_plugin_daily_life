@@ -49,7 +49,9 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
     def _split_voice_call_invite_message(message: str) -> tuple[str, str | None]:
         """拆分通话邀请提示与可单独复制的链接。"""
 
-        lines = [line.strip() for line in str(message or "").splitlines() if line.strip()]
+        lines = [
+            line.strip() for line in str(message or "").splitlines() if line.strip()
+        ]
         for index, line in enumerate(lines):
             if line.startswith(("https://", "http://")):
                 notice = "\n".join(lines[:index]).strip()
@@ -373,6 +375,11 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         """为分享类插件返回目标隔离且已提炼的生活上下文。"""
         async with self._external_runtime_lease() as runtime:
             return await runtime.get_share_context(target_umo)
+
+    async def get_share_chat_style(self) -> dict:
+        """为外部分享插件返回聊天表达软偏好，不导出私聊或发送设置。"""
+        async with self._external_runtime_lease() as runtime:
+            return runtime.get_share_chat_style()
 
     async def search_share_evidence(
         self,
@@ -1989,14 +1996,15 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
                 self.runtime, "suppress_media_agent_error", None
             )
             suppressed = bool(
-                callable(suppress_media_error)
-                and suppress_media_error(event, response)
+                callable(suppress_media_error) and suppress_media_error(event, response)
             )
             suppress_suite_error = getattr(
                 self.runtime, "suppress_photo_suite_agent_error", None
             )
-            if not suppressed and callable(suppress_suite_error) and suppress_suite_error(
-                event, response
+            if (
+                not suppressed
+                and callable(suppress_suite_error)
+                and suppress_suite_error(event, response)
             ):
                 logger.debug(
                     f"{LOG_PREFIX} 已抑制套图后续确认语错误，继续等待后台交付。"
@@ -2271,6 +2279,10 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             ):
                 continue
             await self._runtime_hook_apply(name, event, is_async=is_async)
+            if self._runtime_hook_bool("stop_stale_continuous_turn_event", event):
+                return
+            if self._send_pipeline_should_stop(event):
+                return
 
     @filter.on_decorating_result(priority=-900)
     @_runtime_guard
@@ -2292,6 +2304,9 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
     @filter.after_message_sent()
     @_runtime_guard
     async def after_message_sent(self, event: AstrMessageEvent):
+        voice_receipt = self._runtime_hook("note_voice_switch_message_sent")
+        if voice_receipt:
+            await voice_receipt(event)
         outbound_logger = getattr(self.runtime, "log_outbound_result_async", None)
         if not callable(outbound_logger):
             outbound_logger = getattr(self.runtime, "log_outbound_result", None)

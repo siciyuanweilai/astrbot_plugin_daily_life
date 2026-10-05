@@ -636,7 +636,7 @@ def _timeline_window_boundary(
     *,
     after: datetime.datetime,
 ) -> datetime.datetime | None:
-    """Resolve a daily window boundary, including an after-midnight endpoint."""
+    """解析每日时间窗口的边界，包括午夜后的结束时刻。"""
     parsed = parse_life_datetime(value)
     if parsed is not None:
         return parsed

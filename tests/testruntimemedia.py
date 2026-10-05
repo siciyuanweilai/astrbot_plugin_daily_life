@@ -35,7 +35,7 @@ from runtimehelpers import (
 
 
 class FrameworkStopEvent(Event):
-    """Match AstrBot's stop_event behavior when no result exists yet."""
+    """模拟尚无结果时 AstrBot 的 stop_event 行为。"""
 
     def stop_event(self):
         super().stop_event()
@@ -523,12 +523,18 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
                 (
                     "保留姿势，换成咖啡店生活照",
                     str(reference),
-                    {"preserve_reference_ratio": True},
+                    {
+                        "preserve_reference_ratio": True,
+                        "include_character_reference": False,
+                    },
                 ),
                 (
                     "保留姿势，换成咖啡店生活照，自然生活化表达",
                     str(reference),
-                    {"preserve_reference_ratio": True},
+                    {
+                        "preserve_reference_ratio": True,
+                        "include_character_reference": False,
+                    },
                 ),
             ],
         )
@@ -563,7 +569,11 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
                 (
                     event.message_str,
                     str(reference),
-                    {"aspect_ratio": "16:9", "preserve_reference_ratio": False},
+                    {
+                        "aspect_ratio": "16:9",
+                        "preserve_reference_ratio": False,
+                        "include_character_reference": False,
+                    },
                 )
             ],
         )
@@ -631,7 +641,9 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
 
         self.assertTrue(sent)
         self.assertEqual(event.sent_messages, [])
-        self.assertEqual(runtime.context.sent_messages, [(event.unified_msg_origin, chain)])
+        self.assertEqual(
+            runtime.context.sent_messages, [(event.unified_msg_origin, chain)]
+        )
         self.assertFalse(getattr(event, "_daily_life_media_scope_delivery", False))
 
     async def test_webchat_current_request_keeps_event_delivery(self):
@@ -1029,7 +1041,10 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
                 (
                     "改成咖啡店生活照",
                     "https://example.com/ref.png",
-                    {"preserve_reference_ratio": True},
+                    {
+                        "preserve_reference_ratio": True,
+                        "include_character_reference": False,
+                    },
                 )
             ],
         )
@@ -1073,7 +1088,10 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
                 (
                     "换成雨夜房间氛围",
                     "D:/tmp/ref.png",
-                    {"preserve_reference_ratio": True},
+                    {
+                        "preserve_reference_ratio": True,
+                        "include_character_reference": False,
+                    },
                 )
             ],
         )
@@ -1108,7 +1126,16 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(json.loads(result)["action"], "edit")
         self.assertEqual(
             edit_calls,
-            [("换成雨夜房间氛围", resolved_path, {"preserve_reference_ratio": True})],
+            [
+                (
+                    "换成雨夜房间氛围",
+                    resolved_path,
+                    {
+                        "preserve_reference_ratio": True,
+                        "include_character_reference": False,
+                    },
+                )
+            ],
         )
 
     async def test_edit_life_image_uses_quoted_image_when_reference_empty(self):
@@ -1147,7 +1174,10 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
                 (
                     "换成雨夜房间氛围",
                     "https://example.com/quoted.png",
-                    {"preserve_reference_ratio": True},
+                    {
+                        "preserve_reference_ratio": True,
+                        "include_character_reference": False,
+                    },
                 )
             ],
         )
@@ -1184,7 +1214,16 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(json.loads(result)["action"], "edit")
         self.assertEqual(
             edit_calls,
-            [("换成雨夜房间氛围", resolved_path, {"preserve_reference_ratio": True})],
+            [
+                (
+                    "换成雨夜房间氛围",
+                    resolved_path,
+                    {
+                        "preserve_reference_ratio": True,
+                        "include_character_reference": False,
+                    },
+                )
+            ],
         )
 
     async def test_edit_life_image_requires_reference(self):
@@ -1230,7 +1269,10 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
                 (
                     "不要外套",
                     str(cached),
-                    {"preserve_reference_ratio": True},
+                    {
+                        "preserve_reference_ratio": True,
+                        "include_character_reference": False,
+                    },
                 )
             ],
         )
@@ -1279,7 +1321,9 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             expired = Path(temp_dir) / "deleted-astrbot-temp.png"
             runtime._life_media_last_images = {event.unified_msg_origin: str(cached)}
 
-            result = await runtime._edit_life_image_inline(event, "不要外套", str(expired))
+            result = await runtime._edit_life_image_inline(
+                event, "不要外套", str(expired)
+            )
 
         self.assertEqual(json.loads(result)["action"], "edit")
         self.assertEqual(edit_calls[0][1], str(cached))
@@ -2483,7 +2527,14 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             "aiocqhttp:FriendMessage:10001",
             "我困啦",
             "闲时回复发送失败",
-            send_payload={"expression_intent": {"channel": "text", "confidence": 0.95, "emotion": "困倦", "reason": "对方不方便听语音"}},
+            send_payload={
+                "expression_intent": {
+                    "channel": "text",
+                    "confidence": 0.95,
+                    "emotion": "困倦",
+                    "reason": "对方不方便听语音",
+                }
+            },
         )
 
         self.assertTrue(sent)
@@ -2493,34 +2544,69 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
 
     async def test_proactive_voice_requires_valid_semantic_intent(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
-        runtime.config = LifeSettings.from_dict({"voice_generation_config": {
-            "enabled": True, "proactive_enabled": True,
-        }})
+        runtime.config = LifeSettings.from_dict(
+            {
+                "voice_generation_config": {
+                    "enabled": True,
+                    "proactive_enabled": True,
+                }
+            }
+        )
         calls = []
+
         async def synthesize(text, **kwargs):
             calls.append(text)
             return types.SimpleNamespace(path=Path("voice.mp3"))
-        runtime.media = types.SimpleNamespace(voice=types.SimpleNamespace(synthesize=synthesize))
+
+        runtime.media = types.SimpleNamespace(
+            voice=types.SimpleNamespace(synthesize=synthesize)
+        )
         cases = [
-            {}, {"emotion": "开心"},
+            {},
+            {"emotion": "开心"},
             {"channel": "text", "confidence": 0.99, "reason": "适合文字"},
-            *[{"channel": "voice", "confidence": value, "reason": "想说晚安"}
-              for value in (None, "bad", float("nan"), float("inf"), -1, 1.1, True, 0.4)],
+            *[
+                {"channel": "voice", "confidence": value, "reason": "想说晚安"}
+                for value in (
+                    None,
+                    "bad",
+                    float("nan"),
+                    float("inf"),
+                    -1,
+                    1.1,
+                    True,
+                    0.4,
+                )
+            ],
             {"channel": "voice", "confidence": 0.99, "reason": ""},
         ]
         for intent in cases:
             with self.subTest(intent=intent):
-                self.assertFalse(await runtime._send_proactive_voice_if_enabled(
-                    "aiocqhttp:FriendMessage:1", "早点休息", {"expression_intent": intent}
-                ))
-        valid = {"expression_intent": {"channel": "voice", "confidence": 0.9, "reason": "想轻声说晚安"}}
-        self.assertFalse(await runtime._send_proactive_voice_if_enabled(
-            "aiocqhttp:FriendMessage:1", "请查看 https://example.com", valid
-        ))
+                self.assertFalse(
+                    await runtime._send_proactive_voice_if_enabled(
+                        "aiocqhttp:FriendMessage:1",
+                        "早点休息",
+                        {"expression_intent": intent},
+                    )
+                )
+        valid = {
+            "expression_intent": {
+                "channel": "voice",
+                "confidence": 0.9,
+                "reason": "想轻声说晚安",
+            }
+        }
+        self.assertFalse(
+            await runtime._send_proactive_voice_if_enabled(
+                "aiocqhttp:FriendMessage:1", "请查看 https://example.com", valid
+            )
+        )
         runtime.config.voice_generation.proactive_enabled = False
-        self.assertFalse(await runtime._send_proactive_voice_if_enabled(
-            "aiocqhttp:FriendMessage:1", "早点休息", valid
-        ))
+        self.assertFalse(
+            await runtime._send_proactive_voice_if_enabled(
+                "aiocqhttp:FriendMessage:1", "早点休息", valid
+            )
+        )
         self.assertEqual(calls, [])
 
     async def test_collects_emoji_assets_and_uses_vision_provider(self):

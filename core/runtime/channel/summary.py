@@ -199,8 +199,8 @@ class RuntimeMediaCommonMixin:
         unregister = getattr(follow_up, "unregister_active_runner", None)
         if runner is None or not callable(unregister):
             return
-        # Existing follow-ups resume as independent turns; later messages must
-        # not be consumed by the media request's final confirmation response.
+        # 已有后续回复恢复为独立话轮，媒体请求的最终确认回复
+        # 不应消耗后来收到的消息。
         release = getattr(runner, "_resolve_unconsumed_follow_ups", None)
         if callable(release):
             release()
@@ -210,10 +210,15 @@ class RuntimeMediaCommonMixin:
         sources = self._event_sources(event)
         original = sources[-1] if sources else event
         snapshot = copy.copy(original)
+        from ...clock import now as life_now
+
+        snapshot._daily_life_media_requested_at = (
+            getattr(original, "_daily_life_media_requested_at", None) or life_now()
+        )
         snapshot._extras = dict(getattr(original, "_extras", {}) or {})
-        # WebChat's original request stream can close before background delivery.
-        snapshot._daily_life_media_scope_delivery = (
-            "webchat" in event_platform_names(original)
+        # WebChat 原请求流可能在后台投递前关闭。
+        snapshot._daily_life_media_scope_delivery = "webchat" in event_platform_names(
+            original
         )
         items = self._event_message_items(original)
         copied_items = copy.deepcopy(items)

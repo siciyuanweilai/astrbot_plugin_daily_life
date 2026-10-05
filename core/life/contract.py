@@ -69,11 +69,19 @@ class DailyContractMixin:
                 self._set_validation_issue("timeline_invalid")
                 return False, "timeline 节点必须是对象"
             offset = item.get("day_offset")
-            if offset is not None and (not isinstance(offset, int) or isinstance(offset, bool) or not 0 <= offset <= 7):
+            if offset is not None and (
+                not isinstance(offset, int)
+                or isinstance(offset, bool)
+                or not 0 <= offset <= 7
+            ):
                 self._set_validation_issue("timeline_invalid")
                 return False, "timeline.day_offset 必须是 0 到 7 的整数"
         normalize_timeline_day_offsets(timeline)
-        valid_minutes = [minutes for item in timeline if (minutes := timeline_item_minutes(item)) is not None]
+        valid_minutes = [
+            minutes
+            for item in timeline
+            if (minutes := timeline_item_minutes(item)) is not None
+        ]
         if valid_minutes != sorted(valid_minutes):
             self._set_validation_issue("timeline_invalid")
             return False, "timeline 必须按日期及时间递增排列"
@@ -102,7 +110,15 @@ class DailyContractMixin:
             from .future import future_outfit_timing_issue
 
             outfit_issue = future_outfit_timing_issue(
-                payload.get("outfit", ""), timeline, current_minutes
+                payload.get("outfit", ""),
+                timeline,
+                current_minutes,
+                source_timeline_time=(
+                    str(payload["change_evidence"].get("timeline_time") or "").strip()
+                    if isinstance(payload.get("change_evidence"), dict)
+                    and payload["change_evidence"].get("source") == "occurred_schedule"
+                    else ""
+                ),
             )
             if outfit_issue:
                 self._set_validation_issue("future_outfit_timing")
@@ -125,12 +141,15 @@ class DailyContractMixin:
         if not isinstance(actions, list):
             return ""
         for index, action in enumerate(actions):
-            if not isinstance(action, dict) or str(
-                action.get("action_type") or ""
-            ).strip().lower() != "cook":
+            if (
+                not isinstance(action, dict)
+                or str(action.get("action_type") or "").strip().lower() != "cook"
+            ):
                 continue
             details = action.get("payload")
-            ingredients = details.get("ingredients") if isinstance(details, dict) else None
+            ingredients = (
+                details.get("ingredients") if isinstance(details, dict) else None
+            )
             if not isinstance(ingredients, list):
                 return f"planned_actions[{index}] 的 cook 必须填写 ingredients"
             for item in ingredients:
@@ -187,9 +206,7 @@ class DailyContractMixin:
         if str(day_plan.get("schedule_intent") or "").strip() == "rest":
             return ""
         outfit = (
-            decision.get("outfit")
-            if isinstance(decision.get("outfit"), dict)
-            else {}
+            decision.get("outfit") if isinstance(decision.get("outfit"), dict) else {}
         )
         if not (
             str(outfit.get("style_pool") or "").strip() == "sleep_styles"
@@ -348,9 +365,13 @@ class DailyContractMixin:
                 current["outfit_style_pool"] == "sleep_styles"
                 and previous["outfit_style_pool"] == "sleep_styles"
             )
-            if both_sleepwear and self._repeat_sequence_similarity(
-                current["outfit"], previous["outfit"]
-            ) >= 0.46:
+            if (
+                both_sleepwear
+                and self._repeat_sequence_similarity(
+                    current["outfit"], previous["outfit"]
+                )
+                >= 0.46
+            ):
                 similar_sleepwear_dates.append(previous_date)
                 if len(similar_sleepwear_dates) >= 2:
                     self._set_validation_issue("outfit_repeat")
@@ -368,10 +389,7 @@ class DailyContractMixin:
                 " ".join(previous.values()),
             )
             has_clear_novelty = len(novelty) >= 8
-            if (
-                outfit_similarity >= 0.86
-                and not both_sleepwear
-            ):
+            if outfit_similarity >= 0.86 and not both_sleepwear:
                 self._set_validation_issue("outfit_repeat")
                 return (
                     f"生成穿搭与 {previous_date} 过于相似；"
@@ -492,7 +510,11 @@ class DailyContractMixin:
     def _timeline_unwrapped_minutes(self, timeline: object) -> list[int]:
         items = timeline if isinstance(timeline, list) else []
         normalize_timeline_day_offsets(items)
-        return [minutes for item in items if (minutes := timeline_item_minutes(item)) is not None]
+        return [
+            minutes
+            for item in items
+            if (minutes := timeline_item_minutes(item)) is not None
+        ]
 
     @staticmethod
     def _timeline_item_duration(item: object) -> int:
@@ -556,9 +578,8 @@ class DailyContractMixin:
         ]
         if not positive_gaps:
             return ""
-        # Compare each quiet stretch with this timeline's own cadence. A calm day
-        # may be sparse, while one unusually empty stretch inside an active day
-        # should be surfaced for the model to explain or split into real events.
+        # 按时间轴自身的节奏比较各段平静时段。安静的一天可以安排稀疏，
+        # 活跃一天中异常空缺的时段则应交给模型解释，或拆分为真实事件。
         adaptive_gap_limit = max(120, int(median(positive_gaps) * 1.6))
         for gap_index, (left, right) in enumerate(zip(minutes, minutes[1:])):
             item = items[gap_index] if gap_index < len(items) else {}

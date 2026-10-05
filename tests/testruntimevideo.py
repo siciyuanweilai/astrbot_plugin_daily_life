@@ -160,7 +160,7 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         )
 
     async def test_life_video_background_does_not_capture_later_chat_image(self):
-        """A later image/sticker must not become the pending video's first frame."""
+        """后续图片或表情包不能成为待完成视频的首帧。"""
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         resolver_calls = []
         first_frame_calls = []
@@ -1661,6 +1661,7 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             any(getattr(item, "file", "") == "voice.mp3" for item in result.chain)
         )
         self.assertFalse(runtime.note_voice_switch_text_result(event))
+        self.assertTrue(await runtime.note_voice_switch_message_sent(event))
         history = runtime.context.conversation_manager.conversations[
             event.unified_msg_origin
         ].history
@@ -1809,6 +1810,8 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         changed = await runtime.apply_voice_switch_before_send(event)
 
         self.assertTrue(changed)
+        history = runtime.context.conversation_manager.conversations[scope].history
+        self.assertTrue(await runtime.note_voice_switch_message_sent(event))
         history = runtime.context.conversation_manager.conversations[scope].history
         self.assertEqual(len(history), 2)
         self._assert_user_history_has_image(history[0], image_path)
@@ -2127,6 +2130,7 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertTrue(changed)
         self.assertEqual(provider.prompts, [])
         self.assertEqual(voice_calls, ["嗯，雨停了我就往回走。"])
+        self.assertTrue(await runtime.note_voice_switch_message_sent(event))
         cadence = runtime._voice_switch_cadence_store()[event.unified_msg_origin]
         self.assertEqual(cadence["consecutive_voice"], 2)
 

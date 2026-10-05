@@ -17,7 +17,7 @@ from ..markers import LOG_PREFIX
 
 class SpineInviteMixin:
     async def _save_invite_day(self, data: DayRecord, date_str: str) -> DayRecord:
-        """Save invite changes without overwriting a newer live state update."""
+        """保存邀约变化，避免覆盖更新的实时状态。"""
 
         try:
             return await self.archive.save_day(data)
@@ -28,8 +28,8 @@ class SpineInviteMixin:
         latest = await self.archive.get_day(date_str)
         if latest is None:
             raise DayRevisionConflict(f"日期 {date_str} 已被其他任务删除")
-        # Keep the newest state and retry the invite-owned changes through the
-        # normal revision merge so concurrent timeline/meta edits remain guarded.
+            # 保留最新状态，通过常规版本合并重试邀约自身的修改，
+            # 继续保护并发的时间轴和 meta 编辑。
         data.state = copy.deepcopy(latest.state)
         data.state_log = copy.deepcopy(latest.state_log)
         return await self.archive.save_day(data)

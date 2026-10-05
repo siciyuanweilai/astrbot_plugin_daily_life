@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-import support  # noqa: F401 - Install AstrBot test doubles before runtime imports.
+import support  # noqa: F401 - 导入运行时模块前先安装 AstrBot 测试替身。
 from core.runtime.background import BackgroundTaskScheduler
 from core.runtime.channel import image as image_module
 from core.runtime.delivery import BackgroundTextMode

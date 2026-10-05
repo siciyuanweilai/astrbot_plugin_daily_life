@@ -92,7 +92,9 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
 
         selection.assert_awaited_once_with([7], scene_category="sleep")
 
-    async def test_previous_context_prefers_daytime_outfit_over_late_night_snapshot(self):
+    async def test_previous_context_prefers_daytime_outfit_over_late_night_snapshot(
+        self,
+    ):
         composer, _, _, archive = make_composer([])
         await archive.save_day(
             DayRecord(
@@ -765,7 +767,9 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("由系统自动沉淀食谱", provider.prompts[0])
         self.assertIn("不要用 meal 代替实际在家烹饪", provider.prompts[0])
         self.assertIn("现有可用食材库存是会变化的生活事实", provider.prompts[0])
-        self.assertIn("cook 表示实际动手烹饪，必须填写至少一项 ingredients", provider.prompts[0])
+        self.assertIn(
+            "cook 表示实际动手烹饪，必须填写至少一项 ingredients", provider.prompts[0]
+        )
         self.assertIn("purchase.payload.pantry_items", provider.prompts[0])
         self.assertIn("普通物品、纪念品、家居用品和杂货", provider.prompts[0])
         self.assertIn("通勤、普通出行、购物、逛街", provider.prompts[0])
@@ -1200,7 +1204,9 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("日程类型标签", prompt)
         self.assertIn("不要写穿搭风格", prompt)
         self.assertIn("不要因为当前时间线索偏早就强制起床", prompt)
-        self.assertIn("节点数量由 life_decision、清醒跨度、活动复杂度和当前状态共同决定", prompt)
+        self.assertIn(
+            "节点数量由 life_decision、清醒跨度、活动复杂度和当前状态共同决定", prompt
+        )
         self.assertIn("当前/目标时刻仍在外出", prompt)
         self.assertIn("keep 延续当前 outfit、style、hair_style、hair", prompt)
         self.assertIn('"scene_category"', prompt)
@@ -1912,7 +1918,9 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(correction_flags, [True])
         self.assertEqual(len(provider.prompts), 1)
 
-    async def test_daily_generation_revalidates_timeline_after_location_correction(self):
+    async def test_daily_generation_revalidates_timeline_after_location_correction(
+        self,
+    ):
         preplan = '{"requests":[]}'
         shifted_json = (
             '{"generation_contract":{"contract_version":"daily_life_generation",'
@@ -1932,9 +1940,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
             '{"time":"22:47","activity":"回家洗漱后关灯","status":"安稳"}],'
             '"places":[],"new_events":[]}'
         )
-        composer, provider, _, _ = make_composer(
-            [preplan, shifted_json, repaired_json]
-        )
+        composer, provider, _, _ = make_composer([preplan, shifted_json, repaired_json])
         audit_calls = 0
 
         async def audit(payload, **_kwargs):
@@ -1966,7 +1972,9 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertIsNotNone(data)
-        self.assertEqual([item.time for item in data.timeline], ["08:07", "18:26", "22:47"])
+        self.assertEqual(
+            [item.time for item in data.timeline], ["08:07", "18:26", "22:47"]
+        )
         self.assertEqual(audit_calls, 2)
         self.assertEqual(len(provider.prompts), 3)
 
@@ -2462,7 +2470,8 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
                             },
                             "outer_layer": {"state": "worn", "description": "出门外套"},
                             "carried_accessories": {
-                                "state": "carried", "description": "外出包",
+                                "state": "carried",
+                                "description": "外出包",
                             },
                         }
                     ),
@@ -2494,7 +2503,9 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         RefreshMixin._synchronize_outfit_with_schedule(
             stored, datetime.datetime(2026, 8, 7, 21, 20)
         )
-        self.assertEqual(stored.outfit, "浅薄荷绿吊带睡裙，宽松轻盈，裙摆垂顺，赤足放松")
+        self.assertEqual(
+            stored.outfit, "浅薄荷绿吊带睡裙，宽松轻盈，裙摆垂顺，赤足放松"
+        )
         self.assertEqual(stored.meta["style"], "清爽居家睡裙风")
         self.assertEqual(
             stored.meta["outfit_reason"],
@@ -2549,19 +2560,30 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_autonomous_outfit_change_reasks_model_for_ambiguous_catalog(self):
         composer, provider, _, archive = make_composer([])
-        await archive.upsert_style_catalog_item({
-            "kind": "outfit", "title": "外出裙", "description": "日间碎花裙",
-            "source_image_hash": "a" * 64,
-        })
-        sleepwear = await archive.upsert_style_catalog_item({
-            "kind": "outfit", "title": "棉质睡衣", "description": "米白色棉质睡衣",
-            "source_image_hash": "b" * 64,
-        })
+        await archive.upsert_style_catalog_item(
+            {
+                "kind": "outfit",
+                "title": "外出裙",
+                "description": "日间碎花裙",
+                "source_image_hash": "a" * 64,
+            }
+        )
+        sleepwear = await archive.upsert_style_catalog_item(
+            {
+                "kind": "outfit",
+                "title": "棉质睡衣",
+                "description": "米白色棉质睡衣",
+                "source_image_hash": "b" * 64,
+            }
+        )
         response = {
-            "outfit_decision": "sleepwear", "current_outfit_basis": "stored",
-            "scene_category": "sleep", "style_pool": "sleep_styles",
+            "outfit_decision": "sleepwear",
+            "current_outfit_basis": "stored",
+            "scene_category": "sleep",
+            "style_pool": "sleep_styles",
             "component_review": {"main_clothing": "adjust"},
-            "outfit": "米白色棉质睡衣", "catalog_reference_ids": [],
+            "outfit": "米白色棉质睡衣",
+            "catalog_reference_ids": [],
         }
         provider.responses.append(json.dumps(response))
         response["catalog_reference_ids"] = [sleepwear.id]
@@ -3634,7 +3656,9 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         prompt = provider.prompts[0]
         self.assertIn("当前实际时间：2026-05-24 13:40", prompt)
         self.assertIn("当前时间范围：12:00-14:00", prompt)
-        self.assertIn("当前日程位置：05-24 13:20 - 坐在雨边长椅吃炸串 [慵懒满足]", prompt)
+        self.assertIn(
+            "当前日程位置：05-24 13:20 - 坐在雨边长椅吃炸串 [慵懒满足]", prompt
+        )
         self.assertIn("下一项安排：05-24 15:30 - 去甜品店看看草莓慕斯 [轻松]", prompt)
         self.assertIn(
             "出行：从雨边长椅前往测试甜品店 · 驾车约 16 分钟 · 5.1 公里",
@@ -3645,7 +3669,8 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("未发生的未来安排只能作为预告，不能提前覆盖当前穿搭", prompt)
         self.assertLess(prompt.index("当前日程位置"), prompt.index("未发生日程预告"))
         self.assertIn(
-            "05-24 21:00 - 洗完澡换睡裙准备睡前放松 [困倦]（约 440 分钟后，尚未发生）", prompt
+            "05-24 21:00 - 洗完澡换睡裙准备睡前放松 [困倦]（约 440 分钟后，尚未发生）",
+            prompt,
         )
 
     async def test_update_outfit_does_not_apply_future_homewear_before_arrival(self):
@@ -4236,9 +4261,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNotNone(new_timeline)
         self.assertEqual(new_timeline[-1].place_address, "测试区测试路1号")
-        self.assertIn(
-            "测试书店", {item["name"] for item in result["_audited_places"]}
-        )
+        self.assertIn("测试书店", {item["name"] for item in result["_audited_places"]})
         self.assertEqual(result["_location_audit"]["map_provider"], "高德地图")
         self.assertTrue(audit_kwargs[0]["allow_safe_corrections"])
         self.assertEqual(audit_payloads[0]["places"][0]["name"], "测试书店")
@@ -4302,7 +4325,9 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result["accept"])
         self.assertIsNotNone(new_timeline)
-        self.assertEqual([item["time"] for item in audit_payloads[0]["timeline"]], ["14:00", "16:00"])
+        self.assertEqual(
+            [item["time"] for item in audit_payloads[0]["timeline"]], ["14:00", "16:00"]
+        )
         past = next(item for item in new_timeline if item.time == "14:00")
         self.assertEqual(past.place, "家")
         self.assertEqual(past.place_city, "测试市")
@@ -4856,7 +4881,11 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
             "timeline": [
                 {"time": "08:10", "activity": "自然醒后洗漱", "duration_minutes": 25},
                 {"time": "09:00", "activity": "慢慢吃早餐", "duration_minutes": 40},
-                {"time": "10:10", "activity": "在桌边处理手头的事", "duration_minutes": 150},
+                {
+                    "time": "10:10",
+                    "activity": "在桌边处理手头的事",
+                    "duration_minutes": 150,
+                },
                 {"time": "13:05", "activity": "准备并吃午饭", "duration_minutes": 55},
                 {"time": "14:20", "activity": "午后安静看书", "duration_minutes": 210},
                 {
@@ -4899,10 +4928,22 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
             "outfit": "宽松居家T恤和棉质长裤",
             "timeline": [
                 {"time": "14:20", "activity": "补觉后慢慢醒来", "duration_minutes": 30},
-                {"time": "15:10", "activity": "吃一顿迟来的午饭", "duration_minutes": 45},
+                {
+                    "time": "15:10",
+                    "activity": "吃一顿迟来的午饭",
+                    "duration_minutes": 45,
+                },
                 {"time": "16:20", "activity": "在家整理照片", "duration_minutes": 180},
-                {"time": "20:00", "activity": "准备晚饭并慢慢吃完", "duration_minutes": 75},
-                {"time": "21:40", "activity": "看一部轻松的电影", "duration_minutes": 150},
+                {
+                    "time": "20:00",
+                    "activity": "准备晚饭并慢慢吃完",
+                    "duration_minutes": 75,
+                },
+                {
+                    "time": "21:40",
+                    "activity": "看一部轻松的电影",
+                    "duration_minutes": 150,
+                },
                 {"time": "00:30", "activity": "洗漱后放下手机", "duration_minutes": 50},
             ],
         }
@@ -5484,6 +5525,10 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         current_outfit = future_homewear.replace(
             '"outfit":"宽松的米白色棉麻家居连衣裙，长发自然披在肩上，赤脚或者穿双棉袜"',
             '"outfit":"米白针织开衫配浅色吊带裙，长发用发带松松束着，脚上穿帆布鞋"',
+        )
+        future_homewear = (
+            future_homewear[:-1]
+            + ',"change_evidence":{"source":"occurred_schedule","timeline_time":"18:20"}}'
         )
         composer, provider, _, _ = make_composer([future_homewear, current_outfit])
 

@@ -30,6 +30,32 @@ from runtimehelpers import (
 
 
 class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTestCase):
+    async def test_edit_passes_directors_character_reference_decision(self):
+        from unittest.mock import AsyncMock
+
+        for needs_reference in (False, True):
+            with self.subTest(needs_reference=needs_reference):
+                runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+                runtime._directed_life_image_result = AsyncMock(
+                    return_value=("directed prompt", needs_reference, needs_reference)
+                )
+                runtime._resolve_life_identity_profiles = AsyncMock(return_value={})
+                runtime._edit_life_image_with_policy_retry = AsyncMock(
+                    return_value=types.SimpleNamespace(path=Path("result.png"))
+                )
+                await runtime._execute_image_edit(
+                    Event(),
+                    "original prompt",
+                    "reference.png",
+                    [],
+                    "",
+                    "1K",
+                    "gpt",
+                    direct_prompt=False,
+                )
+                options = runtime._edit_life_image_with_policy_retry.call_args.kwargs
+                self.assertIs(options["include_character_reference"], needs_reference)
+
     async def test_festival_photo_prompt_locks_historical_outfit_after_followup(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.context = Context(Provider([]))
@@ -71,8 +97,11 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         event.message_str = "你发给我看看"
 
         result = await runtime._life_image_generate_inline(
-            event, "中秋下午在老街拍下的生活照", subject_route="current_character",
-            historical_target="2026-09-25", historical_period="afternoon",
+            event,
+            "中秋下午在老街拍下的生活照",
+            subject_route="current_character",
+            historical_target="2026-09-25",
+            historical_period="afternoon",
         )
 
         self.assertEqual(json.loads(result)["status"], "sent")
@@ -147,8 +176,8 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         runtime._current_life_appearance_snapshot = lambda route: async_return(
             "当前穿搭：浅灰色宽松 T 恤"
         )
-        runtime._historical_life_appearance_snapshot = lambda request, **kwargs: async_return(
-            "昨日回现穿搭：粉色露肩上衣搭配粉色碎花蕾丝半身短裙"
+        runtime._historical_life_appearance_snapshot = lambda request, **kwargs: (
+            async_return("昨日回现穿搭：粉色露肩上衣搭配粉色碎花蕾丝半身短裙")
         )
         runtime.media = types.SimpleNamespace(
             image=types.SimpleNamespace(
@@ -434,6 +463,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
                     "https://example.com/reference.png",
                     {
                         "preserve_reference_ratio": True,
+                        "include_character_reference": True,
                         "identity_profile": (
                             "整体纤细匀称，上半身曲线自然丰满，与肩腰胯比例协调"
                         ),
@@ -974,7 +1004,9 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
         event.message_str = "雨后古镇生活照，输出 4K 图片"
 
-        result = await runtime._life_image_generate_inline(event, "备用提示词", resolution="2K")
+        result = await runtime._life_image_generate_inline(
+            event, "备用提示词", resolution="2K"
+        )
 
         self.assertEqual(json.loads(result)["status"], "sent")
         self.assertEqual(calls, [("备用提示词", {"resolution": "2K"})])
@@ -1023,7 +1055,9 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             unified_msg_origin=source_event.unified_msg_origin, group_id="20001"
         )
 
-        result = await runtime._life_image_generate_inline(tool_event, "古风灯会街巷少女递花灯")
+        result = await runtime._life_image_generate_inline(
+            tool_event, "古风灯会街巷少女递花灯"
+        )
 
         self.assertEqual(json.loads(result)["status"], "sent")
         self.assertEqual(image_prompts, [(full_prompt, {"aspect_ratio": "9:16"})])
@@ -1127,7 +1161,9 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
         event.message_str = "请按角色本人参考图再拍一张"
 
-        result = await runtime._life_image_generate_inline(event, "拍一张角色本人参考图")
+        result = await runtime._life_image_generate_inline(
+            event, "拍一张角色本人参考图"
+        )
 
         self.assertEqual(json.loads(result)["status"], "sent")
         self.assertEqual(generate_calls, [])
@@ -1290,7 +1326,9 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
         event.message_str = "我在聊天里提到 / 这个符号，但不是图片直给命令"
 
-        result = await runtime._life_image_generate_inline(event, "模型整理后的图片提示词")
+        result = await runtime._life_image_generate_inline(
+            event, "模型整理后的图片提示词"
+        )
 
         self.assertEqual(json.loads(result)["status"], "sent")
         self.assertEqual(image_prompts, ["模型整理后的图片提示词"])
@@ -1638,7 +1676,9 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             context=types.SimpleNamespace(event=event)
         )
 
-        result = await runtime._life_image_generate_inline(wrapped_event, "咖喱店生活照")
+        result = await runtime._life_image_generate_inline(
+            wrapped_event, "咖喱店生活照"
+        )
 
         self.assertEqual(json.loads(result)["status"], "sent")
         self.assertEqual(runtime.context.sent_messages[0][0], event.unified_msg_origin)
@@ -2075,7 +2115,9 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
         event.message_str = "20多岁亚洲女性夏日写真，完整服装细节，竖版全身构图。海边露台，阳光明亮，生活化拍摄。"
 
-        result = await runtime._life_image_generate_inline(event, "备用提示词", resolution="4k")
+        result = await runtime._life_image_generate_inline(
+            event, "备用提示词", resolution="4k"
+        )
 
         self.assertEqual(json.loads(result)["status"], "sent")
         self.assertEqual(generate_calls, [(event.message_str, {"resolution": "4K"})])
@@ -3732,9 +3774,11 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         root = Path(tempfile.mkdtemp())
         runtime.data_path = root / "daily_life.db"
         runtime._runtime_now = lambda: datetime.datetime(2026, 9, 27, 21)
-        runtime._historical_life_appearance_snapshot = lambda request, **kwargs: async_return(
-            "历史回现穿搭（2026-09-25 17:00生活记录）：浅紫色针织裙和米白开衫\n"
-            "同一时刻发型名称：高马尾"
+        runtime._historical_life_appearance_snapshot = lambda request, **kwargs: (
+            async_return(
+                "历史回现穿搭（2026-09-25 17:00生活记录）：浅紫色针织裙和米白开衫\n"
+                "同一时刻发型名称：高马尾"
+            )
         )
         runtime._current_life_appearance_snapshot = lambda route: async_return(
             "当前穿搭：当前睡裙"
@@ -3760,7 +3804,8 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             "中秋下午在老街拍的三张照片",
             count=3,
             subject_route="current_character",
-            historical_target="2026-09-25", historical_period="afternoon",
+            historical_target="2026-09-25",
+            historical_period="afternoon",
         )
 
         self.assertEqual(json.loads(result)["status"], "pending")

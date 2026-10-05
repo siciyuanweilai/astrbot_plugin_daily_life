@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
+from contextvars import ContextVar
 import base64
 import hashlib
 import inspect
@@ -30,7 +32,7 @@ from ..base import (
     image_mime_and_ext,
     upstream_error_text,
 )
-from . import gemini, imagine, openai, routes
+from . import gemini, imagine, openai, polling, routes
 from .pipe import ImageRoute
 
 _SUPPORTED_ASPECT_RATIO_VALUES = {
@@ -98,7 +100,7 @@ def _validate_downloaded_image(
     *,
     label: str,
 ) -> None:
-    """Reject CDN responses that contain only an image header or metadata."""
+    """拒绝仅包含图片头或元数据的 CDN 响应。"""
     if not image_bytes:
         raise _RetryableRemoteImageError(f"{label}为空")
 
@@ -228,6 +230,88 @@ class GeminiImageService:
         self.data_dir = data_dir
         self.output_dir = data_dir / "generated" / "images"
         self._session: aiohttp.ClientSession | None = None
+        self._task_listener = ContextVar(
+            f"image_task_listener_{id(self)}", default=None
+        )
+
+    @contextmanager
+    def track_async_tasks(self, listener):
+        token = self._task_listener.set(listener)
+        try:
+            yield
+        finally:
+            self._task_listener.reset(token)
+
+    async def resume_async_image(
+        self, task_id: str, reference: dict[str, Any]
+    ) -> GeneratedImage:
+        from ..base import normalize_openai_base_url
+
+        candidates = await self._request_routes("text") + await self._request_routes(
+            "edit"
+        )
+        route = next(
+            (
+                item
+                for item in candidates
+                if (
+                    normalize_openai_base_url(item.api_url) == reference.get("api_url")
+                    and item.model == reference.get("model")
+                    and item.protocol == reference.get("protocol")
+                )
+            ),
+            None,
+        )
+        if route is None:
+            raise polling.ImageTaskError(
+                "原图片任务的接口通道尚不可用，保留原任务等待恢复"
+            )
+        session = await self._get_session()
+        from .pipe import ImageRequest
+
+        request = ImageRequest(
+            url="",
+            headers={
+                "Authorization": f"Bearer {route.api_key}",
+                "Idempotency-Key": task_id,
+            },
+        )
+        result = await polling.request_image_task(
+            session, route, request, resume_task_id=task_id
+        )
+        try:
+            image_bytes = await self._extract_image_bytes(
+                result,
+                route,
+                timeout=aiohttp.ClientTimeout(total=route.timeout_seconds),
+            )
+        except Exception as exc:
+            raise polling.ImageTaskError(
+                f"原图片任务成品暂未取得，保留任务继续获取：{exc}"
+            ) from exc
+        if not image_bytes or not all(_image_dimensions(image_bytes)):
+            raise polling.ImageTaskError("原图片任务的成品数据不完整，等待重新获取")
+        digest = hashlib.sha256(
+            f"{reference['api_url']}:{task_id}".encode()
+        ).hexdigest()[:24]
+        await asyncio.to_thread(self.output_dir.mkdir, parents=True, exist_ok=True)
+        _, ext = image_mime_and_ext(image_bytes)
+        path = self.output_dir / f"async_{digest}{ext}"
+        await asyncio.to_thread(path.write_bytes, image_bytes)
+        return GeneratedImage(path)
+
+    @contextmanager
+    def async_task_metadata(self, metadata: dict[str, Any]):
+        listener = self._task_listener.get()
+        if listener is None:
+            yield
+            return
+
+        async def accepted(task_id, route):
+            await listener(task_id, route, metadata)
+
+        with self.track_async_tasks(accepted):
+            yield
 
     async def close(self) -> None:
         if self._session and not self._session.closed:
@@ -441,6 +525,7 @@ class GeminiImageService:
         protocol: str = "",
         model: str = "",
         identity_profile: str = "",
+        include_character_reference: bool | None = None,
     ) -> GeneratedImage:
         if not self.settings.enabled:
             raise RuntimeError("图片生成未启用")
@@ -469,8 +554,10 @@ class GeminiImageService:
         )
         effective_aspect_ratio = reference_aspect_ratio or aspect_ratio
         reference_is_character = self._is_character_reference_image(reference_image)
-        reference_parts = await self._character_reference_parts(
-            exclude_paths={reference_image}
+        reference_parts = (
+            await self._character_reference_parts(exclude_paths={reference_image})
+            if include_character_reference is not False
+            else []
         )
         output_bytes, route = await self._generate_image_result(
             lambda route, current_prompt: [
@@ -877,6 +964,8 @@ class GeminiImageService:
                 errors.append(message)
                 if self._is_policy_violation_error(exc):
                     raise RuntimeError(f"图片生成触发安全拒绝：{message}") from exc
+                if isinstance(exc, polling.ImageTaskError):
+                    raise
                 logger.debug(
                     f"{LOG_PREFIX} {self._mode_label(mode)}接口通道失败，尝试下一条：{message}"
                 )
@@ -896,6 +985,11 @@ class GeminiImageService:
                     timeout=timeout,
                 )
             except Exception as exc:
+                if isinstance(data, polling.ImageTaskResult):
+                    raise polling.ImageTaskError(
+                        f"图片任务 {data.task_id} 已完成，获取成品失败：{exc}；"
+                        "已停止自动切换通道，避免重复生成"
+                    ) from exc
                 message = (
                     f"{route_label}：{self._error_text(exc, route.timeout_seconds)}"
                 )
@@ -941,6 +1035,11 @@ class GeminiImageService:
                     )
                 return image_bytes, route
             message = f"{route_label}：图片接口未返回图片：{upstream_error_text(data)}"
+            if isinstance(data, polling.ImageTaskResult):
+                raise polling.ImageTaskError(
+                    f"图片任务 {data.task_id} 已完成但没有可用图片；"
+                    "已停止自动切换通道，避免重复生成"
+                )
             errors.append(message)
             if self._is_policy_violation_text(message):
                 raise RuntimeError(f"图片生成触发安全拒绝：{message}")
@@ -968,6 +1067,23 @@ class GeminiImageService:
         request = self._build_request(route, parts)
         if require_reference and request.reference_image_count <= 0:
             raise ValueError("图生图请求没有可上传的参考图，已终止请求")
+        if openai.uses_async_tasks(route):
+            listener = getattr(self, "_task_listener", None)
+            result = await polling.request_image_task(
+                session,
+                route,
+                request,
+                **(
+                    {"on_accepted": listener.get()}
+                    if listener is not None and listener.get() is not None
+                    else {}
+                ),
+            )
+            if result is not None:
+                return result
+            logger.debug(
+                f"{LOG_PREFIX} 通道未启用异步图片接口，使用同步接口：{route.label}"
+            )
         if request.reference_image_count:
             logger.debug(
                 f"{LOG_PREFIX} 图生图参考图已挂载：数量={request.reference_image_count}；"
@@ -1082,7 +1198,7 @@ class GeminiImageService:
         label: str,
         headers: dict[str, str] | None = None,
     ) -> tuple[bytes, str]:
-        """Download an image only after the remote body passes integrity checks."""
+        """仅在远端响应正文通过完整性检查后保存下载的图片。"""
         if not await is_http_url_allowed_async(url):
             raise ValueError(f"{label}地址不在允许的媒体网络范围内")
         session = await self._get_session()
@@ -1215,13 +1331,16 @@ class GeminiImageService:
         effective_aspect_ratio = (
             aspect_ratio if aspect_ratio in IMAGE_ASPECT_RATIOS else route.aspect_ratio
         )
-        if route.protocol == "openai":
-            effective_aspect_ratio = openai.supported_aspect_ratio(
-                route.model, effective_aspect_ratio
-            )
         effective_resolution = resolution or str(route.resolution or "").strip().upper()
         if effective_resolution not in IMAGE_RESOLUTIONS:
             raise ValueError("图片通道分辨率只能是 1K、2K 或 4K")
+        if route.protocol == "openai":
+            effective_aspect_ratio = openai.supported_aspect_ratio(
+                route.model,
+                effective_aspect_ratio,
+                api_url=route.api_url,
+                resolution=effective_resolution,
+            )
         if route.protocol == "grok" and effective_resolution == "4K":
             raise ValueError("Grok 图片接口只支持 1K 或 2K 分辨率")
         resolution_source = "本轮指定" if resolution else "通道配置"
@@ -1252,7 +1371,10 @@ class GeminiImageService:
     def _request_size_label(route: ImageRoute) -> str:
         if route.protocol in {"openai", "grok"}:
             return openai.size_for(
-                route.resolution, route.aspect_ratio, model=route.model
+                route.resolution,
+                route.aspect_ratio,
+                model=route.model,
+                api_url=route.api_url,
             ).replace("x", "×")
         return f"{route.resolution}档位"
 

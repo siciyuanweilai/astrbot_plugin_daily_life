@@ -741,8 +741,8 @@ class LifeActionMixin:
                 )
             return outcome
 
-        # Settlement itself marks a successful action completed. Do not mark it
-        # before feasibility/precondition checks, which can reject the receipt.
+        # 结算成功后才将动作标记为完成；可行性和前置条件检查可能拒绝回执，
+        # 因此不能在检查前提前标记完成。
         action.source = "daily_plan"
         action.evidence = evidence
         outcome = await self.settle_and_persist_life_action(

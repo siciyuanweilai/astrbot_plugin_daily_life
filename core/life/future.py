@@ -13,96 +13,6 @@ def _field(item: Any, key: str) -> str:
     return ""
 
 
-def _minutes(value: object) -> int | None:
-    raw = str(value or "").strip()
-    try:
-        hour, minute = raw.split(":", 1)
-        hour_int = int(hour)
-        minute_int = int(minute)
-    except (TypeError, ValueError):
-        return None
-    if 0 <= hour_int <= 23 and 0 <= minute_int <= 59:
-        return hour_int * 60 + minute_int
-    return None
-
-
-def _date(value: object) -> datetime.date | None:
-    if isinstance(value, datetime.datetime):
-        return value.date()
-    if isinstance(value, datetime.date):
-        return value
-    try:
-        return datetime.datetime.strptime(str(value or "").strip(), "%Y-%m-%d").date()
-    except ValueError:
-        return None
-
-
-def _datetime_on_date(item: Any, date_value: object) -> datetime.datetime | None:
-    return timeline_item_datetime(item, date_value)
-
-
-def _normalize_text(value: object) -> str:
-    text = str(value or "")
-    return "".join(
-        char for char in text if char.isalnum() or "\u4e00" <= char <= "\u9fff"
-    )
-
-
-def _longest_common_run(left: str, right: str) -> int:
-    if not left or not right:
-        return 0
-    previous = [0] * (len(right) + 1)
-    best = 0
-    for left_char in left:
-        current = [0]
-        for index, right_char in enumerate(right, start=1):
-            value = previous[index - 1] + 1 if left_char == right_char else 0
-            current.append(value)
-            if value > best:
-                best = value
-        previous = current
-    return best
-
-
-def _outfit_overlap_threshold(left: str, right: str) -> int:
-    base = min(len(left), len(right))
-    if base < 8:
-        return 0
-    return max(8, min(18, int(base * 0.45)))
-
-
-def outfit_descriptions_match(context: str, outfit: str) -> bool:
-    fragment_text = _normalize_text(context)
-    outfit_text = _normalize_text(outfit)
-    if not fragment_text or not outfit_text:
-        return False
-    threshold = _outfit_overlap_threshold(fragment_text, outfit_text)
-    if not threshold:
-        return False
-    if len(outfit_text) >= threshold and outfit_text in fragment_text:
-        return True
-    if len(fragment_text) >= threshold and fragment_text in outfit_text:
-        return True
-
-    if _longest_common_run(fragment_text, outfit_text) >= threshold:
-        return True
-
-    # 穿搭描述常用不同连接词串起同一组单品，再比较相邻字符证据，
-    # 避免未来穿搭仅因换一种措辞就绕过时序校验。
-    fragment_pairs = {
-        fragment_text[index : index + 2]
-        for index in range(len(fragment_text) - 1)
-    }
-    outfit_pairs = {
-        outfit_text[index : index + 2] for index in range(len(outfit_text) - 1)
-    }
-    if not fragment_pairs or not outfit_pairs:
-        return False
-    shared = len(fragment_pairs & outfit_pairs)
-    shorter = min(len(fragment_pairs), len(outfit_pairs))
-    return shared >= 8 and shared / shorter >= 0.35
-
-
 def future_outfit_timing_issue(
     outfit: str,
     timeline: list,
@@ -110,13 +20,21 @@ def future_outfit_timing_issue(
     *,
     current_time: datetime.datetime | None = None,
     timeline_date: object = None,
+    source_timeline_time: str = "",
 ) -> str:
-    if not str(outfit or "").strip() or not isinstance(timeline, list):
+    """校验明确引用的换装证据时间，不从衣服描述推断事件来源。"""
+    if (
+        not str(outfit or "").strip()
+        or not source_timeline_time
+        or not isinstance(timeline, list)
+    ):
         return ""
     normalize_timeline_day_offsets(timeline)
     for item in timeline:
+        if _field(item, "time") != source_timeline_time:
+            continue
         if current_time is not None and timeline_date is not None:
-            item_time = _datetime_on_date(item, timeline_date)
+            item_time = timeline_item_datetime(item, timeline_date)
             if item_time is None or item_time <= current_time:
                 continue
         else:
@@ -125,9 +43,5 @@ def future_outfit_timing_issue(
             item_minutes = timeline_item_minutes(item)
             if item_minutes is None or item_minutes <= current_minutes:
                 continue
-        activity = _field(item, "activity")
-        if activity and outfit_descriptions_match(activity, outfit):
-            time_text = _field(item, "time") or "未来"
-            short_fragment = " ".join(activity.split())[:40]
-            return f"当前穿搭疑似提前使用了 {time_text} 尚未发生的换装内容：{short_fragment}"
+        return f"当前穿搭引用了 {source_timeline_time} 尚未发生的换装证据"
     return ""

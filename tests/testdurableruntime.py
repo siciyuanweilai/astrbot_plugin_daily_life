@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-# Install AstrBot test stubs before importing runtime modules.
+# 导入运行时模块前先安装 AstrBot 测试替身。
 from support import LifeArchive  # isort: skip
 
 from core.life.reliability import NonRetryableProviderError
@@ -251,6 +251,8 @@ class DurableRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 "artifacts": [str(image_path)],
                 "action_type": "photo",
                 "evidence": "重启后恢复投递",
+                "action_id": "yesterday-photo",
+                "action_date": "2026-10-04",
                 "commitment_id": commitment.id,
                 "reply_context": {
                     "media_name": "承诺的生活照片",
@@ -414,9 +416,15 @@ class DurableRuntimeTest(unittest.IsolatedAsyncioTestCase):
             source_message_id="video-request-1",
         )
 
-        self.assertTrue(await runtime.finalize_durable_media_delivery(task, outcome="sent"))
-        self.assertEqual((await self.archive.get_commitment(commitment.id)).status, "done")
-        self.assertEqual((await self.archive.get_commitment(unrelated.id)).status, "active")
+        self.assertTrue(
+            await runtime.finalize_durable_media_delivery(task, outcome="sent")
+        )
+        self.assertEqual(
+            (await self.archive.get_commitment(commitment.id)).status, "done"
+        )
+        self.assertEqual(
+            (await self.archive.get_commitment(unrelated.id)).status, "active"
+        )
         scheduled_task = await runtime.stage_durable_media_delivery(
             "private:video",
             "video",
@@ -426,9 +434,13 @@ class DurableRuntimeTest(unittest.IsolatedAsyncioTestCase):
             source_message_id="video-request-3",
         )
         self.assertTrue(
-            await runtime.finalize_durable_media_delivery(scheduled_task, outcome="sent")
+            await runtime.finalize_durable_media_delivery(
+                scheduled_task, outcome="sent"
+            )
         )
-        self.assertEqual((await self.archive.get_commitment(scheduled.id)).status, "done")
+        self.assertEqual(
+            (await self.archive.get_commitment(scheduled.id)).status, "done"
+        )
         self.assertTrue(
             await runtime.direct_media_was_delivered(
                 "private:video", "video", ["video-request-1"]
@@ -627,7 +639,7 @@ class ProactiveCommitmentScheduleTest(unittest.IsolatedAsyncioTestCase):
                             source_session="test:FriendMessage:1",
                         )
                     )
-                    # No text evaluator or sender exists on this test runtime.
+                    # 此测试运行时没有文字评估器或发送器。
                     result = await self.runtime.run_proactive_commitment_task(
                         SimpleNamespace(
                             payload={

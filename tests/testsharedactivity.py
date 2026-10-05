@@ -316,6 +316,6 @@ class SharedActivityTest(unittest.IsolatedAsyncioTestCase):
         await self.runtime.schedule_invite_contact(
             self.commitment, observed_at=self.now
         )
-        # The first task already belongs to this approved life day.
+        # 首个任务已属于本次确认的生活日。
         result = await self.send_now()
         self.assertEqual(result["outcome"], "sent")

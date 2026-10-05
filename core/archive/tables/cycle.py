@@ -1,5 +1,5 @@
 WEEKLY_SQL = """
--- Weekly plans
+-- 每周计划
 CREATE TABLE IF NOT EXISTS week_plans (
             week_id TEXT PRIMARY KEY,
             theme TEXT NOT NULL DEFAULT '',

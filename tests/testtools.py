@@ -261,7 +261,7 @@ class LifeToolsTest(unittest.TestCase):
 
         self.assertEqual(issue, "")
 
-    def test_future_outfit_timing_flags_specific_future_homewear(self):
+    def test_future_outfit_timing_does_not_infer_homewear_source_from_words(self):
         issue = future_outfit_timing_issue(
             "宽松的米白色棉麻家居连衣裙，长发自然披在肩上，赤脚穿棉袜",
             [
@@ -274,9 +274,9 @@ class LifeToolsTest(unittest.TestCase):
             current_minutes=17 * 60 + 45,
         )
 
-        self.assertIn("当前穿搭疑似提前使用了 18:20 尚未发生的换装内容", issue)
+        self.assertEqual(issue, "")
 
-    def test_future_outfit_timing_flags_specific_future_sleepwear(self):
+    def test_future_outfit_timing_does_not_infer_sleepwear_source_from_words(self):
         issue = future_outfit_timing_issue(
             "奶油色云朵绒长袖睡衣套装，头发用深灰色抓夹松松盘起",
             [
@@ -289,7 +289,7 @@ class LifeToolsTest(unittest.TestCase):
             current_minutes=20 * 60,
         )
 
-        self.assertIn("当前穿搭疑似提前使用了 20:50 尚未发生的换装内容", issue)
+        self.assertEqual(issue, "")
 
     def test_future_outfit_timing_matches_same_items_with_different_connectors(self):
         issue = future_outfit_timing_issue(
@@ -304,7 +304,7 @@ class LifeToolsTest(unittest.TestCase):
             current_minutes=7 * 60 + 30,
         )
 
-        self.assertIn("当前穿搭疑似提前使用了 08:40 尚未发生的换装内容", issue)
+        self.assertEqual(issue, "")
 
     def test_week_plan_daily_helpers_support_date_and_weekday_keys(self):
         plan = {

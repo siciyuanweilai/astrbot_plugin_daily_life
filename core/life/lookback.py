@@ -1,4 +1,4 @@
-"""Date-aware appearance lookup using recorded facts."""
+"""依据已记录的事实，按日期查询外观。"""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ _PERIODS = {
 
 
 def record_appearance_snapshot(day: Any, observed_at: dt.datetime) -> None:
-    """Preserve each actual appearance change, including changes within a period."""
+    """保存每次实际外观变化，包括同一时段内的变化。"""
     values = current_appearance_values(day)
     components = normalize_outfit_components(day.meta.get("outfit_components"))
     if components.get("main_clothing", {}).get("state") in {
@@ -65,7 +65,7 @@ def _snapshots(day: Any) -> list[tuple[dt.datetime, dict]]:
 def appearance_query(
     target: str, now: dt.datetime, *, period: str = "", time: str = ""
 ) -> tuple[str, tuple[int, int] | None, int | None]:
-    """Validate an explicit model-supplied date, period and clock time."""
+    """校验模型明确提供的日期、时段和具体时间。"""
     target = str(target or "").strip()
     if target != "last":
         try:
@@ -127,7 +127,7 @@ def _reference(
     for key, outfit in history.items():
         window = _PERIODS.get(key)
         if window:
-            # A coarse period cannot establish an exact minute within it.
+            # 粗略时段不能确定其中的具体分钟。
             if minute is not None and window[1] * 60 > minute:
                 continue
             if period and not (window[0] < period[1] and window[1] > period[0]):

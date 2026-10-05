@@ -549,8 +549,8 @@ async function watchStatusOnce() {
       _ts: Date.now(),
     });
     if (data.changed) applyStatus(data);
-    // A plugin reload resets the server-side counter. If an older server did
-    // not return a snapshot for that reset, fetch the complete status now.
+    // 插件重载会重置服务端计数器。若服务端旧实现未因此返回快照，
+    // 则立即获取完整状态。
     else if (Number(data.status_version || 0) < statusVersion()) {
       await loadStatus({ quiet: true });
     }

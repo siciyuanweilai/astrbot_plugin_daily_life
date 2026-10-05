@@ -325,8 +325,8 @@ class DailyEngineMixin:
                 else current_scene_category,
             )
             if outfit_choice == "partial_change":
-                # A local adjustment may use an explicitly named shoe, outer
-                # layer, or accessory, but it must keep the current main layer.
+                    # 局部调整可以采用明确指定的鞋履、外搭或配饰，
+                    # 但必须保留当前主体服装。
                 catalog_appearance.pop("outfit", None)
                 partial_components = normalize_outfit_components(
                     catalog_appearance.get("outfit_components")

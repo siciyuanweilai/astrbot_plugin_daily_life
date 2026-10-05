@@ -440,10 +440,10 @@ class ContinuousTurnMixin:
         return self._continuous_turn_revision(scope, participant) == revision
 
     def media_request_is_current_turn(self, event: Any) -> bool:
-        """Return whether a background media request still belongs to the active turn.
+        """判断后台媒体请求是否仍属于当前话轮。
 
-        Media delivery must survive a newer message, but its old follow-up must not
-        be inserted into the newer conversation turn.
+        新消息到来后仍应继续投递媒体，但不能将旧请求的后续回复
+        插入新的对话轮次。
         """
         for source in self._event_sources(event):
             token = getattr(source, self._MEDIA_CHAT_TOKEN_ATTR, None)

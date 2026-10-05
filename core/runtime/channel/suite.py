@@ -5,6 +5,7 @@ import json
 import shutil
 import time
 import uuid
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ from astrbot.api import logger
 from ...life.people import MEDIA_PERSON_TEXT_PATHS
 from ...media.base import GROUP_IDENTITY_CONTINUITY_RULE, image_mime_and_ext
 from ...media.picture.routes import image_provider_label, requested_image_provider
+from ...media.picture.polling import ImageTaskError, ImageTaskFailed
 from ...outcome import ToolResultText
 from ...paths import path_is_file, runtime_data_root
 from ...prompts import CORE_MEDIA_REPLY_RULES, cache_friendly_prompt
@@ -627,13 +629,18 @@ class RuntimePhotoSuiteMediaMixin:
             index = int(shot.get("index") or 0)
             if index in sent_indexes:
                 shot["status"] = "sent"
-            elif index in indexes and not str(shot.get("path") or "").strip():
+            elif (
+                index in indexes
+                and not str(shot.get("path") or "").strip()
+                and shot.get("status") != "pending"
+            ):
                 shot["status"] = "failed"
         total_available = len(await self._photo_suite_available_shots(manifest))
         failed_indexes = [
             int(shot.get("index") or 0)
             for shot in manifest.get("shots") or []
             if not str(shot.get("path") or "").strip()
+            and shot.get("status") != "pending"
         ]
         sent_total = sum(
             1
@@ -645,6 +652,10 @@ class RuntimePhotoSuiteMediaMixin:
             if sent_total >= count
             else "partial"
             if total_available or sent_indexes
+            else "pending"
+            if any(
+                shot.get("status") == "pending" for shot in manifest.get("shots", [])
+            )
             else "failed"
         )
         await self._photo_suite_write_manifest(manifest_path, manifest)
@@ -748,6 +759,30 @@ class RuntimePhotoSuiteMediaMixin:
         initial_reference_image: str = "",
         continue_last_result: bool = False,
     ) -> None:
+        await self.track_image_generation(
+            event,
+            self._photo_suite_generate_background_tracked(
+                scope,
+                event,
+                request_id,
+                manifest_path,
+                retry_indexes=retry_indexes,
+                initial_reference_image=initial_reference_image,
+                continue_last_result=continue_last_result,
+            ),
+        )
+
+    async def _photo_suite_generate_background_tracked(
+        self,
+        scope: str,
+        event: Any,
+        request_id: str,
+        manifest_path: Path,
+        *,
+        retry_indexes: list[int] | None = None,
+        initial_reference_image: str = "",
+        continue_last_result: bool = False,
+    ) -> None:
         marker = self._photo_suite_requests().get(request_id)
         try:
             manifest, count, indexes = await self._photo_suite_prepare_generation(
@@ -764,12 +799,16 @@ class RuntimePhotoSuiteMediaMixin:
             successful = await self._photo_suite_available_shots(
                 manifest, indexes=indexes, generated_only=True
             )
+            event._daily_life_photo_suite_ready_indexes = {
+                int(shot["index"]) for shot in successful
+            }
             delivery_task = await self.stage_durable_media_delivery(
                 scope,
                 "images",
                 [str(shot.get("path") or "") for shot in successful],
                 action_type="photo",
                 evidence=f"套图已生成 {len(successful)} 张，等待投递确认",
+                source_event=event,
                 source_message_id=self._event_message_id(event),
                 reply_context={
                     "media_name": "一组生活照片",
@@ -811,6 +850,9 @@ class RuntimePhotoSuiteMediaMixin:
 
             if isinstance(marker, dict):
                 marker["status"] = manifest["status"]
+            if not sent_indexes and manifest["status"] == "pending":
+                self.cancel_tool_reaction(event, "life_photo_suite_generate")
+                return
             await self._photo_suite_send_followup(
                 scope,
                 event,
@@ -866,9 +908,15 @@ class RuntimePhotoSuiteMediaMixin:
         for _ in range(PHOTO_SUITE_SLOT_ATTEMPTS):
             shot["attempts"] = int(shot.get("attempts") or 0) + 1
             try:
-                generated = await self._photo_suite_generate_asset(
-                    event, manifest, str(shot.get("prompt") or "")
-                )
+                metadata = getattr(self.media.image, "async_task_metadata", None)
+                with (
+                    metadata({"manifest_path": str(manifest_path), "slot_index": index})
+                    if callable(metadata)
+                    else nullcontext()
+                ):
+                    generated = await self._photo_suite_generate_asset(
+                        event, manifest, str(shot.get("prompt") or "")
+                    )
                 source_path = Path(str(getattr(generated, "path", "") or ""))
                 if not await asyncio.to_thread(path_is_file, source_path):
                     raise RuntimeError("图片服务没有返回可用文件")
@@ -881,6 +929,13 @@ class RuntimePhotoSuiteMediaMixin:
                 break
             except Exception as exc:
                 error = self._media_error_summary(exc)
+                if isinstance(exc, ImageTaskError):
+                    shot["status"] = (
+                        "failed" if isinstance(exc, ImageTaskFailed) else "pending"
+                    )
+                    shot["error"] = error
+                    # 已受理的任务只能查询原编号，套图重试也不能再次提交。
+                    break
         else:
             if previous_path and await asyncio.to_thread(path_is_file, previous_path):
                 shot["path"] = previous_path

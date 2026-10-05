@@ -259,7 +259,7 @@ skip 时 activity_index 可以为 null，contact_at 和 reply_text 留空。
                 ),
                 "reason": "等待已确认约定落实到日程",
             }
-        # A separate explicit contact promise takes precedence over inferred preparation.
+            # 单独明确作出的联系承诺，优先于推断出的准备提醒。
         explicit = await self.archive.get_durable_task(
             f"proactive_commitment:{commitment.id}"
         )
@@ -315,7 +315,7 @@ skip 时 activity_index 可以为 null，contact_at 和 reply_text 留空。
             interaction=interaction,
             now=now,
         )
-        # Model work is asynchronous: evidence can change while it is in progress.
+            # 模型处理是异步的，处理期间相关证据可能发生变化。
         latest = await self.archive.get_commitment(commitment.id)
         latest_day = await self.archive.get_day(date_str)
         latest_recent = await self._read_recent_context_messages(scope, limit=20)

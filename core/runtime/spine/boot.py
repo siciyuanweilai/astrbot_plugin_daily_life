@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import inspect
+import uuid
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ from ...life import (
 )
 from ...life.reliability import NonRetryableProviderError
 from ...media import LifeMediaService
+from ...media.picture.polling import ImageTaskFailed
 from ...paths import runtime_data_path
 from ...search import SearchService
 from ...sources import ContactNameResolver
@@ -40,6 +42,7 @@ _DURABLE_TASK_LABELS = {
     "private_revisit": "私聊回访检查",
     "proactive_idle": "闲时主动检查",
     "media_delivery": "媒体投递恢复",
+    "image_generation": "图片原任务查询恢复",
     "web_research": "网页研究报告",
     "proactive_commitment": "主动承诺履行",
     "commitment_photo": "承诺拍照",
@@ -50,8 +53,6 @@ _DURABLE_TASK_LABELS = {
 # 平台历史和联系人接口，因此不能只把“平台实例已创建”当成已就绪。
 _PLATFORM_READY_TIMEOUT_SECONDS = 120.0
 _PLATFORM_READY_POLL_SECONDS = 0.5
-_RUNTIME_SERVICE_LEASE_TIMEOUT_SECONDS = 30.0
-_RUNTIME_SERVICE_SWAP_DRAIN_TIMEOUT_SECONDS = 30.0
 
 
 @dataclass(slots=True)
@@ -68,7 +69,44 @@ class RuntimeServices:
     rhythm: LifeRhythmClock
 
 
+class RuntimeServiceField:
+    """让已取得租约的任务继续使用所属版本的服务。"""
+
+    def __set_name__(self, owner: type, name: str) -> None:
+        self.name = name
+
+    def __get__(self, instance: Any, owner: type | None = None) -> Any:
+        if instance is None:
+            return self
+        binding = instance.__dict__.get("_service_binding")
+        services = binding.get() if isinstance(binding, ContextVar) else None
+        services = services or instance.__dict__.get("_runtime_services")
+        if services is not None:
+            return getattr(services, self.name)
+        if self.name not in instance.__dict__:
+            raise AttributeError(self.name)
+        return instance.__dict__[self.name]
+
+    def __set__(self, instance: Any, value: Any) -> None:
+        services = instance.__dict__.get("_runtime_services")
+        if services is None:
+            instance.__dict__[self.name] = value
+        else:
+            setattr(services, self.name, value)
+
+
 class SpineBootMixin:
+    config = RuntimeServiceField()
+    media = RuntimeServiceField()
+    memos = RuntimeServiceField()
+    contact_resolver = RuntimeServiceField()
+    weather_client = RuntimeServiceField()
+    search = RuntimeServiceField()
+    domains = RuntimeServiceField()
+    composer = RuntimeServiceField()
+    model_gateway = RuntimeServiceField()
+    rhythm = RuntimeServiceField()
+
     def __init__(
         self,
         context: Context,
@@ -360,19 +398,13 @@ class SpineBootMixin:
         )
 
     def _install_runtime_services(self, services: RuntimeServices) -> None:
-        self.config = services.config
-        self.media = services.media
-        self.memos = services.memos
-        self.contact_resolver = services.contact_resolver
-        self.weather_client = services.weather_client
-        self.search = services.search
-        self.domains = getattr(services, "domains", None)
-        self.composer = services.composer
-        self.model_gateway = services.model_gateway
-        self.rhythm = services.rhythm
+        self._runtime_services = services
         self._sight_reader = None
 
     def _current_runtime_services(self) -> RuntimeServices:
+        installed = getattr(self, "_runtime_services", None)
+        if installed is not None:
+            return installed
         return RuntimeServices(
             config=self.config,
             media=getattr(self, "media", None),
@@ -430,14 +462,55 @@ class SpineBootMixin:
         if attempts >= maximum:
             return ""
         delay = min(900, 30 * (2 ** max(0, attempts - 1)))
-        return (
-            datetime.datetime.now()
-            + datetime.timedelta(seconds=delay)
-        ).strftime("%Y-%m-%d %H:%M:%S")
+        return (datetime.datetime.now() + datetime.timedelta(seconds=delay)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
 
     async def _run_durable_tasks_once(self) -> int:
         """租用并执行一批白名单生活任务，禁止持久化任意可执行代码。"""
-        owner = getattr(self, "_durable_task_owner", f"runtime:{id(self)}")
+        lock = getattr(self, "_durable_worker_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._durable_worker_lock = lock
+        if lock.locked():
+            return 0
+        async with lock:
+            return await self._drain_durable_tasks()
+
+    async def _run_durable_handler(self, task: Any, handler: Any, owner: str) -> Any:
+        async def invoke():
+            if task.kind in {
+                "media_delivery",
+                "proactive_commitment",
+                "commitment_photo",
+                "commitment_video",
+                "image_generation",
+            }:
+                return await handler(task)
+            return await handler()
+
+        async def renew():
+            while True:
+                await asyncio.sleep(60)
+                if not await self.archive.renew_durable_task_lease(task.id, owner):
+                    raise RuntimeError("持久任务租约已失效，停止本次执行")
+
+        execution = asyncio.create_task(invoke())
+        heartbeat = asyncio.create_task(renew())
+        try:
+            done, _ = await asyncio.wait(
+                (execution, heartbeat), return_when=asyncio.FIRST_COMPLETED
+            )
+            if heartbeat in done:
+                await heartbeat
+            return await execution
+        finally:
+            for pending in (execution, heartbeat):
+                if not pending.done():
+                    pending.cancel()
+            await asyncio.gather(execution, heartbeat, return_exceptions=True)
+
+    async def _drain_durable_tasks(self) -> int:
         reconcile_photos = getattr(self, "reconcile_commitment_photo_tasks", None)
         if callable(reconcile_photos):
             await reconcile_photos()
@@ -448,16 +521,27 @@ class SpineBootMixin:
         if callable(reconcile_contacts):
             await reconcile_contacts()
         await self.archive.recover_expired_durable_tasks()
-        tasks = await self.archive.lease_durable_tasks(
-            owner,
-            limit=8,
-            lease_seconds=1800,
-            exclude_kinds=("web_research",),
-        )
         completed = 0
-        for task in tasks:
+        processed_ids = []
+        for _ in range(8):
+            owner = (
+                f"{getattr(self, '_durable_task_owner', id(self))}:{uuid.uuid4().hex}"
+            )
+            tasks = await self.archive.lease_durable_tasks(
+                owner,
+                limit=1,
+                lease_seconds=1800,
+                exclude_kinds=("web_research",),
+                exclude_task_ids=processed_ids,
+            )
+            if not tasks:
+                break
+            task = tasks[0]
+            processed_ids.append(task.id)
             if task.kind == "media_delivery":
                 handler = getattr(self, "resume_durable_media_delivery", None)
+            elif task.kind == "image_generation":
+                handler = getattr(self, "resume_durable_image_generation", None)
             else:
                 handler = getattr(self, "_durable_runtime_handlers", {}).get(task.kind)
             if not callable(handler):
@@ -469,20 +553,10 @@ class SpineBootMixin:
                 )
                 continue
             try:
-                result = (
-                    await handler(task)
-                    if task.kind
-                    in {
-                        "media_delivery",
-                        "proactive_commitment",
-                        "commitment_photo",
-                        "commitment_video",
-                    }
-                    else await handler()
-                )
+                result = await self._run_durable_handler(task, handler, owner)
             except asyncio.CancelledError:
                 raise
-            except NonRetryableProviderError as exc:
+            except (NonRetryableProviderError, ImageTaskFailed) as exc:
                 await self.archive.fail_durable_task(
                     task.id,
                     str(exc),
@@ -519,7 +593,7 @@ class SpineBootMixin:
                         progress=result.get("progress"),
                     )
                     continue
-                await self.archive.complete_durable_task(
+                committed = await self.archive.complete_durable_task(
                     task.id,
                     result
                     if isinstance(result, dict)
@@ -529,7 +603,7 @@ class SpineBootMixin:
                     },
                     owner=owner,
                 )
-                completed += 1
+                completed += int(committed)
         return completed
 
     async def _run_durable_task_worker(self) -> None:
@@ -596,6 +670,24 @@ class SpineBootMixin:
         self._service_lease_owner = owner
         return owner
 
+    def _runtime_service_binding(self) -> ContextVar[RuntimeServices | None]:
+        binding = getattr(self, "_service_binding", None)
+        if not isinstance(binding, ContextVar):
+            binding = ContextVar(f"daily_life_services_{id(self)}", default=None)
+            self._service_binding = binding
+        return binding
+
+    async def _retire_runtime_services(self, services: RuntimeServices) -> None:
+        users = getattr(self, "_service_version_users", {})
+        if users.get(id(services), 0):
+            retired = getattr(self, "_retired_runtime_services", None)
+            if retired is None:
+                retired = {}
+                self._retired_runtime_services = retired
+            retired[id(services)] = services
+            return
+        await self._close_runtime_services(services)
+
     @asynccontextmanager
     async def runtime_service_lease(self):
         depth = self._runtime_service_lease_depth()
@@ -610,47 +702,62 @@ class SpineBootMixin:
                 depth.reset(token)
             return
 
+        binding = self._runtime_service_binding()
+        services = binding.get() or getattr(self, "_runtime_services", None)
+        task_bindings = getattr(self, "_service_task_bindings", None)
+        if task_bindings is None:
+            task_bindings = {}
+            self._service_task_bindings = task_bindings
+        inherited_owner = owner.get()
+        if (
+            inherited_owner is not None
+            and inherited_owner is not current_task
+            and inherited_owner not in task_bindings
+        ):
+            services = getattr(self, "_runtime_services", None)
         condition = self._runtime_service_condition()
         async with condition:
-            try:
-                await asyncio.wait_for(
-                    condition.wait_for(
-                        lambda: not bool(getattr(self, "_service_swap_pending", False))
-                    ),
-                    timeout=_RUNTIME_SERVICE_LEASE_TIMEOUT_SECONDS,
-                )
-            except asyncio.TimeoutError as exc:
-                raise RuntimeError("运行时服务正在切换，等待租约超时") from exc
             self._service_users = int(getattr(self, "_service_users", 0)) + 1
+            users = getattr(self, "_service_version_users", None)
+            if users is None:
+                users = {}
+                self._service_version_users = users
+            if services is not None:
+                users[id(services)] = users.get(id(services), 0) + 1
         depth_token = depth.set(1)
         owner_token = owner.set(current_task)
+        service_token = binding.set(services)
+        task_bindings[current_task] = services
         try:
             yield
         finally:
             depth.reset(depth_token)
             owner.reset(owner_token)
+            binding.reset(service_token)
+            task_bindings.pop(current_task, None)
+            retired_services = None
             async with condition:
                 self._service_users = max(
                     0, int(getattr(self, "_service_users", 0)) - 1
                 )
                 if self._service_users == 0:
                     condition.notify_all()
+                if services is not None:
+                    remaining = users[id(services)] - 1
+                    if remaining:
+                        users[id(services)] = remaining
+                    else:
+                        users.pop(id(services), None)
+                        retired_services = getattr(
+                            self, "_retired_runtime_services", {}
+                        ).pop(id(services), None)
+            if retired_services is not None:
+                await self._close_runtime_services(retired_services)
 
     async def _begin_runtime_service_swap(self) -> None:
         condition = self._runtime_service_condition()
         async with condition:
             self._service_swap_pending = True
-            try:
-                await asyncio.wait_for(
-                    condition.wait_for(
-                        lambda: int(getattr(self, "_service_users", 0)) == 0
-                    ),
-                    timeout=_RUNTIME_SERVICE_SWAP_DRAIN_TIMEOUT_SECONDS,
-                )
-            except asyncio.TimeoutError as exc:
-                self._service_swap_pending = False
-                condition.notify_all()
-                raise RuntimeError("运行时服务切换排空租约超时，配置未生效") from exc
 
     async def _end_runtime_service_swap(self) -> None:
         condition = self._runtime_service_condition()
@@ -665,6 +772,7 @@ class SpineBootMixin:
             ("天气服务", services.weather_client),
             ("搜索服务", services.search),
             ("媒体服务", services.media),
+            ("MemOS 服务", services.memos),
         ):
             await SpineBootMixin._close_runtime_component(service, label)
 
@@ -720,9 +828,7 @@ class SpineBootMixin:
         )
         if callable(close_appearance_tasks):
             await close_appearance_tasks()
-        close_snapshot_flight = getattr(
-            self, "_close_injection_snapshot_flight", None
-        )
+        close_snapshot_flight = getattr(self, "_close_injection_snapshot_flight", None)
         if callable(close_snapshot_flight):
             await close_snapshot_flight()
         close_query_vector_flight = getattr(

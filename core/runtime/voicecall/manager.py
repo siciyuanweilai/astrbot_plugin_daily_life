@@ -175,19 +175,34 @@ class VoiceCallManager(VoiceCallTranscriptMixin):
         self._prune()
         rtc = getattr(self, "rtc", None)
         rtc_count = int(getattr(rtc, "active_count", 0) or 0) if rtc else 0
-        return sum(1 for invite in self._invites.values() if self._is_open(invite)) + rtc_count
+        return (
+            sum(1 for invite in self._invites.values() if self._is_open(invite))
+            + rtc_count
+        )
 
     @property
     def settings(self) -> Any:
-        return getattr(getattr(self.runtime, "config", None), "realtime_voice_call", None)
+        return getattr(
+            getattr(self.runtime, "config", None), "realtime_voice_call", None
+        )
 
     @property
     def api_key(self) -> str:
-        return str(getattr(getattr(self.runtime.config, "voice_generation", None), "api_key", "") or "").strip()
+        return str(
+            getattr(
+                getattr(self.runtime.config, "voice_generation", None), "api_key", ""
+            )
+            or ""
+        ).strip()
 
     @property
     def speaker_id(self) -> str:
-        return str(getattr(getattr(self.runtime.config, "voice_generation", None), "speaker_id", "") or "").strip()
+        return str(
+            getattr(
+                getattr(self.runtime.config, "voice_generation", None), "speaker_id", ""
+            )
+            or ""
+        ).strip()
 
     @property
     def uses_o20_protocol(self) -> bool:
@@ -293,11 +308,11 @@ class VoiceCallManager(VoiceCallTranscriptMixin):
             self._invites.clear()
             self._bridges.clear()
 
-    async def reconfigure(self) -> None:
+    async def reconfigure(self, *, force: bool = False) -> None:
         """配置热切换时关闭旧会话和旧监听，让下一次邀请使用新配置。"""
         settings = self.settings
         signature = self._settings_signature(settings)
-        if signature == self._config_signature:
+        if signature == self._config_signature and not force:
             return
         rtc = getattr(self, "rtc", None)
         if rtc is not None:
@@ -331,9 +346,15 @@ class VoiceCallManager(VoiceCallTranscriptMixin):
         return hmac.new(self._secret, body.encode("ascii"), hashlib.sha256).hexdigest()
 
     def _encode(self, payload: dict[str, Any]) -> str:
-        body = base64.urlsafe_b64encode(
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        ).decode("ascii").rstrip("=")
+        body = (
+            base64.urlsafe_b64encode(
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(
+                    "utf-8"
+                )
+            )
+            .decode("ascii")
+            .rstrip("=")
+        )
         return f"{body}.{self._sign(body)}"
 
     def _decode(self, token: str) -> dict[str, Any] | None:
@@ -344,7 +365,13 @@ class VoiceCallManager(VoiceCallTranscriptMixin):
             padded = body + "=" * (-len(body) % 4)
             payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
             return payload if isinstance(payload, dict) else None
-        except (TypeError, ValueError, json.JSONDecodeError, UnicodeError, binascii.Error):
+        except (
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+            UnicodeError,
+            binascii.Error,
+        ):
             return None
 
     def _prune(self) -> None:
@@ -393,7 +420,8 @@ class VoiceCallManager(VoiceCallTranscriptMixin):
         active = sum(
             1
             for invite in self._invites.values()
-            if invite.active or invite.state in {"accepted", "connecting", "active", "ending"}
+            if invite.active
+            or invite.state in {"accepted", "connecting", "active", "ending"}
         )
         return active < maximum
 
@@ -407,7 +435,9 @@ class VoiceCallManager(VoiceCallTranscriptMixin):
         )
 
     def _link_for_invite(self, invite: VoiceCallInvite) -> str:
-        public_url = str(getattr(self.settings, "public_url", "") or "").strip().rstrip("/")
+        public_url = (
+            str(getattr(self.settings, "public_url", "") or "").strip().rstrip("/")
+        )
         return f"{public_url}/call/{self._token_for_invite(invite)}"
 
     def peek_invite(self, token: str) -> bool:
@@ -448,12 +478,17 @@ class VoiceCallManager(VoiceCallTranscriptMixin):
         now = time.time()
         if invite.ended_at:
             return invite if invite.transcript_expires_at > now else None
-        if invite.accepted or invite.active or invite.state in {
-            "accepted",
-            "connecting",
-            "active",
-            "ending",
-        }:
+        if (
+            invite.accepted
+            or invite.active
+            or invite.state
+            in {
+                "accepted",
+                "connecting",
+                "active",
+                "ending",
+            }
+        ):
             return invite
         if invite.expires_at <= now:
             return None
@@ -654,7 +689,9 @@ class VoiceCallManager(VoiceCallTranscriptMixin):
         try:
             if callable(saver):
                 ended_at = invite.ended_at or time.time()
-                duration = max(0.0, ended_at - (invite.accepted_at or invite.created_at))
+                duration = max(
+                    0.0, ended_at - (invite.accepted_at or invite.created_at)
+                )
                 event_types = ",".join(invite.event_types[-12:]) or "无上游事件"
                 detail = (
                     f"实时语音通话状态：{invite.state}；"
@@ -700,7 +737,10 @@ class VoiceCallManager(VoiceCallTranscriptMixin):
             "127.0.0.1",
             "localhost",
         }
-        if not (parsed_url.scheme == "https" and parsed_url.hostname) and not is_local_http:
+        if (
+            not (parsed_url.scheme == "https" and parsed_url.hostname)
+            and not is_local_http
+        ):
             raise RuntimeError("实时语音通话公开地址必须使用 HTTPS")
         configuration_error = self.upstream_configuration_error()
         if configuration_error:
@@ -727,11 +767,15 @@ class VoiceCallManager(VoiceCallTranscriptMixin):
                 )
                 return f"语音通话邀请已生成（{remaining}秒内有效）：\n{link}"
             maximum = max(1, int(getattr(settings, "max_concurrent_calls", 1) or 1))
-            if sum(
-                1
-                for invite in self._invites.values()
-                if invite.active or invite.state in {"accepted", "connecting", "active", "ending"}
-            ) >= maximum:
+            if (
+                sum(
+                    1
+                    for invite in self._invites.values()
+                    if invite.active
+                    or invite.state in {"accepted", "connecting", "active", "ending"}
+                )
+                >= maximum
+            ):
                 raise RuntimeError("当前实时语音通话已达到并发上限")
             context = await self._build_context(
                 scope,
@@ -750,7 +794,8 @@ class VoiceCallManager(VoiceCallTranscriptMixin):
                 context=context,
                 greeting=str(greeting or "").strip()[:500],
                 created_at=now,
-                expires_at=now + max(30, int(getattr(settings, "invite_expire_seconds", 120) or 120)),
+                expires_at=now
+                + max(30, int(getattr(settings, "invite_expire_seconds", 120) or 120)),
                 state="invited",
                 group_id=group_id,
                 group_name=group_name,
@@ -760,7 +805,9 @@ class VoiceCallManager(VoiceCallTranscriptMixin):
             )
             self._invites[invite.token_id] = invite
         link = await self._shorten_invite_url(self._link_for_invite(invite))
-        logger.info(f"[日常生活] 已创建实时语音通话邀请：有效期={int(invite.expires_at - now)}秒")
+        logger.info(
+            f"[日常生活] 已创建实时语音通话邀请：有效期={int(invite.expires_at - now)}秒"
+        )
         return f"语音通话邀请已生成（{int(invite.expires_at - now)}秒内有效）：\n{link}"
 
     def _short_url_api_key(self) -> str:
@@ -795,20 +842,29 @@ class VoiceCallManager(VoiceCallTranscriptMixin):
                     return original_url
                 payload = json.loads(await response.text())
             data = payload.get("data") if isinstance(payload, dict) else None
-            short_url = str(data.get("short_url") or "").strip() if isinstance(data, dict) else ""
+            short_url = (
+                str(data.get("short_url") or "").strip()
+                if isinstance(data, dict)
+                else ""
+            )
             parsed = urlparse(short_url)
-            if parsed.scheme in {"http", "https"} and parsed.hostname and len(short_url) <= 500:
+            if (
+                parsed.scheme in {"http", "https"}
+                and parsed.hostname
+                and len(short_url) <= 500
+            ):
                 return short_url
         except asyncio.TimeoutError:
             logger.debug("[日常生活] 邀请短链接生成超时，保留完整邀请")
-        except (aiohttp.ClientError, json.JSONDecodeError, TypeError, ValueError) as exc:
-            logger.debug(
-                f"[日常生活] 邀请短链接生成失败：{type(exc).__name__}"
-            )
+        except (
+            aiohttp.ClientError,
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            logger.debug(f"[日常生活] 邀请短链接生成失败：{type(exc).__name__}")
         except Exception as exc:
-            logger.debug(
-                f"[日常生活] 邀请短链接生成失败：{type(exc).__name__}"
-            )
+            logger.debug(f"[日常生活] 邀请短链接生成失败：{type(exc).__name__}")
         finally:
             if owned_session and session is not None and not session.closed:
                 await session.close()
@@ -835,11 +891,11 @@ class VoiceCallManager(VoiceCallTranscriptMixin):
         try:
             context = await self.runtime.get_share_context(scope)
         except Exception as exc:
-            logger.debug(f"[日常生活] 构建实时通话上下文失败，使用基础上下文：{type(exc).__name__}")
+            logger.debug(
+                f"[日常生活] 构建实时通话上下文失败，使用基础上下文：{type(exc).__name__}"
+            )
             context = {}
-        context_turns = max(
-            0, int(getattr(self.settings, "context_turns", 8) or 0)
-        )
+        context_turns = max(0, int(getattr(self.settings, "context_turns", 8) or 0))
         if not isinstance(context, dict):
             context = {}
         # 把本次通话对象和实时钟表事实放在上下文最前面，避免生活记录较长时被裁剪掉。
@@ -873,12 +929,16 @@ class VoiceCallManager(VoiceCallTranscriptMixin):
                 if isinstance(items, list):
                     context[key] = items[-context_turns:]
         try:
-            raw = json.dumps(context, ensure_ascii=False, separators=(",", ":"), default=str)
+            raw = json.dumps(
+                context, ensure_ascii=False, separators=(",", ":"), default=str
+            )
         except (TypeError, ValueError):
             raw = str(context or "")
         persona = " ".join(persona.split())[:4200]
         raw = raw[:7000]
-        persona_section = persona or "未读取到额外角色设定；保持当前会话的自然、克制、生活化表达。"
+        persona_section = (
+            persona or "未读取到额外角色设定；保持当前会话的自然、克制、生活化表达。"
+        )
         awareness_section = json.dumps(
             current_awareness,
             ensure_ascii=False,
@@ -916,7 +976,9 @@ class VoiceCallManager(VoiceCallTranscriptMixin):
     def _avatar_url_from_sources(cls, event: Any, keys: tuple[str, ...]) -> str:
         for source in iter_event_sources(event):
             candidates = [source, getattr(source, "message_obj", None)]
-            raw_message = getattr(getattr(source, "message_obj", None), "raw_message", None)
+            raw_message = getattr(
+                getattr(source, "message_obj", None), "raw_message", None
+            )
             if raw_message is not None:
                 candidates.append(raw_message)
             for candidate in candidates:
@@ -1023,9 +1085,7 @@ class VoiceCallManager(VoiceCallTranscriptMixin):
         instructions = invite.context
         tools = self.voice_tool_schemas(invite)
         if tools:
-            instructions += (
-                "\n通话中始终可以使用结束当前通话的控制能力：只在完成自然告别后调用，调用后不要继续发起新话题。"
-            )
+            instructions += "\n通话中始终可以使用结束当前通话的控制能力：只在完成自然告别后调用，调用后不要继续发起新话题。"
             if bool(getattr(self.settings, "allow_function_calls", False)):
                 instructions += (
                     "另外，可以调用已注册的生活工具来查询或执行用户明确要求的事项。"
@@ -1037,7 +1097,9 @@ class VoiceCallManager(VoiceCallTranscriptMixin):
                 f"“{invite.greeting}”"
             )
         else:
-            instructions += "\n这次没有预设开场白，先听用户说话，不要为了填充空白主动寒暄。"
+            instructions += (
+                "\n这次没有预设开场白，先听用户说话，不要为了填充空白主动寒暄。"
+            )
         session: dict[str, Any] = {
             "id": invite.token_id,
             "model": str(getattr(settings, "model", "1.2.6.1") or "1.2.6.1"),
@@ -1047,8 +1109,22 @@ class VoiceCallManager(VoiceCallTranscriptMixin):
                 "output": {
                     "format": {"type": "pcm_s16le", "rate": 24000},
                     "voice": self.speaker_id,
-                    "speed": int(getattr(getattr(self.runtime.config, "voice_generation", None), "speech_rate", 0) or 0),
-                    "loudness": int(getattr(getattr(self.runtime.config, "voice_generation", None), "loudness_rate", 0) or 0),
+                    "speed": int(
+                        getattr(
+                            getattr(self.runtime.config, "voice_generation", None),
+                            "speech_rate",
+                            0,
+                        )
+                        or 0
+                    ),
+                    "loudness": int(
+                        getattr(
+                            getattr(self.runtime.config, "voice_generation", None),
+                            "loudness_rate",
+                            0,
+                        )
+                        or 0
+                    ),
                 },
             },
         }
@@ -1070,7 +1146,9 @@ class VoiceCallManager(VoiceCallTranscriptMixin):
         session = session if isinstance(session, dict) else {}
         extension = self._official_extension_payload()
         dialog_extension = extension.get("dialog")
-        dialog_extension = dialog_extension if isinstance(dialog_extension, dict) else {}
+        dialog_extension = (
+            dialog_extension if isinstance(dialog_extension, dict) else {}
+        )
         dialog_extra = dialog_extension.get("extra")
         dialog_extra = dict(dialog_extra) if isinstance(dialog_extra, dict) else {}
         dialog_extra.update(
@@ -1100,9 +1178,7 @@ class VoiceCallManager(VoiceCallTranscriptMixin):
                     "sample_rate": 24000,
                 },
                 "extra": {
-                    "speech_rate": int(
-                        getattr(voice_settings, "speech_rate", 0) or 0
-                    ),
+                    "speech_rate": int(getattr(voice_settings, "speech_rate", 0) or 0),
                     "loudness_rate": int(
                         getattr(voice_settings, "loudness_rate", 0) or 0
                     ),
@@ -1133,10 +1209,14 @@ class VoiceCallManager(VoiceCallTranscriptMixin):
             api_key = str(
                 getattr(settings, "official_internet_api_key", "") or ""
             ).strip()
-            search_type = str(
-                getattr(settings, "official_internet_type", "web_global_api")
-                or "web_global_api"
-            ).strip().lower()
+            search_type = (
+                str(
+                    getattr(settings, "official_internet_type", "web_global_api")
+                    or "web_global_api"
+                )
+                .strip()
+                .lower()
+            )
             if search_type not in _REALTIME_OFFICIAL_SEARCH_TYPES:
                 search_type = "web_global_api"
             bot_id = str(
@@ -1195,14 +1275,18 @@ class VoiceCallManager(VoiceCallTranscriptMixin):
 
     def record_event(self, invite: VoiceCallInvite, event: dict[str, Any]) -> None:
         event_type = str(event.get("type") or "")
-        if event_type and (not invite.event_types or invite.event_types[-1] != event_type):
+        if event_type and (
+            not invite.event_types or invite.event_types[-1] != event_type
+        ):
             invite.event_types.append(event_type)
             del invite.event_types[:-64]
         if event_type == "session.created":
             self.mark_active(invite)
         if event_type == "error":
             self.mark_ending(invite, "上游返回错误")
-            invite.upstream_log_id = str(event.get("event_id") or event.get("id") or "")[:120]
+            invite.upstream_log_id = str(
+                event.get("event_id") or event.get("id") or ""
+            )[:120]
         if event_type == "conversation.item.input_audio_transcription.started":
             self._begin_transcript_turn(invite, "user", event)
         elif event_type == "conversation.item.input_audio_transcription.delta":
@@ -1255,7 +1339,9 @@ class VoiceCallManager(VoiceCallTranscriptMixin):
         user_id: str = "",
         group_id: str = "",
     ) -> str:
-        scope = event_attr(event, "unified_msg_origin") or event_attr(event, "session_id")
+        scope = event_attr(event, "unified_msg_origin") or event_attr(
+            event, "session_id"
+        )
         if scope:
             return scope
         platform = cls._event_call(event, "get_platform_name") or event_attr(
@@ -1281,9 +1367,12 @@ class VoiceCallManager(VoiceCallTranscriptMixin):
             if sender is None:
                 continue
             user_id = user_id or str(getattr(sender, "user_id", "") or "").strip()
-            user_name = user_name or str(
-                getattr(sender, "nickname", "") or getattr(sender, "card", "") or ""
-            ).strip()
+            user_name = (
+                user_name
+                or str(
+                    getattr(sender, "nickname", "") or getattr(sender, "card", "") or ""
+                ).strip()
+            )
         return user_id, user_name or user_id or "用户"
 
     @staticmethod
@@ -1333,9 +1422,12 @@ class VoiceCallManager(VoiceCallTranscriptMixin):
             if group is None:
                 continue
             group_id = group_id or str(getattr(group, "group_id", "") or "").strip()
-            group_name = group_name or str(
-                getattr(group, "group_name", "") or getattr(group, "name", "") or ""
-            ).strip()
+            group_name = (
+                group_name
+                or str(
+                    getattr(group, "group_name", "") or getattr(group, "name", "") or ""
+                ).strip()
+            )
         return group_id, group_name
 
 

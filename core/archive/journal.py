@@ -61,8 +61,7 @@ class DayArchiveMixin:
         timeline = [
             TimelineItem(
                 time=item["time"],
-                # Keep the legacy in-memory representation for same-day nodes;
-                # only an actual next-day offset needs to be exposed to callers.
+            # 同日节点沿用原有内存表示，仅在确实跨日时向调用方提供日期偏移。
                 day_offset=(item["day_offset"] or None),
                 activity=item["activity"],
                 activity_kind=item["activity_kind"],

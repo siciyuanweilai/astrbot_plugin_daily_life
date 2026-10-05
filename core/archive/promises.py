@@ -277,7 +277,7 @@ class CommitmentArchiveMixin:
         evidence: str,
         source_id: str,
     ) -> bool:
-        """Atomically close an evidenced virtual action; never complete media delivery."""
+        """以原子操作结算有证据的虚拟动作，不将媒体投递标记为完成。"""
         if not scope or not evidence or not source_id:
             return False
 

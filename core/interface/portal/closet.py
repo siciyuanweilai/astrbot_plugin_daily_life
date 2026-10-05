@@ -305,7 +305,7 @@ class PortalClosetMixin:
                 max(10, int(getattr(channel, "timeout_seconds", 300) or 300))
                 for channel in (channels or [])
             )
-            # One image may traverse fallback routes, then use vision/LLM recognition.
+        # 单张图片可能依次尝试备用通道，再通过视觉模型或 LLM 识别。
             return max(300, route_seconds + (llm_timeout * 2) + 60)
 
         return {

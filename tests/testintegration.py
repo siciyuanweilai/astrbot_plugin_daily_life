@@ -331,7 +331,61 @@ class TargetLifeContextTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
+class ShareChatStyleTests(unittest.TestCase):
+    def test_style_export_contains_only_configured_soft_preference(self):
+        snapshot = _Snapshot()
+        snapshot.config = types.SimpleNamespace(
+            chat_style=types.SimpleNamespace(
+                enabled=True,
+                casual_short_prompt="轻松自然。\n 少追问。",
+                private_casual_max_chars=15,
+                punctuation_cleanup_enabled=True,
+                segment_delay_range="1.5,3.5",
+            )
+        )
+        result = snapshot.get_share_chat_style()
+        self.assertEqual(set(result), {"enabled", "prompt"})
+        self.assertIs(result["enabled"], True)
+        self.assertIn("轻松自然。 少追问。", result["prompt"])
+        self.assertIn("不覆盖本轮任务", result["prompt"])
+        self.assertNotIn("\n", result["prompt"])
+        self.assertFalse(hasattr(snapshot, "composer"))
+
+    def test_style_export_obeys_toggle_and_reads_current_settings(self):
+        snapshot = _Snapshot()
+        style = types.SimpleNamespace(enabled=False, casual_short_prompt="旧语气")
+        snapshot.config = types.SimpleNamespace(chat_style=style)
+        self.assertEqual(
+            snapshot.get_share_chat_style(), {"enabled": False, "prompt": ""}
+        )
+        style.enabled = True
+        style.casual_short_prompt = "新语气"
+        self.assertIn("新语气", snapshot.get_share_chat_style()["prompt"])
+        snapshot.config.chat_style = None
+        self.assertEqual(
+            snapshot.get_share_chat_style(), {"enabled": False, "prompt": ""}
+        )
+
+
 class ExternalLeaseTests(unittest.IsolatedAsyncioTestCase):
+    async def test_share_chat_style_contract_holds_external_lease(self):
+        plugin = DailyLifePlugin(types.SimpleNamespace(), {})
+        observed = []
+
+        class Runtime:
+            def get_share_chat_style(self):
+                observed.append(plugin._external_users)
+                return {"enabled": True, "prompt": "配置语气"}
+
+        plugin.runtime = Runtime()
+        plugin.commands = object()
+        self.assertEqual(
+            await plugin.get_share_chat_style(),
+            {"enabled": True, "prompt": "配置语气"},
+        )
+        self.assertEqual(observed, [1])
+        self.assertEqual(plugin._external_users, 0)
+
     async def test_plugin_lifecycle_lease_does_not_acquire_service_lease(self):
         plugin = DailyLifePlugin(types.SimpleNamespace(), {})
 

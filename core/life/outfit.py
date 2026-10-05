@@ -251,7 +251,13 @@ class OutfitMixin:
         return ""
 
     @staticmethod
-    def _timeline_item_text(item: object, *, previous_place: str = "", timeline_date: object = None, meta: dict | None = None) -> str:
+    def _timeline_item_text(
+        item: object,
+        *,
+        previous_place: str = "",
+        timeline_date: object = None,
+        meta: dict | None = None,
+    ) -> str:
         if not item:
             return "无"
         time = str(
@@ -286,7 +292,8 @@ class OutfitMixin:
         timeline: list,
         current_time: datetime.datetime,
         timeline_date: object = None,
-        *, meta: dict | None = None,
+        *,
+        meta: dict | None = None,
     ) -> tuple[str, str]:
         if not timeline:
             return "暂无已发生日程", "暂无未发生日程"
@@ -303,7 +310,12 @@ class OutfitMixin:
                 else item.get("time", "")
             ).strip()
             item_minutes = parse_time_minutes(item_time)
-            line = cls._timeline_item_text(item, previous_place=previous_place, timeline_date=timeline_date, meta=meta)
+            line = cls._timeline_item_text(
+                item,
+                previous_place=previous_place,
+                timeline_date=timeline_date,
+                meta=meta,
+            )
             item_datetime = timeline_item_datetime(item, timeline_date, meta=meta)
             if item_datetime is not None:
                 if item_datetime <= current_time:
@@ -430,8 +442,12 @@ class OutfitMixin:
         current_item, next_item = get_current_timeline_status(
             old_data.timeline, current_time, timeline_date, meta=old_data.meta
         )
-        current_timeline = self._timeline_item_text(current_item, timeline_date=timeline_date, meta=old_data.meta)
-        next_timeline = self._timeline_item_text(next_item, timeline_date=timeline_date, meta=old_data.meta)
+        current_timeline = self._timeline_item_text(
+            current_item, timeline_date=timeline_date, meta=old_data.meta
+        )
+        next_timeline = self._timeline_item_text(
+            next_item, timeline_date=timeline_date, meta=old_data.meta
+        )
         past_timeline, future_timeline = self._timeline_context_text(
             old_data.timeline, current_time, timeline_date, meta=old_data.meta
         )
@@ -770,8 +786,8 @@ class OutfitMixin:
                 reference_ids,
                 scene_category="" if context.get("instruction") else scene_category,
             )
-            # A partial change may adopt a shoe, outer layer, or carried item,
-            # but a catalog outfit must never replace the preserved main layer.
+            # 局部换装可以采用鞋履、外搭或随身物品，
+            # 但衣橱候选不能替换需要保留的主体服装。
             catalog_appearance.pop("outfit", None)
             catalog_components = normalize_outfit_components(
                 catalog_appearance.get("outfit_components")
@@ -1033,6 +1049,13 @@ class OutfitMixin:
             old_data.timeline,
             current_time=current_time,
             timeline_date=context["timeline_date"],
+            source_timeline_time=(
+                str(result["change_evidence"].get("timeline_time") or "").strip()
+                if not user_instruction
+                and isinstance(result.get("change_evidence"), dict)
+                and result["change_evidence"].get("source") == "occurred_schedule"
+                else ""
+            ),
         )
         if timing_issue:
             logger.warning(f"[穿搭更新] 已忽略提前换装结果：{timing_issue}")

@@ -35,7 +35,7 @@ class RefreshMixin:
         minutes: int,
         target_times: list[str],
     ) -> str:
-        """Apply an explicit tool decision to selected schedule entries."""
+        """将工具明确作出的决定应用到选中的日程条目。"""
         now = self._runtime_now()
         date, _ = await self.resolve_injection_target(now)
         data = await self.ensure_injection_day_data(date, now)

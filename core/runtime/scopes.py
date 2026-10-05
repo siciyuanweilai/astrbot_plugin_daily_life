@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -219,8 +220,15 @@ class RuntimeScopeState:
         if not isinstance(cache, dict):
             return
         for key in list(cache):
-            _, separator, scope = str(key).partition(":")
-            if separator and scope in aliases:
+            try:
+                parameters = json.loads(key)
+            except (TypeError, ValueError):
+                continue
+            if (
+                isinstance(parameters, list)
+                and len(parameters) == 3
+                and any(scope in aliases for scope in parameters[1:])
+            ):
                 cache.pop(key, None)
 
     def _clear_store(self, name: str) -> None:

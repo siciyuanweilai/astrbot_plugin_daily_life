@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from typing import Any
 
@@ -99,7 +100,9 @@ class SnapshotPackMixin:
             group_id, _ = self._event_group_meta(event)
             experience_scope = group_id or session_id
 
-        cache_key = f"{max_summaries}:{experience_scope}"
+        cache_key = json.dumps(
+            [max_summaries, experience_scope, session_id], ensure_ascii=False
+        )
         if use_cache:
             cached = self._cached_injection_snapshot(cache, cache_key)
             if cached is not None:

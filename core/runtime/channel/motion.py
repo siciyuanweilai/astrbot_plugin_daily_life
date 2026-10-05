@@ -561,6 +561,7 @@ class RuntimeVideoMediaMixin:
             "video",
             [generated_url],
             action_type="video",
+            source_event=request.event,
             evidence="视频已生成，等待投递确认",
             commitment_id=commitment_id,
             source_message_id=self._event_message_id(request.event),
@@ -598,6 +599,9 @@ class RuntimeVideoMediaMixin:
         # 此时先收到成功信号，后续记录/自然补话失败也不能导致视频重复生成。
         self._resolve_life_video_commitment_future(request.event, "sent")
         self._update_life_video_request(request.request_id, video_status="sent")
+        await self.finalize_durable_media_delivery(
+            delivery_task, outcome="sent", detail="视频已发送"
+        )
         summary = await self._media_result_summary(generated_url, started_at)
         logger.info(f"{LOG_PREFIX} 视频已发送：{summary}")
         self.note_structured_bot_message(
@@ -636,11 +640,6 @@ class RuntimeVideoMediaMixin:
             summary,
             request.event,
             request.request_id,
-        )
-        await self.finalize_durable_media_delivery(
-            delivery_task,
-            outcome="sent",
-            detail="视频已发送",
         )
         await self.finish_tool_reaction(
             request.event, "life_video_generate", success=True

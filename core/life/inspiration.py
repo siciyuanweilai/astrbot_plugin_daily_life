@@ -100,10 +100,10 @@ class StyleCatalogMixin:
     def _style_catalog_scene_compatible(
         cls, item: Any, scene_category: object
     ) -> bool:
-        """Reject clearly incompatible home/outdoor catalog candidates.
+        """排除与居家或外出场景明显不匹配的衣橱候选。
 
-        Unknown or unclassified candidates remain eligible so older catalog
-        entries do not become unusable solely because they lack scene tags.
+        场景未知或尚未分类的候选仍可使用，避免已有衣橱条目
+        仅因缺少场景标签而失效。
         """
 
         scene = str(scene_category or "").strip().lower()

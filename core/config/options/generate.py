@@ -120,7 +120,7 @@ def _image_channels(value: Any) -> list[ImageApiChannel]:
             .lower()
         )
         if protocol not in IMAGE_PROTOCOLS:
-            # Unknown protocol entries are not valid image channels.
+            # 未知协议条目不能作为有效的生图通道。
             continue
         default_model = {
             "openai": "gpt-image-2",

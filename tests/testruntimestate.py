@@ -180,7 +180,9 @@ class RuntimeStateTest(unittest.TestCase):
         self.assertNotEqual(before, after)
         data.state.sleep.depth = "awake"
         data.timeline[0].place_kind = "poi"
-        self.assertNotEqual(before, runtime._outfit_context_signature(data, now, "深夜"))
+        self.assertNotEqual(
+            before, runtime._outfit_context_signature(data, now, "深夜")
+        )
 
     def test_outfit_context_ignores_period_and_ordinary_home_activity_progress(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
@@ -2110,7 +2112,7 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(runtime._injection_snapshot_cache, {})
         self.assertEqual(changed_reasons, ["weather_city_changed"])
 
-    async def test_runtime_service_swap_waits_for_active_lease(self):
+    async def test_runtime_service_swap_does_not_wait_for_active_lease(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         entered = asyncio.Event()
         release = asyncio.Event()
@@ -2125,7 +2127,9 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         swap = asyncio.create_task(runtime._begin_runtime_service_swap())
         await asyncio.sleep(0)
 
-        self.assertFalse(swap.done())
+        self.assertTrue(swap.done())
+        async with runtime.runtime_service_lease():
+            self.assertFalse(release.is_set())
 
         release.set()
         await user

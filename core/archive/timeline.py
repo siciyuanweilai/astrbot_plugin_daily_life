@@ -8,7 +8,7 @@ from ..models import TimelineItem
 def rebind_planned_actions(
     meta: dict[str, str], previous: list[TimelineItem], current: list[TimelineItem]
 ) -> None:
-    """Keep actions attached to their original activity when node positions change."""
+    """节点位置变化时，保持动作与原活动的绑定。"""
     raw = meta.get("planned_life_actions")
     if not raw or previous == current:
         return
@@ -35,7 +35,7 @@ def rebind_planned_actions(
         ]
         exact = [i for i in candidates if current[i].time == original.time]
         candidates = exact or candidates
-        # A removed or ambiguous activity must not fall through to another node.
+        # 活动已被移除或归属不明确时，不得转而绑定其他节点。
         replacement = candidates[0] if len(candidates) == 1 else None
         if replacement != index:
             action["timeline_index"] = replacement

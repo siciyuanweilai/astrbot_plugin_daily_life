@@ -171,11 +171,12 @@ class BackgroundTaskScheduler:
             await coro
 
         try:
-            async with self.gate(label, category=category):
-                if callable(lease_factory):
-                    async with lease_factory():
+            if callable(lease_factory):
+                async with lease_factory():
+                    async with self.gate(label, category=category):
                         await run_body()
-                else:
+            else:
+                async with self.gate(label, category=category):
                     await run_body()
         finally:
             current = asyncio.current_task()

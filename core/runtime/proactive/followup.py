@@ -668,7 +668,7 @@ class ProactiveFollowupMixin(SharedActivityContactMixin):
                 commitment.id, "expired", now.isoformat(timespec="seconds")
             )
             return {"outcome": "expired", "reason": "条件承诺已超过有效期"}
-        # Older queued follow-ups may actually owe media, not a text message.
+                # 已排队的后续任务实际可能需要发送媒体，而非文字消息。
         media_scheduler = None
         if self._commitment_requests_photo(commitment):
             media_scheduler = self.schedule_commitment_photo

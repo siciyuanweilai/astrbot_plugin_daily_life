@@ -120,8 +120,8 @@ class PhysiologicalRhythmLogRecord:
     energy_curve: str = ""
     body_label: str = ""
     body_intensity: int = 0
-    # Directly constructed records are typed API input; a supplied intensity
-    # therefore represents a burden unless the caller explicitly clears it.
+        # 直接构造的记录属于带类型的 API 输入；除非调用方明确清除，
+        # 否则传入的 intensity 表示负担强度。
     body_burden_present: bool | None = True
     body_source: str = ""
     body_expires_at: str = ""

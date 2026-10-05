@@ -44,7 +44,7 @@ def normalize_outfit_scene_category(value: object, default: str = "mixed") -> st
 
 
 def scene_category_for_place_kind(value: object, default: str = "") -> str:
-    """Map the current timeline location to the outfit scene it actually implies."""
+    """根据当前时间轴的地点，确定对应的实际穿搭场景。"""
 
     place_kind = str(value or "").strip().lower()
     return {
@@ -116,7 +116,7 @@ def normalize_outfit_current_basis(value: object, default: str = "stored") -> st
 
 
 def normalize_outfit_components(value: object) -> dict[str, dict[str, str]]:
-    """Normalize the scene-independent component ledger returned by the model."""
+    """规范化模型返回的穿搭组成记录，不依赖具体场景。"""
     raw = value
     if isinstance(raw, str):
         try:
@@ -139,7 +139,7 @@ def normalize_outfit_components(value: object) -> dict[str, dict[str, str]]:
         else:
             continue
         normalized[key] = {"state": state, "description": description}
-    # Legacy records may duplicate a structured component inside main_clothing.
+    # 早期记录可能在 main_clothing 中重复包含其他结构化组成部分。
     main = normalized.get("main_clothing")
     if main:
         text = main["description"]
@@ -166,7 +166,7 @@ def serialize_outfit_components(value: object) -> str:
 
 
 def merge_outfit_components(base: object, updates: object) -> dict[str, dict[str, str]]:
-    """Merge a partial ledger while keeping confirmed facts over uncertainty."""
+    """合并局部组成记录，优先保留已确认事实而非不确定信息。"""
     merged = normalize_outfit_components(base)
     for key, item in normalize_outfit_components(updates).items():
         if item.get("state") == "unknown" and key in merged:
@@ -182,12 +182,11 @@ def reconcile_outfit_components_for_scene(
     catalog_components: object = None,
     catalog_selected: bool = False,
 ) -> dict[str, dict[str, str]]:
-    """Keep the component ledger aligned with the current scene.
+    """使穿搭组成记录与当前场景保持一致。
 
-    Catalog states are authoritative when present. When a component has no
-    explicit scene role, optional footwear and carried accessories default to
-    staged in a home or sleep scene; the person can still keep a home-suitable
-    component when its catalog state says so.
+    存在衣橱状态时以其为准。组成部分没有明确场景用途时，
+    可选鞋履和随身配饰在居家或睡眠场景默认处于待用状态；
+    衣橱状态明确适合居家的组成部分仍可继续使用。
     """
 
     components = normalize_outfit_components(value)
@@ -224,10 +223,10 @@ def reconcile_outfit_components_for_scene(
 def project_outfit_components_for_scene(
     value: object, scene_category: object
 ) -> dict[str, dict[str, str]]:
-    """Project stored outfit facts into what is visible in the current scene.
+    """根据已保存的穿搭事实，确定当前场景中可见的组成部分。
 
-    This is intentionally read-only: the ledger keeps the historical fact that
-    shoes or a bag were worn outside, while a home scene renders them as staged.
+    此操作只读：组成记录保留鞋履或包曾在外出时穿戴的历史事实，
+    在居家场景中则将其展示为待用状态。
     """
 
     components = normalize_outfit_components(value)
@@ -251,7 +250,7 @@ def synchronize_outfit_components_for_scene(
     *,
     previous_scene_category: object = "",
 ) -> dict[str, dict[str, str]]:
-    """Apply a real scene transition to the current component ledger."""
+    """将实际发生的场景变化应用到当前穿搭组成记录。"""
 
     target = normalize_outfit_scene_category(scene_category, default="")
     previous = normalize_outfit_scene_category(previous_scene_category, default="")
@@ -271,7 +270,7 @@ def synchronize_outfit_components_for_scene(
 
 
 def format_outfit_components(value: object, *, include_staged: bool = False) -> str:
-    """Render the components currently visible on the person into one short fact."""
+    """将人物当前可见的穿搭组成部分整理为一条简短事实。"""
     components = normalize_outfit_components(value)
     visible_states = {"worn", "carried"}
     if include_staged:

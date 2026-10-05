@@ -1,4 +1,4 @@
-"""Ground chat-derived virtual action completion in sent, scoped messages."""
+"""以对应会话中已发送的消息为依据，确认聊天中虚拟动作的完成情况。"""
 
 from __future__ import annotations
 
@@ -66,7 +66,7 @@ class ChatExecutionMixin:
         scope = str(batch.get("session_id") or "")
         if not scope:
             return 0
-        # Only ids supplied to this batch's model call are eligible for writes.
+        # 仅允许写入本批次模型调用中已提供的 ID。
         commitments = {
             str(item["id"]): item
             for item in batch.get("open_commitments", [])

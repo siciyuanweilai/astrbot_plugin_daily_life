@@ -29,8 +29,8 @@ APPEARANCE_PREFERENCE_CATEGORIES = (
     "style",
 )
 
-# A day's top-level outfit is the latest state, which can be sleepwear after a
-# late-night change. Historical references should prefer the daytime record.
+    # 日记录的顶层穿搭是最新状态，夜间换装后可能已变为睡衣。
+    # 查询历史穿搭时应优先参考白天的记录。
 _REFERENCE_OUTFIT_PERIODS = (
     "noon",
     "afternoon",
@@ -117,7 +117,7 @@ def persona_appearance_values(values: object) -> dict[str, str]:
 
 
 def reference_outfit(day: Any) -> tuple[str, str]:
-    """Return the most useful historical outfit and its recorded period."""
+    """返回最适合参考的历史穿搭及其记录时段。"""
 
     if day is None:
         return "", ""
@@ -139,7 +139,7 @@ def reference_outfit(day: Any) -> tuple[str, str]:
 
 
 def format_reference_appearance_context(day: Any, *, label: str = "历史参考") -> str:
-    """Render a dated outfit without treating the day's latest state as current."""
+    """展示指定日期的穿搭，不将该日最终状态当作目标时段的当前状态。"""
 
     outfit, period = reference_outfit(day)
     if not outfit:
@@ -150,8 +150,7 @@ def format_reference_appearance_context(day: Any, *, label: str = "历史参考"
     lines = [
         f"{label}穿搭（按{period or '白天'}生活记录）：{outfit}",
     ]
-    # Legacy period records contain clothes only. The final hair of the day
-    # does not establish what the hair looked like at an earlier period.
+    # 早期时段记录仅包含服装，当天最终发型不能证明更早时段的发型。
     same_snapshot = outfit == str(getattr(day, "outfit", "") or "").strip()
     hair_style = (
         normalize_appearance_fact(meta.get("hair_style"), 80) if same_snapshot else ""
@@ -427,7 +426,7 @@ def format_current_appearance_context(day: Any, *, scene_category: object = "") 
 
 
 def format_image_appearance_context(day: Any, *, scene_category: object = "") -> str:
-    """Render the current appearance with explicit visual presence constraints."""
+    """展示当前外观，并明确哪些造型要素应在画面中出现。"""
 
     context = format_current_appearance_context(day, scene_category=scene_category)
     meta = getattr(day, "meta", {}) or {}

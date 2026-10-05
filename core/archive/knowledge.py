@@ -836,9 +836,7 @@ class CognitionArchiveMixin:
 
         return await self._run_db(dbwork)
 
-    async def reschedule_durable_task(
-        self, task_key: str, available_at: str
-    ) -> bool:
+    async def reschedule_durable_task(self, task_key: str, available_at: str) -> bool:
         """刷新尚未执行的持久任务时间。
 
         只更新仍处于 pending 状态的任务，避免用户延期时并发中的任务被
@@ -968,6 +966,7 @@ class CognitionArchiveMixin:
         lease_seconds: int = 60,
         now: str = "",
         exclude_kinds: tuple[str, ...] | list[str] = (),
+        exclude_task_ids: tuple[int, ...] | list[int] = (),
     ) -> list[DurableTaskRecord]:
         """原子租用到期且可执行的持久任务。
 
@@ -1019,6 +1018,10 @@ class CognitionArchiveMixin:
                 placeholders = ",".join("?" for _ in excluded)
                 where += f" AND kind NOT IN ({placeholders})"
                 params.extend(excluded)
+            if exclude_task_ids:
+                placeholders = ",".join("?" for _ in exclude_task_ids)
+                where += f" AND id NOT IN ({placeholders})"
+                params.extend(int(item) for item in exclude_task_ids)
             params.append(max(int(limit), 1))
             rows = self._conn.execute(
                 "SELECT id FROM durable_tasks WHERE "
@@ -1046,6 +1049,48 @@ class CognitionArchiveMixin:
                 (*ids, lease_owner),
             ).fetchall()
             return [self._compose_durable_task(row) for row in leased]
+
+        return await self._run_db(dbwork)
+
+    async def update_durable_task_progress(
+        self, task_id: int, owner: str, progress: dict[str, Any]
+    ) -> bool:
+        """在释放租约之前持久化已取得的产物，避免恢复时重复获取。"""
+
+        def dbwork() -> bool:
+            cursor = self._conn.execute(
+                """UPDATE durable_tasks SET result_json = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status = 'leased' AND lease_owner = ?""",
+                (
+                    self._cognition_json({"progress": progress}, default={}),
+                    int(task_id),
+                    self._text(owner),
+                ),
+            )
+            self._conn.commit()
+            return bool(cursor.rowcount)
+
+        return await self._run_db(dbwork)
+
+    async def renew_durable_task_lease(
+        self, task_id: int, owner: str, *, lease_seconds: int = 1800
+    ) -> bool:
+        """仅为当前仍有效的租约续期，过期租约不能重新取得所有权。"""
+        point = self._cognition_now()
+        expires = (
+            datetime.datetime.fromisoformat(point)
+            + datetime.timedelta(seconds=max(1, lease_seconds))
+        ).strftime("%Y-%m-%d %H:%M:%S")
+
+        def dbwork() -> bool:
+            cursor = self._conn.execute(
+                """UPDATE durable_tasks SET lease_expires_at = ?
+                WHERE id = ? AND status = 'leased' AND lease_owner = ?
+                AND lease_expires_at > ?""",
+                (expires, int(task_id), self._text(owner), point),
+            )
+            self._conn.commit()
+            return bool(cursor.rowcount)
 
         return await self._run_db(dbwork)
 

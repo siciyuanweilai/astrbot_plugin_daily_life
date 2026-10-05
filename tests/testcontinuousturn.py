@@ -8,7 +8,7 @@ from support import DailyLifeRuntime, Event, LifeSettings, ProviderRequest
 
 
 class FrameworkStopEvent(Event):
-    """Match AstrBot's stop_event behavior when no result exists yet."""
+    """模拟尚无结果时 AstrBot 的 stop_event 行为。"""
 
     def stop_event(self):
         super().stop_event()

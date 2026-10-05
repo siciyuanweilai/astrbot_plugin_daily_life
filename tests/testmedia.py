@@ -956,7 +956,12 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
             "https://siciyuanweilai.com/v1",
             "https://www.siciyuanweilai.com/v1/images/edits",
         ):
-            for model in ("gpt-image-2", "gpt-image-2.5"):
+            for model in (
+                "gpt-image-2",
+                "gpt-image-2.5",
+                "gpt-image-2.5-flare",
+                "gpt-image-2.5-sunburst",
+            ):
                 for reference_count in (0, 1, 2):
                     with self.subTest(
                         api_url=api_url, model=model, references=reference_count
@@ -1668,6 +1673,146 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "只能是 1K、2K 或 4K"):
             openai_image.size_for("8K", "1:1")
 
+    def test_hosted_gpt_dimensions_stay_in_documented_tiers(self):
+        catalog = {
+            "1K": {
+                "1024x1024",
+                "1280x1280",
+                "1536x1024",
+                "1536x1152",
+                "1360x1024",
+                "1536x864",
+                "1600x900",
+                "1824x1024",
+                "1024x1536",
+                "1152x1536",
+                "1024x1360",
+                "864x1536",
+                "900x1600",
+                "1024x1824",
+                "1792x1008",
+                "1008x1792",
+                "1536x512",
+                "512x1536",
+                "2016x864",
+                "864x2016",
+            },
+            "2K": {
+                "2048x2048",
+                "2048x1152",
+                "2560x1440",
+                "1152x2048",
+                "1440x2560",
+                "2048x1536",
+                "1536x2048",
+                "3072x2048",
+                "2048x3072",
+                "3072x1024",
+                "1024x3072",
+                "2560x2048",
+                "2048x2560",
+            },
+        }
+        for model in (
+            "gpt-image-2",
+            "gpt-image-2.5",
+            "gpt-image-2.5-flare",
+            "gpt-image-2.5-sunburst",
+        ):
+            for resolution, dimensions in catalog.items():
+                for ratio in (
+                    "1:1",
+                    "2:3",
+                    "3:2",
+                    "3:4",
+                    "4:3",
+                    "4:5",
+                    "5:4",
+                    "9:16",
+                    "16:9",
+                    "21:9",
+                    "1:4",
+                    "4:1",
+                    "1:8",
+                    "8:1",
+                ):
+                    with self.subTest(model=model, tier=resolution, ratio=ratio):
+                        self.assertIn(
+                            openai_image.size_for(
+                                resolution,
+                                ratio,
+                                model=model,
+                                api_url="https://api.scywl.cc/v1",
+                            ),
+                            dimensions,
+                        )
+        self.assertEqual(
+            openai_image.size_for(
+                "1K",
+                "9:16",
+                model="gpt-image-2.5-flare",
+                api_url="https://api.scywl.cc",
+            ),
+            "864x1536",
+        )
+        self.assertEqual(
+            openai_image.size_for(
+                "4K",
+                "9:16",
+                model="gpt-image-2.5-flare",
+                api_url="https://api.scywl.cc",
+            ),
+            "2160x3840",
+        )
+        self.assertEqual(
+            openai_image.size_for(
+                "1K",
+                "9:16",
+                model="gpt-image-2.5-flare",
+                api_url="https://another-relay.example",
+            ),
+            "576x1024",
+        )
+
+    def test_hosted_gpt_request_and_prompt_use_the_same_tier_ratio(self):
+        route = ImageRoute(
+            api_url="https://api.scywl.cc/v1",
+            api_key="test-key",
+            model="gpt-image-2.5-flare",
+            label="GPT Image",
+            protocol="openai",
+            resolution="2K",
+            aspect_ratio="21:9",
+            timeout_seconds=300,
+            origin="https://api.scywl.cc",
+        )
+        normalized = GeminiImageService._route_with_options(route, "", "")
+        self.assertEqual(normalized.aspect_ratio, "3:1")
+        self.assertEqual(
+            GeminiImageService._request_size_label(normalized), "3072×1024"
+        )
+        for references in (
+            [],
+            [
+                {
+                    "inlineData": {
+                        "mimeType": "image/png",
+                        "data": base64.b64encode(b"reference").decode("ascii"),
+                    }
+                }
+            ],
+        ):
+            with self.subTest(references=len(references)):
+                request = openai_image.build_request(
+                    normalized,
+                    [{"text": f"{normalized.aspect_ratio} 比例"}] + references,
+                    resolution=normalized.resolution,
+                    aspect_ratio=normalized.aspect_ratio,
+                )
+                self.assertEqual(request.payload["size"], "3072x1024")
+                self.assertIn("3:1", request.payload["prompt"])
+                self.assertEqual(request.reference_image_count, len(references))
+
     def test_gpt_image_2_always_maps_to_supported_aspect_ratios(self):
         ratios = (
             "1:1",
@@ -1836,6 +1981,8 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
 
             def post(self, url, json=None, data=None, headers=None, timeout=None):
                 calls.append((url, headers or {}, json, data, timeout))
+                if url.endswith("/async"):
+                    return _Response(status=404)
                 if not (json or {}).get("images") or any(
                     not image.get("image_url") for image in json["images"]
                 ):
@@ -1888,6 +2035,7 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         generated = await service.edit_image("换成雨夜窗边", str(reference))
 
         self.assertTrue(generated.path.exists())
+        self.assertEqual(calls.pop(0)[0], "https://api.scywl.cc/v1/images/edits/async")
         self.assertEqual(calls[0][0], "https://api.scywl.cc/v1/images/edits")
         self.assertIsNotNone(calls[0][2])
         self.assertIsNone(calls[0][3])
@@ -2017,6 +2165,58 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         image_fields = [field for field in form.fields if field[0] == "image"]
         self.assertEqual(len(image_fields), 2)
         self.assertIn("当前角色身份图", _form_field(form, "prompt"))
+
+    async def test_object_edit_can_exclude_unrelated_character_references(self):
+        temp_dir = Path(tempfile.mkdtemp())
+        reference = temp_dir / "apple.png"
+        character = temp_dir / "character.png"
+        reference.write_bytes(_real_png_bytes(9, 16))
+        character.write_bytes(_real_png_bytes(16, 16))
+        settings = LifeSettings.from_dict(
+            {
+                "image_generation_config": {
+                    "enabled": True,
+                    "edit_channels": [
+                        {
+                            "__template_key": "openai",
+                            "api_url": "https://relay.example",
+                            "api_key": "test-key",
+                            "model": "gpt-image-2.5",
+                        }
+                    ],
+                    "character_reference_policy": "auto",
+                    "character_reference_images": [{"path": str(character)}],
+                }
+            }
+        ).image_generation
+        service = GeminiImageService(settings, temp_dir)
+        requests = []
+
+        class _ImageSession:
+            closed = False
+
+            def post(self, url, **options):
+                requests.append(options["data"])
+                return _Response(
+                    payload={
+                        "data": [
+                            {
+                                "b64_json": base64.b64encode(
+                                    _real_png_bytes(9, 16)
+                                ).decode("ascii"),
+                            }
+                        ]
+                    }
+                )
+
+        service._get_session = AsyncMock(return_value=_ImageSession())
+        await service.edit_image(
+            "把苹果改成青绿色", str(reference), include_character_reference=False
+        )
+        image_fields = [field for field in requests[0].fields if field[0] == "image"]
+        self.assertEqual(len(image_fields), 1)
+        self.assertEqual(image_fields[0][1], reference.read_bytes())
+        self.assertNotIn("当前角色", _form_field(requests[0], "prompt"))
 
     async def test_edit_image_uses_reference_image_aspect_ratio_before_config(self):
         output_bytes = b"\x89PNG\r\n\x1a\nopenai-edit"
