@@ -628,17 +628,20 @@ class SnapshotExportMixin:
             "terms": self._share_terms_payload(terms),
         }
 
-    def get_share_chat_style(self) -> dict[str, Any]:
+    def get_share_chat_style(self, *, scene: str = "") -> dict[str, Any]:
         """仅导出配置中的表达软偏好，不携带会话记忆或发送规则。"""
         style = getattr(self.config, "chat_style", None)
         if not style or not bool(getattr(style, "enabled", False)):
             return {"enabled": False, "prompt": ""}
-        return {
-            "enabled": True,
-            "prompt": format_chat_style_prompt(
-                getattr(style, "casual_short_prompt", "")
-            ),
-        }
+        prompt = format_chat_style_prompt(getattr(style, "casual_short_prompt", ""))
+        if scene == "qzone_post":
+            prompt += (
+                " 公开说说沿用上述语气与表达节奏，像平时说话一样随手发一条状态；"
+                "围绕本次在意的一点，用自己会说出口的话表达，意思说完就自然停住，"
+                "不需要完整铺景、抒情或总结一天。按语意自然换行，不固定字数、行数或标题模板。"
+                "这是单条公开文案的表达偏好，不采用私聊长度、聊天分段发送或标点清洗规则。"
+            )
+        return {"enabled": True, "prompt": prompt}
 
     async def get_share_context(self, target_umo: str = "") -> dict[str, Any]:
         """向分享类插件暴露目标隔离且已提炼的生活上下文。"""

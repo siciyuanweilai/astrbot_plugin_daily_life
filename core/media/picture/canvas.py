@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import contextmanager
-from contextvars import ContextVar
 import base64
 import hashlib
 import inspect
 import time
 from collections.abc import Callable
+from contextlib import contextmanager
+from contextvars import ContextVar
 from math import gcd
 from pathlib import Path
 from typing import Any
@@ -1370,12 +1370,17 @@ class GeminiImageService:
     @staticmethod
     def _request_size_label(route: ImageRoute) -> str:
         if route.protocol in {"openai", "grok"}:
-            return openai.size_for(
-                route.resolution,
-                route.aspect_ratio,
-                model=route.model,
-                api_url=route.api_url,
-            ).replace("x", "×")
+            size = (
+                imagine.size_for(route.resolution, route.aspect_ratio)
+                if route.protocol == "grok"
+                else openai.size_for(
+                    route.resolution,
+                    route.aspect_ratio,
+                    model=route.model,
+                    api_url=route.api_url,
+                )
+            )
+            return size.replace("x", "×")
         return f"{route.resolution}档位"
 
     @staticmethod
@@ -1386,17 +1391,19 @@ class GeminiImageService:
         resolution: str,
         aspect_ratio: str,
     ) -> bool:
-        """判断 Grok 返回图是否满足请求的比例与分辨率档位。"""
+        """判断 Grok 返回图是否满足接口实际采用的比例与分辨率档位。"""
         try:
-            ratio_width, ratio_height = (
-                int(value) for value in str(aspect_ratio or "1:1").split(":", 1)
+            requested_size = imagine.size_for(resolution, aspect_ratio)
+            expected_width, expected_height = (
+                int(value) for value in requested_size.split("x", 1)
             )
+            requested_ratio = expected_width / expected_height
         except (TypeError, ValueError):
-            ratio_width = ratio_height = 1
-        if ratio_width <= 0 or ratio_height <= 0:
-            ratio_width = ratio_height = 1
-        requested_ratio = ratio_width / ratio_height
-        actual_ratio = width / height
+            requested_ratio = 1.0
+        try:
+            actual_ratio = width / height
+        except (TypeError, ZeroDivisionError):
+            return False
         if abs(actual_ratio - requested_ratio) / requested_ratio > 0.05:
             return False
         minimum_long_edge = {"1K": 768, "2K": 1536}.get(

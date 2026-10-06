@@ -5,7 +5,7 @@ import time
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import support  # noqa: F401 - 导入运行时模块前先安装 AstrBot 测试替身。
 from core.runtime.background import BackgroundTaskScheduler
@@ -522,6 +522,151 @@ class MediaBackgroundTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTestC
             later.set_result(later.chain_result(["后续正常回复"]))
             self.assertFalse(holder(later))
             self.assertIsNotNone(later.get_result())
+
+    def prepare_suite_planner(self):
+        self.runtime._photo_suite_plan = lambda event, prompt, count, **kwargs: (
+            async_return(self.runtime._photo_suite_fallback_plan(prompt, count, "free"))
+        )
+        self.runtime.get_persona_text = AsyncMock(return_value="自然简短地接话。")
+        self.runtime._photo_suite_send_followup = AsyncMock(return_value=True)
+
+    async def test_later_affection_does_not_create_another_suite(self):
+        self.prepare_suite_planner()
+        first = self.event("suite-first", "拍套图看看")
+        await self.begin_turn(first)
+        await self.runtime.life_photo_suite_generate(first, "暖光卧室生活抓拍")
+        await asyncio.wait_for(self.started.wait(), timeout=0.5)
+        later = self.event("suite-later", "就知道你最好了，mua")
+        await self.begin_turn(later)
+        captured = []
+
+        async def decide(prompt, **kwargs):
+            captured.append(prompt)
+            return {"create_new": False, "reply_text": "收到你的亲亲啦"}
+
+        self.runtime._media_director_call = decide
+        self.runtime.send_background_text = AsyncMock(return_value=True)
+        self.runtime._append_assistant_history = AsyncMock()
+        result = await asyncio.wait_for(
+            self.runtime.life_photo_suite_generate(later, "同一卧室亲吻镜头的三张照片"),
+            timeout=0.5,
+        )
+        self.assertEqual(json.loads(result)["status"], "pending")
+        await self.finish_tasks()
+
+        self.assertEqual(len(self.calls), 3)
+        self.assertEqual(len(first.sent_messages), 3)
+        self.assertEqual(later.sent_messages, [])
+        self.assertEqual(len(captured), 1)
+        self.assertIn("就知道你最好了，mua", captured[0])
+        self.assertIn("suite-first", captured[0])
+        self.assertIn("suite-later", captured[0])
+        self.runtime.send_background_text.assert_awaited_once()
+        self.assertEqual(
+            self.runtime.send_background_text.await_args.args[1], "收到你的亲亲啦"
+        )
+        root = self.path.parent / "generated" / "images" / "suites"
+        manifests = [json.loads(p.read_text()) for p in root.glob("*/manifest.json")]
+        self.assertEqual(
+            sorted(m["status"] for m in manifests), ["completed", "not_requested"]
+        )
+        _, latest = await self.runtime._photo_suite_latest_manifest(
+            first.unified_msg_origin
+        )
+        self.assertEqual(latest["source_message_id"], "suite-first")
+
+    async def test_explicit_same_theme_new_suite_is_allowed_after_delivery(self):
+        self.prepare_suite_planner()
+        first = self.event("suite-first", "拍套图看看")
+        await self.begin_turn(first)
+        await self.runtime.life_photo_suite_generate(first, "暖光卧室生活抓拍")
+        await self.finish_tasks()
+        later = self.event("suite-new", "再给我拍一套同样场景的")
+        await self.begin_turn(later)
+        self.runtime._media_director_call = AsyncMock(
+            return_value={"create_new": True, "evidence_message_id": "suite-new"}
+        )
+        await self.runtime.life_photo_suite_generate(later, "暖光卧室生活抓拍")
+        await self.finish_tasks()
+        self.assertEqual(len(self.calls), 6)
+        self.assertEqual(len(first.sent_messages), 3)
+        self.assertEqual(len(later.sent_messages), 3)
+        self.runtime._media_director_call.assert_awaited_once()
+
+    async def test_suite_authorization_cannot_reuse_old_message_or_invalid_decision(
+        self,
+    ):
+        self.prepare_suite_planner()
+        event = self.event("suite-current", "mua")
+        manifest = {
+            "source_message_id": "suite-current",
+            "source_request": "mua",
+            "previous_suite": {"source_message_id": "suite-old", "status": "completed"},
+        }
+        for result in (
+            {"create_new": True, "evidence_message_id": "suite-old"},
+            {"create_new": "true", "evidence_message_id": "suite-current"},
+            {},
+        ):
+            with self.subTest(result=result):
+                self.runtime._media_director_call = AsyncMock(return_value=result)
+                decision = await self.runtime._photo_suite_new_request_decision(
+                    event, manifest
+                )
+                self.assertFalse(decision["create_new"])
+        self.runtime._media_director_call = AsyncMock(side_effect=TimeoutError())
+        self.assertFalse(
+            (await self.runtime._photo_suite_new_request_decision(event, manifest))[
+                "create_new"
+            ]
+        )
+        self.assertEqual(self.calls, [])
+
+    async def test_suite_validation_wait_does_not_block_chat_or_send_stale_reply(self):
+        self.prepare_suite_planner()
+        first = self.event("suite-first", "拍套图看看")
+        await self.begin_turn(first)
+        await self.runtime.life_photo_suite_generate(first, "暖光卧室生活抓拍")
+        await self.finish_tasks()
+        later = self.event("suite-later", "mua")
+        await self.begin_turn(later)
+        deciding = asyncio.Event()
+        decided = asyncio.Event()
+
+        async def decide(prompt, **kwargs):
+            deciding.set()
+            await decided.wait()
+            return {"create_new": False, "reply_text": "收到亲亲啦"}
+
+        self.runtime._media_director_call = decide
+        self.runtime.send_background_text = AsyncMock(return_value=True)
+        await asyncio.wait_for(
+            self.runtime.life_photo_suite_generate(later, "亲吻镜头的三张照片"),
+            timeout=0.5,
+        )
+        await asyncio.wait_for(deciding.wait(), timeout=0.5)
+        newest = self.event("suite-chat", "我们接着说刚才那件事")
+        request = await asyncio.wait_for(self.begin_turn(newest), timeout=0.5)
+        self.assertEqual(request.prompt, newest.message_str)
+        decided.set()
+        await self.finish_tasks()
+        self.assertEqual(len(self.calls), 3)
+        self.runtime.send_background_text.assert_not_awaited()
+
+    async def test_copied_original_message_does_not_authorize_new_suite(self):
+        self.prepare_suite_planner()
+        self.runtime._media_director_call = AsyncMock(
+            return_value={"create_new": True, "evidence_message_id": "suite-original"}
+        )
+        decision = await self.runtime._photo_suite_new_request_decision(
+            self.event("suite-original", "拍套图看看"),
+            {
+                "source_message_id": "suite-original",
+                "previous_suite": {"source_message_id": "suite-original"},
+            },
+        )
+        self.assertFalse(decision["create_new"])
+        self.runtime._media_director_call.assert_not_awaited()
 
     async def test_text_followup_invalidates_media_reply_even_in_same_revision(self):
         first = self.event()

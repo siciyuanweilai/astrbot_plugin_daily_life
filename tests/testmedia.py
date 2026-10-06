@@ -160,10 +160,11 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request.headers["Authorization"], "Bearer grok-key")
         self.assertEqual(request.payload["model"], "grok-imagine-image")
         self.assertEqual(request.payload["prompt"], "雨后街巷生活照")
-        self.assertEqual(request.payload["aspect_ratio"], "16:9")
-        self.assertEqual(request.payload["resolution"], "2k")
+        self.assertEqual(request.payload["size"], "2048x1152")
         self.assertEqual(request.payload["response_format"], "b64_json")
-        self.assertFalse(request.payload["stream"])
+        self.assertNotIn("aspect_ratio", request.payload)
+        self.assertNotIn("resolution", request.payload)
+        self.assertNotIn("stream", request.payload)
 
     def test_grok_edit_request_embeds_all_reference_images_as_data_urls(self):
         route = ImageRoute(
@@ -201,18 +202,57 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(request.url, "https://grok-relay.example/v1/images/edits")
+        self.assertEqual(request.payload["model"], "grok-imagine-image-edit")
         self.assertNotIn("image", request.payload)
         self.assertEqual(len(request.payload["images"]), 2)
         self.assertTrue(
-            request.payload["images"][0]["url"].startswith("data:image/png;base64,")
+            request.payload["images"][0]["image_url"].startswith(
+                "data:image/png;base64,"
+            )
         )
         self.assertTrue(
-            request.payload["images"][1]["url"].startswith("data:image/jpeg;base64,")
+            request.payload["images"][1]["image_url"].startswith(
+                "data:image/jpeg;base64,"
+            )
         )
-        self.assertEqual(request.payload["resolution"], "2k")
-        self.assertEqual(request.payload["aspect_ratio"], "9:16")
-        self.assertFalse(request.payload["stream"])
-        self.assertNotIn("size", request.payload)
+        self.assertEqual(request.payload["size"], "1152x2048")
+        self.assertNotIn("resolution", request.payload)
+        self.assertNotIn("aspect_ratio", request.payload)
+        self.assertNotIn("stream", request.payload)
+
+    def test_grok_single_edit_uses_documented_image_url_object(self):
+        route = ImageRoute(
+            api_url="https://grok-relay.example/v1",
+            api_key="grok-key",
+            model="grok-imagine-image",
+            label="Grok 编辑线路",
+            protocol="grok",
+            resolution="1K",
+            aspect_ratio="1:1",
+            timeout_seconds=120,
+            origin="https://grok-relay.example",
+        )
+        request = grok_image.build_request(
+            route,
+            [
+                {"text": "保持构图，改成夜景"},
+                {
+                    "inlineData": {
+                        "mimeType": "image/png",
+                        "data": base64.b64encode(b"reference").decode("ascii"),
+                    }
+                },
+            ],
+            resolution="1K",
+            aspect_ratio="1:1",
+        )
+
+        self.assertEqual(request.payload["model"], "grok-imagine-image-edit")
+        self.assertEqual(request.payload["size"], "1024x1024")
+        self.assertEqual(
+            request.payload["image"]["url"], "data:image/png;base64,cmVmZXJlbmNl"
+        )
+        self.assertNotIn("images", request.payload)
 
     def test_grok_output_size_validation_checks_ratio_and_resolution(self):
         matches = GeminiImageService._grok_output_matches_request
@@ -280,10 +320,11 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(generated.path.read_bytes(), square_output)
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][0], "https://grok-relay.example/v1/images/edits")
-        self.assertEqual(calls[0][1]["aspect_ratio"], "9:16")
-        self.assertEqual(calls[0][1]["resolution"], "2k")
-        self.assertFalse(calls[0][1]["stream"])
-        self.assertNotIn("size", calls[0][1])
+        self.assertEqual(calls[0][1]["model"], "grok-imagine-image-edit")
+        self.assertEqual(calls[0][1]["size"], "1152x2048")
+        self.assertNotIn("resolution", calls[0][1])
+        self.assertNotIn("aspect_ratio", calls[0][1])
+        self.assertNotIn("stream", calls[0][1])
 
     async def test_grok_generation_downloads_url_response(self):
         output_bytes = _real_png_bytes(2, 2)
@@ -347,7 +388,9 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             calls[0][0:2], ("POST", "https://grok-relay.example/v1/images/generations")
         )
-        self.assertEqual(calls[0][2]["resolution"], "2k")
+        self.assertEqual(calls[0][2]["size"], "2048x1152")
+        self.assertNotIn("resolution", calls[0][2])
+        self.assertNotIn("aspect_ratio", calls[0][2])
         self.assertEqual(calls[1][0:2], ("GET", "https://cdn.example/generated.png"))
 
     async def test_grok_url_download_failure_tries_next_channel(self):

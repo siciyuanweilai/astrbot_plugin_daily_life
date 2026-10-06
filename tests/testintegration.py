@@ -332,6 +332,41 @@ class TargetLifeContextTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ShareChatStyleTests(unittest.TestCase):
+    def test_qzone_scene_exports_public_post_expression_without_chat_processing(self):
+        snapshot = _Snapshot()
+        snapshot.config = types.SimpleNamespace(
+            chat_style=types.SimpleNamespace(
+                enabled=True,
+                casual_short_prompt="自然接话，不刻意扩写。",
+                private_casual_max_chars=15,
+                segment_delay_range="1.5,3.5",
+                punctuation_cleanup_enabled=True,
+            )
+        )
+        original = snapshot.get_share_chat_style()
+        result = snapshot.get_share_chat_style(scene="qzone_post")
+        self.assertEqual(set(result), {"enabled", "prompt"})
+        self.assertIs(result["enabled"], True)
+        self.assertTrue(result["prompt"].startswith(original["prompt"]))
+        self.assertIn("像平时说话一样随手发一条状态", result["prompt"])
+        self.assertIn("意思说完就自然停住", result["prompt"])
+        self.assertNotIn("短句偏好不等于只能写短文", result["prompt"])
+        self.assertIn("不固定字数、行数或标题模板", result["prompt"])
+        for value in (
+            "15",
+            "1.5,3.5",
+            "private_casual_max_chars",
+            "punctuation_cleanup_enabled",
+        ):
+            self.assertNotIn(value, result["prompt"])
+        self.assertEqual(snapshot.get_share_chat_style(scene="other"), original)
+        self.assertFalse(hasattr(snapshot, "composer"))
+        snapshot.config.chat_style.enabled = False
+        self.assertEqual(
+            snapshot.get_share_chat_style(scene="qzone_post"),
+            {"enabled": False, "prompt": ""},
+        )
+
     def test_style_export_contains_only_configured_soft_preference(self):
         snapshot = _Snapshot()
         snapshot.config = types.SimpleNamespace(
@@ -373,8 +408,8 @@ class ExternalLeaseTests(unittest.IsolatedAsyncioTestCase):
         observed = []
 
         class Runtime:
-            def get_share_chat_style(self):
-                observed.append(plugin._external_users)
+            def get_share_chat_style(self, *, scene=""):
+                observed.append((scene, plugin._external_users))
                 return {"enabled": True, "prompt": "配置语气"}
 
         plugin.runtime = Runtime()
@@ -383,7 +418,11 @@ class ExternalLeaseTests(unittest.IsolatedAsyncioTestCase):
             await plugin.get_share_chat_style(),
             {"enabled": True, "prompt": "配置语气"},
         )
-        self.assertEqual(observed, [1])
+        self.assertEqual(
+            await plugin.get_share_chat_style(scene="qzone_post"),
+            {"enabled": True, "prompt": "配置语气"},
+        )
+        self.assertEqual(observed, [("", 1), ("qzone_post", 1)])
         self.assertEqual(plugin._external_users, 0)
 
     async def test_plugin_lifecycle_lease_does_not_acquire_service_lease(self):

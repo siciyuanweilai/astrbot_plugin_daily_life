@@ -14,8 +14,8 @@ from astrbot.api import logger
 
 from ...life.people import MEDIA_PERSON_TEXT_PATHS
 from ...media.base import GROUP_IDENTITY_CONTINUITY_RULE, image_mime_and_ext
-from ...media.picture.routes import image_provider_label, requested_image_provider
 from ...media.picture.polling import ImageTaskError, ImageTaskFailed
+from ...media.picture.routes import image_provider_label, requested_image_provider
 from ...outcome import ToolResultText
 from ...paths import path_is_file, runtime_data_root
 from ...prompts import CORE_MEDIA_REPLY_RULES, cache_friendly_prompt
@@ -214,6 +214,109 @@ class RuntimePhotoSuiteMediaMixin:
         if request_id:
             self._photo_suite_requests().pop(request_id, None)
 
+    async def _photo_suite_new_request_decision(
+        self, event: Any, manifest: dict[str, Any]
+    ) -> dict[str, Any]:
+        previous = manifest.get("previous_suite")
+        if not previous:
+            return {"create_new": True}
+        source_message_id = str(manifest.get("source_message_id") or "")
+        if source_message_id and source_message_id == str(
+            previous.get("source_message_id") or ""
+        ):
+            return {"create_new": False}
+        fixed = """判断当前用户话轮是否明确请求另拍一组照片。
+只输出 JSON：{"create_new":false,"evidence_message_id":"当前请求消息编号或空","reply_text":"不另拍时自然接话的一句中文或空"}。
+当前话轮、引用关系和上一套照片记录是依据，工具拟定的画面不能证明用户提出了新要求。
+此前套图已经受理，无论正在准备、排队还是已交付，都不应因为后续普通聊天、感谢、亲昵回应、催进度或收到照片后的反应再次生成。
+只有当前话轮明确要求另外一组、重新拍一组，或同意角色刚提出的具体新套图安排时，create_new 才为 true；允许相同主题的新请求，不按用词相似度判断。
+旧要求只提供指代背景，不是新的授权；若需要区分重复接话和新要求，只判断当前话轮的语义。证据不清楚时不另拍。
+create_new=true 时 evidence_message_id 必须填写当前请求消息编号，reply_text 留空。
+不另拍时可按角色口吻自然回应当前用户表达；不要声称照片已发送、拍摄失败或将再拍，也不要提工具、模型或内部判断。"""
+        try:
+            persona = await self.get_persona_text(self._event_session_id(event))
+            dynamic = json.dumps(
+                {
+                    "current_message_id": manifest.get("source_message_id", ""),
+                    "current_user_turn": manifest.get("source_request", ""),
+                    "message_context_at_submission": manifest.get(
+                        "request_context", ""
+                    ),
+                    "previous_suite": previous,
+                    "proposed_scene": manifest.get("prompt", ""),
+                    "persona": str(persona or "")[:800],
+                },
+                ensure_ascii=False,
+            )
+            decision = await asyncio.wait_for(
+                self._media_director_call(
+                    cache_friendly_prompt(fixed, dynamic, dynamic_title="套图请求归属"),
+                    provider_id=self._media_image_director_provider_id(),
+                ),
+                timeout=self._photo_suite_planning_timeout_seconds(),
+            )
+        except Exception as exc:
+            logger.warning(
+                f"{LOG_PREFIX} 新套图请求未能确认，保留原套图："
+                f"{self._media_error_summary(exc)}"
+            )
+            return {"create_new": False}
+        if not isinstance(decision, dict):
+            return {"create_new": False}
+        authorized = (
+            decision.get("create_new") is True
+            and bool(manifest.get("source_message_id"))
+            and str(decision.get("evidence_message_id") or "")
+            == str(manifest["source_message_id"])
+        )
+        return {
+            "create_new": authorized,
+            "reply_text": (
+                str(decision.get("reply_text") or "").strip()
+                if decision.get("create_new") is False
+                else ""
+            ),
+        }
+
+    async def _photo_suite_skip_unrequested_generation(
+        self,
+        scope: str,
+        event: Any,
+        manifest_path: Path,
+        manifest: dict[str, Any],
+        marker: Any,
+        decision: dict[str, Any],
+    ) -> None:
+        manifest["status"] = "not_requested"
+        await self._photo_suite_write_manifest(manifest_path, manifest)
+        if self._photo_suite_last_tasks().get(scope) == str(manifest_path):
+            self._photo_suite_last_tasks().pop(scope, None)
+        if isinstance(marker, dict):
+            marker["status"] = "not_requested"
+        self.cancel_tool_reaction(event, "life_photo_suite_generate")
+        logger.info(
+            f"{LOG_PREFIX} 未确认新的套图要求，停止额外生成："
+            f"来源消息={manifest.get('source_message_id') or '无'}"
+        )
+        text = str(decision.get("reply_text") or "").strip()
+        if text and self.media_request_is_current_turn(event):
+            try:
+                sent = await self.send_background_text(
+                    scope,
+                    text,
+                    mode=BackgroundTextMode.EXPRESSIVE,
+                    source_event=event,
+                    source="photo_suite_request_reply",
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"{LOG_PREFIX} 套图请求接话发送失败："
+                    f"{self._media_error_summary(exc)}"
+                )
+                return
+            if sent and self.media_request_is_current_turn(event):
+                await self._append_assistant_history(scope, text)
+
     def hold_life_photo_suite_final_text(self, event: Any) -> bool:
         marker = self._photo_suite_request_from_event(event)
         if not marker:
@@ -392,6 +495,7 @@ class RuntimePhotoSuiteMediaMixin:
                 )
                 friend_look_persist = self._friend_look_should_persist(look_source)
             source_request = self._event_current_image_request_text(event)
+            _, previous_suite = await self._photo_suite_latest_manifest(scope)
             historical_request = route in {"current_character", "group"} and bool(
                 historical_target
             )
@@ -440,6 +544,25 @@ class RuntimePhotoSuiteMediaMixin:
                 "historical_period": historical_period,
                 "historical_time": historical_time,
                 "source_request": source_request,
+                "source_message_id": self._event_message_id(event),
+                "request_context": self.format_structured_message_context(
+                    event, limit=8
+                ),
+                "previous_suite": (
+                    {
+                        key: previous_suite.get(key, "")
+                        for key in (
+                            "id",
+                            "created_at",
+                            "status",
+                            "source_request",
+                            "source_message_id",
+                            "prompt",
+                        )
+                    }
+                    if previous_suite
+                    else {}
+                ),
                 "friend_look": friend_look,
                 "friend_look_persist": friend_look_persist,
                 "reference_path": "",
@@ -785,6 +908,18 @@ class RuntimePhotoSuiteMediaMixin:
     ) -> None:
         marker = self._photo_suite_requests().get(request_id)
         try:
+            if not retry_indexes:
+                pending_manifest = await self._photo_suite_read_manifest(manifest_path)
+                if pending_manifest is None:
+                    raise RuntimeError("套图任务记录不可用")
+                decision = await self._photo_suite_new_request_decision(
+                    event, pending_manifest
+                )
+                if decision.get("create_new") is not True:
+                    await self._photo_suite_skip_unrequested_generation(
+                        scope, event, manifest_path, pending_manifest, marker, decision
+                    )
+                    return
             manifest, count, indexes = await self._photo_suite_prepare_generation(
                 event,
                 manifest_path,
@@ -1401,7 +1536,11 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}根据当前对话和实�
         if cached:
             path = Path(cached)
             payload = await self._photo_suite_read_manifest(path)
-            if payload is not None and str(payload.get("scope") or "") == scope:
+            if (
+                payload is not None
+                and str(payload.get("scope") or "") == scope
+                and payload.get("status") != "not_requested"
+            ):
                 return path, payload
 
         root = self._photo_suite_root()
@@ -1414,7 +1553,11 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}根据当前对话和实�
         latest: tuple[str, Path, dict[str, Any]] | None = None
         for path in await asyncio.to_thread(candidates):
             payload = await self._photo_suite_read_manifest(path)
-            if payload is not None and str(payload.get("scope") or "") == scope:
+            if (
+                payload is not None
+                and str(payload.get("scope") or "") == scope
+                and payload.get("status") != "not_requested"
+            ):
                 created_at = str(payload.get("created_at") or "")
                 candidate = (created_at, path, payload)
                 if latest is None or candidate[0] > latest[0]:

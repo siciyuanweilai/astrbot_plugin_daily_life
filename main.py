@@ -376,10 +376,10 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         async with self._external_runtime_lease() as runtime:
             return await runtime.get_share_context(target_umo)
 
-    async def get_share_chat_style(self) -> dict:
-        """为外部分享插件返回聊天表达软偏好，不导出私聊或发送设置。"""
+    async def get_share_chat_style(self, *, scene: str = "") -> dict:
+        """为外部分享插件返回场景表达软偏好，不导出私聊或发送设置。"""
         async with self._external_runtime_lease() as runtime:
-            return runtime.get_share_chat_style()
+            return runtime.get_share_chat_style(scene=scene)
 
     async def search_share_evidence(
         self,
@@ -1319,6 +1319,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
     ):
         """
         仅当用户明确要求“拍一套”“来组照片”“多拍几张”等一组独立照片时调用；普通单张图片仍调用 life_image_generate。
+        前一组已受理后，后续感谢、亲昵回应、催进度或普通接话不构成新的套图要求，不能沿用旧请求再次调用；只有本轮明确另拍一组或重拍时才调用。
         默认生成 3 张，可按用户要求生成 2 到 6 张。调用前可以先用角色口吻说一句简短、自然的行动确认；
         不能提前声称整组已经拍好，也不要提及模型、任务、并发、缓存或生成流程。工具会在后台规划并生成整组照片，
         一次发送成功图片，交付后再按实际结果自然补一句。不要为了生成套图而自行连续调用多次单图工具。
