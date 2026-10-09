@@ -1,4 +1,5 @@
 import datetime
+import json
 from typing import Any
 
 from ...config.options.basis import format_chat_style_prompt
@@ -321,6 +322,7 @@ class LayerTextMixin:
         structured: str = "",
         recent_video: str = "",
         expression_event: Any = None,
+        include_rules: bool = True,
     ) -> str:
         meta = data.meta or {}
         residence_context_stale = (
@@ -338,13 +340,22 @@ class LayerTextMixin:
                 now,
                 using_extended_night,
             )
+            try:
+                execution = json.loads(meta.get("continuous_execution") or "{}")
+            except (ValueError, TypeError):
+                execution = {}
+            if execution.get("status") in {"running", "paused", "ready", "settling"}:
+                from ...life.continuity import RUN_STATUS_LABELS
+
+                activity = f"{execution['action']['target']}（{RUN_STATUS_LABELS[execution['status']]}）"
         parts = [
             "\n\n<daily_life>",
             "\n[UseRule] 以下内容是角色日常生活背景。按当前话题自然引用有依据的细节，"
             "无需逐项汇报，也不要把未来计划说成已经发生。",
-            f"\n[HiddenContextRules] {CORE_HIDDEN_CONTEXT_RULES}",
         ]
-        style_hint = self.build_hidden_chat_style_hint()
+        if include_rules:
+            parts.append(f"\n[HiddenContextRules] {CORE_HIDDEN_CONTEXT_RULES}")
+        style_hint = self.build_hidden_chat_style_hint() if include_rules else ""
         if style_hint:
             parts.append(style_hint)
 
@@ -355,6 +366,12 @@ class LayerTextMixin:
                 "新生活记录完成前，对这些问题只能自然表示暂未确定。"
             )
         else:
+            wardrobe_context = data.meta.get("wardrobe_context", "")
+            if wardrobe_context:
+                parts.append("衣橱与审美事实：\n" + wardrobe_context)
+            continuous_context = data.meta.get("continuous_life_context", "")
+            if continuous_context:
+                parts.append(f"\n[HiddenContinuousLife]\n{continuous_context}")
             appearance = format_current_appearance_context(data)
             if appearance:
                 parts.append(
@@ -465,6 +482,7 @@ class LayerTextMixin:
         event: Any = None,
         memos_context: str = "",
         recent_video: str = "",
+        include_rules: bool = True,
     ) -> str:
         period_cn = build_time_context(
             now, getattr(self.config, "schedule_time", "07:00")
@@ -484,14 +502,18 @@ class LayerTextMixin:
             if recent_video
             else ""
         )
+        rules_context = (
+            f"\n[HiddenContextRules] {CORE_HIDDEN_CONTEXT_RULES}"
+            f"{self.build_hidden_chat_style_hint()}"
+            if include_rules else ""
+        )
         return (
             "\n\n<daily_life>"
             "\n[UseRule] 当前还没有可用的日常生活记录；这只是一条防止编造的隐藏约束，不是聊天话题。"
             "\n[AntiFabricationRule] 在确认记录形成前，禁止编造今天正在做什么、穿什么、在哪里、天气如何、睡眠如何或接下来有什么安排；"
             "如果用户明确询问这些内容，只能用角色口吻自然表示今天的安排还没整理清楚或暂时不确定，不要提及后台、系统或记录生成。"
             "普通闲聊时不要主动提及这段缺失。"
-            f"\n[HiddenContextRules] {CORE_HIDDEN_CONTEXT_RULES}"
-            f"{self.build_hidden_chat_style_hint()}"
+            f"{rules_context}"
             f"\n[HiddenScheduleUnavailable] {date_hint} {target_date_str} 暂无已确认的日程、穿搭、地点、天气、生活状态或时间轴。"
             f"{external}"
             f"{video_context}"

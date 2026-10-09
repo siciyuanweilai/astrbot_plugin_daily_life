@@ -215,6 +215,7 @@ const DECISION_REASON_LABELS = {
 };
 const LIFE_ACTION_TYPE_LABELS = {
   rest: "休息",
+  drink: "喝水",
   meal: "用餐",
   cook: "做饭",
   order_food: "点餐",
@@ -231,6 +232,9 @@ const LIFE_ACTION_TYPE_LABELS = {
   chat: "聊天互动",
   photo: "拍照",
   video: "拍摄视频",
+};
+const CONTINUOUS_ACTION_STATUS_LABELS = {
+  running: "进行中", paused: "暂停", ready: "等待确认", settling: "收尾中", failed: "未完成", cancelled: "已取消",
 };
 const COGNITION_LAYER_LABELS = {
   transient: "短时情绪",
@@ -1417,6 +1421,15 @@ function renderRealtimeDayFacts(clock = currentClockDate()) {
     ? `${clean(current.time, "")} ${clean(current.activity, "")}`.trim()
     : CURRENT_ACTIVITY_EMPTY_TEXT;
   el.scheduleIntentText.textContent = clean(currentScheduleIntentText(day, clock), TODAY_FACT_EMPTY_TEXT.scheduleIntentText);
+  const run = state.status?.continuous_life?.run;
+  if (run && ["running", "paused", "ready", "settling"].includes(run.status)) {
+    const statusLabel = CONTINUOUS_ACTION_STATUS_LABELS[run.status];
+    el.currentActivity.textContent = `${clean(run.action?.target, "当前行动")} · ${statusLabel}`;
+    const actionLabel = run.rest_kind === "sleep" && run.action?.action_type === "rest"
+      ? "睡眠"
+      : LIFE_ACTION_TYPE_LABELS[run.action?.action_type] || "当前行动";
+    el.scheduleIntentText.textContent = `${actionLabel} · ${statusLabel}`;
+  }
 }
 
 function renderTodayWeekPlan(week = {}) {
@@ -1771,7 +1784,15 @@ function renderLifecycle(status) {
   const durableTasks = diagnosticsEnabled ? objectItems(lifecycle.durable_tasks) : [];
   const preferences = objectItems(lifecycle.preferences);
   const events = objectItems(lifecycle.life_events);
-  const total = reviews.length + preferences.length + events.length;
+  const continuity = status.continuous_life || {};
+  const kernel = continuity.kernel || {};
+  const outcomes = objectItems(kernel.action_outcomes).slice(-8).reverse();
+  const threads = objectItems(kernel.open_threads).filter((item) => item.status === "open").slice(-8).reverse();
+  const goals = objectItems(continuity.goals);
+  const body = continuity.body;
+  const run = continuity.run;
+  const skills = Object.entries(continuity.skills || {});
+  const total = reviews.length + preferences.length + events.length + goals.length + skills.length + outcomes.length + threads.length + (body?.updated_at ? 1 : 0) + (run ? 1 : 0) + (kernel.updated_at ? 1 : 0);
   const cognitionTotal = reflections.length + diaries.length + durableTasks.length;
   const totalRecords = total + cognitionTotal;
   if (!totalRecords) {
@@ -1779,6 +1800,88 @@ function renderLifecycle(status) {
     return;
   }
   const records = [];
+  if (kernel.updated_at) {
+    const record = node("div", "record");
+    const title = node("div", "record-title");
+    const affect = kernel.affect || {};
+    const attention = kernel.attention || {};
+    const environment = kernel.environment || {};
+    const agency = kernel.agency || {};
+    title.append(node("span", "", "统一生命内核"), node("span", "muted", "连续快照"));
+    record.append(title, recordLines([
+      `情绪 ${clean(affect.mood, "未记录")} · 心情 ${Math.round(Number(affect.mood_score ?? 50))}/100 · 压力 ${Math.round(Number(affect.stress ?? 50))}/100`,
+      `注意力 ${Math.round(Number(attention.capacity ?? 50))}/100 · ${clean(attention.watch_state, "未记录")} · 自主状态 ${CONTINUOUS_ACTION_STATUS_LABELS[agency.run_status] || clean(agency.run_status, "空闲")}`,
+      `环境 ${clean(environment.place, "未记录地点")} · 穿搭 ${clean(environment.outfit, "未记录")}`,
+      Array.isArray(kernel.events) && kernel.events.length ? `最近事实：${kernel.events.slice(-3).map((item) => clean(item.summary || item.kind, "")).filter(Boolean).join("；")}` : "尚无可展示的事实引用",
+      Array.isArray(kernel.self_model?.interests) && kernel.self_model.interests.length ? `自身兴趣：${kernel.self_model.interests.map((item) => `${clean(item.label)}（${item.status === "supported" ? "已有支持" : "暂定"}）`).join("；")}` : "自身兴趣尚未形成新的证据记录",
+      `自传快照 ${objectItems(kernel.autobiography).length} 条 · 因果记录 ${objectItems(kernel.causal_traces).length} 条`,
+    ]));
+    records.push(record);
+  }
+  outcomes.forEach((item) => {
+    const record = node("div", "record");
+    const title = node("div", "record-title");
+    title.append(node("span", "", clean(item.target, "行动结果")), node("span", "muted", "行动成果"));
+    record.append(title, recordLines([
+      clean(item.result),
+      item.observed_minutes ? `已观察过程 ${Number(item.observed_minutes).toFixed(1)} 分钟` : "仅有回执，未补造执行时长",
+      item.reflection?.summary ? `事后判断：${clean(item.reflection.summary)}` : "",
+      item.obstacle ? `困难判断：${clean(item.obstacle)}` : "",
+      item.next_step ? `计划下一步：${clean(item.next_step)}` : "",
+      item.artifact?.content ? `本轮数字笔记/草稿：${clean(item.artifact.content)}` : "",
+    ].filter(Boolean)));
+    records.push(record);
+  });
+  threads.forEach((item) => {
+    const record = node("div", "record");
+    const title = node("div", "record-title");
+    title.append(node("span", "", clean(item.title, "自身事项")), node("span", "muted", "尚未完成"));
+    record.append(title, recordLines([
+      item.next_step ? `下一步计划：${clean(item.next_step)}` : "等待继续判断",
+      item.obstacle ? `困难判断：${clean(item.obstacle)}` : "",
+      `累计实际过程 ${Number(item.practice_minutes || 0).toFixed(1)} 分钟`,
+    ].filter(Boolean)));
+    records.push(record);
+  });
+  if (body?.updated_at) {
+    const record = node("div", "record");
+    const title = node("div", "record-title");
+    const updated = parseStatusNow(body.updated_at);
+    title.append(node("span", "", "身体需求"), node("span", "muted", updated ? formatClock(updated) : ""));
+    const needs = [["体力", "energy"], ["困倦", "sleep_pressure"], ["疲劳", "fatigue"], ["饥饿", "hunger"], ["口渴", "thirst"], ["社交电量", "social_battery"]];
+    record.append(title, node("div", "record-body", needs.map(([label, key]) => `${label} ${Math.round(Number(body[key] || 0))}`).join(" · ")));
+    records.push(record);
+  }
+  if (run) {
+    const record = node("div", "record");
+    const title = node("div", "record-title");
+    title.append(node("span", "", clean(run.action?.target, "当前行动")), node("span", "muted", CONTINUOUS_ACTION_STATUS_LABELS[run.status] || "待确认"));
+    record.append(title, recordLines([
+      `已进行 ${(Number(run.active_seconds || 0) / 60).toFixed(1)} 分钟 · 计划 ${Number(run.action?.duration_minutes || 0)} 分钟`,
+      relationshipText(run.reason),
+    ]));
+    records.push(record);
+  }
+  goals.slice(-8).reverse().forEach((goal) => {
+    const record = node("div", "record");
+    const title = node("div", "record-title");
+    const labels = {active: "进行中", blocked: "遇到阻碍", completed: "已完成", abandoned: "已放弃"};
+    title.append(node("span", "", clean(goal.title)), node("span", "muted", labels[goal.status] || "待确认"));
+    const steps = objectItems(goal.steps);
+    const completed = new Set(steps.filter((step) => step.status === "completed").map((step) => step.id));
+    record.append(title, recordLines([
+      relationshipText(goal.obstacle || goal.reason),
+      ...steps.map((step) => `${step.status === "completed" ? "已完成" : (step.depends_on || []).every((id) => completed.has(id)) ? "待继续" : "等待前序阶段"} · ${clean(step.title)} · 已练习 ${Number(step.practice_minutes || 0).toFixed(1)} 分钟 · 阶段要求 ${Number(step.required_minutes || 0)} 分钟`),
+    ]));
+    records.push(record);
+  });
+  skills.slice(-6).forEach(([name, skill]) => {
+    const record = node("div", "record");
+    const title = node("div", "record-title");
+    title.append(node("span", "", clean(name)), node("span", "muted", "练习积累"));
+    record.append(title, node("div", "record-body", `${Number(skill.sessions || 0)} 次 · ${Number(skill.practice_minutes || 0).toFixed(1)} 分钟`));
+    records.push(record);
+  });
   reviews.slice(0, 2).forEach((item) => {
     const record = node("div", "record");
     const title = node("div", "record-title");
@@ -3287,11 +3390,22 @@ function renderClosetManagement() {
         : `显示 ${pageInfo.start + 1}-${pageInfo.end} 组，共 ${groups.length} 组；总数 ${total} 个候选`;
   }
   el.closetList.replaceChildren(...(pageInfo.items.length ? pageInfo.items.map(closetRecord) : [empty("暂无符合条件的衣橱素材")]));
+  if (el.closetSummary && state.closetWardrobe) {
+    const taste = (state.closetWardrobe.aesthetics || []).filter((entry) => entry.origin !== "user_feedback").slice(0, 2).map((entry) => clean(entry.preference, "")).filter(Boolean);
+    const waiting = (state.closetWardrobe.jobs || []).filter((entry) => !["failed", "uncertain", "cancelled"].includes(entry.status));
+    const additions = [];
+    if (taste.length) additions.push(`自己的审美：${taste.join("；")}`);
+    if (waiting.length) additions.push(`后台补充中 ${waiting.length} 项`);
+    const blocked = (state.closetWardrobe.jobs || []).find((entry) => entry.error);
+    if (blocked) additions.push(`补衣进度：${clean(blocked.error, '等待处理')}`);
+    if (additions.length) el.closetSummary.textContent += ` · ${additions.join(" · ")}`;
+  }
   renderClosetDetail();
 }
 
 function applyClosetPayload(payload = {}) {
   state.closetItems = objectItems(payload.items);
+  state.closetWardrobe = payload.wardrobe && typeof payload.wardrobe === "object" ? payload.wardrobe : {};
   state.closetStats = payload.stats && typeof payload.stats === "object" ? payload.stats : {};
   state.closetFilter = normalizeClosetFilter(state.closetFilter);
   if (el.closetFilter && el.closetFilter.value !== state.closetFilter) {
@@ -3306,6 +3420,13 @@ function applyClosetPayload(payload = {}) {
     ? payload.generation_timeout_seconds
     : {};
   state.closetLoaded = true;
+  window.clearTimeout(state.closetRefreshTimer);
+  const pending = (state.closetWardrobe.jobs || []).some((entry) => ['planned', 'pending', 'generating', 'recognizing'].includes(entry.status));
+  if (pending && state.view === 'closet' && !document.hidden) {
+    state.closetRefreshTimer = window.setTimeout(() => {
+      if (state.view === 'closet' && !document.hidden) void loadClosetAssets({ quiet: true });
+    }, 10000);
+  }
   pruneClosetSelection();
   renderClosetManagement();
 }
@@ -3403,6 +3524,12 @@ function renderClosetDetail() {
   closetBadges(item).forEach(([label, className]) => badges.append(node("span", `closet-badge ${className}`.trim(), label)));
   const grid = document.createElement("dl");
   grid.className = "closet-detail-grid";
+  const wardrobe = item.attributes?.wardrobe;
+  if (wardrobe) {
+    const conditions = {clean: "干净可穿", worn: "正在穿着", dirty: "待洗", washing: "清洗中", drying: "晾晒中", stored: "已收纳"};
+    closetDetailField(grid, "衣物归属", wardrobe.ownership === "owned" ? "正式拥有" : "灵感候选");
+    closetDetailField(grid, "穿护状态", conditions[wardrobe.condition] || "尚未确定");
+  }
   closetDetailField(grid, "偏好分", Number(item.preference_score || 0).toFixed(2));
   closetDetailField(grid, "置信度", `${Math.round(Number(item.confidence || 0) * 100)}%`);
   closetDetailField(grid, "学习次数", Number(item.seen_count || 0));

@@ -111,9 +111,14 @@ class HiddenExperienceMixin:
         label = self._hidden_first(item, "label", "scope", limit=60)
         tone = self._hidden_first(item, "tone", limit=100)
         habits = self._hidden_join(getattr(item, "habits", []), limit=60, count=3)
+        avoid = self._hidden_join(getattr(item, "avoid", []), limit=60, count=3)
+        profile_id = self._hidden_first(item, "profile_id", limit=120)
+        if profile_id:
+            label = f"{label}（适用对象：{profile_id}）"
+        details = [tone, habits, f"避免：{avoid}" if avoid else ""]
         return (
-            f"- {label}: {tone or '表达习惯'}；{habits}"
-            if label and (tone or habits)
+            f"- {label}: {'；'.join(part for part in details if part)}"
+            if label and any(details)
             else ""
         )
 
@@ -309,12 +314,14 @@ class HiddenExperienceMixin:
             "[HiddenReplyEffects]",
             self._hidden_lines(reply_effects, 4, self._hidden_reply_effect_line),
         )
+        profile_lines = self._hidden_lines(
+            expression_profiles, 4, self._hidden_expression_profile_line
+        )
         self._hidden_section(
             sections,
             "[HiddenExpressionHabits]",
-            self._hidden_lines(
-                expression_profiles, 4, self._hidden_expression_profile_line
-            ),
+            (["只在相符场景参考这些已学到的软偏好，当前表达需要和角色人设优先，不套固定话术。"] + profile_lines)
+            if profile_lines else [],
         )
         self._hidden_section(
             sections,

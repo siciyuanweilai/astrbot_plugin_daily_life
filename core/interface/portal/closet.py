@@ -84,7 +84,7 @@ class PortalClosetMixin:
                 generation_mode=generation_mode,
                 count=count,
             )
-            if str(getattr(result, "status", "ok")) != "ok":
+            if str(getattr(result, "status", "ok")) not in {"ok", "submitted"}:
                 raise ValueError(str(result) or "创意衣橱生成失败")
             payload = await self._page_closet_payload()
             payload["message"] = str(result)
@@ -253,6 +253,12 @@ class PortalClosetMixin:
         items = await self.runtime.archive.get_style_catalog_items(
             status="", limit=500
         )
+        wardrobe_getter = getattr(self.runtime.archive, "get_wardrobe_snapshot", None)
+        wardrobe = await wardrobe_getter() if callable(wardrobe_getter) else {}
+        for item in items:
+            asset = wardrobe.get("items", {}).get(str(item.id))
+            if asset:
+                item.attributes["wardrobe"] = asset
         payload = [self._page_closet_item(item) for item in items]
         source_groups = {
             str(item.get("source_group_key") or item.get("id")) for item in payload
@@ -269,6 +275,8 @@ class PortalClosetMixin:
             default_generation_mode = "text_to_image"
         return {
             "items": payload,
+            "wardrobe": {"aesthetics": wardrobe.get("profile", {}).get("aesthetics", []),
+                         "jobs": [{"status": job["status"], "requirement": job["payload"].get("requirement", ""), "error": job["error"]} for job in wardrobe.get("jobs", [])]},
             "default_generation_mode": default_generation_mode,
             "generation_timeout_seconds": self._page_closet_generation_timeouts(),
             "stats": {

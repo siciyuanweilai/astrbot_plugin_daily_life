@@ -476,11 +476,6 @@ class RefreshMixin:
             source_event, log_skip=True
         ):
             return await self.archive.get_day(target_date_str)
-        if respect_quiet_hours and self._state_refresh_in_quiet_hours(now):
-            logger.debug(
-                f"{LOG_PREFIX} 实时状态巡检处于静默时段 {self.config.state.quiet_hours}，跳过本次巡检"
-            )
-            return await self.archive.get_day(target_date_str)
         if update_weather:
             if source_event is not None and self.event_was_recalled(
                 source_event, log_skip=True

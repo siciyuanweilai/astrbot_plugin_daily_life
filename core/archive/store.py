@@ -7,6 +7,7 @@ from typing import Any, TypeVar
 
 from .categories import STORAGE_CATEGORIES
 from .knowledge import CognitionArchiveMixin
+from .continuance import ContinuityArchiveMixin
 from .common import CommonArchiveMixin
 from .activity import DomainArchiveMixin
 from .experience import ExperienceArchiveMixin
@@ -19,6 +20,7 @@ from .reflections import LifecycleArchiveMixin
 from .schema import init_schema
 from .storage import StorageArchiveMixin
 from .inventory import StyleCatalogArchiveMixin
+from .garments import GarmentArchiveMixin
 from .vectors import MemoryVectorArchiveMixin
 from .weeks import WeekArchiveMixin
 
@@ -65,7 +67,9 @@ _CONTEXT_SNAPSHOT_KEYS = (
 
 
 class LifeArchive(
+    ContinuityArchiveMixin,
     StyleCatalogArchiveMixin,
+    GarmentArchiveMixin,
     DomainArchiveMixin,
     CognitionArchiveMixin,
     MemoryVectorArchiveMixin,
@@ -246,10 +250,18 @@ class LifeArchive(
                 await self.get_emotion_arcs(limit=4, scope=experience_scope),
                 await self.get_physiological_rhythm_logs(limit=3),
                 await self.get_physiological_rhythm_trend(days=7, limit=6),
-                await self.get_reply_effects(limit=4, scope=experience_scope),
+                await self.get_reply_effects(
+                    limit=4, scope=session_id or experience_scope
+                ),
                 await self.get_memory_corrections(limit=3, unapplied_only=True),
-                await self.get_expression_profiles(limit=4),
-                await self.get_expression_reviews(limit=3, scope=experience_scope),
+                (
+                    await self.get_expression_profiles(limit=4, scope=experience_scope)
+                    if experience_scope
+                    else await self.get_expression_profiles(limit=4)
+                ),
+                await self.get_expression_reviews(
+                    limit=3, scope=session_id or experience_scope
+                ),
                 await self.get_behavior_patterns(limit=4),
                 await self.get_behavior_scenes(limit=4, scope=experience_scope),
                 await self.get_session_mid_summaries(limit=3, session_id=session_id),

@@ -26,6 +26,7 @@ from .appearance import (
 )
 from .condition import format_physiological_rhythm_prompt
 from .fashion import outfit_style_contamination_reason
+from .dressing import wardrobe_conditions
 from .future import future_outfit_timing_issue
 from .lookback import record_appearance_snapshot
 from .tools import (
@@ -470,7 +471,8 @@ class OutfitMixin:
         )
         current_outfit = format_outfit_components(current_components)
         persona = await self._get_persona()
-        style_catalog_context = await self._style_catalog_context(limit=14)
+        wardrobe_weather = wardrobe_conditions(old_data, current_time, residence=str(getattr(getattr(self.config, 'domains', None), 'home_address', '') or ''))
+        style_catalog_context = await self._style_catalog_context(limit=14, conditions=wardrobe_weather)
         catalog_has_clothing = await self._style_catalog_has_clothing_candidates()
         instruction_text = str(instruction or "").strip()
         normalized_instruction_source = (
@@ -1134,14 +1136,32 @@ class OutfitMixin:
                 old_data.meta.pop("outfit_fact_evidence", None)
         old_data.outfit = new_outfit
         old_data.time_period = target_period
+        if not full_change and decision != 'keep' and reference_ids:
+            # 局部更新只替换相应类别；保留主体衣物的实际采用编号。
+            getter = getattr(self.archive, 'get_style_catalog_items', None)
+            if callable(getter):
+                previous_items = await getter(ids=current_reference_ids, limit=max(1, len(current_reference_ids))) if current_reference_ids else []
+                new_items = await getter(ids=reference_ids, limit=len(reference_ids))
+                replaced = {item.kind for item in new_items}
+                reference_ids = list(dict.fromkeys([item.id for item in previous_items if item.kind not in replaced] + reference_ids))
         if reference_ids:
             old_data.meta["style_catalog_reference_ids"] = ",".join(
                 str(item) for item in reference_ids
             )
         if appearance_changed:
             record_appearance_snapshot(old_data, current_time)
-        await self.archive.save_day(old_data)
-        if reference_ids:
+        if requires_catalog_clothing and not context.get('instruction'):
+            try:
+                await self.archive.save_day(old_data, require_wearable=True)
+            except ValueError as exc:
+                context['catalog_selection_issue'] = str(exc)
+                return None
+        else:
+            await self.archive.save_day(old_data)
+        wear_recorder = getattr(self.archive, "record_wardrobe_wear", None)
+        if appearance_changed and callable(wear_recorder):
+            await wear_recorder(old_data, event_id="outfit:" + str(old_data.meta.get("outfit_fact_confirmed_at")) + ":" + str(old_data.meta.get("style_catalog_reference_ids")))
+        if appearance_changed and reference_ids:
             await self._mark_style_catalog_references(reference_ids)
         outcome_parts = [f"风格：{final_style}"]
         if final_hair_style:

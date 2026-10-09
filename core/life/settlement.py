@@ -24,6 +24,8 @@ from ..models import (
     timeline_item_minutes,
 )
 from .lookback import record_appearance_snapshot
+from .body import ContinuousBody, project_body
+from .presence import record_action_outcome
 from .tools import parse_life_datetime, timeline_item_datetime
 from .wardrobe import (
     format_outfit_components,
@@ -65,6 +67,10 @@ _ACTION_RULES: dict[str, dict[str, Any]] = {
     "meal": {
         "effects": (("energy", 8), ("stress", -2), ("mood_score", 3)),
         "allowed": {"energy", "stress", "mood_score"},
+    },
+    "drink": {
+        "effects": (),
+        "allowed": {"energy", "mood_score", "stress"},
     },
     "cook": {
         "effects": (("energy", 5), ("stress", -3), ("mood_score", 4)),
@@ -327,6 +333,14 @@ class LifeActionMixin:
         day.state = state
         changes: dict[str, dict[str, float | int | None]] = {}
         applicable_effects = [] if preserve_outfit_fact else effects
+        body = ContinuousBody.from_value(json.loads(day.meta["continuous_body"])) if day.meta.get("continuous_body") else None
+        body_fields = {"energy", "sleepiness", "interaction_capacity"}
+        if body is not None:
+            applicable_effects = [effect for effect in applicable_effects if effect.field not in body_fields]
+            previous_values = {field: getattr(state, field) for field in body_fields}
+            body.complete(action.action_type, action.payload)
+            project_body(day, body)
+            changes.update({field: {"before": previous_values[field], "after": getattr(state, field)} for field in body_fields if previous_values[field] != getattr(state, field)})
         for effect in applicable_effects:
             previous = getattr(state, effect.field, None)
             base_value = float(previous) if previous is not None else 50.0
@@ -755,6 +769,11 @@ class LifeActionMixin:
         )
         if outcome.status == "committed":
             if action.action_type == "change_outfit":
+                wear_recorder = getattr(self.archive, "record_wardrobe_wear", None)
+                if callable(wear_recorder):
+                    saved_day = await self.archive.get_day(day.date)
+                    if saved_day:
+                        await wear_recorder(saved_day, event_id="action-wear:" + action.action_id)
                 marker = getattr(self, "_mark_style_catalog_references", None)
                 if callable(marker):
                     await marker(action.payload.get("catalog_reference_ids"))
@@ -863,8 +882,43 @@ class LifeActionMixin:
         """
         action = LifeActionIntent.from_value(intent)
         preserve_outfit_fact = self._planned_outfit_action_is_superseded(day, action)
-        outcome = self.settle_life_action(day, action, now=now)
-        await self.archive.save_day(day)
+        continuous_mutator = getattr(self.archive, "mutate_continuous_life", None)
+        if day.meta.get("continuous_body") and callable(continuous_mutator):
+            outcome = None
+            def commit(latest, world):
+                nonlocal outcome, preserve_outfit_fact
+                if action.timeline_index is not None:
+                    raw_actions = json.loads(latest.meta.get("planned_life_actions") or "[]")
+                    current = next((LifeActionIntent.from_value(raw) for raw in raw_actions if isinstance(raw, dict) and raw.get("action_id") == action.action_id), None)
+                    if current is None:
+                        action.timeline_index = None
+                    else:
+                        action.timeline_index = current.timeline_index
+                preserve_outfit_fact = self._planned_outfit_action_is_superseded(latest, action)
+                wardrobe_validator = getattr(self.archive, '_wardrobe_action_issue_unlocked', None)
+                wardrobe_issue = wardrobe_validator(action.payload.get('catalog_reference_ids')) if action.action_type == 'change_outfit' and callable(wardrobe_validator) else ''
+                if wardrobe_issue:
+                    outcome = LifeActionOutcome(action_id=action.action_id, action_type=action.action_type, status='rejected', reason=wardrobe_issue)
+                else:
+                    outcome = self.settle_life_action(latest, action, now=now)
+                if outcome.status == "committed" and not outcome.replayed and world.get("body"):
+                    world["body"] = json.loads(latest.meta["continuous_body"])
+                if not outcome.replayed and outcome.status in {"committed", "failed", "rejected"}:
+                    record_action_outcome(
+                        world,
+                        action,
+                        status=outcome.status,
+                        completed_at=outcome.committed_at or now,
+                        reason=outcome.reason,
+                        run=world.get("run"),
+                    )
+            latest, _ = await continuous_mutator(day.date, commit)
+            if latest is None or outcome is None:
+                return LifeActionOutcome(action_id=action.action_id, action_type=action.action_type, status="rejected", reason="原生活日记录已清理")
+            day.apply_persisted(latest)
+        else:
+            outcome = self.settle_life_action(day, action, now=now)
+            await self.archive.save_day(day)
 
         save_outcome = getattr(self.archive, "save_life_action_outcome", None)
         if callable(save_outcome) and action.action_id and action.action_type:

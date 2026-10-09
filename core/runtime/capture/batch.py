@@ -18,10 +18,11 @@ from ...sources.platforms import parse_unified_origin
 from ..context import INTERACTION_MODE_PREDICATE, interaction_fact_is_current
 from ..markers import LOG_PREFIX
 from .execution import ChatExecutionMixin
+from .diction import ExpressionLearningMixin
 from .jsonclean import call_pure_json
 
 
-class ChatMemoryBatchMixin(ChatExecutionMixin):
+class ChatMemoryBatchMixin(ChatExecutionMixin, ExpressionLearningMixin):
     """保存收到的聊天快照，并按互不重叠的会话批次提炼。"""
 
     _BATCH_READABLE_FIELDS = {
@@ -55,6 +56,8 @@ class ChatMemoryBatchMixin(ChatExecutionMixin):
             "memory_targets",
             "experiences",
             "execution_updates",
+            "expression_profiles",
+            "expression_reviews",
         ):
             if not isinstance(result.get(key), list):
                 result[key] = []
@@ -388,12 +391,15 @@ class ChatMemoryBatchMixin(ChatExecutionMixin):
                 "group_id": str(last.get("group_id") or ""),
                 "group_name": str(last.get("group_name") or ""),
             },
-            "participants": list(participants.values()),
-            "messages": messages,
+            # 较稳定的已知资料先于本批新消息，延长同会话可复用的输入前缀。
+            "current_expression_profiles": batch.get("current_expression_profiles", []),
             "current_temporal_facts": batch.get("current_temporal_facts", []),
             "current_day_timeline": batch.get("current_day_timeline", []),
             "open_commitments": batch.get("open_commitments", []),
             "execution_candidates": batch.get("execution_candidates", []),
+            "recent_reply_effects": batch.get("recent_reply_effects", []),
+            "participants": list(participants.values()),
+            "messages": messages,
         }
         schema = {
             "execution_updates": [
@@ -421,6 +427,32 @@ class ChatMemoryBatchMixin(ChatExecutionMixin):
                 }
             ],
             "preferences": [],
+            "expression_profiles": [
+                {
+                    "profile_id": "表达偏好所属用户的输入编号",
+                    "label": "稳定适用场景；相同场景复用已有 label",
+                    "tone": "角色面对这位用户时适用的语气",
+                    "habits": [],
+                    "avoid": [],
+                    "evidence": "用户反馈及其适用边界的简短依据",
+                    "confidence": 0.0,
+                    "basis": "explicit|repeated",
+                    "source_message_ids": [],
+                    "reply_message_ids": [],
+                    "reply_effect_ids": [],
+                }
+            ],
+            "expression_reviews": [
+                {
+                    "profile_id": "反馈用户的输入编号",
+                    "reply_message_id": "被反馈的 assistant 消息编号",
+                    "source_message_ids": [],
+                    "passed": True,
+                    "risk": "",
+                    "suggestion": "",
+                    "reason": "后续用户反馈证明的表达效果",
+                }
+            ],
             "life_episodes": [],
             "visibility": {
                 "level": "focused|ignored|seen_but_ignored",
@@ -545,6 +577,16 @@ class ChatMemoryBatchMixin(ChatExecutionMixin):
             "worth_saving 只控制长期摘要；这三个实际感知字段有依据时可以独立输出。"
             "behavior_feedback 只记录发生在我的回复之后、由后续用户消息明确证实的真实反馈；life_terms 只记录后续理解仍有帮助的黑话、梗或代称。"
             "behavior_feedback 或 life_terms 有内容时属于可复用信息，应同时给出有效摘要并设置 worth_saving=true。\n"
+            "expression_profiles 学习的是我面对对应用户、在具体场景中适用的表达习惯，不是模仿用户口吻或修改角色人设。"
+            "用户明确表达稳定偏好或纠正时 basis=explicit；仅凭互动效果学习时 basis=repeated，必须有至少三次独立的回复与后续反馈，"
+            "引用本批次的 source_message_ids（用户反馈）、reply_message_ids（先前角色回复），或 recent_reply_effects 中同一对象、同一场景的 reply_effect_ids。"
+            "感谢、继续聊天、一次情绪、沉默或单条角色自述不证明稳定风格；没有可靠证据就输出空数组。"
+            "关注闲聊展开尺度、短句节奏、是否反复问候追问、话题承接等实际反馈，按完整语义理解，不套关键词、句型或字数。"
+            "短句可以很自然；解释和安慰按当下需要说完整，不把所有回复一律缩短。"
+            "对照 current_expression_profiles，同一用户同一场景返回修订后的完整 tone、habits、avoid；保留未被新证据否定的习惯，明确纠正优先，不复制旧回复当模板。"
+            "仅换了措辞不新增场景；无变化不输出。confidence 至少 0.78，并给出新用户证据。"
+            "expression_reviews 只复盘已发送回复被后续用户明确证实的表达效果；普通接话不足以判定风格好坏，不生成例行通过记录。"
+            "上述两类记录有可靠证据时独立保存，worth_saving=false 也可以输出。\n"
             "scope.type 只是平台传输范围，不是现实互动场景。brief、long_summary、relationship_story、note、points、scene_type 等自然语言字段必须按语义区分现实同处、远程交流和未知；"
             "没有明确现实互动证据时使用“这轮交流中”“聊天中”等中性叙述，不要仅因 private/group、role 或消息记录写成隔着屏幕发消息。\n"
             "execution_updates 只同步已经发送的 assistant 消息明确陈述已完成的虚拟生活动作。对照 execution_candidates 和 open_commitments，动作类型、目标、对象及日期必须一致，编号只能来自输入。"
@@ -620,6 +662,7 @@ class ChatMemoryBatchMixin(ChatExecutionMixin):
             decision[field] = self._chinese_text_payload(decision.get(field))
         decision["reason"] = compact_explanation_text(decision.get("reason"))
         normalized["action_decision"] = decision
+        self._normalize_batch_expression_learning(normalized, batch)
         return normalized
 
     @classmethod
@@ -1248,6 +1291,7 @@ class ChatMemoryBatchMixin(ChatExecutionMixin):
         except (TypeError, ValueError):
             observed_at = life_now()
         await self._append_memory_decision_log(payload, meta, observed_at)
+        await self._save_batch_expression_learning(payload, batch, meta)
         if not payload.get("worth_saving"):
             return None
         summary = ChatSummaryRecord.from_value(
@@ -1332,6 +1376,7 @@ class ChatMemoryBatchMixin(ChatExecutionMixin):
                         ],
                     }
             batch = {**batch, **await self._chat_execution_context(batch)}
+            batch = {**batch, **await self._batch_expression_context(batch)}
             payload = await call_pure_json(
                 self,
                 provider,

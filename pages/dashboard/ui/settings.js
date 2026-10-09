@@ -133,7 +133,6 @@ const CONFIG_SECTION_FIELD_GROUPS = new Map([
       hint: "配置天气接口，以及天气是否影响穿搭和活动。",
       fields: [
         "weather_awareness.api_key",
-        "weather_awareness.weather_city",
         "weather_awareness.aware_outfit",
         "weather_awareness.aware_activity",
       ],
@@ -181,14 +180,11 @@ const CONFIG_SECTION_FIELD_GROUPS = new Map([
     {
       key: "location",
       label: "地点与出行",
-      hint: "控制地图服务商、地点解析、路线查询和接口不可用时的时间估算。",
+      hint: "控制高德地图地点解析、路线查询和接口不可用时的时间估算。",
       fields: [
         "life_domain_config.location_enabled",
         "life_domain_config.home_address",
-        "life_domain_config.map_provider",
         "life_domain_config.amap_api_key",
-        "life_domain_config.tencent_map_api_key",
-        "life_domain_config.baidu_map_api_key",
         "life_domain_config.default_travel_minutes",
       ],
     },

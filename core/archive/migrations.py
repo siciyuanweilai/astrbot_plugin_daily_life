@@ -11,7 +11,7 @@ from .tables.mind import COGNITION_INDEX_SQL, COGNITION_SQL
 
 SCHEMA_VERSION_KEY = "schema_version"
 BASELINE_SCHEMA_VERSION = 1
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 21
 LEGACY_BASELINE_SCHEMA_FINGERPRINT = (
     "9e6243276bf6bd509f6019502e30192310da4197838bd0f7d478f0100f8750a5"
 )
@@ -60,7 +60,10 @@ PREVIOUS_V17_SCHEMA_FINGERPRINT = (
 PREVIOUS_V18_SCHEMA_FINGERPRINT = (
     "6fc07333a7aea0ba77a5c8b0fd315bdeee6bbd8b9334df9a8be3dc5d254a7075"
 )
-CURRENT_SCHEMA_FINGERPRINT = "5c85572e593924bac14c74f5e9de4fb3e30f07966678db9301b274b209dda20b"
+PREVIOUS_V19_SCHEMA_FINGERPRINT = "5c85572e593924bac14c74f5e9de4fb3e30f07966678db9301b274b209dda20b"
+PREVIOUS_V20_SCHEMA_FINGERPRINT = "43e2b090847b932c95ad312a19ad66a6c109b7283b2959c5dc2e4fc55e61c180"
+
+CURRENT_SCHEMA_FINGERPRINT = "1dcab14830e01b324d3bac191506af09e1fc2fc092effb4ab6eb04e4405d4cdf"
 
 MigrationStep = Callable[[sqlite3.Connection], None]
 
@@ -130,7 +133,9 @@ KNOWN_SCHEMA_VERSIONS: dict[str, int] = {
     PREVIOUS_V16_SCHEMA_FINGERPRINT: 16,
     PREVIOUS_V17_SCHEMA_FINGERPRINT: 17,
     PREVIOUS_V18_SCHEMA_FINGERPRINT: 18,
-    CURRENT_SCHEMA_FINGERPRINT: 19,
+    PREVIOUS_V19_SCHEMA_FINGERPRINT: 19,
+    PREVIOUS_V20_SCHEMA_FINGERPRINT: 20,
+    CURRENT_SCHEMA_FINGERPRINT: 21,
 }
 
 
@@ -650,6 +655,56 @@ def _migrate_timeline_day_offsets(conn: sqlite3.Connection) -> None:
         conn.execute("UPDATE days SET revision = revision + 1 WHERE date = ?", (date_str,))
 
 
+def _migrate_continuous_life_entries(conn: sqlite3.Connection) -> None:
+    conn.execute("""CREATE TABLE IF NOT EXISTS continuous_life_entries (
+        id TEXT PRIMARY KEY, kind TEXT NOT NULL, date TEXT NOT NULL DEFAULT '',
+        scope TEXT NOT NULL DEFAULT 'global', occurred_at TEXT NOT NULL DEFAULT '',
+        summary TEXT NOT NULL DEFAULT '', payload_json TEXT NOT NULL DEFAULT '{}'
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_continuous_life_entries_date ON continuous_life_entries(date, occurred_at DESC)")
+
+
+TEXTILE_V21_SQL = """
+CREATE TABLE IF NOT EXISTS wardrobe_units (
+    unit_id TEXT PRIMARY KEY, ownership TEXT NOT NULL DEFAULT 'candidate',
+    condition TEXT NOT NULL DEFAULT 'clean', acquired_at TEXT NOT NULL DEFAULT '',
+    changed_at TEXT NOT NULL DEFAULT '', revision INTEGER NOT NULL DEFAULT 0,
+    payload_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE TABLE IF NOT EXISTS wardrobe_links (
+    catalog_id INTEGER NOT NULL REFERENCES style_catalog_items(id) ON DELETE CASCADE,
+    unit_id TEXT NOT NULL REFERENCES wardrobe_units(unit_id) ON DELETE CASCADE,
+    PRIMARY KEY(catalog_id, unit_id)
+);
+CREATE TABLE IF NOT EXISTS wardrobe_events (
+    event_id TEXT PRIMARY KEY, kind TEXT NOT NULL, occurred_at TEXT NOT NULL,
+    source TEXT NOT NULL, payload_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE TABLE IF NOT EXISTS wardrobe_profile (
+    name TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT '', payload_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE TABLE IF NOT EXISTS wardrobe_jobs (
+    job_id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'planned',
+    updated_at TEXT NOT NULL, next_at TEXT NOT NULL DEFAULT '',
+    lease_owner TEXT NOT NULL DEFAULT '', lease_until TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL DEFAULT '{}', progress_json TEXT NOT NULL DEFAULT '{}',
+    error TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_wardrobe_jobs_pending ON wardrobe_jobs(status, next_at);
+CREATE INDEX IF NOT EXISTS idx_wardrobe_events_time ON wardrobe_events(occurred_at DESC);
+"""
+
+
+def _migrate_wardrobe_life(conn: sqlite3.Connection) -> None:
+    buffer = ""
+    for line in TEXTILE_V21_SQL.splitlines(keepends=True):
+        buffer += line
+        if sqlite3.complete_statement(buffer):
+            conn.execute(buffer)
+            buffer = ""
+
+
 # 键是迁移完成后的目标版本；每个步骤只负责从前一版本升级一次。
 MIGRATIONS: dict[int, MigrationStep] = {
     2: _migrate_timeline_execution_state,
@@ -670,6 +725,8 @@ MIGRATIONS: dict[int, MigrationStep] = {
     17: _migrate_timeline_duration,
     18: _migrate_life_semantic_flags,
     19: _migrate_timeline_day_offsets,
+    20: _migrate_continuous_life_entries,
+    21: _migrate_wardrobe_life,
 }
 
 

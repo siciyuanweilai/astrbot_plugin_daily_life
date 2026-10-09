@@ -6,10 +6,13 @@ from astrbot.api import logger
 from ..labels import page_status_reason_label
 from ..memos import MemosMixin
 from ..sight import SightMixin
+from ..telemetry import ModelCacheMetrics
 from .addressing import ChatAddressingMixin
 from .background import BackgroundTaskMixin
 from .capture import CaptureMixin
 from .context import InteractionContextMixin
+from .continuous import ContinuousLifeMixin
+from .clothier import ClothierMixin
 from .forward import TextForwardMixin
 from .gate import ResponseGateMixin
 from .gateway import ModelCallOptions, ModelGateway
@@ -36,6 +39,8 @@ from .turns import ContinuousTurnMixin
 
 
 class DailyLifeRuntime(
+    ContinuousLifeMixin,
+    ClothierMixin,
     MeaningRuntimeMixin,
     ExternalIntegrationMixin,
     MemosMixin,
@@ -68,6 +73,23 @@ class DailyLifeRuntime(
 
     入口装饰器保留在入口文件；这里负责状态、存储、定时任务、提示词注入和工具动作。
     """
+
+    def _model_cache_meter(self) -> ModelCacheMetrics:
+        meter = getattr(self, "_model_cache_metrics", None)
+        if not isinstance(meter, ModelCacheMetrics):
+            meter = ModelCacheMetrics()
+            self._model_cache_metrics = meter
+        return meter
+
+    def note_chat_model_usage(self, response: Any) -> None:
+        if getattr(response, "is_chunk", False):
+            return
+        raw = getattr(response, "raw_completion", None)
+        model = raw.get("model", "") if isinstance(raw, dict) else getattr(raw, "model", "")
+        self._model_cache_meter().record(response, kind="chat", model=str(model or ""))
+
+    def model_cache_status(self) -> dict[str, Any]:
+        return self._model_cache_meter().snapshot()
 
     async def get_text_provider(self, provider_id: str = ""):
         gateway = getattr(self, "model_gateway", None) or ModelGateway(self.composer)

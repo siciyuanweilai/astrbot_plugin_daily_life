@@ -117,6 +117,7 @@ class ProactiveFlowMixin:
     ) -> tuple[dict[str, Any], str]:
         confidence = self._clamp_float(payload.get("confidence"))
         reply_text = self._proactive_reply_text(payload.get("reply_text"))
+        payload["_expression_candidate_text"] = reply_text
         requested = self._proactive_bool(payload.get("should_reply"))
         expression_passed = self._expression_review_passed(payload)
         utility, utility_valid = self._normalize_proactive_utility(
@@ -135,6 +136,9 @@ class ProactiveFlowMixin:
             reason_code = "invalid_utility_scores"
         elif utility < self._PROACTIVE_UTILITY_THRESHOLD:
             reason_code = "utility_below_threshold"
+        if requested and not expression_passed:
+            payload["decision"] = "observe"
+            payload["reason"] = "表达检查未通过或缺少有效检查，暂缓主动发送"
         should_reply = (
             requested
             and confidence >= self.config.proactive.min_confidence

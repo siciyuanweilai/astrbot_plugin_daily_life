@@ -18,12 +18,12 @@ from ...config.options import LifeSettings
 from ...life import (
     LifeBackgroundComposer,
     LifeDomainService,
-    PersonaResidenceResolver,
     WeatherClient,
 )
 from ...life.reliability import NonRetryableProviderError
 from ...media import LifeMediaService
 from ...media.picture.polling import ImageTaskFailed
+from ...media.video.errors import VideoTaskFailed
 from ...paths import runtime_data_path
 from ...search import SearchService
 from ...sources import ContactNameResolver
@@ -43,6 +43,8 @@ _DURABLE_TASK_LABELS = {
     "proactive_idle": "闲时主动检查",
     "media_delivery": "媒体投递恢复",
     "image_generation": "图片原任务查询恢复",
+    "share_image_generation": "外部分享图片原任务查询恢复",
+    "share_video_generation": "外部分享视频原任务查询恢复",
     "web_research": "网页研究报告",
     "proactive_commitment": "主动承诺履行",
     "commitment_photo": "承诺拍照",
@@ -370,7 +372,6 @@ class SpineBootMixin:
         domains = LifeDomainService(
             config.domains,
             self.archive,
-            weather_city=config.weather.weather_city,
         )
         composer = LifeBackgroundComposer(
             self.context,
@@ -381,9 +382,7 @@ class SpineBootMixin:
             search,
             domains,
         )
-        domains.attach_residence_resolver(
-            PersonaResidenceResolver(composer, provider_id=config.llm_provider)
-        )
+        composer.model_cache_metrics = self._model_cache_meter()
         return RuntimeServices(
             config=config,
             media=media,
@@ -485,6 +484,8 @@ class SpineBootMixin:
                 "commitment_photo",
                 "commitment_video",
                 "image_generation",
+                "share_image_generation",
+                "share_video_generation",
             }:
                 return await handler(task)
             return await handler()
@@ -542,6 +543,10 @@ class SpineBootMixin:
                 handler = getattr(self, "resume_durable_media_delivery", None)
             elif task.kind == "image_generation":
                 handler = getattr(self, "resume_durable_image_generation", None)
+            elif task.kind == "share_image_generation":
+                handler = getattr(self, "resume_share_image_generation", None)
+            elif task.kind == "share_video_generation":
+                handler = getattr(self, "resume_share_video_generation", None)
             else:
                 handler = getattr(self, "_durable_runtime_handlers", {}).get(task.kind)
             if not callable(handler):
@@ -556,7 +561,7 @@ class SpineBootMixin:
                 result = await self._run_durable_handler(task, handler, owner)
             except asyncio.CancelledError:
                 raise
-            except (NonRetryableProviderError, ImageTaskFailed) as exc:
+            except (NonRetryableProviderError, ImageTaskFailed, VideoTaskFailed) as exc:
                 await self.archive.fail_durable_task(
                     task.id,
                     str(exc),
@@ -642,6 +647,10 @@ class SpineBootMixin:
                 self.run_proactive_idle_check, durable_kind="proactive_idle"
             ),
             durable_task=self._leased_rhythm_callback(self._run_durable_tasks_once),
+            wardrobe_task=self._leased_rhythm_callback(self.check_wardrobe_life),
+            continuous_life_task=self._leased_rhythm_callback(
+                self.check_continuous_life
+            ),
         )
 
     def _runtime_service_condition(self) -> asyncio.Condition:

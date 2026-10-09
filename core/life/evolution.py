@@ -6,6 +6,7 @@ from typing import Any
 from ..clock import now as life_now
 from ..models.thought import AffectiveStateRecord, ReflectionRecord
 from .affect import AffectEngine, AffectiveSnapshot
+from .presence import ensure_kernel, record_causal_trace, record_event
 
 
 class LifeEvolutionService:
@@ -14,6 +15,45 @@ class LifeEvolutionService:
     def __init__(self, archive: Any):
         self.archive = archive
         self.affect = AffectEngine()
+
+    async def _record_continuous_change(
+        self,
+        *,
+        date: str,
+        kind: str,
+        source_id: str,
+        scope: str,
+        before: dict[str, Any],
+        after: dict[str, Any],
+        summary: str,
+        evidence_ids: list[str],
+        now: datetime.datetime,
+    ) -> None:
+        mutator = getattr(self.archive, "mutate_continuous_life", None)
+        if not callable(mutator):
+            return
+
+        def record(day, world):
+            kernel = ensure_kernel(world, now)
+            if kind == "affect_change":
+                layers = kernel.setdefault("affect_layers", {})
+                layers[f"{after.get('layer')}:{after.get('label')}"] = after
+            elif kind == "relationship_change":
+                kernel["social"]["last_relationship_change_at"] = now.replace(tzinfo=None).isoformat()
+            record_causal_trace(
+                world,
+                kind=kind,
+                source_id=source_id,
+                scope=scope,
+                before=before,
+                after=after,
+                consequence=summary,
+                evidence_ids=evidence_ids,
+                at=now,
+            )
+            record_event(world, kind=kind, source_id=source_id, at=now, summary="情绪变化已结算" if kind == "affect_change" else "关系变化已结算", evidence_ids=evidence_ids)
+
+        await mutator(date, record)
 
     @staticmethod
     def evidence_ids(
@@ -105,6 +145,7 @@ class LifeEvolutionService:
         *,
         allowed_evidence_ids: set[str],
         now: datetime.datetime,
+        date: str = "",
     ) -> int:
         getter = getattr(self.archive, "get_affective_states", None)
         saver = getattr(self.archive, "save_affective_state", None)
@@ -142,6 +183,17 @@ class LifeEvolutionService:
                     valid_from=now.strftime("%Y-%m-%d %H:%M:%S"),
                     source=signal.source,
                 )
+            )
+            await self._record_continuous_change(
+                date=date or now.strftime("%Y-%m-%d"),
+                kind="affect_change",
+                source_id=f"{date}:{signal.layer}:{signal.label}",
+                scope="global",
+                before={"intensity": getattr(current, "intensity", None), "valence": getattr(current, "valence", None)},
+                after={"layer": settled.layer, "label": settled.label, "intensity": settled.intensity, "valence": settled.valence},
+                summary=f"已结算有证据的情绪变化：{settled.label}",
+                evidence_ids=signal.evidence_ids,
+                now=now,
             )
             saved_count += 1
         return saved_count
@@ -241,6 +293,17 @@ class LifeEvolutionService:
                     provenance={"evidence_ids": update.evidence_ids, "date": date},
                     evidence_summary=update.reason,
                 )
+            await self._record_continuous_change(
+                date=date,
+                kind="relationship_change",
+                source_id=f"relationship:{update.profile_id}:{date}",
+                scope=scope,
+                before={"intensity": getattr(current, "intensity", None)},
+                after={"familiarity_delta": update.familiarity_delta, "trust_delta": update.trust_delta, "affinity_delta": update.affinity_delta, "reason": update.reason},
+                summary=update.reason,
+                evidence_ids=update.evidence_ids,
+                now=now,
+            )
             saved_count += 1
         return saved_count
 
@@ -370,6 +433,7 @@ class LifeEvolutionService:
             payload,
             allowed_evidence_ids=allowed,
             now=now,
+            date=date,
         )
         relationship_count = await self._settle_relationship_updates(
             payload,

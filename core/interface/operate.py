@@ -157,7 +157,7 @@ class OperateCommandMixin:
         query_city = req.param1.strip() if req.param1 else weather_city
         if not query_city:
             yield event.plain_result(
-                "请先在天气设置中配置天气城市，或在居住地/默认人设中提供现实城市，"
+                "请先在地点与出行设置中填写现实居住地和高德地图 Web 服务 Key，"
                 "或直接告诉我要查询哪个城市的天气。"
             )
             return
@@ -191,4 +191,4 @@ class OperateCommandMixin:
             latest.weather_last_update = updated_at
 
         await self.runtime.archive.mutate_day(sync_date_str, apply_weather)
-        logger.debug("[手动天气] 已更新默认天气城市数据")
+        logger.debug("[手动天气] 已更新居住地天气数据")

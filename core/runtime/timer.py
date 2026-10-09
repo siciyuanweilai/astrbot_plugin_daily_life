@@ -25,6 +25,8 @@ class LifeRhythmClock:
         proactive_idle_task: Callable[[], Awaitable[None]] | None = None,
         durable_task: Callable[[], Awaitable[None]] | None = None,
         weekly_task: Callable[[], Awaitable[None]] | None = None,
+        continuous_life_task: Callable[[], Awaitable[None]] | None = None,
+        wardrobe_task: Callable[[], Awaitable[None]] | None = None,
     ):
         self.config = config
         self.scheduler = AsyncIOScheduler(
@@ -40,6 +42,8 @@ class LifeRhythmClock:
         self.auto_update_task = auto_update_task
         self.review_task = review_task
         self.weekly_task = weekly_task
+        self.continuous_life_task = continuous_life_task
+        self.wardrobe_task = wardrobe_task
         self.proactive_revisit_task = proactive_revisit_task
         self.proactive_idle_task = proactive_idle_task
         self.durable_task = durable_task
@@ -83,6 +87,16 @@ class LifeRhythmClock:
                     id="auto_life_check",
                     replace_existing=True,
                 )
+
+            if self.continuous_life_task and self.config.domains.enabled and self.config.domains.simulate_internal_actions:
+                self.scheduler.add_job(
+                    self.continuous_life_task, "interval", seconds=60,
+                    id="continuous_life", replace_existing=True,
+                )
+
+            if self.wardrobe_task:
+                self.scheduler.add_job(self.wardrobe_task, "interval", seconds=60,
+                    id="wardrobe_life", replace_existing=True)
 
             proactive = self.config.proactive
             if (

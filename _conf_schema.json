@@ -108,20 +108,13 @@
   "weather_awareness": {
     "description": "天气",
     "type": "object",
-    "hint": "配置天气接口，让日程与天气挂钩。",
+    "hint": "配置天气接口，让日程与天气挂钩；天气城市使用高德解析的居住地。",
     "items": {
       "api_key": {
         "description": "柠柚接口密钥",
         "type": "string",
         "default": "",
         "hint": "从 https://api.nycnm.cn 获取接口密钥。"
-      },
-      "weather_city": {
-        "description": "天气城市",
-        "type": "string",
-        "multiline": false,
-        "default": "",
-        "hint": "指定天气查询城市；留空时使用可确认的现实居住城市。"
       },
       "aware_outfit": {
         "description": "影响穿搭",
@@ -184,7 +177,7 @@
         "description": "静默时段",
         "type": "string",
         "default": "00:00-06:30",
-        "hint": "可填写 00:00-06:30 这类时间段；静默时段内只会跳过后台状态巡检，聊天与邀约仍会按刷新间隔触发状态更新。留空表示不排除任何时段。"
+        "hint": "可填写 00:00-06:30 这类时间段；静默时段暂停自发回访、闲时主动消息与主动通话邀请，内部生活、身体变化和状态巡检继续运行。正常聊天、已约定联系和媒体交付不受影响；留空表示不限制主动联系。"
       }
     }
   },
@@ -2566,53 +2559,25 @@
         "description": "结算虚拟生活动作",
         "type": "bool",
         "default": true,
-        "hint": "允许有执行证据或复盘确认的纯虚拟休息、用餐、做饭、采购、换装、家务、运动和出行生成模拟回执；仅有计划或时间经过不会结算。聊天、社交、发图、拍照和视频仍必须有真实回执。"
+        "hint": "在后台持续推进内部数字生活：模型选择行动，执行器记录开始、实际过程、暂停与完成，更新身体需求和自身长期目标。无人聊天及夜间静默期间仍运行；停机间隔不补造经历，库存和前置条件校验通过才结算。聊天、社交、拍照和视频仍需要真实回执。"
       },
       "location_enabled": {
         "description": "启用地点与出行",
         "type": "bool",
         "default": true,
-        "hint": "使用选定的地图服务在完整日程生成前预选真实地点，并在保存前再次校正具体地点和出行时间；保存自动坐标缓存、路线缓存和预计出行时间，明确旅行时允许按目标城市核验。"
+        "hint": "使用高德地图在完整日程生成前预选真实地点，并在保存前再次校正具体地点和出行时间；保存自动坐标缓存、路线缓存和预计出行时间，明确旅行时允许按目标城市核验。"
       },
       "home_address": {
         "description": "居住地",
         "type": "string",
         "default": "",
-        "hint": "填写省、市、区、道路和门牌等现实居住地信息，用于地点搜索范围和“家”的出行坐标。留空时会从默认人设提取；虚拟、未知或只有城市级信息时不会启用地图。"
-      },
-      "map_provider": {
-        "description": "地图服务商",
-        "type": "string",
-        "default": "amap",
-        "options": [
-          "amap",
-          "tencent",
-          "baidu"
-        ],
-        "option_labels": {
-          "amap": "高德地图",
-          "tencent": "腾讯地图",
-          "baidu": "百度地图"
-        },
-        "hint": "地点解析、搜索、详情和路线统一使用当前服务商；切换后不会自动回退到其他地图。"
+        "hint": "填写省、市、区、道路和门牌等现实居住地信息，由高德解析为天气城市、地点搜索范围和“家”的出行坐标。留空或无法解析时，天气和地图保持不可用，不从人设推断或使用虚拟地点。"
       },
       "amap_api_key": {
         "description": "高德地图 Web 服务 Key",
         "type": "string",
         "default": "",
-        "hint": "选择高德地图时使用。在高德开放平台创建 Web 服务类型的 Key。"
-      },
-      "tencent_map_api_key": {
-        "description": "腾讯地图 Web 服务 Key",
-        "type": "string",
-        "default": "",
-        "hint": "选择腾讯地图时使用。在腾讯地图开放平台创建 Web 服务类型的 Key。"
-      },
-      "baidu_map_api_key": {
-        "description": "百度地图 Web 服务 Key",
-        "type": "string",
-        "default": "",
-        "hint": "选择百度地图时使用。在百度地图开放平台创建 Web 服务类型的 Key。"
+        "hint": "在高德开放平台创建 Web 服务类型的 Key，用于地点解析、搜索、详情和路线查询。"
       },
       "default_travel_minutes": {
         "description": "默认出行分钟数",
@@ -2623,7 +2588,7 @@
           "max": 240,
           "step": 1
         },
-        "hint": "所选地图服务不可用时采用的低置信度出行估算。"
+        "hint": "高德地图服务不可用时采用的低置信度出行估算。"
       },
       "meals_enabled": {
         "description": "记录饮食",

@@ -765,7 +765,7 @@ class DataManager:
                     break
         return days
 
-    async def save_day(self, day, *, replace=False):
+    async def save_day(self, day, *, replace=False, require_wearable=False):
         self.days[day.date] = day
 
     async def mutate_day(self, date_str, mutator):

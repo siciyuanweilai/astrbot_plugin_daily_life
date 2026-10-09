@@ -165,12 +165,17 @@ class LifeAutonomyMixin:
         return _lines("🧩 执行复盘与今天调整", lines)
 
     async def _build_autonomous_life_context(self, date: datetime.datetime) -> str:
+        from .continuity import execution_context
+
         sections = [
             await self._build_short_term_life_context(),
             await self._build_emotion_arc_context(date),
             await self._build_recent_life_decision_context(),
             await self._build_execution_review_context(date),
         ]
+        getter = getattr(self.archive, "get_continuous_life", None)
+        if callable(getter):
+            sections.append(execution_context(await getter()))
         return "\n\n".join(section for section in sections if section)
 
     async def _save_life_decision_record(

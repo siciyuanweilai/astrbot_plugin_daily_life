@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+from weakref import WeakValueDictionary
 
 import aiohttp
 
@@ -26,7 +27,8 @@ API_BASE = "https://member.bilibili.com/x/bcut/rubick-interface"
 MAX_AUDIO_BYTES = 50 * 1024 * 1024
 POLL_INTERVAL_SECONDS = 1.2
 AUDIO_SUFFIXES = {".mp3", ".m4a", ".aac", ".wav", ".ogg", ".opus", ".webm"}
-_AUDIO_EXTRACTION_LOCKS: dict[str, asyncio.Lock] = {}
+# 等待者持有锁的强引用，所有任务结束后自动释放对应键。
+_AUDIO_EXTRACTION_LOCKS: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
 
 class AudioTranscriptError(RuntimeError):

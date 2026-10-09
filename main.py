@@ -437,6 +437,40 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             )
             return str(getattr(result, "url", "") or "").strip()
 
+    async def generate_share_image_task(
+        self,
+        event: AstrMessageEvent | None,
+        prompt: str,
+        *,
+        task_key: str,
+        contains_character: bool = False,
+    ) -> dict:
+        async with self._external_runtime_lease() as runtime:
+            return await runtime.generate_share_image_task(
+                event, prompt, task_key=task_key, contains_character=contains_character
+            )
+
+    async def get_share_image_task(self, task_key: str) -> dict:
+        async with self._external_runtime_lease() as runtime:
+            return await runtime.get_share_image_task(task_key)
+
+    async def generate_share_video_task(
+        self,
+        event: AstrMessageEvent | None,
+        prompt: str,
+        *,
+        task_key: str,
+        reference_image: str = "",
+    ) -> dict:
+        async with self._external_runtime_lease() as runtime:
+            return await runtime.generate_share_video_task(
+                event, prompt, task_key=task_key, reference_image=reference_image
+            )
+
+    async def get_share_video_task(self, task_key: str) -> dict:
+        async with self._external_runtime_lease() as runtime:
+            return await runtime.get_share_video_task(task_key)
+
     async def generate_share_voice(
         self,
         text: str,
@@ -456,6 +490,14 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
                 str(text or "").strip(), **voice_kwargs
             )
             return str(getattr(result, "path", "") or "").strip()
+
+    async def prepare_share_expression(self, text: str, *, scene: str = "") -> dict:
+        async with self._external_runtime_lease() as runtime:
+            return await runtime.prepare_share_expression(text, scene=scene)
+
+    async def record_public_activity(self, receipt: dict) -> bool:
+        async with self._external_runtime_lease() as runtime:
+            return await runtime.record_public_activity(dict(receipt))
 
     async def record_external_activity(
         self,
@@ -1541,7 +1583,7 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
     ):
         """
         当用户明确提出穿搭、发型、妆容、美甲或生活场景需求，并希望生成新的生活化造型图片加入视觉衣橱时调用。
-        用户需求是本次生成的唯一创作依据，模型会直接据此构思生活化细节。
+        本次要求优先，结合现实天气、活动与角色自身审美在后台生成；提交后可继续聊天。
         本工具不会改变角色当前真实穿搭，也不会向用户发送生成图；只生成、视觉核对并保存衣橱候选。
         文生图绝不使用角色参考图；图生图必须有可用图生图接口和已启用的当前角色参考图，缺少条件时必须如实失败，不能切换到另一种方式。
 
@@ -1561,6 +1603,30 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
             generation_mode=str(generation_mode or "").strip(),
             count=self._tool_int(count, 1),
         )
+
+    @filter.llm_tool(name="life_wardrobe_manage")
+    @_runtime_guard
+    async def tool_life_wardrobe_manage(
+        self, event: AstrMessageEvent, operation: str = "query",
+        item_ids: list[int] | None = None, reason: str = "", duration_minutes: int = 30,
+    ):
+        """查询数字衣橱审美与衣物状态，或执行本轮明确的纳入和洗护操作。
+        灵感候选不等于拥有；adopt 正式纳入数字衣橱，不等于现实购物或已穿上。
+        dirty 标为待洗，washing 开始洗护，stored 收纳，clean 从收纳取出。
+        洗护依据后台实际观测推进，不能提前说洗好或晾干；无法操作时保留当前事实。
+
+        Args:
+            operation(string): query、adopt、dirty、washing、stored 或 clean。
+            item_ids(array[int]): 从衣橱查询结果明确选定的编号，不猜编号。
+            reason(string): 本轮明确要求和具体操作理由。
+            duration_minutes(int): washing 的预计清洗分钟，默认30；预计时长不等于完成。
+        """
+        denial = self._life_permission_denial(event, "style:manage", LifeActionScope.PRIVATE)
+        if denial:
+            return denial
+        return await self.runtime.manage_wardrobe(event, operation=operation,
+            item_ids=self.runtime._style_item_ids(item_ids or []), reason=reason,
+            duration_minutes=self._tool_int(duration_minutes,30))
 
     @filter.llm_tool(name="life_style_catalog")
     @_runtime_guard
@@ -1967,6 +2033,9 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
     @filter.on_llm_response()
     @_runtime_guard
     async def on_llm_response(self, event: AstrMessageEvent, response):
+        note_usage = getattr(self.runtime, "note_chat_model_usage", None)
+        if callable(note_usage):
+            note_usage(response)
         if self._runtime_hook_bool("stop_stale_continuous_turn_event", event):
             return
         if self._response_is_agent_error(response):
@@ -2329,6 +2398,9 @@ class DailyLifePlugin(DailyLifeDashboardMixin, Star):
         if emoji_sender:
             await emoji_sender(event)
         await self._capture_chat_memory_bot_reply(event)
+        life_exchange = self._runtime_hook("note_continuous_chat_exchange")
+        if life_exchange:
+            await life_exchange(event)
         regular_effect = self._runtime_hook("note_regular_reply_effect")
         if regular_effect:
             await regular_effect(event)

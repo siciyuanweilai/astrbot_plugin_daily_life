@@ -30,7 +30,7 @@ class ExpressionArchiveMixin:
         )
 
     async def upsert_expression_profile(
-        self, profile: ExpressionProfileRecord
+        self, profile: ExpressionProfileRecord, *, replace: bool = False
     ) -> ExpressionProfileRecord | None:
         item = ExpressionProfileRecord.from_value(
             profile.as_dict()
@@ -42,21 +42,29 @@ class ExpressionArchiveMixin:
         scope = self._text(item.scope)
         profile_id = self._text(item.profile_id)
         label = self._text(item.label) or scope or profile_id or "表达习惯"
+        updates = (
+            "tone = excluded.tone, habits = excluded.habits, avoid = excluded.avoid, "
+            "evidence = excluded.evidence, confidence = excluded.confidence,"
+            if replace
+            else """
+                tone = COALESCE(NULLIF(excluded.tone, ''), expression_profiles.tone),
+                habits = COALESCE(NULLIF(excluded.habits, ''), expression_profiles.habits),
+                avoid = COALESCE(NULLIF(excluded.avoid, ''), expression_profiles.avoid),
+                evidence = COALESCE(NULLIF(excluded.evidence, ''), expression_profiles.evidence),
+                confidence = MAX(expression_profiles.confidence, excluded.confidence),
+            """
+        )
 
         def dbwork():
             self._conn.execute(
-                """
+                f"""
                 INSERT INTO expression_profiles(
                     scope, profile_id, label, tone, habits, avoid, evidence,
                     confidence, source, created_at, updated_at
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 ON CONFLICT(scope, profile_id, label) DO UPDATE SET
-                    tone = COALESCE(NULLIF(excluded.tone, ''), expression_profiles.tone),
-                    habits = COALESCE(NULLIF(excluded.habits, ''), expression_profiles.habits),
-                    avoid = COALESCE(NULLIF(excluded.avoid, ''), expression_profiles.avoid),
-                    evidence = COALESCE(NULLIF(excluded.evidence, ''), expression_profiles.evidence),
-                    confidence = MAX(expression_profiles.confidence, excluded.confidence),
+                    {updates}
                     source = excluded.source,
                     updated_at = CURRENT_TIMESTAMP
                 """,

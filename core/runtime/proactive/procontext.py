@@ -160,9 +160,7 @@ class ProactiveContextMixin:
 
     def _expression_review_passed(self, payload: dict[str, Any]) -> bool:
         review = payload.get("expression_review")
-        if not isinstance(review, dict) or "passed" not in review:
-            return True
-        return self._proactive_bool(review.get("passed"))
+        return isinstance(review, dict) and review.get("passed") is True
 
     async def _current_proactive_persona(self, target_scope: str = "") -> str:
         get_persona = getattr(self, "get_persona_text", None)
@@ -324,8 +322,9 @@ JSON 输出要求：
 - 问候和开放式提问不自动通过；有依据的新进展和约定提醒可以自然换话题，不要求复述上文。
 - 候选尚未发送，旧媒体记录不能证明本轮已重新发送图片、语音、视频或文件。
 - 没有明确依据判断自然承接时 valid=false；不要替候选补造过渡或经历。
-{fact_rules}"""
-        dynamic = f"""候选理由：{str(payload.get("reason") or "").strip()}
+- 存在生活事实资料时，同时遵循本轮事实审计范围。"""
+        dynamic = f"""本轮事实审计范围：{fact_rules or '仅复核对话承接。'}
+候选理由：{str(payload.get("reason") or "").strip()}
 候选回复：{str(payload.get("reply_text") or "").strip()}
 本轮待发送内容：候选回复可按表达意图以文字或语音送达；目前尚未发送，也没有附带图片、视频或文件。
 
@@ -478,7 +477,9 @@ JSON 输出要求：
             parts = [tone, habits, f"避开：{avoid}" if avoid else ""]
             body = "；".join(part for part in parts if part)
             if label and body:
-                lines.append(f"- {label}: {body}")
+                profile_id = str(getattr(item, "profile_id", "") or "").strip()
+                owner = f"（适用对象：{profile_id}）" if profile_id else ""
+                lines.append(f"- {label}{owner}: {body}")
         return "\n".join(lines) if lines else "暂无稳定表达习惯。"
 
     def _format_behavior_patterns_for_proactive(self, patterns: list[Any]) -> str:

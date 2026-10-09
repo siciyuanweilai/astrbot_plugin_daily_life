@@ -176,6 +176,7 @@ class PageViewMixin:
         )
         runtime_status = await self._page_runtime_snapshot(target_date, data, now)
         rhythm = getattr(self.runtime, "rhythm", None)
+        cache_status = getattr(self.runtime, "model_cache_status", None)
         return {
             "now": now.strftime("%Y-%m-%d %H:%M:%S"),
             "status_version": getattr(self.runtime, "page_status_version", 0),
@@ -191,8 +192,10 @@ class PageViewMixin:
                 "scheduler_error": str(getattr(rhythm, "last_error", "") or ""),
             },
             "background_tasks": runtime_status["background_tasks"],
+            "model_cache": cache_status() if callable(cache_status) else {},
             "semantic_segments": runtime_status["semantic_segments"],
             "domains": runtime_status["domains"],
+            "continuous_life": runtime_status["continuous_life"],
             "day": self._page_day(data, now, extended_night) if data else None,
             "week_plan": self._page_week_plan(week_plan),
             "world": world,
@@ -493,12 +496,15 @@ class PageViewMixin:
         semantic_status_getter = getattr(self.runtime, "semantic_segment_status", None)
         if callable(semantic_status_getter):
             semantic_segments = semantic_status_getter()
+        continuous_getter = getattr(self.runtime.archive, "get_continuous_life", None)
+        continuous = await continuous_getter() if callable(continuous_getter) else {}
         return {
             "memo": memo_status,
             "daily_generation": generation_status,
             "background_tasks": background_tasks,
             "semantic_segments": semantic_segments,
             "domains": domain_snapshot,
+            "continuous_life": continuous,
         }
 
     @staticmethod

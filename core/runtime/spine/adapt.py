@@ -116,10 +116,6 @@ class SpineAdaptMixin:
     def _residence_address(config: LifeSettings) -> str:
         return " ".join(str(config.domains.home_address or "").split()).casefold()
 
-    @staticmethod
-    def _weather_city(config: LifeSettings) -> str:
-        return " ".join(str(config.weather.weather_city or "").split()).casefold()
-
     async def _prepare_residence_change(self, target: datetime.datetime) -> None:
         changed_at = life_now().strftime("%Y-%m-%d %H:%M:%S")
         resetter = getattr(self.archive, "reset_residence_context", None)
@@ -140,6 +136,9 @@ class SpineAdaptMixin:
 
         def invalidate_location_context(day) -> None:
             day.places = []
+            day.weather = ""
+            day.weather_info = WeatherInfo()
+            day.weather_last_update = 0
             day.meta["residence_context_stale"] = "true"
 
         mutator = getattr(self.archive, "mutate_day", None)
@@ -149,30 +148,6 @@ class SpineAdaptMixin:
         notifier = getattr(self, "mark_page_status_changed", None)
         if callable(notifier):
             await notifier("residence_changed")
-
-    async def _prepare_weather_city_change(self, target: datetime.datetime) -> None:
-        target_date = target.strftime("%Y-%m-%d")
-
-        def invalidate_weather(day) -> None:
-            day.weather = ""
-            day.weather_info = WeatherInfo()
-            day.weather_last_update = 0
-
-        mutator = getattr(self.archive, "mutate_day", None)
-        if callable(mutator):
-            await mutator(target_date, invalidate_weather)
-        self._injection_snapshot_cache = {}
-        notifier = getattr(self, "mark_page_status_changed", None)
-        if callable(notifier):
-            await notifier("weather_city_changed")
-
-    async def _refresh_after_weather_city_change(
-        self, target: datetime.datetime
-    ) -> None:
-        try:
-            await self.try_update_weather(target.strftime("%Y-%m-%d"), force=True)
-        except Exception as exc:
-            logger.warning(f"{LOG_PREFIX} 天气城市变化后的天气刷新失败：{exc}")
 
     async def _refresh_after_residence_change(self, target: datetime.datetime) -> None:
         resolver = getattr(
@@ -212,9 +187,6 @@ class SpineAdaptMixin:
             previous_address = self._residence_address(self.config)
             next_address = self._residence_address(parsed)
             residence_changed = previous_address != next_address
-            weather_city_changed = self._weather_city(
-                self.config
-            ) != self._weather_city(parsed)
             previous_services = self._current_runtime_services()
             previous_rhythm_running = self._rhythm_running(previous_services)
             candidate = self._build_runtime_services(parsed, payload)
@@ -242,15 +214,6 @@ class SpineAdaptMixin:
                 label="居住地变化刷新",
                 key="residence_change_refresh",
             )
-        if weather_city_changed:
-            await self._prepare_weather_city_change(target)
-            if not residence_changed:
-                self._schedule_background_task(
-                    self._refresh_after_weather_city_change(target),
-                    label="天气城市变化刷新",
-                    key="weather_city_change_refresh",
-                )
-
         logger.info(f"{LOG_PREFIX} 已从设置页重新加载配置")
         return self.config
 

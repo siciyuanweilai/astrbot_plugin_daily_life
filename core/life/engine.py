@@ -5,9 +5,10 @@ import uuid
 from astrbot.api import logger
 
 from ..clock import now as life_now
-from ..models import normalize_timeline_day_offsets
+from ..models import DayRecord, WeatherInfo, normalize_timeline_day_offsets
 from .appearance import current_appearance_values, persona_appearance_values
 from .calendar import format_calendar_context, format_season_context
+from .dressing import wardrobe_conditions
 from .people import DAILY_PERSON_TEXT_PATHS
 from .tools import (
     analyze_weather,
@@ -108,7 +109,7 @@ class DailyEngineMixin:
         weather_data = (
             await self.weather_client.get_weather(city)
             if city
-            else "未配置天气城市，居住地或默认人设也没有可确认的现实城市"
+            else "居住地尚未配置或无法通过高德确认现实城市，天气不可用"
         )
         weather_info = analyze_weather(await self._classify_weather_condition(weather_data))
         weather_section, constraint_section = self._build_weather_sections(weather_info)
@@ -157,7 +158,10 @@ class DailyEngineMixin:
             domain_context = await domain_context_builder()
             if domain_context:
                 world_context = f"{world_context}\n\n{domain_context}".strip()
-        style_catalog_context = await self._style_catalog_context(limit=14)
+        wardrobe_day = await self.archive.get_day(date_str) or DayRecord(date=date_str)
+        wardrobe_day.weather_info = WeatherInfo.from_value(weather_info)
+        wardrobe_weather = wardrobe_conditions(wardrobe_day, check_time, residence=str(getattr(getattr(self.config, 'domains', None), 'home_address', '') or ''))
+        style_catalog_context = await self._style_catalog_context(limit=14, conditions=wardrobe_weather)
         if style_catalog_context:
             world_context = f"{world_context}\n\n{style_catalog_context}".strip()
         prompt = self._build_timeline_prompt(

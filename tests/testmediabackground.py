@@ -29,6 +29,7 @@ class MediaBackgroundTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTestC
         self.runtime.context = Context(Provider([]))
         self.runtime.config = LifeSettings.from_dict(
             {
+                "state_config": {"quiet_hours": ""},
                 "chat_style_config": {
                     "continuous_turn_wait_seconds": 0,
                     "continuous_turn_max_wait_seconds": 0,

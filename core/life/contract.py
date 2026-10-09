@@ -896,13 +896,13 @@ class DailyContractMixin:
             if style_catalog_context.strip()
             else ""
         )
-        fixed = f"""你之前生成的日程未通过校验，请直接修复为可通过的 JSON。
-{contract_section}
-
+        fixed = """你之前生成的日程未通过校验，请直接修复为可通过的 JSON。
 【输出要求】
 - 只输出完整 JSON 对象，不要解释、不要 Markdown、不要补充文字。
-- 修复方式：{repair_strategy}"""
-        dynamic = f"""校验原因：{reason}
+- 根据本轮生成契约、校验原因和修复方式，仅调整需要修复的内容。"""
+        dynamic = f"""{contract_section}
+修复方式：{repair_strategy}
+校验原因：{reason}
 {extra_section}{web_section}{person_section}{location_section}{style_catalog_section}
 
 原始输出：

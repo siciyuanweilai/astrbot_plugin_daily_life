@@ -26,14 +26,17 @@ class StageLensMixin:
         provider_id = str(provider_id or "").strip()
         provider = await self.get_text_provider(provider_id)
         session_id = f"daily_life_media_{uuid.uuid4().hex[:8]}"
-        text = await self.call_text_model(
-            provider,
-            prompt,
-            session_id,
-            empty_retries=0,
-            primary_provider_id=provider_id,
-        )
-        return str(text or "").strip()
+        try:
+            text = await self.call_text_model(
+                provider,
+                prompt,
+                session_id,
+                empty_retries=0,
+                primary_provider_id=provider_id,
+            )
+            return str(text or "").strip()
+        finally:
+            await self.close_text_session(session_id)
 
     async def _media_director_call(
         self, prompt: str, provider_id: str = ""

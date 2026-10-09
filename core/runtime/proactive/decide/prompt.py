@@ -73,8 +73,6 @@ class ProactivePromptMixin:
         expression_profiles = await self.archive.get_expression_profiles(
             limit=5, scope=expression_scope
         )
-        if not expression_profiles:
-            expression_profiles = await self.archive.get_expression_profiles(limit=5)
         behavior_patterns = await self.archive.get_behavior_patterns(
             limit=5, scope=expression_scope
         )
@@ -345,6 +343,7 @@ JSON 输出要求：
   "target_message_id": "如果回复，写最自然承接的消息ID；没有明确目标则空字符串",
   "target_topic": "如果回复，写自然承接的话题；没有明确目标则空字符串",
   "reply_text": "如果 should_reply=true，写简短自然、意思完整的回复；否则空字符串",
+  "expression_review": {{"passed": true, "risk": "具体表达风险或空字符串", "suggestion": "必要的调整或空字符串", "reason": "结合本轮话题和已学习表达习惯的检查依据"}},
   "voice_call_intent": {{
     "should_invite": false,
     "greeting": "如果邀请被接受，角色想先说的上下文相关短句；没有自然开场就留空",
@@ -358,6 +357,7 @@ JSON 输出要求：
 - benefit、timeliness、continuity、disruption、uncertainty 必须分别填写 0 至 100 的整数；前三项是主动回复收益，后两项是打扰与不确定风险。
 - 只有主动收益确实高于风险时才设 should_reply=true；不值得打扰时选择 observe 或 wait。
 - reply_text 优先写简短自然的回复，必要的意思说完整，不刻意扩写；口吻跟随角色人设和本轮表达约束。
+- 在同一次生成中检查 reply_text 是否接住当前话题、是否重复关心或追问、是否符合当前关系和适用的表达习惯，填写 expression_review；短句自然与否由语境决定，不按关键词、句型或字数判断。发现问题先修改 reply_text，再对最终文本给出检查结果；无法自然承接则 passed=false 并选择 observe。
 - voice_call_intent 默认 should_invite=false。只有私聊、实时通话能力明确可用、角色此刻确实想听对方声音且邀请比继续文字更自然时才设 true；不要因为想延长聊天、模型不知道说什么或为了展示功能而邀请。
 - 主动邀请时，reply_text 要先自然表达想通话的意愿，不要伪装成系统通知；执行层会另外发送邀请提示和链接。greeting 只在这次接通后确实适合先开口时填写，不要固定写“你好，听得到吗”。
 - 群聊、双方可能同处现场、刚刚已经邀请过、深夜打扰风险高或通话能力不可用时，voice_call_intent 必须保持 false。

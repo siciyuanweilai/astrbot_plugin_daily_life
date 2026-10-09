@@ -1,6 +1,7 @@
 import datetime
 import json
 import sqlite3
+from core.archive.migrations import SCHEMA_VERSION
 import tempfile
 import unittest
 
@@ -144,6 +145,6 @@ class MidnightArchiveTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(day.timeline[-1].day_offset, 1)
                 self.assertEqual(day.timeline[-1].execution_state, "planned")
                 self.assertEqual(json.loads(day.meta["planned_life_actions"])[0]["timeline_index"], 2)
-                self.assertEqual(migrated._conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0], "19")
+                self.assertEqual(migrated._conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0], str(SCHEMA_VERSION))
             finally:
                 migrated.close()

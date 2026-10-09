@@ -17,10 +17,9 @@ from ..models import (
     LifeActionIntent,
     LifeActionOutcome,
 )
+from .amap import AmapWebServiceClient
 from .audit import DailyLocationAuditMixin
 from .locator import DailyLocationPlanningMixin
-from .maps import create_map_client, map_provider_label, normalize_map_provider
-from .residence import PersonaResidence
 from .tools import get_week_id, timeline_item_datetime
 
 _TRAVEL_SPEED_METERS_PER_SECOND = {
@@ -39,8 +38,6 @@ _ROUTE_MODE_LABELS = {
 
 _ROUTE_SOURCE_LABELS = {
     "amap": "高德地图",
-    "tencent": "腾讯地图",
-    "baidu": "百度地图",
     "coordinate_estimate": "坐标估算",
     "default_estimate": "默认估算",
 }
@@ -56,12 +53,9 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
         self,
         settings: LifeDomainSettings,
         archive: Any,
-        *,
-        weather_city: str = "",
     ):
         self.settings = settings
         self.archive = archive
-        self.weather_city = str(weather_city or "").strip()
         self.home_city = ""
         self._coordinates: dict[str, tuple[float, float]] = {}
         self._place_cities: dict[str, str] = {}
@@ -69,48 +63,13 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
         self._home_location: dict[str, Any] | None = None
         self._home_location_retry_after = 0.0
         self._home_location_lock = asyncio.Lock()
-        self._persona_residence_refresh_lock = asyncio.Lock()
-        self._residence_resolver: Any = None
-        self._persona_residence: PersonaResidence | None = None
         self._map_unavailable_reason = ""
         self._residence_boundary_date: str | None = None
         self._detected_residence_change_at = ""
         self._poi_search_provenance: dict[str, dict[str, Any]] = {}
-        self.map_provider = normalize_map_provider(settings.map_provider)
-        self.map_provider_label = map_provider_label(self.map_provider)
-        self._map = create_map_client(settings)
-
-    def attach_residence_resolver(self, resolver: Any) -> None:
-        """注入默认人设居住地解析器，避免领域层依赖运行时实现。"""
-
-        self._residence_resolver = resolver
-        self._persona_residence = None
-
-    async def _resolve_persona_residence(self) -> PersonaResidence:
-        resolver = getattr(self._residence_resolver, "resolve", None)
-        if not callable(resolver):
-            result = PersonaResidence(reason="未配置居住地且无法读取默认人设")
-        else:
-            try:
-                result = await resolver()
-            except Exception as exc:
-                logger.warning(f"[日常生活] 默认人设居住地解析失败：{exc}")
-                result = PersonaResidence(reason="默认人设居住地解析失败")
-        if not isinstance(result, PersonaResidence):
-            result = PersonaResidence(reason="默认人设居住地结果无效")
-        self._persona_residence = result
-        return result
-
-    @staticmethod
-    def _persona_residence_key(residence: PersonaResidence) -> str:
-        return "|".join(
-            (
-                residence.kind,
-                residence.city.casefold(),
-                residence.address.casefold(),
-                residence.precision,
-            )
-        )
+        self._map = AmapWebServiceClient(settings.amap_api_key, city="")
+        self.map_provider = self._map.provider_id
+        self.map_provider_label = self._map.provider_label
 
     async def _record_detected_residence_change(self) -> None:
         changed_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -122,54 +81,6 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
             )
         self._residence_boundary_date = changed_at[:10]
         self._detected_residence_change_at = changed_at
-
-    @staticmethod
-    def _city_key(value: Any) -> str:
-        text = "".join(str(value or "").split()).casefold()
-        for suffix in ("特别行政区", "自治州", "地区", "盟", "市"):
-            if text.endswith(suffix) and len(text) > len(suffix):
-                return text[: -len(suffix)]
-        return text
-
-    @classmethod
-    def _geocode_city_matches(cls, expected: str, geocoded: dict[str, Any]) -> bool:
-        expected_key = cls._city_key(expected)
-        if not expected_key:
-            return True
-        candidates = {
-            cls._city_key(geocoded.get("city")),
-            cls._city_key(geocoded.get("province")),
-        }
-        candidates.discard("")
-        return expected_key in candidates
-
-    async def _residence_source(
-        self, persona_residence: PersonaResidence | None = None
-    ) -> tuple[str, str, str]:
-        configured = str(self.settings.home_address or "").strip()
-        if configured:
-            self._map_unavailable_reason = ""
-            return configured, "", "config"
-        residence = persona_residence or await self._resolve_persona_residence()
-        if residence.map_available:
-            self._map_unavailable_reason = ""
-            return residence.address, residence.city, "persona"
-        if residence.kind == "fictional":
-            self._map_unavailable_reason = (
-                f"{self.map_provider_label}不可用：默认人设中的居住地是虚拟地点，"
-                "地图功能已禁用。"
-            )
-        elif residence.kind == "real" and residence.precision == "city":
-            self._map_unavailable_reason = (
-                f"{self.map_provider_label}不可用：默认人设只提供了现实城市，"
-                "没有可定位的居住地址。"
-            )
-        else:
-            self._map_unavailable_reason = (
-                f"{self.map_provider_label}不可用：未配置居住地，且无法从默认人设"
-                "确认可定位的现实地址。"
-            )
-        return "", residence.city if residence.weather_available else "", "persona"
 
     async def initialize(self) -> None:
         """补齐旧版本中已提交但未派生成功的生活领域记录。"""
@@ -377,37 +288,21 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
         return repaired
 
     async def resolve_home_location(self) -> dict[str, Any] | None:
-        """从显式配置或默认人设解析现实居住城市和“家”坐标。"""
+        """仅用配置的现实居住地解析天气城市和“家”坐标。"""
 
-        resolved_persona = None
         if self._home_location is not None:
-            async with self._persona_residence_refresh_lock:
-                cached_location = self._home_location
-                if cached_location is not None:
-                    if cached_location.get("source") != "persona":
-                        return cached_location
-                    residence = await self._resolve_persona_residence()
-                    previous_key = str(cached_location.get("residence_key") or "")
-                    current_key = self._persona_residence_key(residence)
-                    if current_key == previous_key:
-                        return cached_location
-                    await self._record_detected_residence_change()
-                    self.invalidate_home_location_cache()
-                    self._persona_residence = residence
-                    resolved_persona = residence
-        if not self.settings.enabled or not self.settings.location_enabled:
-            self._map_unavailable_reason = "地点与出行功能未启用。"
+            return self._home_location
+        home_address = str(self.settings.home_address or "").strip()
+        if not home_address:
+            self._map_unavailable_reason = (
+                f"未配置现实居住地，天气和{self.map_provider_label}不可用。"
+            )
             return None
         if not self._map.available:
             self._map_unavailable_reason = (
                 f"地图功能需要可定位的现实居住地和{self.map_provider_label}服务端 Key；"
                 "当前服务端 Key 未配置。"
             )
-            return None
-        home_address, expected_city, source = await self._residence_source(
-            resolved_persona
-        )
-        if not home_address:
             return None
         loop = asyncio.get_running_loop()
         if loop.time() < self._home_location_retry_after:
@@ -428,20 +323,11 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
                 )
             except (KeyError, TypeError, ValueError):
                 coordinate = None
-            city_matches = bool(
-                isinstance(geocoded, dict)
-                and self._geocode_city_matches(expected_city, geocoded)
-            )
-            if not city or coordinate is None or not city_matches:
+            if not city or coordinate is None:
                 self._home_location_retry_after = loop.time() + 300.0
-                if not city_matches:
-                    self._map_unavailable_reason = (
-                        "默认人设的现实城市与地图解析结果不一致，地图功能已禁用。"
-                    )
-                else:
-                    self._map_unavailable_reason = (
-                        f"{self.map_provider_label}无法可靠解析当前居住地。"
-                    )
+                self._map_unavailable_reason = (
+                    f"{self.map_provider_label}无法可靠解析当前居住地。"
+                )
                 logger.debug(f"[日常生活] {self._map_unavailable_reason}")
                 return None
 
@@ -469,14 +355,10 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
 
             self.home_city = city
             self._map.city = city
-            coordinate_source = (
-                f"{self.map_provider}_home_address"
-                if source == "config"
-                else f"{self.map_provider}_persona_home_address"
-            )
-            await self._remember_tool_place(
-                "家", geocoded or {}, coordinate_source
-            )
+            if self.settings.enabled and self.settings.location_enabled:
+                await self._remember_tool_place(
+                    "家", geocoded or {}, f"{self.map_provider}_home_address"
+                )
             self._coordinates[home_address] = coordinate
             self._place_cities[home_address] = self._place_cities.get("家", city)
             self._home_location = {
@@ -485,16 +367,11 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
                 "formatted_address": str(
                     (geocoded or {}).get("formatted_address") or home_address
                 ).strip(),
-                "source": source,
+                "source": "config",
                 "source_address": home_address,
-                "residence_key": (
-                    self._persona_residence_key(self._persona_residence)
-                    if source == "persona" and self._persona_residence is not None
-                    else ""
-                ),
             }
             self._map_unavailable_reason = ""
-            logger.debug(f"[日常生活] 已解析现实居住地城市：{city}（来源={source}）")
+            logger.debug(f"[日常生活] 已解析现实居住地城市：{city}")
             return self._home_location
 
     def set_residence_boundary(self, changed_at: str) -> None:
@@ -520,7 +397,6 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
         self.home_city = ""
         self._home_location = None
         self._home_location_retry_after = 0.0
-        self._persona_residence = None
         self._map_unavailable_reason = ""
         for home_address in (configured_address, cached_address):
             if not home_address:
@@ -543,15 +419,10 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
         return self._residence_boundary_date
 
     async def resolve_weather_city(self) -> str:
-        """优先返回独立天气城市，再使用可确认的现实居住城市。"""
+        """天气城市仅使用高德解析出的配置居住地城市。"""
 
-        if self.weather_city:
-            return self.weather_city
-        if self.settings.home_address:
-            location = await self.resolve_home_location()
-            return str((location or {}).get("city") or "").strip()
-        residence = await self._resolve_persona_residence()
-        return residence.city if residence.weather_available else ""
+        location = await self.resolve_home_location()
+        return str((location or {}).get("city") or "").strip()
 
     async def ensure_map_context(self) -> bool:
         """完成惰性居住地解析后返回地图是否可安全使用。"""
@@ -578,16 +449,7 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
         configured = bool(str(self.settings.home_address or "").strip())
         if configured:
             return "已配置" if self._home_location else "已配置（尚未定位）"
-        residence = self._persona_residence
-        if residence is None:
-            return "尚未解析"
-        if residence.kind == "fictional":
-            return "人设为虚拟地点（地图禁用）"
-        if residence.kind == "real" and residence.precision == "city":
-            return "人设仅提供城市（地图禁用）"
-        if residence.map_available and self._home_location:
-            return "来自默认人设"
-        return "人设未提供可定位地址"
+        return "未配置"
 
     def should_simulate(self, action: LifeActionIntent) -> bool:
         """判断有执行证据的内部生活动作是否允许生成模拟回执。"""
@@ -684,6 +546,15 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
 
         if not self.settings.enabled:
             return True, ""
+        wardrobe_getter = getattr(self.archive, "get_wardrobe_snapshot", None)
+        if action.action_type == "change_outfit" and callable(wardrobe_getter):
+            snapshot = await wardrobe_getter()
+            if snapshot.get("items"):
+                raw_ids = action.payload.get("catalog_reference_ids") or []
+                ids = [int(v) for v in raw_ids if str(v).isdigit()] if isinstance(raw_ids, list) else []
+                clothes = [i for i in ids if str(i) in snapshot["items"]]
+                if not clothes or any(not snapshot["items"][str(i)].get("available") for i in clothes):
+                    return False, "计划换装的衣物尚未拥有或正在洗护，待可穿衣物确认后再执行"
         if action.action_type in {"move", "travel"} and self.settings.location_enabled:
             origin = str(action.payload.get("origin") or "").strip()
             destination = str(
@@ -802,6 +673,9 @@ class LifeDomainService(DailyLocationPlanningMixin, DailyLocationAuditMixin):
                 }
             )
         if not self.settings.pantry_enabled or action.action_type != "cook":
+            return
+        consumed = getattr(self.archive, "continuous_ingredients_consumed", None)
+        if callable(consumed) and await consumed(action.action_id):
             return
         adjust = getattr(self.archive, "adjust_pantry_item", None)
         if not callable(adjust):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import hashlib
 import json
 import math
 import sqlite3
@@ -25,6 +26,38 @@ from ..models.coerce import compact_explanation_text
 
 class CognitionArchiveMixin:
     """持久化时间化认知、任务、情绪和动作结算。"""
+
+    async def record_public_activity(self, receipt: dict[str, Any]) -> bool:
+        """Keep a durable, idempotent publication receipt without chat side effects."""
+        event_id = str(receipt.get("event_id") or "").strip()
+        if not event_id:
+            return False
+        key = "public_activity:" + hashlib.sha256(event_id.encode()).hexdigest()
+        payload = {
+            key: receipt[key]
+            for key in (
+                "event_id",
+                "scene",
+                "content",
+                "post_id",
+                "comment_id",
+                "actor_id",
+                "image_sent",
+                "occurred_at",
+            )
+            if key in receipt
+        }
+
+        def write() -> bool:
+            cursor = self._conn.execute(
+                "INSERT OR IGNORE INTO durable_tasks(task_key, kind, payload_json, status, priority, available_at, max_attempts, result_json, created_at, updated_at, completed_at) VALUES (?, 'public_activity_receipt', ?, 'completed', 0, ?, 1, '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+                (key, self._cognition_json(payload, default={}), self._cognition_now()),
+            )
+            self._conn.commit()
+            return bool(cursor.rowcount)
+
+        await self._run_db(write)
+        return True
 
     _TEMPORAL_SOURCE_PRIORITY = {
         "life_action_receipt": 500,

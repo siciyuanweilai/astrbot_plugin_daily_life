@@ -1253,7 +1253,7 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         await runtime.check_autonomous_life_update()
         self.assertEqual(composer.calls, [])
 
-    async def test_auto_life_update_skips_quiet_hours(self):
+    async def test_auto_life_update_continues_during_quiet_hours(self):
         archive = DataManager()
         today = "2026-06-24"
         await archive.save_day(
@@ -1300,8 +1300,8 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         await runtime.check_autonomous_life_update()
 
         stored = await archive.get_day(today)
-        self.assertEqual(composer.calls, [])
-        self.assertNotIn("auto_life_last_checked_at", stored.meta)
+        self.assertEqual(len(composer.calls), 1)
+        self.assertIn("auto_life_last_checked_at", stored.meta)
 
     async def test_chat_state_refresh_runs_during_quiet_hours(self):
         archive = DataManager()
@@ -2067,9 +2067,9 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
             await runtime._prepare_residence_change(target)
 
         day = await runtime.archive.get_day("2026-08-04")
-        self.assertEqual(day.weather, "旧城市 晴 30°C")
-        self.assertEqual(day.weather_info.temp, 30)
-        self.assertEqual(day.weather_last_update, 123)
+        self.assertEqual(day.weather, "")
+        self.assertIsNone(day.weather_info.temp)
+        self.assertEqual(day.weather_last_update, 0)
         self.assertEqual(day.places, [])
         self.assertEqual(day.meta["residence_context_stale"], "true")
         self.assertEqual(day.timeline[0].activity, "去旧城市公园散步")
@@ -2082,35 +2082,6 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelperMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(runtime.domains.boundary, "2026-08-04 18:01:00")
         self.assertEqual(runtime._injection_snapshot_cache, {})
         self.assertEqual(changed_reasons, ["residence_changed"])
-
-    async def test_prepare_weather_city_change_invalidates_weather_only(self):
-        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
-        runtime.archive = DataManager()
-        runtime._injection_snapshot_cache = {"old": object()}
-        changed_reasons = []
-        runtime.mark_page_status_changed = lambda reason="": (
-            changed_reasons.append(reason) or async_return(1)
-        )
-        target = datetime.datetime(2026, 8, 4, 18, 0)
-        await runtime.archive.save_day(
-            DayRecord(
-                date="2026-08-04",
-                weather="旧城市 晴 30°C",
-                weather_info=WeatherInfo(condition="晴", temp=30),
-                weather_last_update=123,
-                timeline=[TimelineItem(time="18:00", activity="散步")],
-            )
-        )
-
-        await runtime._prepare_weather_city_change(target)
-
-        day = await runtime.archive.get_day("2026-08-04")
-        self.assertEqual(day.weather, "")
-        self.assertIsNone(day.weather_info.temp)
-        self.assertEqual(day.weather_last_update, 0)
-        self.assertEqual(day.timeline[0].activity, "散步")
-        self.assertEqual(runtime._injection_snapshot_cache, {})
-        self.assertEqual(changed_reasons, ["weather_city_changed"])
 
     async def test_runtime_service_swap_does_not_wait_for_active_lease(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)

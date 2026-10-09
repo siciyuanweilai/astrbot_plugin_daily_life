@@ -1,5 +1,14 @@
 DOMAIN_SQL = """
 -- 可结算的生活领域记录
+CREATE TABLE IF NOT EXISTS continuous_life_entries (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            date TEXT NOT NULL DEFAULT '',
+            scope TEXT NOT NULL DEFAULT 'global',
+            occurred_at TEXT NOT NULL DEFAULT '',
+            summary TEXT NOT NULL DEFAULT '',
+            payload_json TEXT NOT NULL DEFAULT '{}'
+        );
 CREATE TABLE IF NOT EXISTS activity_sessions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             action_id TEXT NOT NULL UNIQUE,
@@ -128,6 +137,8 @@ CREATE TABLE IF NOT EXISTS conversation_action_items (
 
 
 DOMAIN_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_continuous_life_entries_date
+ON continuous_life_entries(date, occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_activity_sessions_recent ON activity_sessions(date DESC, updated_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_activity_sessions_status ON activity_sessions(status, last_heartbeat_at DESC);
 CREATE INDEX IF NOT EXISTS idx_route_cache_expiry ON route_cache(expires_at, origin_name, destination_name);

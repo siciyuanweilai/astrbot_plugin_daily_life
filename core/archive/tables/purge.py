@@ -1,5 +1,6 @@
 DROP_SCHEMA_SQL = """
 PRAGMA foreign_keys = OFF;
+        DROP TABLE IF EXISTS continuous_life_entries;
         DROP TABLE IF EXISTS conversation_action_items;
         DROP TABLE IF EXISTS fitness_records;
         DROP TABLE IF EXISTS chore_records;
@@ -23,6 +24,11 @@ PRAGMA foreign_keys = OFF;
         DROP TABLE IF EXISTS chat_memory_batches;
         DROP TABLE IF EXISTS chat_memory_sessions;
         DROP TABLE IF EXISTS chat_memory_messages;
+        DROP TABLE IF EXISTS wardrobe_links;
+        DROP TABLE IF EXISTS wardrobe_units;
+        DROP TABLE IF EXISTS wardrobe_events;
+        DROP TABLE IF EXISTS wardrobe_profile;
+        DROP TABLE IF EXISTS wardrobe_jobs;
         DROP TABLE IF EXISTS style_catalog_feedback;
         DROP TABLE IF EXISTS style_catalog_items;
         DROP TABLE IF EXISTS day_event_people;

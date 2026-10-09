@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import json
 from typing import Any
 
 from astrbot.api import logger
@@ -19,6 +20,71 @@ from ...sources.platforms import parse_unified_origin
 
 
 class SnapshotExportMixin:
+    @staticmethod
+    def _share_current_facts(data: Any) -> dict[str, Any]:
+        """Export own current facts, never the raw kernel or private goal payload."""
+        meta = data.meta or {}
+        if str(meta.get("residence_context_stale", "")).lower() == "true":
+            return {
+                "version": 1,
+                "valid": False,
+                "reason": "居住地变化，等待新生活记录确认",
+            }
+
+        def object_value(key: str) -> dict:
+            try:
+                value = json.loads(meta.get(key) or "{}")
+            except (ValueError, TypeError):
+                return {}
+            return value if isinstance(value, dict) else {}
+
+        run = object_value("continuous_execution")
+        action = run.get("action") or {}
+        action = action if isinstance(action, dict) else {}
+        current = {}
+        if run.get("status") in {"running", "paused", "ready", "settling"}:
+            from ...models import INTERNAL_SIMULATED_ACTION_TYPES
+
+            if action.get("action_type") in INTERNAL_SIMULATED_ACTION_TYPES:
+                current = {
+                    "activity": str(action.get("target") or "")[:240],
+                    "status": run["status"],
+                    "source": "continuous_executor",
+                    "action_id": str(action.get("action_id") or ""),
+                    "started_at": str(run.get("started_at") or ""),
+                }
+        elif not run:
+            active = [
+                item for item in data.timeline if item.execution_state == "active"
+            ]
+            if len(active) == 1:
+                current = {
+                    "activity": active[0].activity,
+                    "status": "running",
+                    "source": "timeline",
+                }
+        body = object_value("continuous_body")
+        return {
+            "version": 1,
+            "valid": True,
+            "date": data.date,
+            "current_action": current,
+            "body": {
+                key: body[key]
+                for key in (
+                    "energy",
+                    "sleep_pressure",
+                    "fatigue",
+                    "hunger",
+                    "thirst",
+                    "social_battery",
+                    "updated_at",
+                    "uncertain_minutes",
+                )
+                if key in body
+            },
+        }
+
     async def _get_rich_context_parts(
         self,
         data: Any,
@@ -548,7 +614,9 @@ class SnapshotExportMixin:
             self.archive.get_expression_profiles(limit=4, scope=experience_scope)
             if experience_scope
             else asyncio.sleep(0, result=[]),
-            self.archive.get_expression_profiles(limit=4, profile_id=profile_id)
+            self.archive.get_expression_profiles(
+                limit=4, scope=experience_scope, profile_id=profile_id
+            )
             if is_private and profile_id
             else asyncio.sleep(0, result=[]),
             self.archive.get_temporary_expression_states(
@@ -603,7 +671,11 @@ class SnapshotExportMixin:
             item
             for item in profiles
             if item in scoped_profiles
-            or (is_private and self._share_text(item, "profile_id", 120) == profile_id)
+            or (
+                is_private
+                and self._share_text(item, "scope", 160) == experience_scope
+                and self._share_text(item, "profile_id", 120) == profile_id
+            )
         ]
 
         trend_summary = ""
@@ -640,6 +712,14 @@ class SnapshotExportMixin:
                 "围绕本次在意的一点，用自己会说出口的话表达，意思说完就自然停住，"
                 "不需要完整铺景、抒情或总结一天。按语意自然换行，不固定字数、行数或标题模板。"
                 "这是单条公开文案的表达偏好，不采用私聊长度、聊天分段发送或标点清洗规则。"
+                "日常状态通常一句就够，只说最想说的那件小事；不顺带汇报下一项安排，"
+                "不补一段氛围描写或升华，不为了显得随性硬加口头禅。"
+            )
+        elif scene in {"qzone_comment", "qzone_reply"}:
+            prompt += (
+                " 这是公开评论或回评，不是私聊；只接住眼前这句话或这组图片最值得回应的一点，"
+                "有来有往即可，不写小作文、不连续夸赞、不反问续聊。"
+                "称呼和熟悉程度只参考当前对象的已确认关系，不公开私聊细节。"
             )
         return {"enabled": True, "prompt": prompt}
 
@@ -676,6 +756,19 @@ class SnapshotExportMixin:
             self._life_context_target_archive_snapshot(target_umo),
         )
         state_dict = data.state.as_dict() if data.state else {}
+        current_facts = self._share_current_facts(data)
+        if not current_facts["valid"]:
+            # Historical records remain in storage, not in the current sharing view.
+            return {
+                "current_facts": current_facts,
+                "current_awareness": {
+                    "datetime": now.strftime("%Y-%m-%d %H:%M:%S"),
+                    "timezone": "Asia/Shanghai",
+                },
+                "relationships": [
+                    item.as_dict() for item in archive_snapshot["relationships"]
+                ],
+            }
         interrupt = classify_message_interrupt()
         weekday_names = (
             "星期一",
@@ -698,6 +791,7 @@ class SnapshotExportMixin:
             "season": format_season_context(now),
         }
         return {
+            "current_facts": current_facts,
             "current_awareness": current_awareness,
             "weather": self._life_context_weather(data),
             "outfit": data.outfit,

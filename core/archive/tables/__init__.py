@@ -11,6 +11,7 @@ from .review import REVIEW_SQL
 from .routine import DAILY_SQL
 from .vows import COMMITMENT_SQL
 from .world import WORLD_SQL
+from .textile import TEXTILE_SQL
 
 SCHEMA_GROUPS = (
     CORE_SQL,
@@ -18,6 +19,7 @@ SCHEMA_GROUPS = (
     WEEKLY_SQL,
     COMMITMENT_SQL,
     WORLD_SQL,
+    TEXTILE_SQL,
     AWARENESS_SQL,
     REVIEW_SQL,
     EXPERIENCE_SQL,

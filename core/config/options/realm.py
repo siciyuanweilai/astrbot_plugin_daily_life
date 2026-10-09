@@ -15,10 +15,7 @@ class LifeDomainSettings:
     simulate_internal_actions: bool = True
     location_enabled: bool = True
     home_address: str = ""
-    map_provider: str = "amap"
     amap_api_key: str = ""
-    tencent_map_api_key: str = ""
-    baidu_map_api_key: str = ""
     default_travel_minutes: int = 15
     meals_enabled: bool = True
     pantry_enabled: bool = True
@@ -31,9 +28,6 @@ class LifeDomainSettings:
     @staticmethod
     def from_dict(data: Any) -> LifeDomainSettings:
         raw = data if isinstance(data, dict) else {}
-        map_provider = as_str(raw.get("map_provider", "amap")).strip().lower()
-        if map_provider not in {"amap", "tencent", "baidu"}:
-            map_provider = "amap"
         return LifeDomainSettings(
             enabled=as_bool(raw.get("enabled"), True),
             activity_tracking_enabled=as_bool(
@@ -44,10 +38,7 @@ class LifeDomainSettings:
             ),
             location_enabled=as_bool(raw.get("location_enabled"), True),
             home_address=as_str(raw.get("home_address", "")).strip(),
-            map_provider=map_provider,
             amap_api_key=as_str(raw.get("amap_api_key", "")).strip(),
-            tencent_map_api_key=as_str(raw.get("tencent_map_api_key", "")).strip(),
-            baidu_map_api_key=as_str(raw.get("baidu_map_api_key", "")).strip(),
             default_travel_minutes=as_int(
                 raw.get("default_travel_minutes", 15), 15, 1, 240
             ),

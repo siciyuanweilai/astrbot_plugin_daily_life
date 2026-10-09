@@ -252,6 +252,7 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
                     "confidence": 0.9,
                 }
             )
+            await archive.adopt_wardrobe_items([outfit.id, top.id, bottom.id], event_id='test-owned', at='2026-10-08 12:00:00', reason='测试实际拥有的完整服装')
             runtime = _StyleCatalogComposer(archive)
             try:
                 (
@@ -457,7 +458,7 @@ class StyleCatalogRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("[下装]", context)
                 self.assertIn("[妆容]", context)
                 self.assertIn("[美甲]", context)
-                self.assertIn("避免把高偏好候选穿成固定制服", context)
+                self.assertIn("可自然复穿", context)
             finally:
                 archive.close()
 

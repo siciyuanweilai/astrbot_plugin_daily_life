@@ -20,7 +20,7 @@ from ..base import (
     origin_from_url,
     upstream_error_text,
 )
-from .errors import VideoRequestTimeout, VideoTaskError
+from .errors import VideoRequestTimeout, VideoTaskError, VideoTaskFailed
 
 JsonRequester = Callable[..., Awaitable[Any]]
 VideoDownloader = Callable[
@@ -135,7 +135,7 @@ async def poll_video_url(
             log_info(f"{LOG_PREFIX} 视频生成完成：{request_id}")
             return video_url
         if status in _FAILED:
-            raise VideoTaskError(
+            raise VideoTaskFailed(
                 f"Grok 视频任务失败：{request_id}，{upstream_error_text(data)}"
             )
         if status in _DONE:

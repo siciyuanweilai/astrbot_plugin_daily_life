@@ -113,6 +113,7 @@ class StorageArchiveMixin:
 
         def write() -> dict:
             deleted = self._delete_all_unlocked(category.clear_order)
+            self.clear_continuous_category_unlocked(category.key)
             self._conn.commit()
             return {
                 "category": category.key,
@@ -304,6 +305,8 @@ class StorageArchiveMixin:
         """
         return self._delete_statements_unlocked(
             (
+                ("DELETE FROM long_term_memories WHERE source_table='continuous_life_entries' AND source_id IN (SELECT id FROM continuous_life_entries WHERE date <> '' AND date < ?)", (cutoff,)),
+                ("DELETE FROM continuous_life_entries WHERE date <> '' AND date < ?", (cutoff,)),
                 (
                     f"DELETE FROM life_episode_people WHERE episode_id IN (SELECT id FROM life_episodes WHERE {stale_episode_where})",
                     (cutoff,),

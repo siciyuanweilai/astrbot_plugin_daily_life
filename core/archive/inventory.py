@@ -28,6 +28,11 @@ class StyleCatalogArchiveMixin:
             attributes = json.loads(row["attributes_json"] or "{}")
         except (TypeError, json.JSONDecodeError):
             attributes = {}
+        wardrobe_reader = getattr(self, "_wardrobe_item_state_unlocked", None)
+        if callable(wardrobe_reader):
+            state = wardrobe_reader(int(row["id"]))
+            if state:
+                attributes["wardrobe"] = state
         return StyleCatalogItemRecord(
             id=int(row["id"] or 0),
             kind=str(row["kind"] or "outfit"),

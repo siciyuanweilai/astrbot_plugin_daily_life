@@ -62,6 +62,10 @@ class ProactiveSendMixin:
         )
 
     def _proactive_send_is_current(self, event: Any) -> bool:
+        quiet_guard = getattr(event, "_daily_life_quiet_guard", False)
+        quiet_check = getattr(self, "_state_refresh_in_quiet_hours", None)
+        if quiet_guard and callable(quiet_check) and quiet_check(life_now()):
+            return False
         expires_at = getattr(event, "_daily_life_proactive_expires_at", None)
         if expires_at is not None and life_now() >= expires_at:
             return False
@@ -83,7 +87,11 @@ class ProactiveSendMixin:
         parts = [str(notice or "").strip(), str(link or "").strip()]
         if not all(parts):
             return False
+        source_event = self._snapshot_proactive_send_event(target_scope, source_event)
+        source_event._daily_life_quiet_guard = True
         for part in parts:
+            if not self._proactive_send_is_current(source_event):
+                return False
             if not await self.send_background_text(
                 target_scope,
                 part,
@@ -137,6 +145,8 @@ class ProactiveSendMixin:
                 send_payload and send_payload.get("source") == "proactive_reply"
             ),
         )
+        if (send_payload or {}).get("source") in {"private_revisit", "proactive_reply", "proactive_voice_call"}:
+            source_event._daily_life_quiet_guard = True
         try:
             if not self._proactive_send_is_current(source_event):
                 return False
@@ -237,14 +247,15 @@ class ProactiveSendMixin:
         scope = self._event_session_id(event) or self._proactive_scope_key(event)
         message_id = self._event_message_id(event)
         review = payload.get("expression_review")
-        if isinstance(review, dict):
+        candidate = reply_text or str(payload.get("_expression_candidate_text") or "").strip()
+        if isinstance(review, dict) and candidate and isinstance(review.get("passed"), bool):
             await self.archive.save_expression_review(
                 ExpressionReviewRecord.from_value(
                     {
                         **review,
-                        "scope": review.get("scope") or scope,
-                        "reply_text": review.get("reply_text") or reply_text,
-                        "source": review.get("source") or source,
+                        "scope": scope,
+                        "reply_text": candidate,
+                        "source": source,
                     },
                     source=source,
                 )

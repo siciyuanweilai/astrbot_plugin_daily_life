@@ -14,3 +14,7 @@ class VideoRequestTimeout(RuntimeError):
 
 class VideoTaskError(RuntimeError):
     pass
+
+
+class VideoTaskFailed(VideoTaskError):
+    """The upstream task explicitly reached a failed terminal state."""

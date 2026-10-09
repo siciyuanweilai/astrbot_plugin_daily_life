@@ -145,10 +145,7 @@ class LifeSettingsTest(unittest.TestCase):
                 },
                 "life_domain_config": {
                     "home_address": "测试省测试市测试区测试路1号",
-                    "map_provider": "tencent",
                     "amap_api_key": "amap-key",
-                    "tencent_map_api_key": "tencent-key",
-                    "baidu_map_api_key": "baidu-key",
                 },
                 "state_config": {
                     "enabled": "false",
@@ -348,10 +345,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertTrue(config.weather.aware_activity)
         self.assertFalse(hasattr(config.weather, "default_city"))
         self.assertEqual(config.domains.home_address, "测试省测试市测试区测试路1号")
-        self.assertEqual(config.domains.map_provider, "tencent")
         self.assertEqual(config.domains.amap_api_key, "amap-key")
-        self.assertEqual(config.domains.tencent_map_api_key, "tencent-key")
-        self.assertEqual(config.domains.baidu_map_api_key, "baidu-key")
         self.assertFalse(config.state.enabled)
         self.assertEqual(config.state.provider, "state-model")
         self.assertEqual(config.state.refresh_minutes, 240)
@@ -723,27 +717,18 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertTrue(items["semantic_max_segments"]["hint"].strip())
         self.assertTrue(items["semantic_timeout_seconds"]["hint"].strip())
 
-    def test_map_provider_schema_exposes_supported_services(self):
+    def test_map_schema_exposes_only_amap_key(self):
         schema = json.loads(
             (PLUGIN_ROOT / "_conf_schema.json").read_text(encoding="utf-8")
         )
         items = schema["life_domain_config"]["items"]
 
         self.assertEqual(items["home_address"]["description"], "居住地")
-        self.assertFalse(
-            schema["weather_awareness"]["items"]["weather_city"]["multiline"]
-        )
-        self.assertEqual(items["map_provider"]["options"], ["amap", "tencent", "baidu"])
-        self.assertEqual(
-            items["map_provider"]["option_labels"],
-            {
-                "amap": "高德地图",
-                "tencent": "腾讯地图",
-                "baidu": "百度地图",
-            },
-        )
-        self.assertIn("tencent_map_api_key", items)
-        self.assertIn("baidu_map_api_key", items)
+        self.assertNotIn("weather_city", schema["weather_awareness"]["items"])
+        self.assertIn("amap_api_key", items)
+        self.assertNotIn("map_provider", items)
+        self.assertNotIn("tencent_map_api_key", items)
+        self.assertNotIn("baidu_map_api_key", items)
 
     def test_image_channel_schema_exposes_custom_group_names(self):
         schema = json.loads(
@@ -1618,10 +1603,10 @@ class LifeSettingsTest(unittest.TestCase):
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertIn("version: 1.4.2", metadata)
+        self.assertIn("version: 1.4.3", metadata)
         self.assertIn('astrbot_version: ">=4.26,<5"', metadata)
-        self.assertIn("version-1.4.2", readme)
-        self.assertIn("v1.4.2 重点更新", readme)
+        self.assertIn("version-1.4.3", readme)
+        self.assertIn("v1.4.3 重点更新", readme)
         self.assertIn("创意衣橱生成", readme)
         self.assertIn("文生图不使用角色参考图", readme)
         self.assertIn("不读取联网灵感或固定风格池", readme)
@@ -1633,6 +1618,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertNotIn("用户明确要求联网寻找灵感时", readme)
         self.assertNotIn("图片 → 创意衣橱", readme)
         self.assertNotIn("SiliconFlow", readme)
+        self.assertIn("v1.4.3 · 2026-10-09", changelog)
         self.assertIn("v1.4.2 · 2026-10-06", changelog)
         self.assertIn("v1.4.1 · 2026-10-05", changelog)
         self.assertIn("v1.4.0 · 2026-10-04", changelog)
@@ -1681,6 +1667,7 @@ class LifeSettingsTest(unittest.TestCase):
         self.assertIn("上移、下移箭头", release_138)
         self.assertNotIn("连续图文与主动回应", release_138)
         self.assertNotIn("images[].image_url", release_138)
+        self.assertLess(changelog.index("v1.4.3"), changelog.index("v1.4.2"))
         self.assertLess(changelog.index("v1.4.2"), changelog.index("v1.4.1"))
         self.assertLess(changelog.index("v1.4.1"), changelog.index("v1.4.0"))
         self.assertLess(changelog.index("v1.4.0"), changelog.index("v1.3.9"))

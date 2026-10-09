@@ -46,7 +46,6 @@ class SettingsCommandMixin:
             domains, "resolve_weather_city", None
         )
         weather_city = await city_resolver() if callable(city_resolver) else ""
-        weather_city_source = "独立配置" if config.weather.weather_city else "自动解析"
         outfit_aware = "开启" if config.weather.aware_outfit else "关闭"
         activity_aware = "开启" if config.weather.aware_activity else "关闭"
         state_status = "开启" if config.state.enabled else "关闭"
@@ -84,7 +83,7 @@ class SettingsCommandMixin:
             f"""⚙️ 配置状态
 🌤️ 天气API: {weather_status}
 🏠 居住地: {home_address_status}
-📍 天气城市: {weather_city or "尚未解析"}（{weather_city_source}）
+📍 天气城市: {weather_city or "尚未解析"}（居住地）
 👔 穿搭感知: {outfit_aware}
 🏃 活动感知: {activity_aware}
 🫧 实时状态: {state_status}（{config.state.refresh_minutes} 分钟巡检状态与穿搭{quiet_hours}）

@@ -9,14 +9,8 @@ from unittest.mock import AsyncMock, patch
 from core.archive.schema import SCHEMA_VERSION
 from core.config.options import LifeDomainSettings
 from core.life.amap import AmapWebServiceClient
-from core.life.baidu import (
-    BaiduMapWebServiceClient,
-    bd09_to_gcj02,
-    gcj02_to_bd09,
-)
 from core.life.domain import LifeDomainService
 from core.life.settlement import LifeActionMixin
-from core.life.tencent import TencentMapWebServiceClient
 from core.life.transit import transit_route_detail
 from core.models import (
     CommitmentRecord,
@@ -1893,27 +1887,14 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(params["city1"], "123400")
         self.assertEqual(params["city2"], "567800")
 
-    async def test_map_clients_use_explicit_city_for_travel_search(self):
+    async def test_amap_uses_explicit_city_for_travel_search(self):
         amap = AmapWebServiceClient("test-key", city="居住市")
         amap._request_json = AsyncMock(return_value={"status": "1", "pois": []})
-        tencent = TencentMapWebServiceClient("test-key", city="居住市")
-        tencent._request_json = AsyncMock(return_value={"data": []})
-        baidu = BaiduMapWebServiceClient("test-key", city="居住市")
-        baidu._request_json = AsyncMock(return_value={"results": []})
 
         await amap.search_places("博物馆", city_hint="旅行市")
-        await tencent.search_places("博物馆", city_hint="旅行市")
-        await baidu.search_places("博物馆", city_hint="旅行市")
 
         self.assertEqual(amap._request_json.await_args.args[1]["region"], "旅行市")
-        self.assertEqual(
-            tencent._request_json.await_args.args[1]["boundary"],
-            "region(旅行市,1)",
-        )
-        self.assertEqual(baidu._request_json.await_args.args[1]["region"], "旅行市")
         self.assertEqual(amap.city, "居住市")
-        self.assertEqual(tencent.city, "居住市")
-        self.assertEqual(baidu.city, "居住市")
 
     async def test_amap_poi_tips_detail_and_traffic_are_normalized(self):
         client = AmapWebServiceClient("test-key", city="测试市")
@@ -1987,207 +1968,6 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tips[0]["coordinate"], (23.02, 113.12))
         self.assertEqual(detail["photos"], ["https://example.com/place.jpg"])
         self.assertEqual(traffic["evaluation"], "基本畅通")
-
-    async def test_tencent_map_responses_are_normalized(self):
-        client = TencentMapWebServiceClient("test-key", city="测试市")
-        client._request_json = AsyncMock(
-            side_effect=[
-                {
-                    "status": 0,
-                    "result": {
-                        "title": "测试地点",
-                        "location": {"lat": 23.123456, "lng": 113.123456},
-                        "address_components": {
-                            "nation": "中国",
-                            "province": "测试省",
-                            "city": "测试市",
-                        },
-                        "ad_info": {"city_code": "0001", "adcode": "440600"},
-                    },
-                },
-                {
-                    "status": 0,
-                    "result": {"routes": [{"distance": 1280, "duration": 18}]},
-                },
-                {
-                    "status": 0,
-                    "data": [
-                        {
-                            "id": "poi-1",
-                            "title": "测试书店",
-                            "address": "测试路1号",
-                            "category": "购物服务:书店",
-                            "location": {"lat": 23.02, "lng": 113.12},
-                            "_distance": 350,
-                            "ad_info": {
-                                "province": "测试省",
-                                "city": "测试市",
-                                "district": "测试区",
-                                "adcode": "440600",
-                            },
-                        }
-                    ],
-                },
-                {
-                    "status": 0,
-                    "data": [
-                        {
-                            "id": "poi-1",
-                            "title": "测试书店",
-                            "address": "测试路1号",
-                            "location": {"lat": 23.02, "lng": 113.12},
-                            "province": "测试省",
-                            "city": "测试市",
-                            "district": "测试区",
-                            "adcode": "440600",
-                        }
-                    ],
-                },
-                {
-                    "status": 0,
-                    "data": [
-                        {
-                            "id": "poi-1",
-                            "title": "测试书店",
-                            "address": "测试路1号",
-                            "location": {"lat": 23.02, "lng": 113.12},
-                        }
-                    ],
-                },
-            ]
-        )
-
-        place = await client.geocode("测试地点", city_hint="")
-        route = await client.route(
-            (23.123456, 113.123456),
-            (23.124456, 113.133456),
-            "driving",
-        )
-        places = await client.search_places("书店", center=(23.0, 113.0), limit=3)
-        tips = await client.input_tips("测试书店")
-        detail = await client.place_detail("poi-1")
-
-        self.assertEqual(place["citycode"], "0001")
-        self.assertEqual(route["provider"], "tencent")
-        self.assertEqual(route["duration_seconds"], 1080)
-        self.assertEqual(places[0]["distance_meters"], 350)
-        self.assertEqual(tips[0]["city"], "测试市")
-        self.assertEqual(detail["poi_id"], "poi-1")
-        traffic = await client.traffic_status((23.0, 113.0))
-        self.assertFalse(traffic["supported"])
-        self.assertEqual(traffic["provider"], "tencent")
-
-    async def test_baidu_map_responses_use_unified_coordinates(self):
-        client = BaiduMapWebServiceClient("test-key", city="测试市")
-        bd_coordinate = (23.129, 113.134)
-        expected_gcj = bd09_to_gcj02(bd_coordinate)
-        client._request_json = AsyncMock(
-            side_effect=[
-                {
-                    "status": 0,
-                    "result": {
-                        "location": {
-                            "lat": bd_coordinate[0],
-                            "lng": bd_coordinate[1],
-                        }
-                    },
-                },
-                {
-                    "status": 0,
-                    "result": {
-                        "formatted_address": "测试省测试市测试地点",
-                        "addressComponent": {
-                            "country": "中国",
-                            "province": "测试省",
-                            "city": "测试市",
-                            "adcode": "440600",
-                        },
-                    },
-                },
-                {
-                    "status": 0,
-                    "result": {"routes": [{"distance": 1280, "duration": 960}]},
-                },
-                {
-                    "status": 0,
-                    "results": [
-                        {
-                            "uid": "poi-1",
-                            "name": "测试书店",
-                            "address": "测试路1号",
-                            "location": {
-                                "lat": bd_coordinate[0],
-                                "lng": bd_coordinate[1],
-                            },
-                            "detail_info": {
-                                "tag": "购物;书店",
-                                "distance": 350,
-                                "overall_rating": 4.6,
-                            },
-                        }
-                    ],
-                },
-                {
-                    "status": 0,
-                    "result": [
-                        {
-                            "uid": "poi-1",
-                            "name": "测试书店",
-                            "location": {
-                                "lat": bd_coordinate[0],
-                                "lng": bd_coordinate[1],
-                            },
-                        }
-                    ],
-                },
-                {
-                    "status": 0,
-                    "result": {
-                        "uid": "poi-1",
-                        "name": "测试书店",
-                        "location": {
-                            "lat": bd_coordinate[0],
-                            "lng": bd_coordinate[1],
-                        },
-                        "detail_info": {
-                            "photo_list": [{"photo": "https://example.com/place.jpg"}]
-                        },
-                    },
-                },
-            ]
-        )
-
-        place = await client.geocode("测试地点", city_hint="")
-        route = await client.route(
-            expected_gcj,
-            (expected_gcj[0] + 0.01, expected_gcj[1] + 0.01),
-            "driving",
-        )
-        places = await client.search_places("书店", center=expected_gcj, limit=3)
-        tips = await client.input_tips("测试书店")
-        detail = await client.place_detail("poi-1")
-
-        self.assertAlmostEqual(place["latitude"], expected_gcj[0], places=7)
-        self.assertAlmostEqual(place["longitude"], expected_gcj[1], places=7)
-        self.assertEqual(route["provider"], "baidu")
-        self.assertEqual(route["duration_seconds"], 960)
-        route_params = client._request_json.await_args_list[2].args[1]
-        self.assertEqual(route_params["coord_type"], "bd09ll")
-        self.assertEqual(places[0]["distance_meters"], 350)
-        self.assertAlmostEqual(places[0]["coordinate"][0], expected_gcj[0], places=7)
-        self.assertEqual(tips[0]["poi_id"], "poi-1")
-        self.assertEqual(detail["photos"], ["https://example.com/place.jpg"])
-        traffic = await client.traffic_status(expected_gcj)
-        self.assertFalse(traffic["supported"])
-        self.assertEqual(traffic["provider"], "baidu")
-
-    def test_baidu_coordinate_conversion_round_trips(self):
-        coordinate = (23.123456, 113.123456)
-
-        restored = bd09_to_gcj02(gcj02_to_bd09(coordinate))
-
-        self.assertAlmostEqual(restored[0], coordinate[0], places=5)
-        self.assertAlmostEqual(restored[1], coordinate[1], places=5)
 
     async def test_natural_language_place_tools_hide_coordinates(self):
         service = LifeDomainService(
@@ -2518,6 +2298,13 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_home_city_does_not_fall_back_without_address(self):
+        await self.archive.update_place_coordinates(
+            "家",
+            22.0,
+            112.0,
+            source="amap_home_address",
+            updated_at="2026-08-02 10:00:00",
+        )
         service = LifeDomainService(
             LifeDomainSettings(amap_api_key="test-key"),
             self.archive,
@@ -2528,7 +2315,57 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(city, "")
         self.assertFalse(service.map_tools_available())
+        self.assertEqual(service.residence_status(), "未配置")
         service._map.geocode.assert_not_awaited()
+
+    async def test_unresolved_residence_has_no_weather_or_map_fallback(self):
+        for geocoded in (
+            None,
+            {},
+            {"latitude": 23.0, "longitude": 113.0},
+            {"city": "测试市"},
+        ):
+            with self.subTest(geocoded=geocoded):
+                service = LifeDomainService(
+                    LifeDomainSettings(
+                        home_address="无法定位的居住地址",
+                        amap_api_key="test-key",
+                    ),
+                    self.archive,
+                )
+                service._map.geocode = AsyncMock(return_value=geocoded)
+
+                self.assertEqual(await service.resolve_weather_city(), "")
+                self.assertEqual(await service.resolve_weather_city(), "")
+                self.assertFalse(service.map_tools_available())
+                self.assertEqual(service.home_city, "")
+                self.assertEqual(service._coordinates, {})
+                self.assertEqual(service._map.geocode.await_count, 1)
+
+    async def test_residence_weather_works_with_domain_or_location_disabled(self):
+        for switches in ({"enabled": False}, {"location_enabled": False}):
+            with self.subTest(switches=switches):
+                service = LifeDomainService(
+                    LifeDomainSettings(
+                        home_address="测试省测试市测试区测试路1号",
+                        amap_api_key="test-key",
+                        **switches,
+                    ),
+                    self.archive,
+                )
+                service._map.geocode = AsyncMock(
+                    return_value={
+                        "latitude": 23.01,
+                        "longitude": 113.10,
+                        "city": "测试市",
+                    }
+                )
+
+                self.assertEqual(await service.resolve_weather_city(), "测试市")
+                self.assertFalse(await service.ensure_map_context())
+                self.assertFalse(service.map_tools_available())
+                self.assertEqual(service._map.geocode.await_count, 1)
+                self.assertEqual(await self.archive.get_recent_places(0), [])
 
     async def test_transit_requires_city(self):
         client = AmapWebServiceClient("test-key")
@@ -2610,29 +2447,22 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
         places = await self.archive.get_recent_places(0)
         self.assertEqual(places[0].coordinate_source, "amap_geocode")
 
-    def test_domain_settings_accept_map_provider_configuration(self):
+    def test_domain_settings_accept_amap_configuration(self):
         settings = LifeDomainSettings.from_dict(
             {
                 "home_address": "测试省测试市测试区测试路1号",
-                "map_provider": "tencent",
                 "amap_api_key": "test-key",
-                "tencent_map_api_key": "tencent-key",
-                "baidu_map_api_key": "baidu-key",
             }
         )
 
         self.assertEqual(settings.home_address, "测试省测试市测试区测试路1号")
-        self.assertEqual(settings.map_provider, "tencent")
         self.assertEqual(settings.amap_api_key, "test-key")
-        self.assertEqual(settings.tencent_map_api_key, "tencent-key")
-        self.assertEqual(settings.baidu_map_api_key, "baidu-key")
 
-    async def test_domain_service_uses_selected_map_provider(self):
+    async def test_domain_service_uses_amap(self):
         service = LifeDomainService(
             LifeDomainSettings(
                 home_address="测试省测试市测试区测试路1号",
-                map_provider="tencent",
-                tencent_map_api_key="test-key",
+                amap_api_key="test-key",
             ),
             self.archive,
         )
@@ -2648,11 +2478,12 @@ class LifeDomainTest(unittest.IsolatedAsyncioTestCase):
 
         location = await service.resolve_home_location()
 
-        self.assertEqual(service.map_provider, "tencent")
-        self.assertEqual(service.map_provider_label, "腾讯地图")
+        self.assertIsInstance(service._map, AmapWebServiceClient)
+        self.assertEqual(service.map_provider, "amap")
+        self.assertEqual(service.map_provider_label, "高德地图")
         self.assertEqual(location["city"], "测试市")
         places = await self.archive.get_recent_places(0)
-        self.assertEqual(places[0].coordinate_source, "tencent_home_address")
+        self.assertEqual(places[0].coordinate_source, "amap_home_address")
 
     async def test_v4_database_migrates_without_losing_existing_data(self):
         with tempfile.TemporaryDirectory() as tmpdir:

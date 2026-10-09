@@ -27,6 +27,7 @@ from .appearance import (
 )
 from .condition import format_daily_variability_prompt
 from .evolution import LifeEvolutionService
+from .presence import ensure_kernel, record_causal_trace, record_event
 from .tools import (
     extract_json_from_text,
     format_timeline_to_text,
@@ -693,6 +694,41 @@ class LifecycleMixin:
             refreshed = await self.archive.get_daily_review(date_str)
             if refreshed:
                 saved = refreshed
+        continuous_mutator = getattr(self.archive, "mutate_continuous_life", None)
+        if callable(continuous_mutator):
+            reflection_summary = _compact(review.summary, 360)
+
+            def sync_continuity(latest, world):
+                kernel = ensure_kernel(world, life_now())
+                kernel["reflection"] = {
+                    "date": date_str,
+                    "summary": reflection_summary,
+                    "memory_points": [_compact(item, 180) for item in review.memory_points[:5]],
+                    "updated_at": life_now().replace(tzinfo=None).isoformat(),
+                }
+                record_event(
+                    world,
+                    kind="daily_reflection",
+                    source_id=f"daily_review:{date_str}",
+                    at=life_now().replace(tzinfo=None),
+                    summary=f"完成 {date_str} 的生活复盘",
+                    evidence_ids=[f"review:{date_str}"],
+                )
+                record_causal_trace(
+                    world,
+                    kind="daily_reflection",
+                    source_id=f"daily_review:{date_str}",
+                    before={"open_threads": len(kernel.get("open_threads", []))},
+                    after={
+                        "reflection": reflection_summary,
+                        "open_threads": len(kernel.get("open_threads", [])),
+                    },
+                    consequence="把当天已记录事实整理为后续可引用的生活叙事",
+                    evidence_ids=[f"review:{date_str}"],
+                    at=life_now().replace(tzinfo=None),
+                )
+
+            await continuous_mutator(date_str, sync_continuity)
         await self._mark_daily_review_completed(date_str)
         return saved
 

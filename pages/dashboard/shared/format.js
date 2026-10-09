@@ -245,8 +245,6 @@ function timelineTravelText(item = {}, previousItem = {}) {
   const provider = text(item.travel_provider).trim().toLowerCase();
   const providerLabel = {
     amap: "高德地图",
-    tencent: "腾讯地图",
-    baidu: "百度地图",
     coordinate_estimate: "坐标估算",
     default_estimate: "默认估算",
   }[provider] || "";

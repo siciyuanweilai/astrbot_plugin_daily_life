@@ -16,6 +16,7 @@ from ...prompts import (
     cache_friendly_prompt,
 )
 from ..capture.jsonclean import call_pure_json
+from ...life.presence import kernel_context
 from ..markers import LOG_PREFIX
 
 
@@ -235,8 +236,21 @@ class ProactiveRevisitMixin:
             )
         else:
             lines.append("- 尚未完成的承诺/约定：暂无可读取记录")
+        continuous_getter = getattr(self.archive, "get_continuous_life", None)
+        continuous_world = {}
+        if callable(continuous_getter):
+            try:
+                continuous_world = await continuous_getter()
+            except Exception as exc:
+                logger.debug(f"{LOG_PREFIX} 读取统一生命内核失败：{type(exc).__name__}")
+        if isinstance(continuous_world, dict) and continuous_world.get("kernel"):
+            lines.append("- 与其他决策共同使用的统一生命内核：")
+            lines.append(kernel_context(continuous_world))
         return "\n".join(lines), bool(
-            day or commitments or interaction_context.has_authoritative_mode
+            day
+            or commitments
+            or interaction_context.has_authoritative_mode
+            or bool(continuous_world.get("kernel"))
         )
 
     async def _private_revisit_expression_context(
@@ -245,14 +259,9 @@ class ProactiveRevisitMixin:
         relationship: Any | None,
         now: datetime.datetime,
     ) -> dict[str, Any]:
-        profile_id = str(getattr(relationship, "id", "") or "")
         expression_profiles = await self.archive.get_expression_profiles(
-            limit=4, profile_id=profile_id
+            limit=4, scope=target_scope
         )
-        if not expression_profiles:
-            expression_profiles = await self.archive.get_expression_profiles(
-                limit=4, scope=target_scope
-            )
         await self._settle_stale_reply_effects()
         return {
             "air_state": self._format_proactive_air_state(target_scope, now),
@@ -344,17 +353,18 @@ JSON 输出要求：
   "decision": "reply|observe|wait|skip",
   "reason": "为什么此刻适合或不适合发起私聊回访",
   "reply_text": "简短自然、意思完整的私聊问候或话题延续",
+  "expression_review": {{"passed": true, "risk": "具体表达风险或空字符串", "suggestion": "必要的调整或空字符串", "reason": "结合本轮话题和已学习表达习惯的检查依据"}},
   "expression_intent": {{"channel": "text|voice", "confidence": 0.0, "emotion": "可选自然情绪", "emotion_category": "neutral|happy|sad|angry", "voice_style": "neutral|happy|light|sad|angry", "emoji_intent": "可选表情意图", "action_intent": "可选动作意图", "send_emoji": true/false, "reason": "可选理由"}}
 }}
 裁定方式：
 - 先看“回访依据”，判断 reply、observe、wait 或 skip。
 - benefit、timeliness、continuity、disruption、uncertainty 必须分别填写 0 至 100 的整数；前三项是回访收益，后两项是打扰与不确定风险。
 - 只有回访收益确实高于风险时才设 should_reply=true；不值得打扰时选择 observe 或 wait。
-- reply_text 优先写简短自然的问候或话题延续，必要的意思说完整，不刻意扩写，{expression_guidance}
+- reply_text 优先写简短自然的问候或话题延续，必要的意思说完整，不刻意扩写，遵循本轮表达设置。
+- 在同一次生成中检查最终 reply_text 的话题承接、重复关心或追问、关系分寸与适用表达习惯，填写 expression_review；短句自然与否由语境决定，不按关键词、句型或字数判断。发现问题先调整文本，仍不适合开口时 passed=false 并选择 observe。
 {CORE_PROACTIVE_VOICE_RULES}
 {CORE_PROACTIVE_CONTINUITY_RULES}
 - voice_style 必须根据整轮语义直接选择枚举值，不要从 emotion 文本推导；没有明显情绪时使用 neutral。
-{expression_limit_line}
 - reason 只写相对场景和判断依据，不复述具体日期、钟点或时间轴编号；具体时间只保留在内部证据中。
 - 近期消息必须按其明确时间理解；旧照片、旧回复或未来约定不能表述成刚发生或已经完成。
 - 只有“当前生活事实”明确支持时，才能断言当前地点、当前动作、动作完成或状态变化。
@@ -363,6 +373,9 @@ JSON 输出要求：
 """
         dynamic = f"""角色人设摘要：
 {persona_context}
+
+本轮表达设置：{expression_guidance}
+{expression_limit_line}
 
 此刻时间：{now.strftime("%Y-%m-%d %H:%M")}
 目标对象：{relationship_snapshot["target_name"]}
@@ -433,6 +446,7 @@ JSON 输出要求：
     ) -> dict[str, Any]:
         confidence = self._clamp_float(payload.get("confidence"))
         reply_text = self._proactive_reply_text(payload.get("reply_text"))
+        payload["_expression_candidate_text"] = reply_text
         requested = self._proactive_bool(payload.get("should_reply"))
         expression_passed = self._expression_review_passed(payload)
         utility, utility_valid = self._normalize_proactive_utility(
@@ -460,6 +474,9 @@ JSON 输出要求：
             reason_code = "invalid_utility_scores"
         elif utility < self._PROACTIVE_UTILITY_THRESHOLD:
             reason_code = "utility_below_threshold"
+        if requested and not expression_passed:
+            payload["decision"] = "observe"
+            payload["reason"] = "表达检查未通过或缺少有效检查，暂缓回访"
         if not revisit_evidence["can_revisit"]:
             payload["decision"] = "observe"
             payload["reason"] = payload.get("reason") or revisit_evidence["reason"]

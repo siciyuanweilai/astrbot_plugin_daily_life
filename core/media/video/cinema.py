@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +14,7 @@ from astrbot.api import logger
 from ...config.options import VideoGenerationSettings
 from ..base import (
     GeneratedVideo,
+    extract_request_id,
     videos_endpoint,
 )
 from .http import request_json, seconds_label, timeout_from_seconds
@@ -27,6 +30,36 @@ class GrokVideoService:
         self.output_dir = (
             Path(data_dir or tempfile.gettempdir()) / "generated" / "videos"
         )
+        self._task_listener: ContextVar[Any] = ContextVar(
+            f"share_video_listener_{id(self)}", default=None
+        )
+
+    @contextmanager
+    def track_async_tasks(self, listener):
+        token = self._task_listener.set(listener)
+        try:
+            yield
+        finally:
+            self._task_listener.reset(token)
+
+    async def resume_async_video(self, task_id: str, reference: dict) -> GeneratedVideo:
+        from .errors import VideoTaskError
+
+        if (
+            reference.get("endpoint") != self.video_endpoint
+            or reference.get("model") != self.settings.model
+        ):
+            raise VideoTaskError("原视频通道不在当前配置中，保留原任务等待恢复")
+        headers = self._headers()
+        timeout = aiohttp.ClientTimeout(
+            total=max(int(self.settings.request_timeout_seconds), 300)
+        )
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            return GeneratedVideo(
+                await self._poll_video_url(
+                    session, headers, self.video_endpoint, task_id
+                )
+            )
 
     async def generate_video(
         self,
@@ -114,6 +147,12 @@ class GrokVideoService:
             request=self._request_json,
             log_info=logger.info,
         )
+        listener = self._task_listener.get()
+        task_id = extract_request_id(data)
+        if callable(listener) and task_id:
+            await listener(
+                task_id, {"endpoint": self.video_endpoint, "model": self.settings.model}
+            )
         return await self._resolve_task(
             session=session,
             headers=headers,

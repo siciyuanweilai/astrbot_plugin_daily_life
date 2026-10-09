@@ -7,6 +7,7 @@ from typing import Any
 
 from astrbot.api import logger
 from astrbot.api.message_components import Image
+from astrbot.core.agent.message import TextPart
 
 from .markers import LOG_PREFIX
 
@@ -611,12 +612,22 @@ class ContinuousTurnMixin:
         if len(messages) < 2:
             return True
         request.prompt = "\n".join(messages)
-        request.system_prompt = (
-            str(getattr(request, "system_prompt", "") or "")
-            + "\n\n[HiddenContinuousTurn]\n"
-            + "当前用户输入由同一人在短时间内连续发送，属于同一个话轮。"
-            + "结合全部内容统一回应，不要把每条消息分别重复回答。"
+        context = (
+            "[HiddenContinuousTurn]\n"
+            "当前用户输入由同一人在短时间内连续发送，属于同一个话轮。"
+            "结合全部内容统一回应，不要把每条消息分别重复回答。"
         )
+        parts = getattr(request, "extra_user_content_parts", None)
+        part = TextPart(text=context)
+        mark_temp = getattr(part, "mark_as_temp", None)
+        if isinstance(parts, list) and callable(mark_temp):
+            previous = getattr(request, "_daily_life_continuous_turn_context", None)
+            parts[:] = [part for part in parts if part is not previous]
+            part = mark_temp()
+            parts.append(part)
+            request._daily_life_continuous_turn_context = part
+        else:
+            request.system_prompt = str(getattr(request, "system_prompt", "") or "") + "\n\n" + context
         return True
 
     def complete_continuous_turn(self, event: Any) -> bool:

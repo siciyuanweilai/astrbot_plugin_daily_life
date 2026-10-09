@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import datetime
 import hashlib
 import inspect
@@ -18,6 +19,207 @@ class RuntimeActionReceiptMixin:
     """将已确认的工具结果提交给当前生活动作。"""
 
     _MEDIA_DELIVERY_LEASE_SECONDS = 6 * 60 * 60
+
+    @staticmethod
+    def _share_asset_key(task_key: str, kind: str = "image") -> str:
+        if not task_key.strip():
+            raise ValueError("Sharing media tasks need an owner key")
+        return f"share_{kind}:" + hashlib.sha256(task_key.encode()).hexdigest()
+
+    async def get_share_image_task(self, task_key: str) -> dict:
+        return await self._get_share_asset_task(task_key, "image")
+
+    async def get_share_video_task(self, task_key: str) -> dict:
+        return await self._get_share_asset_task(task_key, "video")
+
+    async def _get_share_asset_task(self, task_key: str, kind: str) -> dict:
+        task = await self.archive.get_durable_task(
+            self._share_asset_key(task_key, kind)
+        )
+        if task is None:
+            return {"status": "missing", "task_key": task_key}
+        if task.status == "completed":
+            return {
+                "status": "ready",
+                "task_key": task_key,
+                ("path" if kind == "image" else "url"): str(
+                    task.result.get(
+                        "artifact_path" if kind == "image" else "artifact_url"
+                    )
+                    or ""
+                ),
+            }
+        if task.status in {"failed", "cancelled"}:
+            return {"status": "failed", "task_key": task_key, "error": task.last_error}
+        return {"status": "pending", "task_key": task_key}
+
+    async def generate_share_image_task(
+        self,
+        event: Any,
+        prompt: str,
+        *,
+        task_key: str,
+        contains_character: bool = False,
+    ) -> dict:
+        return await self._generate_share_asset_task(
+            event,
+            prompt,
+            task_key=task_key,
+            kind="image",
+            contains_character=contains_character,
+        )
+
+    async def generate_share_video_task(
+        self, event: Any, prompt: str, *, task_key: str, reference_image: str = ""
+    ) -> dict:
+        return await self._generate_share_asset_task(
+            event,
+            prompt,
+            task_key=task_key,
+            kind="video",
+            reference_image=reference_image,
+        )
+
+    async def _generate_share_asset_task(
+        self,
+        event: Any,
+        prompt: str,
+        *,
+        task_key: str,
+        kind: str,
+        contains_character: bool = False,
+        reference_image: str = "",
+    ) -> dict:
+        """External assets are recovered as assets, never delivered to a chat scope."""
+        label = "图片" if kind == "image" else "视频"
+        owner = f"share_{kind}:" + uuid.uuid4().hex
+        record = await self.archive.enqueue_durable_task(
+            self._share_asset_key(task_key, kind),
+            f"share_{kind}_generation",
+            {"external_owner": "daily_share", "task_key": task_key},
+            lease_owner=owner,
+            lease_seconds=self._MEDIA_DELIVERY_LEASE_SECONDS,
+            max_attempts=10000,
+            priority=85,
+        )
+        if record.lease_owner != owner:
+            return await self._get_share_asset_task(task_key, kind)
+        progress = {}
+
+        async def accepted(task_id, route, metadata=None):
+            from ..media.base import normalize_openai_base_url
+
+            reference = (
+                {
+                    "api_url": normalize_openai_base_url(route.api_url),
+                    "model": route.model,
+                    "protocol": route.protocol,
+                }
+                if kind == "image"
+                else {key: route[key] for key in ("endpoint", "model")}
+            )
+            progress.update(task_id=task_id, route=reference)
+            if not await self.archive.update_durable_task_progress(
+                record.id, owner, progress
+            ):
+                raise RuntimeError(f"分享{label}任务已失去租约，不继续提交")
+
+        tracker = getattr(getattr(self.media, kind), "track_async_tasks", None)
+        from contextlib import nullcontext
+
+        from ..media.picture.polling import ImageTaskError, ImageTaskFailed
+        from ..media.video.errors import VideoTaskError, VideoTaskFailed
+
+        try:
+            with tracker(accepted) if callable(tracker) else nullcontext():
+                if kind == "image":
+                    result = await self.generate_life_image_asset(
+                        event,
+                        prompt,
+                        "",
+                        contains_character=contains_character,
+                        preserve_reference_ratio=False,
+                        trusted_identity=contains_character,
+                    )
+                else:
+                    result = await self.generate_life_video_asset(
+                        event, prompt, reference_image
+                    )
+            path = str(
+                getattr(result, "path" if kind == "image" else "url", "") or ""
+            ).strip()
+            if not path:
+                raise RuntimeError(f"分享{label}未返回成品")
+            await self.archive.complete_durable_task(
+                record.id,
+                {"artifact_path" if kind == "image" else "artifact_url": path},
+                owner=owner,
+            )
+        except (ImageTaskFailed, VideoTaskFailed) as exc:
+            await self.archive.fail_durable_task(
+                record.id, str(exc), owner=owner, permanent=True
+            )
+        except BaseException as exc:
+            if progress.get("task_id"):
+                await self.archive.defer_durable_task(
+                    record.id,
+                    self.archive._cognition_now(),
+                    owner=owner,
+                    reason=f"继续查询原分享{label}任务",
+                    progress=progress,
+                )
+            else:
+                await self.archive.fail_durable_task(
+                    record.id,
+                    f"{label}请求未获得可恢复编号，停止自动重提：" + type(exc).__name__,
+                    owner=owner,
+                    permanent=True,
+                )
+            if isinstance(exc, (KeyboardInterrupt, SystemExit, asyncio.CancelledError)):
+                raise
+            if not isinstance(exc, (ImageTaskError, VideoTaskError)) and not progress:
+                raise
+        return await self._get_share_asset_task(task_key, kind)
+
+    async def resume_share_image_generation(self, task: Any) -> dict:
+        return await self._resume_share_asset_generation(task, "image")
+
+    async def resume_share_video_generation(self, task: Any) -> dict:
+        return await self._resume_share_asset_generation(task, "video")
+
+    async def _resume_share_asset_generation(self, task: Any, kind: str) -> dict:
+        from ..media.picture.polling import ImageTaskError, ImageTaskFailed
+        from ..media.video.errors import VideoTaskError, VideoTaskFailed
+
+        failed_error = ImageTaskFailed if kind == "image" else VideoTaskFailed
+        pending_error = ImageTaskError if kind == "image" else VideoTaskError
+        label = "图片" if kind == "image" else "视频"
+        progress = task.result.get("progress", {})
+        if not progress.get("task_id") or not isinstance(progress.get("route"), dict):
+            raise failed_error(f"外部{label}任务没有原任务编号，禁止重新提交")
+        try:
+            resume = (
+                self.media.image.resume_async_image
+                if kind == "image"
+                else self.media.video.resume_async_video
+            )
+            result = await resume(progress["task_id"], progress["route"])
+            path = str(
+                getattr(result, "path" if kind == "image" else "url", "") or ""
+            ).strip()
+            if not path:
+                raise pending_error(f"原分享{label}任务未返回成品")
+            return {"artifact_path" if kind == "image" else "artifact_url": path}
+        except (ImageTaskFailed, VideoTaskFailed):
+            raise
+        except (ImageTaskError, VideoTaskError) as exc:
+            return {
+                "retry_at": (
+                    datetime.datetime.now() + datetime.timedelta(seconds=60)
+                ).strftime("%Y-%m-%d %H:%M:%S"),
+                "reason": str(exc),
+                "progress": progress,
+            }
 
     async def track_image_generation(self, event: Any, work: Any) -> Any:
         """按请求隔离图片任务监听，受理后立即登记查询所需的非敏感信息。"""
@@ -99,6 +301,7 @@ class RuntimeActionReceiptMixin:
         self, event: Any, exc: Exception
     ) -> str | None:
         import json
+
         from ..media.picture.polling import ImageTaskFailed
 
         pending = getattr(event, "_daily_life_async_image_tasks", [])

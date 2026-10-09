@@ -129,7 +129,7 @@ class DailyDraftMixin:
   "planned_actions": [
     {{
       "action_id": "包含目标日期的唯一动作编号",
-      "action_type": "rest | meal | cook | order_food | purchase | move | travel | work | study | chore | exercise | groom | change_outfit | social | chat | photo | video",
+      "action_type": "rest | drink | meal | cook | order_food | purchase | move | travel | work | study | chore | exercise | groom | change_outfit | social | chat | photo | video",
       "target": "动作目标；change_outfit、travel、chore、exercise 必须填写明确目标，其余动作按实际需要填写",
       "timeline_index": 0,
       "duration_minutes": 30,
@@ -222,6 +222,7 @@ class DailyDraftMixin:
 - action_id 在不同日期和节点间必须唯一；effects 只写该动作真实会改变的数值状态。
 - 若一个动作完成即可完整兑现输入中某条当前角色的非媒体承诺，可在 payload.commitment_ids 填该承诺编号；只完成承诺的一部分时不得关联，不能把打包等同于送达，不能填未提供的编号。没有对应承诺用空数组。
 - payload 只用于明确的领域数据：cook 的 ingredients、purchase 的 items 使用 {{"name":"名称","quantity":1,"unit":"可选单位"}} 数组；只有明确属于家庭食材、会用于后续烹饪的采购项才放入 purchase.payload.pantry_items，格式同上；普通物品、纪念品、家居用品和杂货仍放在 items，不得写入 pantry_items；meal/cook/order_food 可填 meal_type 和 place；move/travel 可填 origin、destination、travel_mode；chore 的 cadence_days 使用非负整数、effort 使用 1-5 整数；exercise 的 intensity 使用 1-5 整数。
+- 如果某项内部动作确实推进输入中角色自身长期目标的可继续阶段，payload.goal_id 和 payload.step_id 填写该目标与阶段编号；不能跳过依赖、关联已完成阶段或把用户目标当成角色目标。完成进度由执行器累计，不在计划中声称已经完成练习。
 - 现有可用食材库存是会变化的生活事实，不得长期只当作背景。若在家自制、现做、加热、调配，或明确使用其中食材，优先生成 cook；从库存中选择实际用到的名称并填写正数 ingredients，系统会按此扣减。不要为了清库存机械安排做饭，也不要虚构库存里没有的食材。
 - meal 表示外食、现成餐食或无法确认用料的直接用餐，不校验或扣减家庭库存；cook 表示实际动手烹饪，必须填写至少一项 ingredients，会按库存校验并扣减，同时由系统自动沉淀食谱；order_food 表示点餐或外卖。不要用 meal 代替实际在家烹饪，也不要为 meal/order_food 填写 ingredients 或自行编造 recipe_id。
 - 不要从 activity 文案隐含领域参数；没有可靠参数就保留空 payload。

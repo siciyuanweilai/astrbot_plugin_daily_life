@@ -24,9 +24,9 @@ class LifeActionTest(unittest.TestCase):
     def setUp(self):
         self.engine = LifeActionMixin()
 
-    def test_action_taxonomy_has_seventeen_complete_non_overlapping_types(self):
-        self.assertEqual(len(LIFE_ACTION_TYPES), 17)
-        self.assertEqual(len(INTERNAL_SIMULATED_ACTION_TYPES), 13)
+    def test_action_taxonomy_has_eighteen_complete_non_overlapping_types(self):
+        self.assertEqual(len(LIFE_ACTION_TYPES), 18)
+        self.assertEqual(len(INTERNAL_SIMULATED_ACTION_TYPES), 14)
         self.assertEqual(
             EXTERNAL_RECEIPT_ACTION_TYPES,
             {"social", "chat", "photo", "video"},

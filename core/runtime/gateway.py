@@ -77,7 +77,9 @@ class ModelGateway:
         )
 
     async def close(self, session_id: str) -> None:
-        await self._composer._cleanup_conversation(session_id)
+        cleanup = getattr(self._composer, "_cleanup_conversation", None)
+        if callable(cleanup):
+            await cleanup(session_id)
 
     async def persona(self, scope: str = "") -> str:
         getter = getattr(self._composer, "_get_persona", None)

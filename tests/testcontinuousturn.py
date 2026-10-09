@@ -68,7 +68,8 @@ class ContinuousTurnTest(unittest.IsolatedAsyncioTestCase):
         request = ProviderRequest(prompt=second.message_str)
         self.assertTrue(runtime.prepare_continuous_turn_llm_request(second, request))
         self.assertEqual(request.prompt, "明天下雨\n记得带伞出门")
-        self.assertIn("同一个话轮", request.system_prompt)
+        self.assertIn("同一个话轮", request.extra_user_content_parts[-1].text)
+        self.assertEqual(request.system_prompt, "")
 
     def test_media_request_is_current_turn_tracks_newer_message(self):
         runtime = self._runtime(continuous_turn_wait_seconds=0)

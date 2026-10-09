@@ -119,6 +119,7 @@ class RuntimeAsyncHelperMixin:
         runtime.config = LifeSettings.from_dict(
             {
                 "rhythm_config": {"llm_provider": "default-model"},
+                "state_config": {"quiet_hours": ""},
                 "proactive_config": {
                     "provider": provider_id,
                     "group_enabled": True,

@@ -12,6 +12,17 @@ from ..markers import LOG_PREFIX
 
 class SnapshotPackMixin:
     _INJECTION_SNAPSHOT_CACHE_TTL_SECONDS = 8.0
+    _INJECTION_SNAPSHOT_CACHE_LIMIT = 128
+
+    def _store_injection_snapshot(self, cache: dict[str, Any], key: str, snapshot: dict) -> None:
+        now = time.monotonic()
+        for expired_key, value in list(cache.items()):
+            if now - float(value.get("ts", 0.0) or 0.0) > self._INJECTION_SNAPSHOT_CACHE_TTL_SECONDS:
+                cache.pop(expired_key, None)
+        cache.pop(key, None)
+        cache[key] = {"ts": now, "data": snapshot}
+        while len(cache) > self._INJECTION_SNAPSHOT_CACHE_LIMIT:
+            cache.pop(next(iter(cache)))
 
     def _injection_snapshot_flight(self) -> SingleFlight[dict[str, Any]]:
         flight = getattr(self, "_injection_snapshot_singleflight", None)
@@ -72,7 +83,7 @@ class SnapshotPackMixin:
         )
 
         if int(getattr(self, "_page_status_version", 0) or 0) == snapshot_version:
-            cache[cache_key] = {"ts": time.monotonic(), "data": snapshot}
+            self._store_injection_snapshot(cache, cache_key, snapshot)
         return dict(snapshot)
 
     async def _close_injection_snapshot_flight(self) -> None:

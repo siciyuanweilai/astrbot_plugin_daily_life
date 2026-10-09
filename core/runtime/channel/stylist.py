@@ -631,6 +631,9 @@ class RuntimeStyleCatalogMixin:
         generation_mode: str = "",
         count: int = 1,
     ) -> str:
+        queue = getattr(self, "queue_wardrobe_generation", None)
+        if callable(queue):
+            return await queue(event, requirement=requirement, generation_mode=generation_mode, count=count)
         settings = getattr(
             getattr(getattr(self, "config", None), "image_generation", None),
             "creative_wardrobe",
@@ -1116,6 +1119,13 @@ class RuntimeStyleCatalogMixin:
                 status="failed",
                 media="style_catalog",
             )
+        recorder = getattr(self.archive, "record_wardrobe_feedback", None)
+        if callable(recorder):
+            from ...clock import now as life_now
+            source = self._event_message_id(event) if callable(getattr(self, "_event_message_id", None)) else uuid.uuid4().hex
+            await recorder(event_id="feedback:" + hashlib.sha256((self._event_session_id(event) + ":" + str(source)).encode()).hexdigest(),
+                item_ids=[item.id for item in items], text=feedback,
+                at=life_now().replace(tzinfo=None).isoformat(sep=" "), scope=self._event_session_id(event))
         allowed_ids = {item.id for item in items}
         changed: list[StyleCatalogItemRecord] = []
         for adjustment in payload.get("adjustments") or []:

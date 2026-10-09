@@ -7,6 +7,7 @@ LIFE_ACTION_TYPES = frozenset(
     {
         "rest",
         "meal",
+        "drink",
         "cook",
         "order_food",
         "purchase",

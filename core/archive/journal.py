@@ -337,14 +337,20 @@ class DayArchiveMixin:
         ).fetchone()
         return int(row["revision"] if row else 0)
 
-    def _save_day_unlocked(self, day: DayRecord, *, replace: bool) -> DayRecord:
+    def _save_day_unlocked(self, day: DayRecord, *, replace: bool, require_wearable: bool = False) -> DayRecord:
         self._conn.execute("BEGIN IMMEDIATE")
         try:
+            if require_wearable:
+                issue = self._wardrobe_action_issue_unlocked(str(day.meta.get('style_catalog_reference_ids') or '').split(','))
+                if issue:
+                    raise ValueError(issue)
             current = self._get_day_unlocked(day.date)
             target = (
                 day if replace or current is None else merge_day_records(day, current)
             )
             revision = self._set_day_unlocked(target)
+            if require_wearable:
+                self._record_wardrobe_wear_unlocked(target, source='outfit_atomic_receipt')
             self._conn.commit()
         except Exception:
             self._conn.rollback()
@@ -577,11 +583,11 @@ class DayArchiveMixin:
 
         return await self._run_db(read)
 
-    async def save_day(self, day: DayRecord, *, replace: bool = False) -> DayRecord:
+    async def save_day(self, day: DayRecord, *, replace: bool = False, require_wearable: bool = False) -> DayRecord:
         """保存每日生活记录，并合并基于旧版本产生的非冲突改动。"""
 
         def write() -> DayRecord:
-            return self._save_day_unlocked(day, replace=replace)
+            return self._save_day_unlocked(day, replace=replace, require_wearable=require_wearable)
 
         return await self._run_db(write)
 

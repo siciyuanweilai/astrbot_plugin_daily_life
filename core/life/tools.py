@@ -882,8 +882,6 @@ def format_timeline_travel(
         provider = _timeline_field(item, "travel_provider")
         provider_label = {
             "amap": "高德地图",
-            "tencent": "腾讯地图",
-            "baidu": "百度地图",
             "coordinate_estimate": "坐标估算",
             "default_estimate": "默认估算",
         }.get(provider, "")

@@ -282,7 +282,12 @@ class ImprintDepositMixin:
             )
             if not record:
                 continue
-            saved_profile = await self.archive.upsert_expression_profile(record)
+            if record.source == "chat_expression":
+                saved_profile = await self.archive.upsert_expression_profile(
+                    record, replace=True
+                )
+            else:
+                saved_profile = await self.archive.upsert_expression_profile(record)
             if saved_profile:
                 saved_records["expression_profiles"].append(saved_profile)
                 content = "；".join(

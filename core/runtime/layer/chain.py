@@ -520,6 +520,7 @@ class LayerChainMixin:
                 else "",
                 recent_video=recent_video,
                 expression_event=event,
+                include_rules=False,
             )
             + heuristic_memory
             + person_facts
@@ -574,6 +575,7 @@ class LayerChainMixin:
                     event=event,
                     memos_context=memos_context,
                     recent_video=recent_video,
+                    include_rules=False,
                 )
                 + heuristic_memory
                 + style_context
@@ -583,7 +585,7 @@ class LayerChainMixin:
             )
             if self._voice_expression_channel_enabled(event):
                 self.mark_voice_switch_available(event)
-            req.system_prompt = (req.system_prompt or "") + missing_context
+            self._apply_life_request_context(req, missing_context)
             self._append_visual_input_anchor(req)
             self._append_video_input_anchor(req, event)
             logger.debug("[上下文注入] 当前暂无日常生活记录，已注入防编造约束")
@@ -599,7 +601,7 @@ class LayerChainMixin:
         hidden_context += self.friend_reference_injection_context(event)
         if self._voice_expression_channel_enabled(event):
             self.mark_voice_switch_available(event)
-        req.system_prompt = (req.system_prompt or "") + hidden_context
+        self._apply_life_request_context(req, hidden_context)
         self._append_visual_input_anchor(req)
         self._append_video_input_anchor(req, event)
         logger.debug("[上下文注入] 已注入日常生活背景上下文")

@@ -17,6 +17,7 @@ from ..life.condition import (
     state_log_entry,
 )
 from ..life.restdelay import format_rest_delay_hint
+from ..life.body import ContinuousBody, project_body
 from ..life.signals import physiological_rhythm_log_from_state
 from ..life.tools import (
     extract_json_from_text,
@@ -189,6 +190,7 @@ class StatusMixin:
 当前活动执行状态：{curr_act.execution_state if curr_act else "未知"}；执行证据：{curr_act.execution_evidence if curr_act else "无"}
 下一项安排：{next_text}
 当前状态：{format_state_prompt(data.state)}
+持续生活事实：{data.meta.get("continuous_life_context") or "尚未建立"}
 近期状态变化：
 {state_log_text}
 近期情绪脉络：
@@ -464,8 +466,32 @@ class StatusMixin:
                         replan_payload.get("reason") or revision.reason
                     ).strip()[:240]
 
-        data.state_log = [*data.state_log, state_log_entry(state, spec.now)][-10:]
-        await self.archive.save_day(data)
+        if data.meta.get("continuous_body"):
+            def commit_current(latest):
+                nonlocal state, previous_state, revision
+                if self._state_refresh_recalled(spec.source_event):
+                    return False
+                previous_state = copy.deepcopy(latest.state)
+                state = LifeState.from_value(normalize_state(
+                    result.get("state", result), now=spec.now, source=spec.source,
+                    previous=latest.state, max_score_delta=12,
+                ))
+                self._apply_state_continuity(latest, state, debt, delta, carryover)
+                project_body(latest, ContinuousBody.from_value(json.loads(latest.meta["continuous_body"]), latest))
+                if previous_state is not None:
+                    state.sleep.depth = previous_state.sleep.depth
+                if replan_payload.get("should_replan") is True and callable(replanner) and isinstance(replan_payload.get("replacements"), list):
+                    revision = replanner(latest, replan_payload["replacements"], now=spec.now)
+                    if revision.status == "applied":
+                        latest.meta.pop("schedule_replan_pending", None)
+                        latest.meta["schedule_replan_reason"] = str(replan_payload.get("reason") or revision.reason).strip()[:240]
+                latest.state_log = [*latest.state_log, state_log_entry(state, spec.now)][-10:]
+            current = await self.archive.mutate_day(data.date, commit_current)
+            if current is not None:
+                data.apply_persisted(current)
+        else:
+            data.state_log = [*data.state_log, state_log_entry(state, spec.now)][-10:]
+            await self.archive.save_day(data)
         sync_world_facts = getattr(self.composer, "sync_day_world_facts", None)
         if callable(sync_world_facts):
             await sync_world_facts(
@@ -508,6 +534,13 @@ class StatusMixin:
             spec,
             previous_state,
         )
+        sync_kernel = getattr(self, "sync_continuous_kernel_state", None)
+        if callable(sync_kernel):
+            try:
+                await sync_kernel(data, now=spec.now)
+            except (AttributeError, RuntimeError):
+                # 旧测试夹具或关闭中的运行时没有持续生活归档时，状态刷新仍应完成。
+                pass
         if self._state_refresh_recalled(spec.source_event):
             return data
         if spec.notify_page:

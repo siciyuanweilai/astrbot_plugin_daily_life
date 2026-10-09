@@ -18,6 +18,11 @@ class FakeArchive:
         self.diaries = []
         self.traces = []
         self.points = []
+        self.continuous_world = {}
+
+    async def mutate_continuous_life(self, date, mutator):
+        mutator(None, self.continuous_world)
+        return None, self.continuous_world
 
     async def get_affective_states(self, **kwargs):
         return [
@@ -125,6 +130,13 @@ class LifeEvolutionServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(archive.reflections), 1)
         self.assertEqual(len(archive.diaries), 1)
         self.assertEqual(archive.traces[-1]["stage"], "committed")
+        causal = archive.continuous_world["kernel"]["causal_traces"]
+        self.assertEqual(
+            {item["kind"] for item in causal}, {"affect_change", "relationship_change"}
+        )
+        self.assertEqual(causal[0]["evidence_ids"], ["event:1"])
+        self.assertEqual(causal[1]["scope"], "relationship:u1")
+        self.assertNotIn("虚构", str(causal))
 
     async def test_low_value_review_does_not_create_reflection_or_diary(self):
         archive = FakeArchive()

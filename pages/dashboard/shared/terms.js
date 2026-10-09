@@ -106,6 +106,7 @@ export const LIFE_DOMAIN_STATUS_LABELS = {
 };
 
 export const LIFE_DOMAIN_SOURCE_LABELS = {
+  continuous_executor: "自主行动",
   daily_plan: "日程计划",
   life_action: "动作回执",
   life_action_simulation: "生活模拟",
@@ -352,6 +353,7 @@ export const WEEK_PROGRESS_STATUS_LABELS = {
 };
 
 export const PAGE_STATUS_REASON_LABELS = {
+  wardrobe: "衣橱生活状态",
   state: "实时状态更新",
   daily_refresh: "每日生活背景刷新",
   nightly_review: "夜间复盘",
@@ -359,6 +361,7 @@ export const PAGE_STATUS_REASON_LABELS = {
   weather: "天气更新",
   memo: "备忘录更新",
   autonomous_life_update: "自主生活状态与穿搭更新",
+  continuous_life: "持续生活与身体需求更新",
   chat_state_refresh: "聊天触发状态巡检",
   timeline_execution: "时间轴执行状态更新",
   invite_outfit_update: "邀约后的穿搭判断",

@@ -246,7 +246,7 @@ def build_person_fact_audit_prompt(
     subject: str,
 ) -> str:
     fields = allowed_string_fields(payload, patterns)
-    fixed = f"""审计一份{subject}里的人物身份与称谓是否和明确资料一致。
+    fixed = f"""审计一份待检查资料里的人物身份与称谓是否和明确资料一致。
 这只检查人物指代、称呼、性别、亲疏和关系归属，不评价文风、剧情、日程安排或其他内容。
 
 {CORE_PERSONA_AUDIT_POLICY}
@@ -266,7 +266,8 @@ def build_person_fact_audit_prompt(
 - 有冲突时 valid=false；只为确有冲突的既有字符串字段提供 replacement。
 - replacement.path 必须原样使用候选字段里的路径；不能新增、删除、移动字段或数组项。
 - replacement.value 必须是修正后的完整字符串字段。"""
-    dynamic = f"""{context.format_for_generation(include_persona=True, include_rules=False)}
+    dynamic = f"""资料类型：{subject}
+{context.format_for_generation(include_persona=True, include_rules=False)}
 
 可审计字段：
 {json.dumps(fields, ensure_ascii=False)}"""

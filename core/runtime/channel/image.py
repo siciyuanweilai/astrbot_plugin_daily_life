@@ -193,7 +193,7 @@ class RuntimeImageMediaMixin:
         fixed = f"""你是生活图片的场景语义整理器。当前角色的真实换装已经由生活状态引擎完成并保存，下面的画面提示只能提供非造型信息。
 
 要求：
-- {subject_rule}
+- 按本轮主体范围移除造型设计。
 - 保留明确的地点、环境、时间、天气、动作、姿态、互动、手持物、构图、景别、镜头、光线和氛围。
 - 不新增、改写或概括任何人物造型，也不要用风格词暗示另一套服装。
 - 如果原文只有造型要求而没有可复用的非造型信息，prompt 返回空字符串。
@@ -201,7 +201,7 @@ class RuntimeImageMediaMixin:
 {CORE_JSON_OUTPUT_RULES}
 JSON 字段：
 {{"prompt":"只含非造型画面要求的中文提示词或空字符串"}}"""
-        dynamic = f"需要整理的画面提示：{original}"
+        dynamic = f"主体范围：{subject_rule}\n需要整理的画面提示：{original}"
         try:
             image_config = getattr(
                 getattr(self, "config", None), "image_generation", None
@@ -257,7 +257,7 @@ JSON 字段：
         fixed = f"""你是生活媒体的造型一致性整理器。请对照用户原始请求，整理工具生成的画面提示。
 
 规则：
-- {subject_rule}
+- 按本轮主体范围使用当前生活造型。
 - 只有用户原始请求明确要求本次画面试穿、换造型或采用另一套外观时，才保留对应的服装、鞋袜、配饰、发型、妆容或美甲要求。
 - 用户没有明确提出外观变化时，移除工具提示中自行补写的人物造型、体貌和身份设计。
 - 保留地点、环境、时间、天气、动作、姿态、互动、手持物、构图、景别、镜头、光线、动态和氛围。
@@ -267,7 +267,7 @@ JSON 字段：
 JSON 字段：
 {{"prompt":"与用户原始请求一致、且不和当前生活造型冲突的中文画面提示词"}}"""
         dynamic = (
-            f"用户原始请求：{user_request or '无'}\n工具生成的画面提示：{original}"
+            f"主体范围：{subject_rule}\n用户原始请求：{user_request or '无'}\n工具生成的画面提示：{original}"
         )
         try:
             image_config = getattr(

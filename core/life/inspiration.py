@@ -15,7 +15,9 @@ from ..models import (
 class StyleCatalogMixin:
     @staticmethod
     def _style_catalog_reference_ids(value: object) -> list[int]:
-        if isinstance(value, (str, int, float)):
+        if isinstance(value, str):
+            values = value.split(",")
+        elif isinstance(value, (int, float)):
             values = [value]
         elif isinstance(value, (list, tuple, set)):
             values = list(value)
@@ -238,6 +240,11 @@ class StyleCatalogMixin:
         score = float(getattr(item, "preference_score", 0.0) or 0.0)
         title = " ".join(str(getattr(item, "title", "") or "").split())[:80]
         description = cls._style_catalog_description(item)[:420]
+        wardrobe = attributes.get("wardrobe") or {}
+        if wardrobe:
+            from .dressing import CONDITION_LABELS
+            details.append("衣物归属：" + ("正式拥有" if wardrobe.get("ownership") == "owned" else "灵感候选"))
+            details.append("穿护状态：" + CONDITION_LABELS.get(wardrobe.get("condition"), "未知"))
         suffix = f"；{'；'.join(details)}" if details else ""
         heading = title or f"{kind}候选"
         return (
@@ -355,6 +362,15 @@ class StyleCatalogMixin:
             if complete_selection
             else {}
         )
+        snapshot_getter = getattr(self.archive, "get_wardrobe_snapshot", None)
+        snapshot = await snapshot_getter() if callable(snapshot_getter) else {}
+        if complete_selection and snapshot.get("items"):
+            for item in items:
+                if item.kind not in STYLE_CATALOG_CLOTHING_KINDS:
+                    continue
+                state = snapshot.get("items", {}).get(str(item.id), {})
+                if not state.get("available"):
+                    return {}, "所选衣物尚未正式纳入数字衣橱，或处于待洗、清洗、晾晒、收纳状态；请使用可穿衣物，缺口由后台补充"
         if complete_selection and appearance.get("outfit"):
             return appearance, ""
         if not await self._style_catalog_has_clothing_candidates():
@@ -365,7 +381,7 @@ class StyleCatalogMixin:
             "或同时选择上装与下装，并把采用编号写入 catalog_reference_ids",
         )
 
-    async def _style_catalog_context(self, *, limit: int = 10) -> str:
+    async def _style_catalog_context(self, *, limit: int = 10, conditions: dict | None = None) -> str:
         getter = getattr(self.archive, "get_style_catalog_items", None)
         if not callable(getter):
             return ""
@@ -373,6 +389,14 @@ class StyleCatalogMixin:
         candidates = await getter(
             status="active", limit=500
         )
+        from .dressing import reviewed_candidates, suitability_key, wardrobe_fact_text
+        snapshot_getter = getattr(self.archive, "get_wardrobe_snapshot", None)
+        snapshot = await snapshot_getter() if callable(snapshot_getter) else {}
+        for item in candidates:
+            state = snapshot.get("items", {}).get(str(item.id))
+            if state:
+                item.attributes["wardrobe"] = state
+        candidates = reviewed_candidates(candidates, snapshot.get("profile", {}) if conditions else {}, suitability_key(conditions) if conditions else "")
         grouped = {
             kind: [item for item in candidates if getattr(item, "kind", "") == kind]
             for kind in STYLE_CATALOG_KINDS
@@ -402,15 +426,16 @@ class StyleCatalogMixin:
             return ""
         lines = [
             "## 👗 视觉衣橱候选",
-            "以下来自用户明确学习的商品图或造型图，只是新造型灵感，不是当前已经穿上的事实。",
+            "以下来自已学习或生成的造型资料。候选、正式拥有与当前穿着分别记录，不能把生成或收藏说成已经穿上。",
             "保持当前穿搭时不采用候选；自主产生新穿搭且存在合适服装候选时，具体服装必须从本轮候选中选择，长期偏好只用于排序，不能直接变成衣服。",
             "新穿搭可以采用一条完整套装，也可以同时组合上装与下装，再按需选择鞋袜和配饰；不要只选半套，也不要同时选取语义重复的整套与单品。",
             "完整候选中的可拆卸组成按结构化场景角色进入当前或延后状态；当前场景只写已经穿着或携带的组成，不把待用组成混入可见穿搭。",
-            "近期使用过的候选已由系统降权；场景与天气适配和近期轮换优先于偏好分，避免把高偏好候选穿成固定制服。",
+            "先保留适配的当前穿搭，已有单品优先叠穿；干净、舒适且适合天气的喜欢衣服可自然复穿。正在洗护或仅为候选的衣物不能直接穿上；不足时保留缺口交给后台补充。",
             "发型、妆容和美甲必须分别选择，不能把候选图片中的人物身份、体貌、姿势、场景或品牌当作角色事实。",
             "候选中的“视觉提示词”是该类别的详细外观事实；实际采用后应忠实保留，不得自行简化款式、层次、颜色或装饰细节。",
             "只有实际采用对应类别时才改变该外观组成；局部换衣不能自动改掉发型、妆容或美甲。",
         ]
+        lines.append(wardrobe_fact_text(snapshot))
         lines.extend(self._style_catalog_item_line(item) for item in items)
         detailed_ids = {item.id for item in items}
         clothing_index = [
@@ -425,7 +450,10 @@ class StyleCatalogMixin:
                 scenes = "、".join(self._style_catalog_list(attributes.get("scenes"), 4))
                 material = "、".join(self._style_catalog_list(attributes.get("material_appearance"), 3))
                 title = " ".join(str(item.title or "").split())[:80]
-                lines.append(f"- #{item.id} [{item.kind}] {title}；类别：{category}；场景：{scenes}；材质：{material}")
+                seasons = "、".join(self._style_catalog_list(attributes.get("seasons"), 4))
+                weather = "、".join(self._style_catalog_list(attributes.get("weather_fit"), 4))
+                state = attributes.get("wardrobe") or {}
+                lines.append(f"- #{item.id} [{item.kind}] {title}；类别：{category}；场景：{scenes}；材质：{material}；季节：{seasons}；天气适配：{weather}；归属：{state.get('ownership','candidate')}；状态：{state.get('condition','unknown')}")
         return "\n".join(lines)
 
     async def _style_catalog_reference_appearance(

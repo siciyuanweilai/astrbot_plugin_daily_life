@@ -57,6 +57,8 @@ RELATIONSHIP_CLEAR_ORDER = (
 )
 
 WORLD_TABLES = (
+    "wardrobe_units", "wardrobe_links", "wardrobe_events",
+    "wardrobe_profile", "wardrobe_jobs",
     "places",
     "events",
     "event_people",
@@ -66,6 +68,8 @@ WORLD_TABLES = (
     "style_catalog_feedback",
 )
 WORLD_CLEAR_ORDER = (
+    "wardrobe_links", "wardrobe_units", "wardrobe_events",
+    "wardrobe_profile", "wardrobe_jobs",
     "style_catalog_feedback",
     "style_catalog_items",
     "event_people",
@@ -99,6 +103,7 @@ CONVERSATION_CLEAR_ORDER = (
 )
 
 EXPERIENCE_TABLES = (
+    "continuous_life_entries",
     "life_episodes",
     "life_episode_people",
     "life_episode_places",
@@ -118,6 +123,7 @@ EXPERIENCE_TABLES = (
     "memory_maintenance",
 )
 EXPERIENCE_CLEAR_ORDER = (
+    "continuous_life_entries",
     "life_episode_places",
     "life_episode_people",
     "life_episodes",
@@ -400,7 +406,7 @@ STORAGE_CATEGORIES: dict[str, StorageCategory] = {
             StorageTableGroup(
                 "episodes",
                 "生活片段",
-                ("life_episodes", "life_episode_people", "life_episode_places"),
+                ("life_episodes", "life_episode_people", "life_episode_places", "continuous_life_entries"),
             ),
             StorageTableGroup(
                 "signals",

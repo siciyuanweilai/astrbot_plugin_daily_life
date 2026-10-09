@@ -152,6 +152,7 @@ class ProactiveContinuityTest(
         return json.dumps(
             {
                 "should_reply": True,
+                "expression_review": {"passed": True},
                 "decision": "reply",
                 "confidence": 0.95,
                 "reason": "想继续关心",

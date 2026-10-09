@@ -1120,13 +1120,15 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
             return "不应返回"
 
         provider.text_chat = delayed_text_chat
-        text = await composer._call_llm_text(
-            provider,
-            "测试超时",
-            "daily_life_timeout",
-            empty_retries=0,
-            timeout_seconds=0.01,
-        )
+        with patch("core.life.planner.logger.warning") as warning:
+            text = await composer._call_llm_text(
+                provider,
+                "测试超时",
+                "daily_life_timeout",
+                empty_retries=0,
+                timeout_seconds=0.01,
+            )
+        self.assertIn("TimeoutError：模型请求超时（上限 0.01 秒）", warning.call_args.args[0])
 
         self.assertEqual(text, "")
 

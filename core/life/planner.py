@@ -11,6 +11,7 @@ from ..config.options import LifeSettings
 from ..prompts import CORE_INTERNAL_SYSTEM_PROMPT
 from ..search import SearchService
 from ..sources import SavedHistoryReader
+from ..telemetry import ModelCacheMetrics
 from .appearance import AppearanceAuditMixin
 from .autonomy import LifeAutonomyMixin
 from .daily import DailyMixin
@@ -69,6 +70,7 @@ class LifeBackgroundComposer(
         self._gen_lock = asyncio.Lock()
         self._preference_maintenance_done = False
         self._provider_circuit = ProviderCircuit()
+        self.model_cache_metrics = ModelCacheMetrics()
 
     def _get_curr_period(self, target_dt=None) -> str:
         schedule_time = getattr(self.config, "schedule_time", "07:00")
@@ -314,7 +316,9 @@ class LifeBackgroundComposer(
                     timeout=request_timeout,
                 )
             except Exception as exc:
-                err_text = str(exc)
+                err_text = str(exc).strip() or type(exc).__name__
+                if isinstance(exc, TimeoutError):
+                    err_text = f"TimeoutError：模型请求超时（上限 {request_timeout:g} 秒）"
                 status = exception_status(exc)
                 if status == 401 and await switch_to_temporary_provider("401"):
                     continue
@@ -350,10 +354,11 @@ class LifeBackgroundComposer(
                 if await switch_to_temporary_provider("调用异常"):
                     continue
                 logger.warning(
-                    f"[日常生活] 大语言模型调用异常（第 {attempt + 1} 次）：{exc}"
+                    f"[日常生活] 大语言模型调用异常（第 {attempt + 1} 次）：{err_text[:300]}"
                 )
                 return ""
 
+            self.model_cache_metrics.record(resp, kind="internal")
             text = self._extract_completion_text(resp)
             if text:
                 self._provider_circuit.record_success(current_provider_id)

@@ -425,11 +425,13 @@ JSON 字段：
 - 不新增人物、关系、剧情、姿势、服装、地点或风格；不要把原画面改成另一张图。
 - 不要额外加入说教式安全词、负面词或审查说明。
 - 只在 prompt 字段输出润色后的图片提示词，不要解释。
-生成类型：{"参考图再创作" if reference else "文生图"}
 {CORE_JSON_OUTPUT_RULES}
 JSON 字段：
 {{"prompt":""}}"""
-        dynamic = f"需要改写的图片提示词：{original_prompt}"
+        dynamic = (
+            f"生成类型：{'参考图再创作' if reference else '文生图'}\n"
+            f"需要改写的图片提示词：{original_prompt}"
+        )
         try:
             image_config = getattr(
                 getattr(self, "config", None), "image_generation", None

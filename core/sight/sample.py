@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+from weakref import WeakValueDictionary
 
 import aiohttp
 
@@ -37,7 +38,7 @@ PAGE_CONTENT_TYPES = (
     "application/xml",
     "application/xhtml",
 )
-_REMOTE_DOWNLOAD_LOCKS: dict[str, asyncio.Lock] = {}
+_REMOTE_DOWNLOAD_LOCKS: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
 
 @dataclass(slots=True)
