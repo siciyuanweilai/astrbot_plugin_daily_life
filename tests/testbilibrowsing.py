@@ -210,6 +210,30 @@ class BrowsingTest(unittest.IsolatedAsyncioTestCase):
         result = (await self.store.list())[0]
         self.assertEqual((result["status"], result["position"], result["evidence"]), ("watching", 0, []))
 
+    async def test_life_choice_is_evaluated_once_despite_recent_browser_review(self):
+        self.world["run"] = {"status": "running", "action": {
+            "action_id": "relax-1", "action_type": "rest", "payload": {"activity": "bilibili"},
+        }}
+        await self.store.update_state({"reviewed_at": stamp(self.now), "next_at": stamp(self.now + dt.timedelta(minutes=30))})
+        self.service._model.side_effect = [{"action": "choose"}, {"action": "watch", "id": record_id(BV)}]
+        self.service.reader.candidates = AsyncMock(return_value=[self.metadata()])
+        self.service.reader.metadata = AsyncMock(return_value=self.metadata())
+        await self.service.tick()
+        self.assertEqual((await self.store.list())[0]["status"], "watching")
+        self.assertEqual((await self.store.state())["life_action_id"], "relax-1")
+        count = self.service._model.await_count
+        await self.service.tick()
+        self.assertEqual(self.service._model.await_count, count)
+
+    async def test_life_choice_preserves_incoming_chat_guard(self):
+        self.world["run"] = {"status": "running", "action": {
+            "action_id": "relax-1", "action_type": "rest", "payload": {"activity": "bilibili"},
+        }}
+        await self.service.incoming(types.SimpleNamespace(message_str="你好", scope="private:a"))
+        await self.service.tick()
+        self.service._model.assert_not_awaited()
+        self.assertEqual(await self.store.list(), [])
+
     async def test_missing_login_stops_tick_and_preserves_progress(self):
         record = await self.record(status="watching", position=45)
         self.service._started = True

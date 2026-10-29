@@ -5,6 +5,7 @@ import base64
 import copy
 import json
 import tempfile
+import time
 import types
 import unittest
 from pathlib import Path
@@ -21,7 +22,11 @@ from core.sight.native import (
     parse_video_response,
     video_identity,
 )
-from core.sight.sample import _download_remote_video_with_reason, source_fingerprint
+from core.sight.sample import (
+    _download_remote_video_with_reason,
+    prepare_sample_video_source,
+    source_fingerprint,
+)
 
 
 VIDEO = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 500
@@ -336,15 +341,22 @@ class NativeVideoRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.temp.cleanup()
 
     async def test_native_path_skips_frame_and_asr_then_reuses_content_cache(self):
-        with patch(
-            "core.sight.bridge.extract_video_frames",
-            side_effect=AssertionError("不应抽帧"),
+        with (
+            patch(
+                "core.sight.bridge.extract_video_frames",
+                side_effect=AssertionError("不应抽帧"),
+            ),
+            patch(
+                "core.sight.cinematics.prepare_sample_video_source",
+                wraps=prepare_sample_video_source,
+            ) as prepare,
         ):
             self.runtime._prepare_sight_clip_material = AsyncMock(
                 side_effect=AssertionError("不应走 ASR")
             )
             result = await self.runtime._understand_sight_clip(self.event, self.clip)
             again = await self.runtime._understand_sight_clip(self.event, self.clip)
+        prepare.assert_awaited_once()
         self.assertEqual(result.status, "ready")
         self.assertEqual(result.metadata["video_input_mode"], "gemini_native")
         self.assertTrue(again.metadata["sight_metrics"]["cache_hit"])
@@ -357,6 +369,77 @@ class NativeVideoRuntimeTest(unittest.IsolatedAsyncioTestCase):
             self.event.message_str,
             self.runtime._native_video_client.analyze.call_args.args[2],
         )
+
+    async def test_completed_cache_binds_current_message_without_preparing_video_again(self):
+        later = copy.deepcopy(self.clip)
+        later.message_id = "video-later"
+        with patch(
+            "core.sight.cinematics.prepare_sample_video_source",
+            wraps=prepare_sample_video_source,
+        ) as prepare:
+            first = await self.runtime._understand_sight_clip(self.event, self.clip)
+            again = await self.runtime._understand_sight_clip(self.event, later)
+        prepare.assert_awaited_once()
+        self.runtime._native_video_client.analyze.assert_awaited_once()
+        self.assertTrue(again.metadata["sight_metrics"]["cache_hit"])
+        self.assertEqual(again.clip.message_id, "video-later")
+        self.assertEqual(first.clip.message_id, "video-1")
+
+    async def test_force_reanalyzes_even_with_completed_cache(self):
+        await self.runtime._understand_sight_clip(self.event, self.clip)
+        result = await self.runtime._understand_sight_clip(
+            self.event, self.clip, force=True
+        )
+        self.assertEqual(result.status, "ready")
+        self.assertFalse(result.metadata["sight_metrics"].get("cache_hit", False))
+        self.assertEqual(self.runtime._native_video_client.analyze.await_count, 2)
+
+    async def test_completed_index_cannot_reuse_removed_result(self):
+        await self.runtime._understand_sight_clip(self.event, self.clip)
+        removed = await self.runtime._sight_vault_for_runtime().remove_message(
+            self.clip.scope, self.clip.message_id
+        )
+        self.assertEqual(removed, 1)
+        result = await self.runtime._understand_sight_clip(self.event, self.clip)
+        self.assertEqual(result.status, "ready")
+        self.assertEqual(self.runtime._native_video_client.analyze.await_count, 2)
+
+    async def test_completed_index_cannot_extend_result_ttl(self):
+        await self.runtime._understand_sight_clip(self.event, self.clip)
+        expired_at = time.time() + self.runtime._sight_cache_ttl_seconds() + 1
+        with patch("core.sight.vault.time.time", return_value=expired_at):
+            result = await self.runtime._understand_sight_clip(self.event, self.clip)
+        self.assertEqual(result.status, "ready")
+        self.assertEqual(self.runtime._native_video_client.analyze.await_count, 2)
+
+    async def test_recalled_event_cannot_reuse_completed_result(self):
+        await self.runtime._understand_sight_clip(self.event, self.clip)
+        self.runtime.event_was_recalled = lambda *args, **kwargs: True
+        with patch(
+            "core.sight.cinematics.prepare_sample_video_source",
+            side_effect=AssertionError("撤回后不应准备视频"),
+        ):
+            result = await self.runtime._understand_sight_clip(self.event, self.clip)
+        self.assertEqual(result.status, "failed")
+        self.assertIn("撤回", result.error)
+        self.runtime._native_video_client.analyze.assert_awaited_once()
+
+    async def test_concurrent_requests_share_analysis_and_keep_own_message_id(self):
+        later = copy.deepcopy(self.clip)
+        later.message_id = "video-later"
+
+        async def delayed(*args, **kwargs):
+            await asyncio.sleep(0.02)
+            return analysis(), {}
+
+        self.runtime._native_video_client.analyze.side_effect = delayed
+        first, second = await asyncio.gather(
+            self.runtime._understand_sight_clip(self.event, self.clip),
+            self.runtime._understand_sight_clip(self.event, later),
+        )
+        self.runtime._native_video_client.analyze.assert_awaited_once()
+        self.assertEqual(first.clip.message_id, "video-1")
+        self.assertEqual(second.clip.message_id, "video-later")
 
     async def test_share_wait_timeout_keeps_video_task_and_persists_result_for_followup(
         self,

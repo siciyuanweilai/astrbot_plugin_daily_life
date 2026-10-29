@@ -366,6 +366,10 @@
         </article>
       </section>
 
+      <dialog id="closetImageDialog" class="closet-image-dialog" aria-label="衣橱图片大图" tabindex="-1">
+        <img id="closetImage" alt="">
+      </dialog>
+
       <section id="closetGenerateDialog" class="closet-dialog" hidden aria-hidden="true">
         <article class="closet-dialog-card closet-browse-card" role="dialog" aria-modal="true" aria-labelledby="closetGenerateTitle">
           <header class="closet-dialog-head">
@@ -381,7 +385,7 @@
               <label>数量<input id="closetGenerateCount" type="number" min="1" value="1"></label>
             </div>
             <label>本次生成需求<textarea id="closetGenerateNote" rows="6" maxlength="1000" placeholder="例如：适合春天去书店的浅色通勤穿搭，带自然锁骨发、清透妆容和裸色短甲"></textarea></label>
-            <button id="closetGenerateSubmit" class="primary-button" type="button">生成候选</button>
+            <button id="closetGenerateSubmit" class="primary-button" type="button">生成并入橱</button>
           </div>
         </article>
       </section>

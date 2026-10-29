@@ -177,13 +177,23 @@ class MemoryLifeService:
         if run.get("status") != "running" or action.get("action_type") != "study":
             return False
         sid = int((action.get("payload") or {}).get("knowledge_source_id") or 0)
-        if not sid:
+        if not sid and not ((action.get("payload") or {}).get("knowledge_query")
+                            or (action.get("payload") or {}).get("knowledge_url")):
             return False
         key = str(action.get("action_id") or "")
         if not key or time.monotonic() - self.read_attempts.get(key, 0) < 180:
             return False
         self.read_attempts[key] = time.monotonic()
         self.read_attempts = dict(list(self.read_attempts.items())[-64:])
+        if not sid:
+            sid = await self._acquire_reading_source(run, action)
+            if not sid:
+                return False
+            world = await self.runtime.archive.get_continuous_life()
+            active = world.get("run") or {}
+            if active.get("status") != "running" or (active.get("action") or {}).get("action_id") != key:
+                return False
+            action = active["action"]
         scopes = ["global", "self"]
         passage_id = int((action.get("payload") or {}).get("knowledge_passage_id") or 0)
         if passage_id and await self.archive.reading_receipts(key, sid):
@@ -213,6 +223,61 @@ class MemoryLifeService:
         if saved:
             await self.runtime.mark_page_status_changed("memory_reading")
         return saved
+
+    async def _acquire_reading_source(self, run: dict, action: dict) -> int:
+        """检索只是发现来源；只有取得原文才加入资料库并绑定当前行动。"""
+        search = getattr(getattr(self.runtime, "composer", None), "search", None)
+        if search is None:
+            return 0
+        payload = action.get("payload") or {}
+        url = str(payload.get("knowledge_url") or "").strip()
+        title = url
+        if not url:
+            result = await search.search(str(payload.get("knowledge_query") or ""), source_scope="web")
+            candidates = [source.as_dict() for source in result.sources[:5]] if result.status == "ok" else []
+            if not candidates:
+                return 0
+            choice = await self.model(
+                "为正在进行的阅读选择一份相关来源。返回 {index:候选数组从0开始的序号}；没有合适来源返回 index=null。"
+                "标题和摘要仅用于选来源，不作为已读内容。",
+                {"activity": action, "candidates": candidates}, persona=True,
+            )
+            index = choice.get("index")
+            if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(candidates):
+                return 0
+            url = str(candidates[index].get("url") or "")
+            title = str(candidates[index].get("title") or url)
+        page = await search.fetch(url)
+        content = str(page.get("content") or "").strip()
+        if page.get("status") != "ok" or page.get("mode") != "page_extract" or not content:
+            return 0
+        key = action.get("action_id")
+        latest = await self.runtime.archive.get_continuous_life()
+        active = latest.get("run") or {}
+        if active.get("status") != "running" or (active.get("action") or {}).get("action_id") != key:
+            return 0
+        source = await self.archive.import_source(
+            scope="self", title=title, origin=str(page.get("url") or url), content=content,
+        )
+        sid = int(source["id"])
+
+        def bind(day, world):
+            active = world.get("run") or {}
+            if active.get("status") != "running" or (active.get("action") or {}).get("action_id") != key:
+                return False
+            active["action"].setdefault("payload", {})["knowledge_source_id"] = sid
+            planned = json.loads(day.meta.get("planned_life_actions") or "[]")
+            for item in planned:
+                if item.get("action_id") == key:
+                    item.setdefault("payload", {})["knowledge_source_id"] = sid
+            day.meta["planned_life_actions"] = json.dumps(planned, ensure_ascii=False)
+
+        _, world = await self.runtime.archive.mutate_continuous_life(run["date"], bind)
+        active = world.get("run") or {}
+        if (active.get("status") == "running" and (active.get("action") or {}).get("action_id") == key
+                and (active["action"].get("payload") or {}).get("knowledge_source_id") == sid):
+            return sid
+        return 0
 
     async def search_sources(
         self, query: str, scopes: list[str], offset: int = 0

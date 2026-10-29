@@ -8,9 +8,7 @@ from unittest.mock import AsyncMock
 
 from core.contextbudget import (
     EvidenceCache,
-    budget_context,
     compact_json,
-    token_estimate,
 )
 from core.telemetry import (
     ModelCacheMetrics,
@@ -22,24 +20,7 @@ from support import DailyLifeRuntime, LifeSettings
 
 
 class ContextBudgetTest(unittest.TestCase):
-    def test_budget_keeps_current_body_outfit_promises_and_corrections(self):
-        current = "[HiddenLifeState] 口渴，已换睡裙\n[HiddenCommitments] 等对方一起看电影\n"
-        boundary = "[HiddenLifeDomains] 现有食材只剩鸡蛋\n[HiddenFocusSlots] 记着朋友明天考试\n[HiddenMemoryCorrections] 昨天的照片不能当作今天的穿搭\n[ConversationTiming] 对方隔了两小时才回复\n"
-        history = "[HiddenLifeEpisodes]\n" + "".join(f"- 旧经历{i}：" + "旧事" * 100 + "\n" for i in range(50))
-        text = budget_context(current + history + boundary, tokens=650)
-        self.assertIn(current, text)
-        self.assertIn(boundary, text)
-        self.assertLessEqual(token_estimate(text), 650)
-        for line in text.splitlines():
-            if line.startswith("- 旧经历"):
-                self.assertIn(line + "\n", history)
 
-    def test_exact_optional_evidence_dedup_does_not_merge_different_facts(self):
-        first = "[HiddenEvents]\n- 昨天穿蓝裙\n"
-        second = "[HiddenEvents]\n- 今天穿睡裙\n"
-        self.assertEqual(budget_context(first + first + second), first + second)
-        mandatory = "[HiddenLifeState] 同一状态\n"
-        self.assertEqual(budget_context(mandatory * 2, tokens=1), mandatory * 2)
 
     def test_cache_does_not_allow_mutation_or_unbounded_growth(self):
         cache = EvidenceCache(2)

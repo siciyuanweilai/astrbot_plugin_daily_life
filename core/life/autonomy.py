@@ -81,15 +81,6 @@ class LifeAutonomyComponent:
 
     async def _build_short_term_life_context(self) -> str:
         sections: list[str] = []
-        focus_slots = await self.context.archive.get_focus_slots(limit=6)
-        if focus_slots:
-            lines = [
-                f"- [{item.id}] {item.label or item.focus_key}：进度 {item.progress}/100；优先级 {item.priority}/100；{item.reason or '近期需要留意'}"
-                + (f"；到期 {item.expires_at}" if item.expires_at else "")
-                for item in focus_slots
-            ]
-            sections.append(_lines("🎯 短期目标与注意槽", lines))
-
         corrections = await self.context.archive.get_memory_corrections(
             limit=6, unapplied_only=True
         )

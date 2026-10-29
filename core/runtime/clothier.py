@@ -672,7 +672,7 @@ class WardrobeLifeService:
             category="vision",
         )
         return ToolResultText(
-            f"衣橱生成已提交后台，任务状态：{job['status']}。完成后可在衣橱查看候选，等待期间可以继续聊天。",
+            f"衣橱生成已提交后台，任务状态：{job['status']}。生成并识别通过后会自动收入衣橱，等待期间可以继续聊天。",
             status="submitted",
             media="style_catalog",
         )

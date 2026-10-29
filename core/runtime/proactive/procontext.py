@@ -519,19 +519,6 @@ JSON 输出要求：
                 lines.append(f"- {label}{owner}（{profile_hint(item)}）: {body}；经验权重 {expression_weight(item):.2f}")
         return "\n".join(lines) if lines else "暂无稳定表达习惯。"
 
-    def _format_behavior_patterns_for_proactive(self, patterns: list[Any]) -> str:
-        lines: list[str] = []
-        for item in list(patterns or [])[:5]:
-            scene = str(getattr(item, "scene", "") or "").strip()
-            pattern = str(getattr(item, "pattern", "") or "").strip()
-            action = str(getattr(item, "suggested_action", "") or "").strip()
-            confidence = getattr(item, "confidence", 0)
-            if scene and pattern:
-                suffix = f"；倾向 {action}" if action else ""
-                lines.append(
-                    f"- {scene}: {pattern}{suffix}；可信度 {float(confidence or 0):.2f}"
-                )
-        return "\n".join(lines) if lines else "暂无沉淀行为模式。"
 
     def _format_reply_effects_for_proactive(self, effects: list[Any]) -> str:
         lines: list[str] = []
@@ -580,57 +567,8 @@ JSON 输出要求：
                 )
         return "\n".join(lines) if lines else "暂无行为场景簇。"
 
-    def _format_focus_slots_for_proactive(self, slots: list[Any]) -> str:
-        lines: list[str] = []
-        for item in list(slots or [])[:4]:
-            label = str(
-                getattr(item, "label", "") or getattr(item, "focus_key", "") or ""
-            ).strip()
-            reason = str(getattr(item, "reason", "") or "").strip()
-            priority = int(getattr(item, "priority", 0) or 0)
-            if label:
-                lines.append(
-                    f"- {label}: 注意槽 {priority}/100；{reason or '短期仍会想起'}"
-                )
-        return "\n".join(lines) if lines else "暂无短期注意槽。"
 
-    def _format_mid_summaries_for_proactive(self, summaries: list[Any]) -> str:
-        lines: list[str] = []
-        for item in list(summaries or [])[:3]:
-            label = str(
-                getattr(item, "scope_label", "")
-                or getattr(item, "session_id", "")
-                or ""
-            ).strip()
-            topic = str(getattr(item, "topic", "") or "").strip()
-            mood = str(getattr(item, "mood", "") or "").strip()
-            summary = str(getattr(item, "summary", "") or "").strip()
-            parts = [
-                f"话题：{topic}" if topic else "",
-                f"氛围：{mood}" if mood else "",
-                summary,
-            ]
-            body = "；".join(part for part in parts if part)
-            if label and body:
-                lines.append(f"- {label}: {body}")
-        return "\n".join(lines) if lines else "暂无会话中期摘要。"
 
-    def _format_temporary_expression_states_for_proactive(
-        self, states: list[Any]
-    ) -> str:
-        lines: list[str] = []
-        for item in list(states or [])[:3]:
-            label = str(getattr(item, "label", "") or "").strip()
-            tone = str(getattr(item, "tone", "") or "").strip()
-            reason = str(getattr(item, "reason", "") or "").strip()
-            intensity = getattr(item, "intensity", 0)
-            if label or tone:
-                parts = [tone, reason, f"强度 {int(intensity or 0)}/100"]
-                lines.append(
-                    f"- {label or '此刻表达状态'}: "
-                    + "；".join(part for part in parts if part)
-                )
-        return "\n".join(lines) if lines else "暂无临时表达状态。"
 
     def _format_life_terms_for_proactive(self, terms: list[Any]) -> str:
         lines: list[str] = []

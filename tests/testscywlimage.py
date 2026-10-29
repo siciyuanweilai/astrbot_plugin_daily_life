@@ -115,43 +115,33 @@ class ScywlImageTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(channel.model, model)
                 self.assertEqual(channel.api_url, "https://api.scywl.cc")
 
-    def test_request_uses_single_image_json_contract(self):
+    def test_text_request_uses_json_contract(self):
         for model in ("gpt-image-2", "gpt-image-2.5"):
             for endpoint in ("", "/v1", "/v1/images/edits", "/v1/images/generations"):
-                for count in (0, 1):
-                    with self.subTest(model=model, endpoint=endpoint, references=count):
-                        route = _route(
-                            model=model, api_url=f"https://api.scywl.cc{endpoint}"
-                        )
-                        request = openai.build_request(
-                            route, _parts(count), resolution="1K", aspect_ratio="1:1"
-                        )
-                        self.assertEqual(
-                            request.url,
-                            "https://api.scywl.cc/v1/images/"
-                            + ("edits" if count else "generations"),
-                        )
-                        self.assertEqual(
-                            request.headers["Authorization"], "Bearer test-key"
-                        )
-                        self.assertEqual(request.payload["model"], model)
-                        self.assertEqual(request.payload["size"], "1024x1024")
-                        self.assertEqual(request.payload["n"], 1)
-                        self.assertEqual(request.payload["response_format"], "b64_json")
-                        self.assertEqual(request.reference_image_count, count)
-                        self.assertIsNone(request.form)
-                        self.assertFalse(
-                            {"images", "resolution", "quality", "stream", "mask"}
-                            & request.payload.keys()
-                        )
-                        self.assertEqual("image" in request.payload, bool(count))
-                        if count:
-                            self.assertEqual(
-                                request.payload["image"],
-                                "data:image/png;base64,"
-                                + _parts(1)[1]["inlineData"]["data"],
-                            )
-                        self.assertFalse(openai.uses_async_tasks(route))
+                with self.subTest(model=model, endpoint=endpoint):
+                    route = _route(
+                        model=model, api_url=f"https://api.scywl.cc{endpoint}"
+                    )
+                    request = openai.build_request(
+                        route, _parts(), resolution="1K", aspect_ratio="1:1"
+                    )
+                    self.assertEqual(
+                        request.url, "https://api.scywl.cc/v1/images/generations"
+                    )
+                    self.assertEqual(
+                        request.headers["Authorization"], "Bearer test-key"
+                    )
+                    self.assertEqual(request.payload["model"], model)
+                    self.assertEqual(request.payload["size"], "1024x1024")
+                    self.assertEqual(request.payload["n"], 1)
+                    self.assertEqual(request.payload["response_format"], "b64_json")
+                    self.assertEqual(request.reference_image_count, 0)
+                    self.assertIsNone(request.form)
+                    self.assertFalse(
+                        {"image", "images", "resolution", "quality", "stream", "mask"}
+                        & request.payload.keys()
+                    )
+                    self.assertFalse(openai.uses_async_tasks(route))
 
     def test_sizes_obey_alignment_pixel_budget_and_ratio_limits(self):
         for tier in ("1K", "2K", "4K"):
@@ -196,31 +186,55 @@ class ScywlImageTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(request.payload["size"], "1280x3840")
 
-    def test_multiple_references_use_multipart_without_losing_order_or_content(self):
+    def test_edits_use_common_multipart_without_losing_references(self):
         for model in ("gpt-image-2", "gpt-image-2.5"):
-            with self.subTest(model=model):
-                parts = _parts(3)
-                request = openai.build_request(
-                    _route(model=model), parts, resolution="1K", aspect_ratio="1:1"
-                )
-                self.assertEqual(request.url, "https://api.scywl.cc/v1/images/edits")
-                self.assertIsNone(request.payload)
-                self.assertEqual(request.reference_image_count, 3)
-                fields = request.form.fields
-                values = {name: value for name, value, _ in fields if name != "image"}
-                self.assertEqual(values["model"], model)
-                self.assertEqual(values["size"], "1024x1024")
-                self.assertEqual(values["n"], "1")
-                self.assertEqual(values["response_format"], "b64_json")
-                self.assertNotIn("Content-Type", request.headers)
-                self.assertEqual(
-                    request.headers["Idempotency-Key"],
-                    request.headers["X-Client-Request-ID"],
-                )
-                self.assertEqual(
-                    [value for name, value, _ in fields if name == "image"],
-                    [data for data, _ in openai.inline_images(parts)],
-                )
+            for count in (1, 2, 3):
+                for endpoint in (
+                    "",
+                    "/v1",
+                    "/v1/images/edits",
+                    "/v1/images/generations",
+                ):
+                    with self.subTest(model=model, references=count, endpoint=endpoint):
+                        parts = _parts(count)
+                        request = openai.build_request(
+                            _route(
+                                model=model, api_url=f"https://api.scywl.cc{endpoint}"
+                            ),
+                            parts,
+                            resolution="1K",
+                            aspect_ratio="1:1",
+                        )
+                        self.assertEqual(
+                            request.url, "https://api.scywl.cc/v1/images/edits"
+                        )
+                        self.assertIsNone(request.payload)
+                        self.assertEqual(request.reference_image_count, count)
+                        fields = request.form.fields
+                        values = {
+                            name: value for name, value, _ in fields if name != "image"
+                        }
+                        self.assertEqual(values["model"], model)
+                        self.assertEqual(values["size"], "1024x1024")
+                        self.assertEqual(values["n"], "1")
+                        self.assertEqual(values["response_format"], "b64_json")
+                        self.assertNotIn("Content-Type", request.headers)
+                        self.assertEqual(
+                            request.headers["Idempotency-Key"],
+                            request.headers["X-Client-Request-ID"],
+                        )
+                        self.assertEqual(
+                            [value for name, value, _ in fields if name == "image"],
+                            [data for data, _ in openai.inline_images(parts)],
+                        )
+                        self.assertEqual(
+                            [
+                                options["content_type"]
+                                for name, _, options in fields
+                                if name == "image"
+                            ],
+                            [mime for _, mime in openai.inline_images(parts)],
+                        )
 
     def test_unsupported_mime_is_rejected_for_every_reference(self):
         parts = _parts(2)
@@ -254,14 +268,23 @@ class ScywlImageTest(unittest.IsolatedAsyncioTestCase):
                         )
                     self.assertEqual(result.path.read_bytes(), _image_bytes())
                     self.assertEqual(len(session.calls), 1)
-                    payload = session.calls[0][1]["json"]
+                    sent = session.calls[0][1]
+                    if mode == "edit":
+                        fields = sent["data"].fields
+                        self.assertEqual(
+                            [value for name, value, _ in fields if name == "image"],
+                            [reference.read_bytes()],
+                        )
+                        payload = {name: value for name, value, _ in fields}
+                        self.assertNotIn("json", sent)
+                    else:
+                        payload = sent["json"]
                     self.assertEqual(payload["size"], "4096x4096")
-                    self.assertEqual("image" in payload, mode == "edit")
                     self.assertFalse((service.output_dir / "tasks").exists())
 
     async def test_timeout_stops_failover_after_submission(self):
         for phase in ("connect", "body"):
-            for count in (0, 2):
+            for count in (0, 1, 2):
                 with (
                     self.subTest(phase=phase, references=count),
                     tempfile.TemporaryDirectory() as directory,
@@ -274,7 +297,7 @@ class ScywlImageTest(unittest.IsolatedAsyncioTestCase):
                     service._get_session = AsyncMock(return_value=session)
                     with self.assertRaises(ImageTaskError) as caught:
                         await service._generate_image_result(
-                            lambda *_: _parts(count), prompt="窗边的生活照", mode=mode
+                            lambda *_, count=count: _parts(count), prompt="窗边的生活照", mode=mode
                         )
                     self.assertEqual(len(session.calls), 1)
                     self.assertTrue(caught.exception.request_id)
@@ -305,35 +328,36 @@ class ScywlImageTest(unittest.IsolatedAsyncioTestCase):
             fields = session.calls[0][1]["data"].fields
             self.assertEqual(sum(name == "image" for name, _, _ in fields), 2)
 
-    async def test_multiple_references_survive_explicit_failure_and_failover(self):
-        with tempfile.TemporaryDirectory() as directory:
-            service = GeminiImageService(
-                self._settings(mode="edit", backup=True), Path(directory)
-            )
-            session = _Session([_Response(status=400), _Response()])
-            service._get_session = AsyncMock(return_value=session)
-            parts = _parts(2)
-            path, route = await service._generate_image_result(
-                lambda *_: parts, prompt="合影", mode="edit"
-            )
-            self.assertTrue(path.exists())
-            self.assertEqual(route.model, "gpt-image-2.5-flare")
-            self.assertEqual(len(session.calls), 2)
-            self.assertEqual(
-                [
-                    value
-                    for name, value, _ in session.calls[0][1]["data"].fields
-                    if name == "image"
-                ],
-                [data for data, _ in openai.inline_images(parts)],
-            )
-            self.assertEqual(
-                [row["image_url"] for row in session.calls[1][1]["json"]["images"]],
-                [
-                    openai.image_data_url(data, mime)
-                    for data, mime in openai.inline_images(parts)
-                ],
-            )
+    async def test_references_survive_explicit_failure_and_failover(self):
+        for count in (1, 2):
+            with tempfile.TemporaryDirectory() as directory:
+                service = GeminiImageService(
+                    self._settings(mode="edit", backup=True), Path(directory)
+                )
+                session = _Session([_Response(status=400), _Response()])
+                service._get_session = AsyncMock(return_value=session)
+                parts = _parts(count)
+                path, route = await service._generate_image_result(
+                    lambda *_, parts=parts: parts, prompt="合影", mode="edit"
+                )
+                self.assertTrue(path.exists())
+                self.assertEqual(route.model, "gpt-image-2.5-flare")
+                self.assertEqual(len(session.calls), 2)
+                self.assertEqual(
+                    [
+                        value
+                        for name, value, _ in session.calls[0][1]["data"].fields
+                        if name == "image"
+                    ],
+                    [data for data, _ in openai.inline_images(parts)],
+                )
+                self.assertEqual(
+                    [row["image_url"] for row in session.calls[1][1]["json"]["images"]],
+                    [
+                        openai.image_data_url(data, mime)
+                        for data, mime in openai.inline_images(parts)
+                    ],
+                )
 
     async def test_group_generation_uploads_scene_and_both_people(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -342,16 +342,67 @@
 }
 
 .closet-detail-preview {
+  display: block;
+  align-self: start;
+  width: 100%;
   overflow: hidden;
   aspect-ratio: 4 / 5;
+  border: 0;
   border-radius: var(--diary-radius-md);
+  padding: 0;
   background: rgba(239, 245, 242, 0.8);
+  box-shadow: none;
+}
+
+button.closet-detail-preview {
+  cursor: zoom-in;
+}
+
+.closet-detail-preview:focus-visible {
+  outline: 3px solid var(--diary-berry);
+  outline-offset: 3px;
 }
 
 .closet-detail-preview img {
+  display: block;
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+.closet-image-dialog {
+  width: fit-content;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 24px);
+  max-height: calc(100dvb - 24px);
+  margin: auto;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 0;
+  border-radius: var(--diary-radius-md);
+  padding: 0;
+  background: transparent;
+  box-shadow: var(--diary-shadow-soft);
+}
+
+.closet-image-dialog::backdrop {
+  background: rgba(20, 17, 20, 0.82);
+}
+
+.closet-image-dialog:focus-visible {
+  outline: 2px solid var(--diary-berry);
+  outline-offset: 4px;
+}
+
+.closet-image-dialog img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: calc(100vh - 24px);
+  max-height: calc(100dvb - 24px);
+  margin-inline: auto;
+  object-fit: contain;
 }
 
 .closet-detail-copy {

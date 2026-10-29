@@ -14,8 +14,6 @@ from core.archive.experience.patterns import BehaviorArchiveComponent as _implem
 from core.runtime.capture.event import CaptureEventComponent as _implementation_7
 from core.runtime.capture.payload import CapturePayloadComponent as _implementation_10
 from core.runtime.capture.persona import CapturePersonaComponent as _implementation_11
-from core.runtime.capture.pledge import CapturePledgeComponent as _implementation_12
-from core.runtime.capture.relation import CaptureRelationComponent as _implementation_13
 from core.runtime.delay import ChatDelayComponent as _implementation_14
 from core.runtime.capture.execution import ChatExecutionComponent as _implementation_15
 from core.runtime.capture.batch import ChatMemoryBatchComponent as _implementation_16
@@ -236,11 +234,9 @@ BehaviorArchiveComponent = _fixture('BehaviorArchiveComponent', (_implementation
 CaptureCalibrationComponent = _fixture('CaptureCalibrationComponent', (_implementation_86, _implementation_171, _implementation_114,))
 CaptureEventComponent = _fixture('CaptureEventComponent', (_implementation_7,))
 CaptureImprintComponent = _fixture('CaptureImprintComponent', (_implementation_4, _implementation_60, _implementation_62, _implementation_61,))
-CaptureComponent = _fixture('CaptureComponent', (_implementation_16, _implementation_15, _implementation_51, _implementation_7, _implementation_10, _implementation_13, _implementation_11, _implementation_86, _implementation_171, _implementation_114, _implementation_4, _implementation_60, _implementation_62, _implementation_61, _implementation_41, _implementation_42, _implementation_44, _implementation_45, _implementation_43,))
+CaptureComponent = _fixture('CaptureComponent', (_implementation_16, _implementation_15, _implementation_51, _implementation_7, _implementation_10, _implementation_11, _implementation_86, _implementation_171, _implementation_114, _implementation_4, _implementation_60, _implementation_62, _implementation_61, _implementation_41, _implementation_42, _implementation_44, _implementation_45, _implementation_43,))
 CapturePayloadComponent = _fixture('CapturePayloadComponent', (_implementation_10,))
 CapturePersonaComponent = _fixture('CapturePersonaComponent', (_implementation_11,))
-CapturePledgeComponent = _fixture('CapturePledgeComponent', (_implementation_12,))
-CaptureRelationComponent = _fixture('CaptureRelationComponent', (_implementation_13, _implementation_11, _implementation_86, _implementation_171, _implementation_114,))
 ChatDelayComponent = _fixture('ChatDelayComponent', (_implementation_14,))
 ChatExecutionComponent = _fixture('ChatExecutionComponent', (_implementation_15,))
 ChatMemoryBatchComponent = _fixture('ChatMemoryBatchComponent', (_implementation_16, _implementation_15, _implementation_51,))

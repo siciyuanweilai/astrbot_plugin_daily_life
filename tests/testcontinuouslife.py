@@ -1520,11 +1520,17 @@ class ContinuousLifeTest(unittest.IsolatedAsyncioTestCase):
         data = json.loads(prompt.split("【眼前内容】\n", 1)[1])
         self.assertEqual(data["outfit"], "居家服")
         self.assertIn("body", data)
+        self.assertEqual(list(data)[:4], ["persona", "preferences", "self_model", "body"])
+        self.assertNotIn("focus", data)
         runtime.call_text_model.reset_mock()
         runtime.call_text_model.side_effect = ['{"decision":"expand","reason":"口渴了要喝水"}', '{"decision":"wait"}']
         await runtime.continuous_decision.choose(day, world, runtime.now)
         self.assertEqual(runtime.call_text_model.await_count, 2)
         runtime.composer._style_catalog_context.assert_awaited_once()
+        full_data = json.loads(runtime.call_text_model.call_args.args[1].split("【眼前内容】\n", 1)[1])
+        self.assertEqual(list(full_data)[:3], ["persona", "preferences", "self_model"])
+        self.assertIn("body", full_data["world"])
+        self.assertNotIn("focus", full_data)
 
     async def test_real_browsing_evidence_enters_shared_interests_slowly(self):
         from core.browsing.bookmarks import BrowseArchive, record_id

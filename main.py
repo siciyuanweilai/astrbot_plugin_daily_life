@@ -1647,7 +1647,7 @@ class DailyLifePlugin(Star):
         historical_period: str = "",
         historical_time: str = "",
     ):
-        """用户明确请求一组照片时生成 2 至 6 张，默认 3 张；普通接话、感谢和催进度不构成新拍摄请求。
+        """用户明确请求一组照片时生成 2 至 10 张，默认 3 张；普通接话、感谢和催进度不构成新拍摄请求。
         同组保持人物、造型、场景与光线连续，以景别和动作形成变化；使用 retry_indexes 仅重拍指定照片。
         合影人物 A 是角色、B 是所选好友，外观独立；当前事实与历史回现分别使用对应时间的资料。
         当前消息或引用中的图片自动作为参考；明确沿用上一张成功图片时设置 continue_last_result。
@@ -1655,7 +1655,7 @@ class DailyLifePlugin(Star):
 
         Args:
             prompt(string): 完整画面要求；完整提示词、分镜或时间轴原样保留。
-            count(int): 本组张数，2 至 6，默认 3。
+            count(int): 本组张数，2 至 10，默认 3。
             reference_image(string): 参考图片路径或 URL；留空读取当前消息或引用图。
             continue_last_result(bool): 没有新图且明确沿用会话上一张成功图片时为 true；新拍摄为 false。
             subject_route(string): 主体枚举 current_character、group、scene、object、free；角色本人用 current_character，角色与好友同框用 group。
@@ -1854,13 +1854,13 @@ class DailyLifePlugin(Star):
         """
         当用户明确提出穿搭、发型、妆容、美甲或生活场景需求，并希望生成新的生活化造型图片加入视觉衣橱时调用。
         本次要求优先，结合现实天气、活动与角色自身审美在后台生成；提交后可继续聊天。
-        本工具不会改变角色当前真实穿搭，也不会向用户发送生成图；只生成、视觉核对并保存衣橱候选。
+        生成图经视觉核对后自动收入衣橱，衣物记为已拥有；实际穿戴随生活需要安排，生成图保存在衣橱中。
         文生图绝不使用角色参考图；图生图必须有可用图生图接口和已启用的当前角色参考图，缺少条件时必须如实失败，不能切换到另一种方式。
 
         Args:
             requirement(string): 用户本次希望生成的完整需求，例如“适合春天去书店的浅色通勤穿搭，带自然锁骨发和裸色短甲”。可留空，让模型自由构思。
             generation_mode(string): 可选 text_to_image 或 image_to_image；留空使用创意衣橱配置的默认方式。
-            count(int): 要生成的图片数量，默认 1；每张图独立视觉核对后写入衣橱候选。
+            count(int): 要生成的图片数量，默认 1；每张图独立视觉核对后自动收入衣橱。
         """
         denial = self._life_permission_denial(
             event, "style:generate", LifeActionScope.PRIVATE
@@ -2080,11 +2080,11 @@ class DailyLifePlugin(Star):
     @guard_tool_arguments
     @_runtime_guard
     async def life_bili_message(self, event: AstrMessageEvent, operation: str = "history", text: str = "") -> str:
-        """与当前私聊中已经验证为同一人的B站身份交流，发送必须以真实回执为准。
+        """与当前已验证身份仅交流B站相关内容，发送必须以真实回执为准。
 
         Args:
-            operation(string): history 查看同一人的B站私信；send 向此人的B站账号发送私信。
-            text(string): send 时要发送的自然话语；不会发送给未验证的陌生账号。
+            operation(string): history 查看此人的B站话题私信；send 发送B站相关私信。
+            text(string): send 时围绕B站内容或站内事务的自然话语；不用于生活闲聊或其他平台事务。
         """
         import json
         if event.get_group_id():

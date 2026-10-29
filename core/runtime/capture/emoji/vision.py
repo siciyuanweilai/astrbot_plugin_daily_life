@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import time
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -15,6 +16,7 @@ from ....life.tools import extract_json_from_text
 from ....models import EmojiAssetRecord
 from ....models.primitive import optional_bool
 from ....prompts import cache_friendly_prompt
+from ....search.cache import SingleFlight
 from ....sight.animated import prepare_animated_image
 from ....sight.visual import image_understanding_cache_key, image_understanding_prompt
 from ....telemetry import cache_prefix_version, model_request_identity
@@ -51,6 +53,8 @@ class EmojiVisionComponentContext(Protocol):
     _save_plain_image_emoji_candidate: Any
     _str_payload: Any
     _visual_context_summary_from_payload: Any
+    _visual_context_summary_cache: Any
+    _remember_visual_context_summary: Any
     archive: Any
     close_text_session: Any
     config: Any
@@ -62,6 +66,44 @@ class EmojiVisionComponent:
         self.context = context
         self._plain_image_reviews: dict[tuple[str, str], None] = {}
         self._visual_facts = EvidenceCache(64)
+        self._visual_flight: SingleFlight[dict[str, Any]] = SingleFlight()
+        self._closing = False
+
+    async def _vision_provider_identity(self, settings: VisionSettings) -> str:
+        identities = [
+            model_request_identity(provider, settings.provider)
+            async for provider in self.context.get_text_provider_candidates(
+                settings.provider
+            )
+        ]
+        return compact_json(identities)
+
+    async def _visual_context_cache_key(self, fingerprint: str, user_text: str = "") -> str:
+        settings = replace(self.context.config.vision)
+        return image_understanding_cache_key(
+            settings, fingerprint, user_text,
+            provider_identity=await self._vision_provider_identity(settings),
+        )
+
+    async def _plain_image_review_key(self, fingerprint: str) -> tuple[str, str]:
+        return fingerprint, await self._vision_provider_identity(self.context.config.emoji_vision)
+
+    async def _plain_image_review_known(self, key: tuple[str, str]) -> bool:
+        if key in self._plain_image_reviews:
+            self._plain_image_reviews.pop(key)
+            self._plain_image_reviews[key] = None
+            return True
+        existing = await self.context.archive.get_emoji_asset_by_hash(key[0])
+        return bool(existing and existing.status in {
+            "ready", *self.context.EMOJI_ASSET_REJECTED_STATUSES
+        })
+
+    async def _plain_image_emoji_review_cached(self, fingerprint: str) -> bool:
+        return await self._plain_image_review_known(await self._plain_image_review_key(fingerprint))
+
+    async def _close_visual_context_flights(self) -> None:
+        self._closing = True
+        await self._visual_flight.close()
 
     @staticmethod
     def _emoji_asset_is_inline_source(path: str) -> bool:
@@ -338,11 +380,8 @@ class EmojiVisionComponent:
     ) -> None:
         if not self.context._emoji_auto_collect_enabled() or not fingerprint:
             return
-        review_key = (fingerprint, self.context.config.emoji_vision.provider)
-        if review_key in self._plain_image_reviews:
-            return
-        existing = await self.context.archive.get_emoji_asset_by_hash(fingerprint)
-        if existing and existing.status in {"ready", *self.context.EMOJI_ASSET_REJECTED_STATUSES}:
+        review_key = await self._plain_image_review_key(fingerprint)
+        if await self._plain_image_review_known(review_key):
             return
         if not await self.context._emoji_can_accept_ready_asset(exclude_hash=fingerprint):
             return
@@ -577,18 +616,22 @@ class EmojiVisionComponent:
         *,
         user_text: str = "",
     ) -> None:
-        settings = self.context.config.vision
-        if not settings.enabled:
+        settings = replace(self.context.config.vision)
+        if not settings.enabled or self._closing:
             return
-        path = str(path or "").strip()
-        readable_path = self.context._emoji_asset_readable_source(path)
-        if path and not readable_path:
-            return
-        path = readable_path or path
-        prompt = image_understanding_prompt(settings, user_text)
-        cache_key = image_understanding_cache_key(settings, fingerprint, user_text)
-        facts_key = image_understanding_cache_key(settings, fingerprint)
-        try:
+        identity = await self._vision_provider_identity(settings)
+        cache_key = image_understanding_cache_key(
+            settings, fingerprint, user_text, provider_identity=identity
+        )
+        facts_key = image_understanding_cache_key(settings, fingerprint, provider_identity=identity)
+
+        async def recognize() -> dict[str, Any]:
+            cached = self.context._visual_context_summary_cache().get(cache_key) if fingerprint else None
+            if cached:
+                return {"summary": cached}
+            readable_path = self.context._emoji_asset_readable_source(str(path or "").strip())
+            if not readable_path or self._closing:
+                return {}
             async with asyncio.timeout(settings.timeout_seconds):
                 facts = self._visual_facts.get(facts_key) if fingerprint else None
                 payload = None
@@ -613,14 +656,22 @@ class EmojiVisionComponent:
                         pass
                 if payload is None:
                     payload = await self.context._call_vision_payload(
-                        prompt, path, session_prefix="daily_life_visual",
+                        image_understanding_prompt(settings, user_text), readable_path,
+                        session_prefix="daily_life_visual",
                         task_label="图片上下文", settings=settings,
                     )
                     facts = payload.get("visible_facts")
                     if fingerprint and isinstance(facts, str) and facts.strip():
                         self._visual_facts.put(facts_key, facts.strip()[:1200])
             summary = self.context._visual_context_summary_from_payload(payload)
-            logger.debug(f"{LOG_PREFIX} 图片上下文识别完成：{summary or '已解析'}")
+            # 在共享任务结束前保存结果，后来的请求即可直接命中。
+            if fingerprint and summary:
+                self.context._remember_visual_context_summary(cache_key, summary)
+            return payload
+
+        try:
+            payload, shared = await self._visual_flight.run(cache_key if fingerprint else "", recognize)
+            logger.debug(f"{LOG_PREFIX} 图片上下文准备完成：共用请求={'是' if shared else '否'}")
             self.context._apply_visual_context_summary(
                 context_scope,
                 context_message_key,

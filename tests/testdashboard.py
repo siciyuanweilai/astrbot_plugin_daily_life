@@ -1342,10 +1342,27 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
             },
         )
         self.assertEqual(result["data"]["stats"]["generated"], 1)
+        self.assertEqual(result["data"]["generation_status"], "ok")
         self.assertEqual(
             result["data"]["items"][0]["source_kind"],
             "generated_style_image",
         )
+
+    async def test_closet_generation_reports_background_submission_before_admission(self):
+        async def generate(event, **kwargs):
+            return ToolResultText(
+                "已提交生成，完成后自动收入衣橱", status="submitted"
+            )
+
+        self.plugin.runtime.life_style_generate = generate
+        self.plugin.body = {"generation_mode": "text_to_image", "count": 1}
+
+        result = await self.plugin.page_closet_generate()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["data"]["generation_status"], "submitted")
+        self.assertEqual(result["data"]["items"], [])
+        self.assertEqual(result["data"]["stats"]["generated"], 0)
 
     async def test_emoji_import_upload_caches_asset_and_lists_manual_source(self):
         image_bytes = b"\x89PNG\r\n\x1a\nmanual-emoji"
@@ -1722,15 +1739,11 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
             "平均身体负荷",
             status["experience"]["physiological_rhythm_trend"]["summary"],
         )
-        self.assertEqual(status["experience"]["focus_targets"][0]["label"], "早睡恢复")
-        self.assertNotIn(
-            "过期高优先级目标",
-            [item["label"] for item in status["experience"]["focus_targets"]],
-        )
-        self.assertNotIn(
-            "已停用目标",
-            [item["label"] for item in status["experience"]["focus_targets"]],
-        )
+        for key in (
+            "focus_targets", "focus_slots", "behavior_patterns",
+            "mid_summaries", "temporary_expression_states",
+        ):
+            self.assertNotIn(key, status["experience"])
         self.assertEqual(status["experience"]["terms"][0]["term"], "蹲后续")
         self.assertTrue(status["experience"]["long_term_memories"])
         self.assertTrue(status["experience"]["memory_clusters"])

@@ -2157,7 +2157,7 @@ class CognitionArchiveComponent:
                 sql += " LIMIT ?"
                 params.append(int(limit))
             rows = self.context._conn.execute(sql, tuple(params)).fetchall()
-            from .memorylife import MemoryLifeArchive
+            from .lifetraces import MemoryLifeArchive
             living = MemoryLifeArchive(self.context)
             result = []
             for row in rows:

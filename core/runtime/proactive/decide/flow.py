@@ -729,14 +729,19 @@ class ProactiveFlowComponent:
             )
             if not is_current():
                 return
+            delivery_payload = {**decision, "source": "proactive_reply"}
             sent = await self.context._send_proactive_message(
                 str(candidate.get("target_scope") or ""),
                 reply_text,
                 "闲时回复发送失败",
-                send_payload={**decision, "source": "proactive_reply"},
+                send_payload=delivery_payload,
                 source_event=event,
             )
+            delivery = delivery_payload.get("_delivery") or {}
+            if delivery:
+                decision["_delivery"] = delivery
             if sent:
+                reply_text = str(delivery.get("sent_text") or reply_text)
                 if voice_invite is not None:
                     notice, link = voice_invite
                     invite_sent = await self.context._send_proactive_voice_call_invite(
@@ -803,44 +808,34 @@ class ProactiveFlowComponent:
             interrupted = (
                 latest is not candidate
                 or int((latest or {}).get("revision") or 0) != revision
+                or delivery.get("status") == "interrupted"
             )
+            status = "interrupted" if interrupted else str(delivery.get("status") or "failed")
+            stage = "waiting" if status == "deferred" else (
+                "interrupted" if interrupted else "abandoned"
+            )
+            reason = str(delivery.get("reason") or "主动消息未能成功发送")
+            code = str(delivery.get("reason_code") or "send_failed")
             self.context._transition_proactive_lifecycle(
-                key,
-                "interrupted" if interrupted else "abandoned",
-                event=(
-                    "conversation_revision_changed" if interrupted else "send_failed"
-                ),
-                reason=(
-                    "发送期间会话版本已变化" if interrupted else "主动消息未能成功发送"
-                ),
-                now=now,
-                revision=revision,
-                candidate=candidate,
-                publish=not interrupted,
+                key, stage, event=code, reason=reason, now=now,
+                revision=revision, candidate=candidate, publish=not interrupted,
             )
             await self.context._advance_proactive_decision_trace(
-                event,
-                decision,
-                stage="interrupted" if interrupted else "abandoned",
-                reason_code=(
-                    "conversation_revision_changed" if interrupted else "send_failed"
-                ),
-                outcome=(
-                    "发送期间会话版本已变化" if interrupted else "主动消息发送失败"
-                ),
+                event, decision, stage=stage, reason_code=code, outcome=reason,
             )
             if is_current():
-                self.context._update_proactive_air_after_decision(
-                    key,
-                    {
-                        "decision": "observe",
-                        "reason": "闲时回复发送失败，暂时收回续话意愿",
-                    },
-                    now,
-                    sent=False,
-                )
-                self.context._proactive_idle_candidates.pop(key, None)
-            self.context._record_virtual_life_metric("idle_send_failed")
+                if status == "deferred":
+                    candidate["next_evaluation_at"] = now + datetime.timedelta(
+                        seconds=self.context._proactive_observe_hold_seconds()
+                    )
+                else:
+                    if status == "failed":
+                        self.context._update_proactive_air_after_decision(
+                            key, {"decision": "observe", "reason": reason}, now, sent=False,
+                        )
+                    # 结果不明时收起本次提案，等待新证据，避免重复发送。
+                    self.context._proactive_idle_candidates.pop(key, None)
+            self.context._record_virtual_life_metric(f"idle_send_{status}")
             return
         if decision_name == "observe":
             hold_seconds = self.context._proactive_observe_hold_seconds()

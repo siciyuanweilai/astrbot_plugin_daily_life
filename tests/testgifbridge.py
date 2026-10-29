@@ -5,21 +5,30 @@ import types
 import unittest
 from unittest.mock import AsyncMock
 
-from support import DailyLifeRuntime, LifeSettings
-from core.sight.visual import image_understanding_cache_key
+from support import DailyLifeRuntime, LifeSettings, Provider
 
 
 class GifBridgeTest(unittest.IsolatedAsyncioTestCase):
-    async def test_cached_gif_does_not_wait_for_pending_collection(self):
+    @staticmethod
+    def runtime():
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.config = LifeSettings.from_dict({})
+        provider = Provider([], provider_id="vision-model")
+
+        async def candidates(_provider_id=""):
+            yield provider
+
+        runtime.get_text_provider_candidates = candidates
+        return runtime
+
+    async def test_cached_gif_does_not_wait_for_pending_collection(self):
+        runtime = self.runtime()
         runtime._part_emoji_gather_component._prepared_visual_media_from_event = AsyncMock(
             return_value=[{"fingerprint": "gif"}]
         )
         runtime._part_emoji_gather_component._prepared_visual_media_is_gif = AsyncMock(return_value=True)
-        runtime._visual_context_summary_cache = lambda: {
-            image_understanding_cache_key(runtime.config.vision, "gif"): "已有动图描述"
-        }
+        cache_key = await runtime._visual_context_cache_key("gif")
+        runtime._visual_context_summary_cache = lambda: {cache_key: "已有动图描述"}
         runtime._part_emoji_gather_component._remove_gif_inputs_from_provider_request = AsyncMock(return_value=1)
         runtime._append_gif_visual_summary = (
             lambda req, summaries: setattr(req, "summaries", summaries)
@@ -50,8 +59,7 @@ class GifBridgeTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(cancelled.is_set())
 
     async def test_static_image_analysis_does_not_delay_ready_gif(self):
-        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
-        runtime.config = LifeSettings.from_dict({})
+        runtime = self.runtime()
         runtime.event_was_recalled = lambda event, log_skip=False: False
         runtime._event_session_id = lambda event: "scope"
         runtime._event_message_id = lambda event: "message"
@@ -72,7 +80,7 @@ class GifBridgeTest(unittest.IsolatedAsyncioTestCase):
 
         async def collect_one(entry, scope, message_key, *, user_text=""):
             if entry["gif"]:
-                cache[image_understanding_cache_key(runtime.config.vision, "gif", user_text)] = "动图内容"
+                cache[await runtime._visual_context_cache_key("gif", user_text)] = "动图内容"
             else:
                 static_started.set()
                 await release_static.wait()

@@ -179,7 +179,22 @@ class ProactiveSendComponent:
     ) -> bool:
         target_scope = str(target_scope or "").strip()
         reply_text = self._normalize_proactive_reply_text(reply_text)
+        payload = send_payload if isinstance(send_payload, dict) else {}
+        sent_parts: list[str] = []
+        delivered = False
+
+        def receipt(status: str, code: str, reason: str) -> None:
+            payload["_delivery"] = {
+                "status": status, "reason_code": code, "reason": reason,
+                "sent_text": "\n".join(sent_parts),
+            }
+
+        def record_sent(text: str) -> None:
+            sent_parts.append(text)
+            receipt("partial", "segments_sent", "部分消息已送达")
+
         if not target_scope or not reply_text:
+            receipt("invalid", "empty_message", "发送对象或正文为空")
             return False
         source_event = self.context._snapshot_proactive_send_event(
             target_scope,
@@ -192,49 +207,67 @@ class ProactiveSendComponent:
             source_event._daily_life_quiet_guard = True
         try:
             if not self.context._proactive_send_is_current(source_event):
+                receipt("interrupted", "conversation_changed", "新消息或撤回已改变本次发送依据")
                 return False
             if not self.context.can_send_for_source(
                 target_scope,
                 source_event=source_event,
                 source_message_id=source_message_id,
             ):
+                receipt("interrupted", "source_unavailable", "本次消息来源已不可发送")
                 return False
             await self.context._apply_proactive_send_timing(send_payload)
             if not self.context._proactive_send_is_current(source_event):
+                receipt("interrupted", "conversation_changed", "新消息或撤回已改变本次发送依据")
                 return False
             if not self.context.can_send_for_source(
                 target_scope,
                 source_event=source_event,
                 source_message_id=source_message_id,
             ):
+                receipt("interrupted", "source_unavailable", "本次消息来源已不可发送")
                 return False
             if (send_payload or {}).get("source") in {"private_revisit", "proactive_reply"}:
                 rhythm = await contact_rhythm(self.context, target_scope, life_now())
                 if rhythm.get("ready") is False:
+                    receipt("deferred", "contact_rhythm", "当前收发节奏暂不适合主动联系")
                     return False
             if await self._send_proactive_voice_if_enabled(
                 target_scope,
                 reply_text,
-                send_payload,
+                payload,
                 source_event=source_event,
                 source_message_id=source_message_id,
             ):
+                delivered = True
+                sent_parts.append(reply_text)
+                receipt("confirmed", "voice_sent", "语音已送达")
                 self.context.note_structured_bot_message(target_scope, reply_text, media="语音")
                 await self.context._append_proactive_send_history(
                     target_scope, reply_text, media="语音"
                 )
                 return True
             if not self.context._proactive_send_is_current(source_event):
+                receipt("interrupted", "conversation_changed", "新消息或撤回已改变本次发送依据")
                 return False
-            if not await self.context._send_segmented_proactive_message(
+            complete = await self.context._send_segmented_proactive_message(
                 target_scope,
                 reply_text,
                 source_event=source_event,
                 source_message_id=source_message_id,
-                raise_delivery_errors=raise_delivery_errors,
-            ):
+                raise_delivery_errors=True,
+                on_sent=record_sent,
+            )
+            if not complete and not sent_parts:
+                receipt("interrupted", "source_unavailable", "发送前来源已变化")
                 return False
-            await self.context._append_proactive_send_history(target_scope, reply_text)
+            if not sent_parts:
+                sent_parts.append(reply_text)
+            delivered = bool(complete)
+            receipt("confirmed" if complete else "partial", "text_sent", "文字已送达" if complete else "已发送部分文字，后续发送已中断")
+            await self.context._append_proactive_send_history(target_scope, "\n".join(sent_parts))
+            if not complete:
+                return True
             emoji_payload = dict(send_payload or {})
             if source_event is not None:
                 emoji_payload["_source_event"] = source_event
@@ -243,6 +276,14 @@ class ProactiveSendComponent:
             await self.context._send_proactive_emoji_if_needed(target_scope, emoji_payload)
             return True
         except Exception as exc:
+            if delivered or sent_parts or (payload.get("_delivery") or {}).get("status") == "confirmed":
+                if sent_parts:
+                    receipt("confirmed" if delivered else "partial", "sent_with_followup_error", "消息已送达，后续记录或附加消息未完成")
+                logger.debug(f"{LOG_PREFIX} 主动消息已送达，后续处理暂未完成：{exc}")
+                return True
+            unknown = not isinstance(exc, ScopeDeliveryError) or exc.code == "delivery_unknown"
+            receipt("unknown" if unknown else "failed", "delivery_unknown" if unknown else exc.code,
+                    "发送结果未确认，停止本次自动重发" if unknown else str(exc))
             logger.warning(f"{LOG_PREFIX} {failure_label}：{exc}")
             await self._mark_failed_proactive_contact(
                 target_scope,
@@ -262,23 +303,26 @@ class ProactiveSendComponent:
         relationship: Any | None = None,
         contact_type: str = "",
     ) -> None:
-        reason = str(exc or "").strip()
-        if not target_scope or not reason:
+        # 只有平台明确拒绝发送才改变联系人可达性，网络抖动不代表关系失效。
+        if (
+            not target_scope
+            or not isinstance(exc, ScopeDeliveryError)
+            or not exc.permanent
+            or exc.code != "platform_rejected"
+        ):
             return
+        scope_parts = target_scope.split(":")
         resolved_type = contact_type or (
-            "friend" if "FriendMessage" in target_scope else ""
+            "friend" if len(scope_parts) > 1 and scope_parts[1] == "FriendMessage" else ""
         )
-        if not resolved_type:
-            return
-        not_friend = "不是好友" in reason or "not friend" in reason.lower()
-        if resolved_type != "friend" and not not_friend:
+        if resolved_type != "friend":
             return
         marker = getattr(self.context.archive, "mark_relationship_contact_unreachable", None)
         if not callable(marker):
             return
         try:
             await marker(
-                target_scope, "不是好友或当前不可私聊", contact_type=resolved_type
+                target_scope, str(exc), contact_type=resolved_type
             )
         except Exception as mark_exc:
             logger.debug(f"{LOG_PREFIX} 标记闲时回复目标不可达失败：{mark_exc}")
@@ -375,51 +419,43 @@ class ProactiveSendComponent:
         source_event = self.context._snapshot_proactive_send_event(target_scope, source_event)
         if not self.context._proactive_send_is_current(source_event):
             return False
+        voice_kwargs = {"emotion": emotion, "emotion_category": emotion_category}
+        if voice_style:
+            voice_kwargs["voice_style"] = voice_style
         try:
-            voice_kwargs = {
-                "emotion": emotion,
-                "emotion_category": emotion_category,
-            }
-            if voice_style:
-                voice_kwargs["voice_style"] = voice_style
             generated = await voice_service.synthesize(reply_text, **voice_kwargs)
-            if not self.context._proactive_send_is_current(source_event):
-                return False
-            if not await self.context.send_message_if_not_recalled(
+        except Exception as exc:
+            logger.debug(f"{LOG_PREFIX} {source_label}语音生成未完成，改用文字：{exc}")
+            return False
+        if not self.context._proactive_send_is_current(source_event):
+            return False
+        try:
+            sent = await self.context.send_message_if_not_recalled(
                 target_scope,
                 self.context._record_message_chain(generated.path),
                 source_event=source_event,
                 source_message_id=source_message_id,
-            ):
-                return False
-            await self.context._note_voice_expression_decision(
-                scope=target_scope,
-                channel="语音",
-                source=source_label,
-                reason=reason,
-                result="已发送",
-                text=reply_text,
-                emotion=emotion,
-                emotion_category=emotion_category,
-                confidence=confidence,
             )
-            return True
+        except ScopeDeliveryError:
+            raise
         except Exception as exc:
+            raise ScopeDeliveryError("语音投递结果未确认，停止自动补发", code="delivery_unknown", permanent=False) from exc
+        if not sent:
             if not self.context._proactive_send_is_current(source_event):
                 return False
-            logger.debug(f"{LOG_PREFIX} {source_label}语音发送失败，改用文字：{exc}")
+            raise ScopeDeliveryError("语音投递结果未确认，停止自动补发", code="delivery_unknown", permanent=False)
+        if isinstance(payload, dict):
+            payload["_delivery"] = {"status": "confirmed", "reason_code": "voice_sent",
+                                    "reason": "语音已送达", "sent_text": reply_text}
+        try:
             await self.context._note_voice_expression_decision(
-                scope=target_scope,
-                channel="文字",
-                source=source_label,
-                reason=f"{source_label}语音发送失败，改用文字：{exc}",
-                result="改用文字",
-                text=reply_text,
-                emotion=emotion,
-                emotion_category=emotion_category,
-                confidence=confidence,
+                scope=target_scope, channel="语音", source=source_label,
+                reason=reason, result="已发送", text=reply_text,
+                emotion=emotion, emotion_category=emotion_category, confidence=confidence,
             )
-            return False
+        except Exception as exc:
+            logger.debug(f"{LOG_PREFIX} 语音已送达，表达记录暂未保存：{exc}")
+        return True
 
     @staticmethod
     def _record_message_chain(path: Path) -> Any:

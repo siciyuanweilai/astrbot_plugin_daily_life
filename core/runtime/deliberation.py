@@ -11,7 +11,6 @@ from typing import Any
 from astrbot.api import logger
 
 from ..browsing.bookmarks import BrowseArchive
-from ..contextbudget import compact_json
 from ..epistemic import temporal_context
 from ..life.achievement import review_candidates
 from ..life.actionchain import ready as action_ready
@@ -26,7 +25,7 @@ from ..models import INTERNAL_SIMULATED_ACTION_TYPES
 from ..prompts import cache_friendly_prompt
 from ..telemetry import model_task
 from .continuous import _TERMINAL_STATES, planned_actions
-from .decisioncontext import execution_context, run_context, skill_context
+from .decisioncontext import decision_prompt_context, execution_context, run_context, skill_context
 from .goalreview import review_goals
 from .lifecontract import build_life_decision_contract
 from .markers import LOG_PREFIX
@@ -95,7 +94,12 @@ class ContinuousDecisionService:
                 }
             )
         persona = await self._persona()
-        focus = await self._archive().get_focus_slots(limit=6)
+        settings = self._config()
+        capabilities = {
+            "bilibili": bool(settings.browsing.enabled),
+            "source_discovery": bool(settings.memory.enabled and settings.search.enabled
+                                     and settings.search.tavily_api_keys),
+        }
         preferences = await self._archive().get_preferences(limit=12)
         browsing = []
         if callable(getattr(self._archive(), "_run_db", None)):
@@ -117,7 +121,6 @@ class ContinuousDecisionService:
         for run in [*(world.get("history") or [])[-4:], world.get("run") or {}]:
             if isinstance(run, dict) and isinstance(run.get("action"), dict) and run["action"].get("action_id"):
                 sources.add(f"action:{run['action']['action_id']}")
-        sources.update(f"focus:{item.id}" for item in focus)
         sources.update(f"preference:{item.id}" for item in preferences)
         kernel = world.get("kernel") if isinstance(world.get("kernel"), dict) else {}
         model = kernel.get("self_model") if isinstance(kernel.get("self_model"), dict) else {}
@@ -162,7 +165,6 @@ class ContinuousDecisionService:
             json.dumps(
                 [
                     persona,
-                    [item.as_dict() for item in focus],
                     [item.as_dict() for item in preferences],
                     world.get("chat_events", [])[-1:] if latest_exchange else [],
                     [item.get("action_id") for item in kernel.get("action_outcomes", [])
@@ -203,6 +205,7 @@ class ContinuousDecisionService:
             protected = protected_indexes(day, world)
             continuation = {
                 "persona": persona,
+                "capabilities": capabilities,
                 "state": day.state.as_dict() if day.state else {},
                 "body": world.get("body"), "run": run_context(world),
                 "current_place": day.meta.get("current_place", ""),
@@ -210,7 +213,6 @@ class ContinuousDecisionService:
                 "rest_delay_until": day.meta.get("rest_delay_until", ""),
                 "life_kernel": execution_context(world),
                 "preferences": [item.as_dict() for item in preferences],
-                "focus": [item.as_dict() for item in focus],
                 "goals": [{key: goal.get(key) for key in ("id", "title", "status", "obstacle")}
                           for goal in world.get("goals", []) if isinstance(goal, dict)],
                 "self_model": {key: value for key, value in model.items() if key != "capabilities"},
@@ -243,9 +245,9 @@ class ContinuousDecisionService:
                             "进展待确认不代表被打断，未观察的时长不算实际执行。"
                             "如果需要改日程、换装、处理身体需求、选择新行动、维护兴趣目标，或资料不足，"
                             "返回 expand 读取完整规划资料；不能用 continue 掩盖冲突。"
-                            "browsing 是独立真实浏览流程的检查点，不重复模拟刷视频或声称看完；"
+                            "browsing 是真实观看的检查点；rest.payload.activity=bilibili 可把此刻的浏览意愿交给真实浏览流程；"
                             "生活中有更重要的事可以安排，浏览流程会暂停。",
-                            compact_json(continuation),
+                            decision_prompt_context(continuation),
                         ), session, empty_retries=0,
                         primary_provider_id=provider_id,
                         timeout_seconds=min(45, self._config().llm_timeout_seconds),
@@ -265,7 +267,6 @@ class ContinuousDecisionService:
                         "_achievement_candidates": [],
                         "_self_model": {"persona": persona,
                                         "preferences": [item.as_dict() for item in preferences],
-                                        "focus": [item.as_dict() for item in focus],
                                         "skills": skill_context(world), "evidence_ids": sorted(sources)},
                     }
             finally:
@@ -292,8 +293,8 @@ class ContinuousDecisionService:
         protected = protected_indexes(day, world)
         dynamic = {
             "persona": persona,
+            "capabilities": capabilities,
             "preferences": [item.as_dict() for item in preferences],
-            "focus": [item.as_dict() for item in focus],
             "self_model": {key: value for key, value in (kernel.get("self_model") or {}).items()
                            if key != "capabilities"},
             "allowed_source_ids": sorted(sources),
@@ -389,7 +390,7 @@ class ContinuousDecisionService:
         try:
             decision_call = self._call_text_model(
                 provider,
-                cache_friendly_prompt(fixed, compact_json(dynamic)),
+                cache_friendly_prompt(fixed, decision_prompt_context(dynamic)),
                 session,
                 empty_retries=0,
                 primary_provider_id=provider_id,
@@ -420,7 +421,6 @@ class ContinuousDecisionService:
                 payload["_self_model"] = {
                     "persona": persona,
                     "preferences": dynamic["preferences"],
-                    "focus": dynamic["focus"],
                     "skills": dynamic["world"].get("skills") or {},
                     "evidence_ids": sorted(sources),
                 }

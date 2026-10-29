@@ -1,5 +1,4 @@
-import { DAY_ALIASES, WEEKDAYS } from "./terms.js";
-import { clean, text } from "./format.js";
+import { text } from "./format.js";
 
 export function clone(value) {
   if (Array.isArray(value)) return value.map((item) => clone(item));
@@ -85,68 +84,6 @@ export function parseStatusNow(value) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-export function firstClockMinutes(value) {
-  const body = text(value);
-  for (let index = 0; index < body.length; index += 1) {
-    if (!isAsciiDigit(body[index]) || (index > 0 && isAsciiDigit(body[index - 1]))) continue;
-    for (const hourLength of [2, 1]) {
-      const hourText = body.slice(index, index + hourLength);
-      const sepIndex = index + hourLength;
-      if (!isAsciiDigits(hourText) || body[sepIndex] !== ":") continue;
-      const minuteText = body.slice(sepIndex + 1, sepIndex + 3);
-      if (minuteText.length !== 2 || !isAsciiDigits(minuteText)) continue;
-      if (isAsciiDigit(body[sepIndex + 3])) continue;
-      const hour = Number(hourText);
-      const minute = Number(minuteText);
-      if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {
-        return hour * 60 + minute;
-      }
-    }
-  }
-  return null;
-}
-
-export function formatLines(items) {
-  return Array.isArray(items) ? items.filter(Boolean).join("\n") : "";
-}
-
-export function formatHints(hints = {}) {
-  const lines = [];
-  const used = new Set();
-  for (const [key, label] of WEEKDAYS) {
-    const value = clean(hints[key], "");
-    if (value) {
-      lines.push(`${label}: ${value}`);
-      used.add(key);
-    }
-  }
-  for (const [key, value] of Object.entries(hints)) {
-    if (!used.has(key) && clean(value, "")) {
-      lines.push(`${key}: ${value}`);
-    }
-  }
-  return lines.join("\n");
-}
-
-export function parseHints(value) {
-  const hints = {};
-  let nextDay = 0;
-  for (const line of splitLines(value)) {
-    const sep = hintSeparatorIndex(line);
-    if (sep >= 0) {
-      const key = hintKey(line.slice(0, sep));
-      const body = line.slice(sep + 1).trim();
-      if (key && body) hints[key] = body;
-      continue;
-    }
-    if (nextDay < WEEKDAYS.length) {
-      hints[WEEKDAYS[nextDay][0]] = line;
-      nextDay += 1;
-    }
-  }
-  return hints;
-}
-
 export function splitLines(value) {
   return text(value)
     .replaceAll("\r\n", "\n")
@@ -177,15 +114,3 @@ function pad2(value) {
   return String(value).padStart(2, "0");
 }
 
-function hintSeparatorIndex(line) {
-  const colon = line.indexOf(":");
-  const cnColon = line.indexOf("：");
-  if (colon < 0) return cnColon;
-  if (cnColon < 0) return colon;
-  return Math.min(colon, cnColon);
-}
-
-function hintKey(value) {
-  const raw = text(value).trim();
-  return DAY_ALIASES.get(raw) || DAY_ALIASES.get(raw.toLowerCase()) || "";
-}

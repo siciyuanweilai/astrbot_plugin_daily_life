@@ -29,6 +29,10 @@ class LayerChainComponentContext(Protocol):
     _apply_life_request_context: Any
     _build_person_fact_injection_context: Any
     _collect_emoji_context_background: Any
+    _emoji_asset_source_kind: Any
+    _emoji_auto_collect_enabled: Any
+    _event_has_command_handler: Any
+    _event_message_items: Any
     _event_group_meta: Any
     _event_message_id: Any
     _event_message_text: Any
@@ -53,6 +57,7 @@ class LayerChainComponentContext(Protocol):
     contact_resolver: Any
     domains: Any
     ensure_injection_day_data: Any
+    event_was_recalled: Any
     format_recent_sight_context: Any
     format_structured_message_context: Any
     friend_reference_injection_context: Any
@@ -232,7 +237,17 @@ class LayerChainComponent:
         return str(getattr(event, "message_str", "") or "") if event is not None else ""
 
     def schedule_emoji_capture_from_event(self, event: Any, now: Any = None) -> bool:
-        if event is None:
+        if (
+            event is None
+            or not self.context._emoji_auto_collect_enabled()
+            or self.context._event_has_command_handler(event)
+            or self.context.event_was_recalled(event, log_skip=True)
+        ):
+            return False
+        if not any(
+            self.context._emoji_asset_source_kind(item) in {"trusted", "review", "plain_image"}
+            for item in self.context._event_message_items(event)
+        ):
             return False
         now = now or self.context._life_injection_now()
         session_id = self.context._event_session_id(event)
@@ -321,9 +336,7 @@ class LayerChainComponent:
             "feedback": 0,
             "reply_effects": 0,
             "expression_reviews": 0,
-            "behavior_patterns": 0,
             "behavior_scenes": 0,
-            "mid_summaries": 1,
             "terms": 2,
         }
         groups = {
@@ -435,7 +448,6 @@ class LayerChainComponent:
     ) -> str:
         return self.context._format_hidden_experience_context(
             episodes=selected["episodes"],
-            focus_targets=list(snapshot.get("focus_targets") or [])[:2],
             feedback=selected["feedback"],
             # 情绪和生理节律统一由 HiddenState/HiddenCognition 注入，避免同一批
             # 高频状态在体验上下文中再次重复占用模型上下文。
@@ -446,13 +458,7 @@ class LayerChainComponent:
             memory_corrections=list(snapshot.get("memory_corrections") or [])[:2],
             expression_profiles=list(selected.get("expression_profiles") or []),
             expression_reviews=selected["expression_reviews"],
-            behavior_patterns=selected["behavior_patterns"],
             behavior_scenes=selected["behavior_scenes"],
-            mid_summaries=selected["mid_summaries"],
-            temporary_expression_states=list(
-                snapshot.get("temporary_expression_states") or []
-            ),
-            focus_slots=list(snapshot.get("focus_slots") or [])[:2],
             expression_intents=list(snapshot.get("expression_intents") or [])[:1],
             terms=selected["terms"],
             boundaries=list(snapshot.get("boundaries") or [])[:2],
@@ -622,7 +628,6 @@ class LayerChainComponent:
             relationships=world_context,
             preferences=self.context._format_hidden_experience_context(
                 expression_profiles=list(snapshot.get("selected_expression_profiles") or []),
-                temporary_expression_states=list(snapshot.get("temporary_expression_states") or []),
                 boundaries=list(snapshot.get("boundaries") or [])[:2],
             ),
             conversation=self.context.format_structured_message_context(event, limit=4)

@@ -1507,7 +1507,10 @@ class SemanticSegmentRuntimeComponent:
                 f"{LOG_PREFIX} 后台文字后续分段已取消：已发送 "
                 f"{outcome.sent_count}/{len(segments)} 条。"
             )
-            return True
+            # 主动联系由上层回执保留已送达分段，此返回值只表示整次投递完成。
+            if source == "proactive":
+                return False
+            return bool(outcome.sent_count)
         if outcome.status != "sent":
             logger.warning(f"{LOG_PREFIX} 后台文字发送失败：{outcome.error}")
             if source == "proactive" and outcome.error is not None:

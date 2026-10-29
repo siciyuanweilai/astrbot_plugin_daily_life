@@ -51,13 +51,6 @@ class HiddenExperienceComponent:
         body = self._hidden_first(item, "correction", "summary", "impact", limit=120)
         return f"- {title or '生活片段'}：{body or '无摘要'}" if title or body else ""
 
-    def _hidden_focus_target_line(self, item: Any) -> str:
-        label = self._hidden_first(item, "label", "target_id", limit=60)
-        if not label:
-            return ""
-        reason = self._hidden_first(item, "reason", limit=100)
-        priority = self._hidden_first(item, "priority", limit=8)
-        return f"- {label}: 优先级{priority or 0}; {reason or '近期自然多留意'}"
 
     def _hidden_behavior_feedback_line(self, item: Any) -> str:
         action = self._hidden_first(item, "action", limit=50)
@@ -150,13 +143,6 @@ class HiddenExperienceComponent:
             f"；建议 {suggestion}" if risk and suggestion else ""
         )
 
-    def _hidden_behavior_pattern_line(self, item: Any) -> str:
-        scene = self._hidden_first(item, "scene", limit=60)
-        pattern = self._hidden_first(item, "pattern", limit=120)
-        if not (scene and pattern):
-            return ""
-        action = self._hidden_first(item, "suggested_action", limit=40)
-        return f"- {scene}: {pattern}" + (f"；倾向 {action}" if action else "")
 
     def _hidden_behavior_scene_line(self, item: Any) -> str:
         scene = self._hidden_first(item, "scene", limit=60)
@@ -169,41 +155,8 @@ class HiddenExperienceComponent:
             f"；避免{avoid}" if avoid else ""
         )
 
-    def _hidden_focus_slot_line(self, item: Any) -> str:
-        label = self._hidden_first(item, "label", "focus_key", limit=60)
-        if not label:
-            return ""
-        reason = self._hidden_first(item, "reason", limit=100)
-        priority = self._hidden_first(item, "priority", limit=8)
-        return f"- {label}: 注意槽{priority or 0}/100；{reason or '短期仍会想起'}"
 
-    def _hidden_mid_summary_line(self, item: Any) -> str:
-        label = self._hidden_first(item, "scope_label", "session_id", limit=60)
-        body = "；".join(
-            part
-            for part in (
-                self._hidden_first(item, "topic", limit=70),
-                self._hidden_first(item, "mood", limit=70),
-                self._hidden_first(item, "summary", limit=140),
-            )
-            if part
-        )
-        return f"- {label}: {body}" if label and body else ""
 
-    def _hidden_temporary_expression_line(self, item: Any) -> str:
-        label = self._hidden_first(item, "label", limit=60)
-        expires_at = self._hidden_first(item, "expires_at", limit=40)
-        body = "；".join(
-            part
-            for part in (
-                self._hidden_first(item, "tone", limit=100),
-                self._hidden_first(item, "reason", limit=120),
-                f"强度{self._hidden_first(item, 'intensity', limit=8) or 0}/100",
-                f"到期{expires_at}" if expires_at else "",
-            )
-            if part
-        )
-        return f"- {label}: {body}" if label and body else ""
 
     def _hidden_expression_intent_line(self, item: Any) -> str:
         emotion = self._hidden_first(item, "emotion", limit=50)
@@ -247,17 +200,11 @@ class HiddenExperienceComponent:
         sections: list[str],
         *,
         episodes: list[Any] | None = None,
-        focus_targets: list[Any] | None = None,
     ) -> None:
         self.context._hidden_section(
             sections,
             "[HiddenLifeEpisodes]",
             self.context._hidden_lines(episodes, 3, self._hidden_episode_line),
-        )
-        self.context._hidden_section(
-            sections,
-            "[HiddenFocusTargets]",
-            self.context._hidden_lines(focus_targets, 4, self._hidden_focus_target_line),
         )
 
     def _hidden_behavior_sections(
@@ -265,20 +212,12 @@ class HiddenExperienceComponent:
         sections: list[str],
         *,
         feedback: list[Any] | None = None,
-        behavior_patterns: list[Any] | None = None,
         behavior_scenes: list[Any] | None = None,
     ) -> None:
         self.context._hidden_section(
             sections,
             "[HiddenBehaviorFeedback]",
             self.context._hidden_lines(feedback, 3, self._hidden_behavior_feedback_line),
-        )
-        self.context._hidden_section(
-            sections,
-            "[HiddenBehaviorPatterns]",
-            self.context._hidden_lines(
-                behavior_patterns, 4, self._hidden_behavior_pattern_line
-            ),
         )
         self.context._hidden_section(
             sections,
@@ -324,7 +263,6 @@ class HiddenExperienceComponent:
         reply_effects: list[Any] | None = None,
         expression_profiles: list[Any] | None = None,
         expression_reviews: list[Any] | None = None,
-        temporary_expression_states: list[Any] | None = None,
         expression_intents: list[Any] | None = None,
     ) -> None:
         self.context._hidden_section(
@@ -350,13 +288,6 @@ class HiddenExperienceComponent:
         )
         self.context._hidden_section(
             sections,
-            "[HiddenTemporaryExpressionState]",
-            self.context._hidden_lines(
-                temporary_expression_states, 3, self._hidden_temporary_expression_line
-            ),
-        )
-        self.context._hidden_section(
-            sections,
             "[HiddenExpressionIntents]",
             self.context._hidden_lines(
                 expression_intents, 3, self._hidden_expression_intent_line
@@ -368,8 +299,6 @@ class HiddenExperienceComponent:
         sections: list[str],
         *,
         memory_corrections: list[Any] | None = None,
-        focus_slots: list[Any] | None = None,
-        mid_summaries: list[Any] | None = None,
         terms: list[Any] | None = None,
         boundaries: list[Any] | None = None,
     ) -> None:
@@ -379,16 +308,6 @@ class HiddenExperienceComponent:
             self.context._hidden_lines(
                 memory_corrections, 3, self._hidden_memory_correction_line
             ),
-        )
-        self.context._hidden_section(
-            sections,
-            "[HiddenFocusSlots]",
-            self.context._hidden_lines(focus_slots, 4, self._hidden_focus_slot_line),
-        )
-        self.context._hidden_section(
-            sections,
-            "[HiddenMidConversationSummary]",
-            self.context._hidden_lines(mid_summaries, 3, self._hidden_mid_summary_line),
         )
         self.context._hidden_section(
             sections,
@@ -405,27 +324,22 @@ class HiddenExperienceComponent:
     def _format_hidden_experience_context(
         self,
         episodes: list[Any] | None = None,
-        focus_targets: list[Any] | None = None,
         feedback: list[Any] | None = None,
         emotion_arcs: list[Any] | None = None,
         physiological_rhythm_logs: list[Any] | None = None,
         physiological_rhythm_trend: dict[str, Any] | None = None,
         expression_profiles: list[Any] | None = None,
-        behavior_patterns: list[Any] | None = None,
         reply_effects: list[Any] | None = None,
         memory_corrections: list[Any] | None = None,
         expression_reviews: list[Any] | None = None,
         behavior_scenes: list[Any] | None = None,
-        focus_slots: list[Any] | None = None,
         expression_intents: list[Any] | None = None,
-        mid_summaries: list[Any] | None = None,
-        temporary_expression_states: list[Any] | None = None,
         terms: list[Any] | None = None,
         boundaries: list[Any] | None = None,
     ) -> str:
         sections: list[str] = []
         self._hidden_life_sections(
-            sections, episodes=episodes, focus_targets=focus_targets
+            sections, episodes=episodes
         )
         self._hidden_behavior_sections(sections, feedback=feedback)
         self._hidden_emotion_sections(sections, emotion_arcs=emotion_arcs)
@@ -443,15 +357,10 @@ class HiddenExperienceComponent:
         )
         self._hidden_behavior_sections(
             sections,
-            behavior_patterns=behavior_patterns,
             behavior_scenes=behavior_scenes,
-        )
-        self._hidden_memory_sections(
-            sections, focus_slots=focus_slots, mid_summaries=mid_summaries
         )
         self._hidden_expression_sections(
             sections,
-            temporary_expression_states=temporary_expression_states,
             expression_intents=expression_intents,
         )
         self._hidden_memory_sections(sections, terms=terms, boundaries=boundaries)

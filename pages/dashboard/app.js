@@ -23,7 +23,6 @@ import {
   PREFERENCE_CATEGORY_LABELS,
   QUANTITY_UNIT_LABELS,
   RHYTHM_LIFECYCLE_LABELS,
-  SCHEDULE_INTENT_LABELS,
   SCHEDULE_TONE_LABELS,
   SCENE_TYPE_LABELS,
   SCOPE_LABELS,
@@ -66,8 +65,6 @@ import {
 import {
   clampPercent,
   clampRange,
-  clone,
-  firstClockMinutes,
   formatClock,
   formatDate,
   parseStatusNow,
@@ -456,6 +453,8 @@ const el = {
   closetDetailTitle: byId("closetDetailTitle"),
   closetDetailBody: byId("closetDetailBody"),
   closetDetailClose: byId("closetDetailClose"),
+  closetImageDialog: byId("closetImageDialog"),
+  closetImage: byId("closetImage"),
   closetGenerateDialog: byId("closetGenerateDialog"),
   closetGenerateClose: byId("closetGenerateClose"),
   closetGenerateMode: byId("closetGenerateMode"),
@@ -3519,10 +3518,18 @@ function renderClosetDetail() {
   const groupItems = closetDetailItems(item);
   const groupIds = closetTargetIds(groupItems.map((entry) => entry.id));
   el.closetDetailTitle.textContent = clean(item.title, "衣橱详情");
-  const preview = node("div", "closet-detail-preview");
+  const preview = node(item.preview_available ? "button" : "div", "closet-detail-preview");
   if (item.preview_available) {
+    preview.type = "button";
+    preview.disabled = !state.closetPreviewCache.has(Number(item.id));
+    preview.title = "点击查看大图";
+    preview.setAttribute("aria-label", `查看${clean(item.title, "衣橱图片")}大图`);
+    preview.setAttribute("aria-haspopup", "dialog");
+    preview.setAttribute("aria-controls", "closetImageDialog");
     const image = document.createElement("img");
     image.alt = clean(item.title, "衣橱预览");
+    image.addEventListener("load", () => { preview.disabled = false; });
+    preview.addEventListener("click", () => openClosetImage(item));
     preview.append(image);
     loadClosetPreview(image, item.id);
   } else preview.append(node("span", "closet-thumb-empty", "无预览"));
@@ -3611,6 +3618,15 @@ function renderClosetDetail() {
   el.closetDetailBody.replaceChildren(preview, copy);
 }
 
+function openClosetImage(item) {
+  const source = state.closetPreviewCache.get(Number(item.id));
+  if (!source || !el.closetImageDialog || !el.closetImage) return;
+  el.closetImageDialog.setAttribute("aria-label", `${clean(item.title, "衣橱图片")}大图`);
+  el.closetImage.alt = clean(item.title, "衣橱图片");
+  el.closetImage.src = source;
+  el.closetImageDialog.showModal();
+}
+
 function openClosetDetail(id) {
   const itemId = Number(id || 0);
   if (!closetItem(itemId)) return;
@@ -3623,6 +3639,7 @@ function openClosetDetail(id) {
 
 function closeClosetDetail() {
   if (!el.closetDetailDialog) return;
+  if (el.closetImageDialog?.open) el.closetImageDialog.close();
   const wasOpen = !el.closetDetailDialog.hidden;
   state.closetDetailId = 0;
   el.closetDetailDialog.hidden = true;
@@ -3701,10 +3718,15 @@ async function generateCloset() {
       generation_mode: generationMode,
       count,
       requirement: clean(el.closetGenerateNote?.value, ""),
-    }, { timeoutMs, timeoutMessage: "创意生成仍在后台处理，请稍后刷新衣橱" });
+    }, { timeoutMs, timeoutMessage: "创意生成仍在后台处理，完成后自动收入衣橱" });
     applyClosetPayload(result);
     closeClosetGenerate();
-    setNotice("创意衣橱生成完成", "success");
+    setNotice(
+      result.generation_status === "submitted"
+        ? "已提交生成，完成后自动收入衣橱"
+        : "已生成并收入衣橱",
+      "success"
+    );
   } catch (error) {
     setNotice(
       userErrorMessage(error, "创意衣橱生成失败"),
@@ -4122,12 +4144,20 @@ function bindEvents() {
   el.closetDetailDialog?.addEventListener("click", (event) => {
     if (event.target === el.closetDetailDialog) closeClosetDetail();
   });
+  el.closetImageDialog?.addEventListener("click", () => el.closetImageDialog.close());
+  el.closetImageDialog?.addEventListener("close", () => {
+    el.closetImage?.removeAttribute("src");
+    if (state.closetDetailId) {
+      el.closetDetailBody?.querySelector(".closet-detail-preview")?.focus({preventScroll: true});
+    }
+  });
   el.closetGenerateClose?.addEventListener("click", closeClosetGenerate);
   el.closetGenerateDialog?.addEventListener("click", (event) => {
     if (event.target === el.closetGenerateDialog) closeClosetGenerate();
   });
   el.closetGenerateSubmit?.addEventListener("click", generateCloset);
   document.addEventListener("keydown", (event) => {
+    if (el.closetImageDialog?.open) return;
     if (trapDialogFocus(event, [el.emojiImportDialog, el.emojiDetailDialog, el.closetDetailDialog, el.closetGenerateDialog])) return;
     if (event.key !== "Escape") return;
     if (state.emojiDetailId) closeEmojiDetail();

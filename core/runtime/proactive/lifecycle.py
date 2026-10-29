@@ -43,7 +43,7 @@ class ProactiveLifecycleComponent:
             "abandoned",
         },
         "waiting": {"considering", "interrupted", "abandoned", "closing"},
-        "sending": {"engaged", "interrupted", "abandoned"},
+        "sending": {"engaged", "waiting", "interrupted", "abandoned"},
         "engaged": {"closing", "cooldown", "interrupted"},
         "closing": {"cooldown", "interrupted"},
         "cooldown": {"candidate", "considering", "abandoned"},

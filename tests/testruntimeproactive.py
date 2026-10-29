@@ -39,6 +39,7 @@ from runtimehelpers import (
 )
 
 from astrbot.core.agent.message import TextPart
+from core.sources.dispatch import PermanentScopeDeliveryError
 
 
 class RuntimeProactiveTest(ResponseGateRuntimeHelpers, unittest.TestCase):
@@ -2254,7 +2255,7 @@ class RuntimeProactiveAsyncTest(
         )
         self.assertIn("21:00 - 洗完澡换睡裙准备睡前放松", prompt)
 
-    async def test_proactive_prompt_uses_learned_expression_and_patterns(self):
+    async def test_proactive_prompt_uses_expression_without_retired_branches(self):
         runtime, provider = self._make_proactive_runtime(
             [
                 '{"should_reply": false, "confidence": 0.2, "benefit":10,"timeliness":10,"continuity":10,"disruption":80,"uncertainty":80,"decision": "observe", '
@@ -2380,8 +2381,8 @@ class RuntimeProactiveAsyncTest(
         prompt = provider.prompts[0]
         self.assertIn("表达习惯参考", prompt)
         self.assertIn("轻松短句", prompt)
-        self.assertIn("行为模式参考", prompt)
-        self.assertIn("短句顺着接", prompt)
+        self.assertNotIn("行为模式参考", prompt)
+        self.assertNotIn("短句顺着接", prompt)
         self.assertIn("行为场景簇参考", prompt)
         self.assertIn("等群友补后续", prompt)
         self.assertIn("闲时回复效果参考", prompt)
@@ -2393,11 +2394,11 @@ class RuntimeProactiveAsyncTest(
         self.assertNotIn("越界", prompt)
         self.assertNotIn("过热", prompt)
         self.assertNotIn("缩回被窝", prompt)
-        self.assertIn("短期注意槽", prompt)
-        self.assertIn("会话中期摘要", prompt)
-        self.assertIn("下午场门票", prompt)
-        self.assertIn("此刻表达状态", prompt)
-        self.assertIn("轻轻围观", prompt)
+        self.assertNotIn("短期注意槽", prompt)
+        self.assertNotIn("会话中期摘要", prompt)
+        self.assertNotIn("下午场门票", prompt)
+        self.assertNotIn("此刻表达状态", prompt)
+        self.assertNotIn("轻轻围观", prompt)
         self.assertIn("语言参考", prompt)
         self.assertIn("蹲后续", prompt)
 
@@ -4703,8 +4704,8 @@ class RuntimeProactiveAsyncTest(
         trace_records = self._capture_decision_traces(runtime)
         runtime._proactive_private_last_revisit_at = {}
         target = "aiocqhttp:FriendMessage:10001"
-        runtime.context.send_failures[target] = RuntimeError(
-            "发送失败，请先添加对方为好友"
+        runtime.context.send_failures[target] = PermanentScopeDeliveryError(
+            "发送失败，请先添加对方为好友", code="platform_rejected"
         )
         await runtime.archive.touch_relationship(
             "10001",
@@ -4725,7 +4726,7 @@ class RuntimeProactiveAsyncTest(
         self.assertEqual(contacts, [])
         profile = (await runtime.archive.get_recent_relationships(1))[0]
         self.assertFalse(profile.contacts[0].is_reachable)
-        self.assertEqual(profile.contacts[0].blocked_reason, "不是好友或当前不可私聊")
+        self.assertEqual(profile.contacts[0].blocked_reason, "发送失败，请先添加对方为好友")
         self.assertEqual(
             runtime._proactive_lifecycle_snapshot(target)["state"], "abandoned"
         )

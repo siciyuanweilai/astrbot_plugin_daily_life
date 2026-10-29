@@ -1056,6 +1056,9 @@ class SpineBootComponent:
         close_snapshot_flight = getattr(self.context, "_close_injection_snapshot_flight", None)
         if callable(close_snapshot_flight):
             await close_snapshot_flight()
+        close_visual_flight = getattr(self.context, "_close_visual_context_flights", None)
+        if callable(close_visual_flight):
+            await close_visual_flight()
         browsing = self.context.__dict__.get("bili_browsing")
         if browsing is not None:
             await browsing.close()

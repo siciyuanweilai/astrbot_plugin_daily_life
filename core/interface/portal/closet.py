@@ -116,9 +116,11 @@ class PortalClosetComponent:
                 generation_mode=generation_mode,
                 count=count,
             )
-            if str(getattr(result, "status", "ok")) not in {"ok", "submitted"}:
+            generation_status = str(getattr(result, "status", "ok"))
+            if generation_status not in {"ok", "submitted"}:
                 raise ValueError(str(result) or "创意衣橱生成失败")
             payload = await self.context._page_closet_payload()
+            payload["generation_status"] = generation_status
             payload["message"] = str(result)
             return payload
 

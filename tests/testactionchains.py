@@ -204,6 +204,60 @@ class ActionChainsTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual((await self.archive.get_pantry_items())[0]["quantity"], 1)
 
+    async def test_autonomous_purchase_and_cooking_follow_actual_place_and_stock(self):
+        self.runtime.domains.estimate_route = AsyncMock(
+            return_value={"duration_seconds": 60}
+        )
+        await self.archive.mutate_day(
+            self.runtime.date, lambda day: day.meta.update(current_place="家")
+        )
+        await self.archive.mutate_continuous_life(
+            self.runtime.date, lambda day, world: world["body"].update(hunger=80)
+        )
+        first = await self.decide(new_actions=[
+            self.step("move", "去菜市场", payload={"origin": "家", "destination": "菜市场"}),
+            self.step("purchase", "买鸡蛋", payload={
+                "place": "菜市场", "pantry_items": [{"name": "鸡蛋", "quantity": 2, "unit": "个"}],
+            }),
+            self.step("move", "买完回家", payload={"origin": "菜市场", "destination": "家"}),
+            self.step("cook", "煮一个鸡蛋", payload={
+                "place": "家", "ingredients": [{"name": "鸡蛋", "quantity": 1, "unit": "个"}],
+            }),
+            self.step("meal", "吃煮鸡蛋", payload={"place": "家"}),
+        ])
+        self.assertIsNotNone(first)
+        self.assertEqual((await self.archive.get_day(self.runtime.date)).meta["current_place"], "家")
+        self.assertEqual(await self.archive.get_pantry_items(), [])
+        await self.tick()
+        self.assertEqual((await self.archive.get_day(self.runtime.date)).meta["current_place"], "菜市场")
+        for kind in ("purchase", "move", "cook", "meal"):
+            candidates = await self.choose_pending()
+            self.assertEqual([item["action_type"] for item in candidates], [kind])
+            self.assertIsNotNone(await self.select(candidates[0]))
+            if kind == "purchase":
+                self.assertEqual(await self.archive.get_pantry_items(), [])
+            await self.tick()
+            if kind == "purchase":
+                self.assertEqual((await self.archive.get_pantry_items())[0]["quantity"], 2)
+            elif kind == "move":
+                self.assertEqual((await self.archive.get_day(self.runtime.date)).meta["current_place"], "家")
+            elif kind == "cook":
+                self.assertEqual((await self.archive.get_pantry_items())[0]["quantity"], 1)
+                self.assertGreater((await self.archive.get_continuous_life())["body"]["hunger"], 70)
+        self.assertLess((await self.archive.get_continuous_life())["body"]["hunger"], 30)
+        self.assertEqual(len(await self.archive.get_life_action_receipts()), 5)
+        await self.tick()
+        self.assertEqual((await self.archive.get_pantry_items())[0]["quantity"], 1)
+        self.assertEqual(len(await self.archive.get_life_action_receipts()), 5)
+
+    async def test_autonomous_move_requires_explicit_different_places(self):
+        for payload in ({}, {"destination": "公园"}, {"origin": "家", "destination": "家"}):
+            with self.subTest(payload=payload):
+                self.assertIsNone(await self.decide(
+                    new_actions=[self.step("move", "出去走走", payload=payload)]
+                ))
+        self.assertEqual(await self.archive.get_life_action_receipts(), [])
+
     async def test_user_outfit_change_supersedes_unstarted_followup(self):
         await self.bath_plan()
         await self.tick()

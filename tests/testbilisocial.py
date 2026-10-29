@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, patch
 from support import LifeArchive
 from core.browsing.feed import API, BiliReadError, BiliReader, BiliLoginRequired, video
 from core.browsing.platform import BiliPlatform, BiliWriteUncertain
-from core.browsing.socializing import BiliSocialService
+from core.browsing.socializing import BiliSocialService, BiliDMScopeError, DM_SCOPE_RULE
 from core.browsing.correspondence import BiliSocialStore
 from core.browsing.surfing import BiliBrowseService
 from core.browsing.visiting import BiliLiveVisit, capture_live, capture_hls, hls_parts
@@ -50,6 +50,10 @@ class SocialTest(unittest.IsolatedAsyncioTestCase):
         self.browse.reader.require_login = AsyncMock(return_value='1234')
         self.browse.reader._mid = '1234'
         self.social = self.browse.social
+        # 本组既有测试专注账号回执与身份，话题测试单独启用真实判断入口。
+        async def related(scope, store, *, incoming=(), text=""):
+            return {"incoming": [{"id": r["id"], "related": True} for r in incoming], "outgoing_related": True}
+        self.social._review_dm = AsyncMock(side_effect=related)
         self.platform = types.SimpleNamespace(**{name: AsyncMock(return_value=[]) for name in (
             'folders', 'favorites', 'comments', 'notifications', 'dm_history', 'dynamics', 'live_rooms', 'live_history')})
         for name in ('favorite', 'comment', 'dm', 'dynamic', 'danmaku'):
@@ -81,6 +85,7 @@ class SocialTest(unittest.IsolatedAsyncioTestCase):
     async def video(self, **changes):
         record = self.browse.new_record({'bvid': BV, 'page': 1, 'aid': '42', 'cid': 8, 'duration': 180,
                                        'title': '实际实验', 'url': 'https://www.bilibili.com/video/'+BV})
+        record = await self.browse.archive.get(record['id']) or record
         return await self.browse._save(record, evidence=[{'quote': '对照组', 'start': 0, 'end': 8}], impression='有意思', **changes)
 
     async def incoming(self, scope='private:a', key='1'):
@@ -166,14 +171,185 @@ class SocialTest(unittest.IsolatedAsyncioTestCase):
         await self.social.poll(self.store, await self.store.state())
         self.assertNotIn('backfill_before', (await self.store.state())['bindings']['private:a'])
 
-    async def test_private_dm_has_cross_channel_context(self):
+    async def test_private_dm_isolated_from_ordinary_chat_and_life(self):
         target = await self.incoming()
         self.browse._model.return_value = {'action': 'dm', 'id': target['id'], 'text': '还记得我们刚才说的'}
         await self.social.tick(self.day, self.world)
         context = self.browse._model.await_args.args[1]
-        self.assertIn('私密约定', json.dumps(context, ensure_ascii=False))
+        self.assertNotIn('私密约定', json.dumps(context, ensure_ascii=False))
+        self.assertNotIn('same_person_chat', context)
+        self.assertNotIn('schedule', context)
+        self.assertNotIn('current_run', context)
+        self.runtime._read_recent_context_messages.assert_not_awaited()
         self.platform.dm.assert_awaited_once()
         self.assertEqual((await self.store.get(target['id']))['status'], 'handled')
+
+    def enable_topic_review(self):
+        self.social._review_dm = BiliSocialService._review_dm.__get__(self.social)
+
+    async def test_unrelated_incoming_is_silent_and_does_not_trigger_contact(self):
+        self.enable_topic_review()
+        row = await self.incoming()
+        await self.store.finish(row, text='从B站来找你，今晚陪我聊天吧')
+        await self.video()
+        self.browse._model.return_value = {'incoming': [{'id': row['id'], 'related': False}]}
+        await self.social.tick(self.day, self.world)
+        self.assertEqual((await self.store.get(row['id']))['status'], 'dismissed')
+        self.assertNotIn('contact', self.browse._model.await_args.args[1]['allowed_actions'])
+        self.platform.dm.assert_not_awaited()
+        self.assertEqual(await self.social.context('private:a'), [])
+        self.assertEqual((await self.social.message('private:a', 'history'))['dialogue'], [])
+
+    async def test_mixed_burst_only_answers_bili_part(self):
+        self.enable_topic_review()
+        unrelated = await self.incoming(key='unrelated')
+        await self.store.finish(unrelated, text='今晚陪我聊天吧', remote_at=10)
+        related = await self.incoming(key='related')
+        await self.store.finish(related, text='这个视频的结尾你怎么看', remote_at=11)
+        async def model(rule, context):
+            if rule == DM_SCOPE_RULE:
+                return {'incoming': [{'id': r['id'], 'related': r['id'] == related['id']}
+                                     for r in context['incoming']], 'outgoing_related': True}
+            self.assertNotIn('今晚陪我聊天吧', json.dumps(context, ensure_ascii=False))
+            return {'action': 'dm', 'id': related['id'], 'text': '结尾那个转折挺有意思'}
+        self.browse._model.side_effect = model
+        await self.social.tick(self.day, self.world)
+        self.assertEqual((await self.store.get(unrelated['id']))['status'], 'dismissed')
+        self.assertEqual((await self.store.get(related['id']))['status'], 'handled')
+        sent = (await self.store.pending(['accepted']))[0]
+        self.assertEqual(sent['covered_ids'], [related['id']])
+        self.assertEqual(sent['topic_scope'], 'bilibili')
+        self.platform.dm.assert_awaited_once()
+
+    async def test_contextual_reply_without_platform_name_uses_confirmed_topic(self):
+        self.enable_topic_review()
+        old = await self.incoming(key='old')
+        await self.store.finish(old, text='这个视频里的对照实验挺有意思', status='handled', topic_scope='bilibili')
+        row = await self.incoming(key='new')
+        await self.store.finish(row, text='你觉得最后那一步呢')
+        async def model(rule, context):
+            if rule == DM_SCOPE_RULE:
+                self.assertIn('对照实验', json.dumps(context['bili_dialogue'], ensure_ascii=False))
+                return {'incoming': [{'id': r['id'], 'related': True} for r in context['incoming']],
+                        'outgoing_related': True}
+            return {'action': 'dm', 'id': row['id'], 'text': '我觉得还缺一个对照'}
+        self.browse._model.side_effect = model
+        await self.social.tick(self.day, self.world)
+        self.platform.dm.assert_awaited_once()
+        self.runtime._read_recent_context_messages.assert_not_awaited()
+
+    async def test_message_tool_cannot_send_unrelated_content_even_with_platform_word(self):
+        self.enable_topic_review()
+        await self.incoming()
+        self.browse._model.return_value = {'outgoing_related': False}
+        with self.assertRaises(BiliDMScopeError):
+            await self.social.message('private:a', 'send', 'B站上给你说晚安，别熬夜', 'new-request')
+        self.platform.dm.assert_not_awaited()
+        self.assertFalse([r for r in await self.store.records() if r.get('outbound')])
+
+    async def test_scope_review_failure_or_invalid_boolean_never_sends(self):
+        self.enable_topic_review()
+        await self.incoming()
+        for result in ({}, {'outgoing_related': 'true'}, {'outgoing_related': 1}):
+            self.browse._model.return_value = result
+            with self.assertRaises(BiliDMScopeError):
+                await self.social.message('private:a', 'send', '看看这个视频', 'request')
+        self.browse._model.side_effect = RuntimeError('模型暂不可用')
+        with self.assertRaises(BiliDMScopeError):
+            await self.social.message('private:a', 'send', '看看这个视频', 'request')
+        self.platform.dm.assert_not_awaited()
+        self.assertFalse([r for r in await self.store.records() if r.get('outbound')])
+
+    async def test_unknown_incoming_is_deferred_without_false_dismissal(self):
+        self.enable_topic_review()
+        row = await self.incoming()
+        self.browse._model.return_value = {}
+        await self.social.tick(self.day, self.world)
+        saved = await self.store.get(row['id'])
+        self.assertEqual(saved['status'], 'new')
+        self.assertGreater(saved['review_after'], time.time())
+        self.assertNotIn('incoming', self.browse._model.await_args.args[1])
+        self.assertEqual(await self.social.context('private:a'), [])
+        self.platform.dm.assert_not_awaited()
+
+    async def test_conflicting_incoming_verdicts_defer_instead_of_dismissing(self):
+        self.enable_topic_review()
+        row = await self.incoming()
+        self.browse._model.return_value = {'incoming': [
+            {'id': row['id'], 'related': True}, {'id': row['id'], 'related': False}]}
+        await self.social.tick(self.day, self.world)
+        saved = await self.store.get(row['id'])
+        self.assertEqual(saved['status'], 'new')
+        self.assertGreater(saved['review_after'], time.time())
+        self.platform.dm.assert_not_awaited()
+
+    async def test_reply_cannot_expand_bili_topic_into_life_chat(self):
+        self.enable_topic_review()
+        row = await self.incoming()
+        async def model(rule, context):
+            if rule == DM_SCOPE_RULE:
+                return {'incoming': [{'id': r['id'], 'related': True} for r in context['incoming']],
+                        'outgoing_related': False}
+            return {'action': 'dm', 'id': row['id'], 'text': '这个视频不错，你今晚吃饭了吗'}
+        self.browse._model.side_effect = model
+        await self.social.tick(self.day, self.world)
+        self.platform.dm.assert_not_awaited()
+        self.assertEqual((await self.store.get(row['id']))['status'], 'new')
+        self.assertFalse([r for r in await self.store.records() if r.get('outbound')])
+
+    async def test_autonomous_contact_rechecks_rhythm_after_scope_review(self):
+        self.enable_topic_review()
+        await self.store.update({'bindings': {'private:a': {'uid': '5678'}}})
+        target, _ = await self.social._contact(self.store, await self.store.state(), [], [await self.video()])
+        async def model(rule, context):
+            await self.db.save_conversation_receipt('private:a', local_timestamp(self.now))
+            return {'outgoing_related': True}
+        self.browse._model.side_effect = model
+        with self.assertRaises(BiliDMScopeError):
+            await self.social.act('dm', text='这个实验挺有意思', target=target, scope='private:a')
+        self.platform.dm.assert_not_awaited()
+
+    async def test_scope_review_excludes_other_people_and_unclassified_history(self):
+        self.enable_topic_review()
+        row = await self.incoming(scope='private:b')
+        await self.store.finish(row, text='另一个人的话', topic_scope='bilibili')
+        row = await self.incoming()
+        await self.store.finish(row, text='旧的生活闲聊', status='handled')
+        await self.social._review_dm('private:a', self.store, text='这个视频挺不错')
+        context = self.browse._model.await_args.args[1]
+        self.assertEqual(set(context), {'bili_material', 'bili_dialogue', 'incoming', 'outgoing'})
+        self.assertEqual(context['bili_dialogue'], [])
+        self.assertNotIn('私密约定', json.dumps(context, ensure_ascii=False))
+        self.runtime._read_recent_context_messages.assert_not_awaited()
+
+    async def test_unbinding_during_scope_review_prevents_send(self):
+        self.enable_topic_review()
+        await self.incoming()
+        async def model(rule, context):
+            await self.store.update({'bindings': {}})
+            return {'outgoing_related': True}
+        self.browse._model.side_effect = model
+        with self.assertRaises(BiliDMScopeError):
+            await self.social.message('private:a', 'send', '这个视频挺不错', 'request')
+        self.platform.dm.assert_not_awaited()
+
+    async def test_runtime_change_during_scope_review_prevents_send(self):
+        self.enable_topic_review()
+        await self.incoming()
+        async def model(rule, context):
+            self.browse._epoch += 1
+            return {'outgoing_related': True}
+        self.browse._model.side_effect = model
+        with self.assertRaises(BiliDMScopeError):
+            await self.social.message('private:a', 'send', '这个视频挺不错', 'request')
+        self.platform.dm.assert_not_awaited()
+
+    async def test_ordinary_chat_alone_never_creates_bili_contact(self):
+        await self.store.update({'bindings': {'private:a': {'uid': '5678'}}})
+        await self.social.tick(self.day, self.world)
+        self.assertNotIn('contact', self.browse._model.await_args.args[1]['allowed_actions'])
+        self.runtime._read_recent_context_messages.assert_not_awaited()
+        self.platform.dm.assert_not_awaited()
 
     async def test_dm_never_crosses_scope_or_sends_unverified(self):
         target = await self.incoming()
@@ -474,6 +650,7 @@ class SocialTest(unittest.IsolatedAsyncioTestCase):
         self.platform.dm.assert_not_awaited()
 
     async def test_autonomous_contact_needs_real_changes_and_does_not_chase(self):
+        await self.video()
         await self.store.update({'bindings': {'private:a': {'uid':'5678'}}})
         async def model(rule, context):
             contact = context.get('contact')
@@ -505,7 +682,7 @@ class SocialTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_sent_echo_does_not_allow_another_unanswered_contact(self):
         await self.store.update({'bindings': {'private:a': {'uid':'5678'}}})
-        target, _ = await self.social._contact(self.store, await self.store.state(), [], [])
+        target, _ = await self.social._contact(self.store, await self.store.state(), [], [await self.video()])
         await self.social.act('dm', text='刚才想到你', target=target, scope='private:a')
         await self.store.put('echo', {'kind':'dm_self', 'scope':'private:a', 'uid':'5678',
             'text':'刚才想到你', 'at':(self.now+dt.timedelta(seconds=3)).isoformat(), 'status':'received'})
@@ -516,20 +693,20 @@ class SocialTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_rejected_contact_can_be_reconsidered_after_cooldown(self):
         await self.store.update({'bindings': {'private:a': {'uid':'5678'}}})
-        target, _ = await self.social._contact(self.store, await self.store.state(), [], [])
+        target, _ = await self.social._contact(self.store, await self.store.state(), [], [await self.video()])
         self.platform.dm.side_effect = BiliReadError('平台拒绝')
         with self.assertRaises(BiliReadError):
             await self.social.act('dm', text='刚才想到你', target=target, scope='private:a')
-        contact, _ = await self.social._contact(self.store, await self.store.state(), await self.store.records(), [])
+        contact, _ = await self.social._contact(self.store, await self.store.state(), await self.store.records(), [await self.video()])
         self.assertIsNone(contact)
         rejected = (await self.store.pending(['rejected']))[0]
         await self.store.finish(rejected, retry_after=0)
-        contact, _ = await self.social._contact(self.store, await self.store.state(), await self.store.records(), [])
+        contact, _ = await self.social._contact(self.store, await self.store.state(), await self.store.records(), [await self.video()])
         self.assertEqual(contact['id'], target['id'])
 
-    async def test_same_person_chat_response_can_continue_contact(self):
+    async def test_ordinary_chat_response_cannot_create_a_bili_topic(self):
         await self.store.update({'bindings': {'private:a': {'uid':'5678'}}})
-        target, _ = await self.social._contact(self.store, await self.store.state(), [], [])
+        target, _ = await self.social._contact(self.store, await self.store.state(), [], [await self.video()])
         await self.social.act('dm', text='刚才想到你', target=target, scope='private:a')
         self.now += dt.timedelta(minutes=10)
         await self.db.save_conversation_arrival('private:a', local_timestamp(self.now))
@@ -537,9 +714,10 @@ class SocialTest(unittest.IsolatedAsyncioTestCase):
         self.runtime._read_recent_context_messages.return_value = [
             {'role':'user', 'content':'刚刚在B站看到啦', 'timestamp':local_timestamp(self.now)}]
         await self.social.tick(self.day, self.world)
-        self.assertIn('contact', self.browse._model.await_args.args[1]['allowed_actions'])
+        self.assertNotIn('contact', self.browse._model.await_args.args[1]['allowed_actions'])
 
     async def test_new_experience_can_prompt_later_contact_without_a_reply(self):
+        await self.video()
         await self.store.update({'bindings': {'private:a': {'uid': '5678'}}})
 
         async def model(rule, context):
@@ -562,6 +740,7 @@ class SocialTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rhythm['retry_after'], 16 * 60)
 
     async def test_qq_or_share_receipt_delays_bili_contact(self):
+        await self.video()
         await self.store.update({'bindings': {'private:a': {'uid': '5678'}}})
         await self.db.save_conversation_receipt('private:a', local_timestamp(self.now))
         await self.social.tick(self.day, self.world)
@@ -570,6 +749,7 @@ class SocialTest(unittest.IsolatedAsyncioTestCase):
         self.platform.dm.assert_not_awaited()
 
     async def test_receipt_during_decision_prevents_cross_platform_burst(self):
+        await self.video()
         await self.store.update({'bindings': {'private:a': {'uid': '5678'}}})
 
         async def model(rule, context):
@@ -582,6 +762,7 @@ class SocialTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.store.records(), [])
 
     async def test_other_plugin_reservation_prevents_bili_contact(self):
+        await self.video()
         await self.store.update({'bindings': {'private:a': {'uid': '5678'}}})
         gate = self.runtime.share_contact_gate = ShareContactGate(self.runtime)
         self.assertTrue(gate.claim('private:a', 'daily_share:test'))
@@ -610,6 +791,7 @@ class SocialTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(await self.store.records(scope='private:a')), 2)
 
     async def test_contact_releases_shared_reservation_after_send_or_rejection(self):
+        await self.video()
         await self.store.update({'bindings': {'private:a': {'uid': '5678'}}})
         gate = self.runtime.share_contact_gate = ShareContactGate(self.runtime)
 

@@ -587,25 +587,6 @@ def format_state_prompt(state: dict | None) -> str:
     )
 
 
-def format_state_hidden(state: dict | None) -> str:
-    if not _state_dict(state):
-        return ""
-    normalized = normalize_state(state)
-    watch_state = bot_watch_state_label(normalized["watch_state"])
-    interrupt_level = interrupt_level_label(normalized["interrupt_level"])
-    return (
-        "[HiddenState]\n"
-        f"- 当前身体与情绪底色：{format_state_prompt(normalized)}\n"
-        f"- 群聊观看姿态：{watch_state}；无聊值 {normalized['boredom']}/100；"
-        f"摸鱼值 {normalized['fishing']}/100；注意力开放度 {normalized['attention_openness']}/100；"
-        f"当前打断门槛：{interrupt_level}。"
-        f"打断原因：{normalized['interrupt_reason']}\n"
-        "- 回复风格约束：把这个状态当作今天的内在惯性。体力低时少主动提出高强度外出；"
-        "社交意愿低时回复更慢热、更低负担；忙碌度高时避免显得随时很闲；"
-        "摸鱼值高时普通消息只轻扫或不进入主体注意，除非被明确提及、引用、提到我或高相关事件打断。"
-    )
-
-
 def classify_message_interrupt(
     message: str = "",
     *,

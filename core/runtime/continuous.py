@@ -340,6 +340,10 @@ class ContinuousLifeService:
         if action is None:
             await self._close_continuous_run(run, "cancelled", "原行动已被调整", now)
             return
+        if (action.action_type == "study" and not action.payload.get("knowledge_source_id")
+                and (action.payload.get("knowledge_query") or action.payload.get("knowledge_url"))):
+            await self._close_continuous_run(run, "failed", "本次阅读未取得可读取的原文，保留疑问以便重新选择来源", now)
+            return
         if action.action_type == "study" and action.payload.get("knowledge_source_id"):
             readings = await self._archive().memory_life.reading_receipts(
                 action.action_id, int(action.payload["knowledge_source_id"])
@@ -695,6 +699,7 @@ class ContinuousLifeService:
             return
         day = proposed
         action = None
+        action_issue = "自主步骤缺少可执行的类型、目标、耗时或当前节点"
         new_steps = []
         if decision == "start" and not snapshot.get("run"):
             candidate = next(
@@ -722,7 +727,6 @@ class ContinuousLifeService:
                             break
                         step = LifeActionIntent.from_value(raw)
                         if (step.action_type not in INTERNAL_SIMULATED_ACTION_TYPES
-                                or step.action_type in {"move", "travel"}
                                 or not step.target or not step.duration_minutes):
                             new_steps = []
                             break
@@ -746,8 +750,10 @@ class ContinuousLifeService:
                         step.payload["execution_chain_unbound"] = step.timeline_index is None
                         step.source = "continuous_plan"
                         new_steps.append(step)
-                    if new_steps and not await self._prepare_actions(day, new_steps):
-                        action = new_steps[0]
+                    if new_steps:
+                        action_issue = await self._prepare_actions(day, new_steps)
+                        if not action_issue:
+                            action = new_steps[0]
             if action and (
                 action.action_type not in INTERNAL_SIMULATED_ACTION_TYPES
                 or not action.duration_minutes
@@ -755,7 +761,7 @@ class ContinuousLifeService:
             ):
                 action = None
             if action:
-                valid, _ = await self._validate_action(action, day=day)
+                valid, action_issue = await self._validate_action(action, day=day)
                 if not valid:
                     action = None
         expected_revision = int(snapshot.get("revision") or 0)
@@ -769,6 +775,18 @@ class ContinuousLifeService:
                 resumed is not None and (await self._validate_action(resumed, day=day))[0]
             )
         if decision == "start" and not snapshot.get("run") and action is None:
+            def blocked(latest, world):
+                if (int(world.get("revision") or 0) != expected_revision
+                        or latest.revision != day.revision or world.get("run")):
+                    return False
+                world["plan_alignment_blocked"] = action_issue
+                world["last_decision_at"] = now.isoformat()
+                world["next_decision_at"] = next_decision_time(
+                    latest, world, now, refresh_minutes=self._config().state.refresh_minutes,
+                ).isoformat()
+                world["decision_observation"] = decision_observation(latest, world)
+
+            await self._archive().mutate_continuous_life(day.date, blocked)
             return
 
         blocked_reason = ""

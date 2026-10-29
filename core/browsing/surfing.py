@@ -327,9 +327,19 @@ class BiliBrowseService:
                 default=str,
             ).encode()
         ).hexdigest()
+        run = world.get("run") or {}
+        life_action = run.get("action") or {}
+        life_action_id = str(life_action.get("action_id") or "")
+        explicit_choice = (
+            run.get("status") == "running"
+            and life_action.get("action_type") == "rest"
+            and (life_action.get("payload") or {}).get("activity") == "bilibili"
+            and bool(life_action_id)
+            and state.get("life_action_id") != life_action_id
+        )
         changed = state.get("context_key") != fingerprint
         due = not instant(state.get("next_at")) or now >= instant(state["next_at"])
-        needs_review = due or (
+        needs_review = explicit_choice or due or (
             changed and elapsed(now, state.get("reviewed_at")) >= 300
         )
         if active and not needs_review:
@@ -356,9 +366,9 @@ class BiliBrowseService:
                     {"date": now.date().isoformat(), "daily_seconds": used + advanced}
                 )
             return
-        if not due and (not changed or elapsed(now, state.get("reviewed_at")) < 300):
+        if not explicit_choice and not due and (not changed or elapsed(now, state.get("reviewed_at")) < 300):
             return
-        if elapsed(now, state.get("reviewed_at")) < 300:
+        if not explicit_choice and elapsed(now, state.get("reviewed_at")) < 300:
             return
         context = context or await self._context(day, world, state)
         context.update(
@@ -380,6 +390,7 @@ class BiliBrowseService:
                 "reviewed_at": stamp(now),
                 "next_at": stamp(now + datetime.timedelta(minutes=minutes)),
                 "context_key": fingerprint,
+                "life_action_id": life_action_id if explicit_choice else state.get("life_action_id", ""),
                 "last_reason": clean(decision.get("reason"), 200),
                 "last_error": "",
             }
@@ -843,7 +854,7 @@ class BiliBrowseService:
             "若尚无该视频的内容依据，明确还未了解，不凭标题猜测、不承诺稍后必发；需要了解时可调用 life_bili_browse 的 understand 操作。"
             "自主分享仅在当前话题或关系合适且 share_worthy 时考虑，已分享内容不重复推荐，不能把对方的沉默视为负面反馈。"
             "delivery_pending 表示发送回执正在核对，暂不主动重复推荐；只在用户主动提及时正常承接。"
-            "账号活动 accepted/confirmed 才代表B站已接收；uncertain/sending 不能说已发出。私信仅与已验证的同一会话身份延续。"
+            "账号活动 accepted/confirmed 才代表B站已接收；uncertain/sending 不能说已发出。私信仅与已验证的同一会话身份交流B站相关内容。"
             + payload
             + "\n</video_life_experiences>"
         )

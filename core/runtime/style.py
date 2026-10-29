@@ -1209,17 +1209,6 @@ class ChatStyleRuntimeComponent:
             f"长度={len(self.context._chat_style_compact_text(reply_text))}"
         )
 
-    _CHAT_STYLE_SEGMENT_DELAY_RANGE = _part_chat_delay_component.ChatDelayComponent._CHAT_STYLE_SEGMENT_DELAY_RANGE
-
-    _CHAT_STYLE_SHORT_DELAY_RANGE = _part_chat_delay_component.ChatDelayComponent._CHAT_STYLE_SHORT_DELAY_RANGE
-
-    _CHAT_STYLE_LONG_DELAY_RANGE = _part_chat_delay_component.ChatDelayComponent._CHAT_STYLE_LONG_DELAY_RANGE
-
-    _CHAT_STYLE_LEAD_SHORT_DELAY_RANGE = _part_chat_delay_component.ChatDelayComponent._CHAT_STYLE_LEAD_SHORT_DELAY_RANGE
-
-    _CHAT_STYLE_LEAD_MEDIUM_DELAY_RANGE = _part_chat_delay_component.ChatDelayComponent._CHAT_STYLE_LEAD_MEDIUM_DELAY_RANGE
-
-    _CHAT_STYLE_LEAD_LONG_DELAY_RANGE = _part_chat_delay_component.ChatDelayComponent._CHAT_STYLE_LEAD_LONG_DELAY_RANGE
 
     _CHAT_STYLE_MAX_DELAY_SECONDS = _part_chat_delay_component.ChatDelayComponent._CHAT_STYLE_MAX_DELAY_SECONDS
 

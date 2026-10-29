@@ -17,7 +17,6 @@ class MaintenanceArchiveComponentContext(Protocol):
     _text: Any
     get_behavior_feedback: Any
     get_emotion_arcs: Any
-    get_focus_targets: Any
     get_life_episodes: Any
     get_life_terms: Any
     get_memory_boundaries: Any
@@ -96,7 +95,6 @@ class MaintenanceArchiveComponent:
         storage = await self.context.get_storage_overview(policy)
         evidence = await self.context.get_memory_evidence(limit=5)
         episodes = await self.context.get_life_episodes(limit=5)
-        focus = await self.context.get_focus_targets(limit=5)
         feedback = await self.context.get_behavior_feedback(limit=5)
         emotion_arcs = await self.context.get_emotion_arcs(limit=5)
         rhythm_logs = await self.context.get_physiological_rhythm_logs(limit=5)
@@ -128,12 +126,6 @@ class MaintenanceArchiveComponent:
                 "label": "证据链",
                 "ok": bool(evidence),
                 "count": len(evidence),
-            },
-            {
-                "key": "focus_targets",
-                "label": "关注目标",
-                "ok": bool(focus),
-                "count": len(focus),
             },
             {
                 "key": "behavior_feedback",

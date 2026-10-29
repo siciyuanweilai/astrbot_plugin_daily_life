@@ -952,9 +952,6 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         runtime.maybe_collect_emoji_assets_from_event = (
             lambda event, now, sender_name="": async_return(None)
         )
-        runtime.maybe_capture_commitment_from_event = (
-            lambda event, now, sender_name="": async_return(None)
-        )
         runtime.maybe_capture_chat_memory_from_event = (
             lambda event, now, sender_name="": async_return(None)
         )

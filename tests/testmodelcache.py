@@ -1,6 +1,7 @@
 """验证前缀稳定、背景不入历史、真实缓存计量和资源释放。"""
 
 import asyncio
+import json
 import types
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -17,12 +18,29 @@ from core.life.planner import LifeBackgroundComposer
 from core.life.covenant import build_daily_plan_contract
 from core.life.reliability import ProviderCircuit
 from core.sight import sample
+from core.runtime.decisioncontext import decision_prompt_context
 
 
 class PrefixTest(unittest.TestCase):
     def setUp(self):
         self.runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         self.runtime.config = LifeSettings.from_dict({})
+
+    def test_decision_prefix_survives_live_updates_without_reusing_old_facts(self):
+        stable = {"persona": "喜欢摄影", "preferences": [{"text": "散步", "id": 1}],
+                  "focus": [], "self_model": {"interests": []}}
+        first = {"body": {"energy": 76}, "now": "21:30", **stable}
+        second = {**stable, "now": "23:05", "body": {"energy": 40}}
+        prompts = [decision_prompt_context(value) for value in (first, second)]
+        self.assertEqual(prompts[0].split(',"body":', 1)[0],
+                         prompts[1].split(',"body":', 1)[0])
+        self.assertEqual([json.loads(text) for text in prompts], [first, second])
+        self.assertEqual(list(json.loads(prompts[0]))[:4],
+                         ["persona", "preferences", "focus", "self_model"])
+        self.assertEqual(decision_prompt_context(dict(reversed(list(first.items())))), prompts[0])
+        changed = decision_prompt_context({**first, "persona": "开始喜欢绘画"})
+        self.assertNotEqual(changed.split(',"body":', 1)[0],
+                            prompts[0].split(',"body":', 1)[0])
 
     def test_current_outfit_and_time_change_without_changing_system_or_history(self):
         history = [{"role": "user", "content": "之前聊过的电影"}]

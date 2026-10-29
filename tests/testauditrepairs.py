@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, patch
 
 from core.life.future import future_outfit_timing_issue
 from core.life.planner import LifeBackgroundComposer
+from core.models import ExpressionReviewRecord
 from core.media import GeminiImageService
 from core.media.picture import polling
 from core.runtime.spine.boot import RuntimeServices
@@ -75,25 +76,25 @@ class AuditRepairsTest(unittest.IsolatedAsyncioTestCase):
         self.archive.close()
         self.directory.cleanup()
 
-    async def test_same_group_id_on_different_platforms_has_separate_cached_summaries(
+    async def test_same_group_id_on_different_platforms_has_separate_cached_context(
         self,
     ):
         self.runtime._settle_stale_reply_effects = AsyncMock()
         events = []
         for platform in ("a", "b"):
             scope = f"{platform}:GroupMessage:777"
-            await self.archive.upsert_session_mid_summary(
-                {"session_id": scope, "summary": platform}
+            await self.archive.save_expression_review(
+                ExpressionReviewRecord(scope=scope, reason=platform)
             )
             events.append(Event(unified_msg_origin=scope, group_id="777"))
         snapshots = await asyncio.gather(
             *(self.runtime._gather_life_context_snapshot(event) for event in events)
         )
         self.assertEqual(
-            [item["mid_summaries"][0].summary for item in snapshots], ["a", "b"]
+            [item["expression_reviews"][0].reason for item in snapshots], ["a", "b"]
         )
         cached = await self.runtime._gather_life_context_snapshot(events[1])
-        self.assertEqual(cached["mid_summaries"][0].summary, "b")
+        self.assertEqual(cached["expression_reviews"][0].reason, "b")
 
     def _configure_swap(self):
         runtime = self.runtime

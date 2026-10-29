@@ -24,7 +24,7 @@ class SightVault:
         clip_metadata = (
             insight.clip.metadata if isinstance(insight.clip.metadata, dict) else {}
         )
-        for key in ("content_fingerprint", "platform_id", "file_size"):
+        for key in ("content_fingerprint", "platform_id", "file_size", "native_signature"):
             if clip_metadata.get(key) not in ("", None):
                 metadata[key] = clip_metadata[key]
         payload["metadata"] = metadata

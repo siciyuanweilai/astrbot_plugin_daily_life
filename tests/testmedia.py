@@ -990,7 +990,7 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
             },
         )
 
-    def test_gpt_json_reference_contract_without_quality(self):
+    def test_gpt_reference_contract_without_quality(self):
         for api_url in (
             "https://api.scywl.cc",
             "https://api.scywl.cc/v1",
@@ -1040,7 +1040,7 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
                             route, parts, resolution="1K", aspect_ratio="1:1"
                         )
 
-                        if base_model and reference_count > 1:
+                        if base_model and reference_count:
                             self.assertIsNone(request.payload)
                             fields = request.form.fields
                             values = {name: value for name, value, _ in fields if name != "image"}
@@ -1065,12 +1065,6 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
                         if not reference_count:
                             self.assertNotIn("images", request.payload)
                             self.assertNotIn("image", request.payload)
-                            continue
-                        if base_model:
-                            self.assertNotIn("images", request.payload)
-                            prefix, encoded = request.payload["image"].split(",", 1)
-                            self.assertEqual(prefix, f"data:{references[0][1]};base64")
-                            self.assertEqual(base64.b64decode(encoded), references[0][0])
                             continue
                         self.assertNotIn("image", request.payload)
                         self.assertEqual(
@@ -2034,7 +2028,7 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(calls[0][2])
         self.assertIsNotNone(calls[0][3])
 
-    async def test_gpt_image_25_edit_image_posts_application_json_without_quality(self):
+    async def test_gpt_image_25_edit_image_posts_multipart_without_quality(self):
         output_bytes = _real_png_bytes(16, 16)
         reference = Path(tempfile.mkdtemp()) / "reference.png"
         reference.write_bytes(_real_png_bytes(32, 32))
@@ -2047,17 +2041,19 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
                 calls.append((url, headers or {}, json, data, timeout))
                 if url.endswith("/async"):
                     return _Response(status=404)
-                if not (json or {}).get("image"):
+                fields = data.fields if data is not None else []
+                values = {name: value for name, value, _ in fields}
+                if not values.get("image"):
                     return _Response(
                         status=400,
                         text='{"error":{"message":"image is required",'
                         '"type":"invalid_request_error"}}',
                     )
-                if json.get("response_format") != "b64_json":
+                if values.get("response_format") != "b64_json":
                     return _Response(
                         status=503, text="image task storage is unavailable"
                     )
-                if "quality" in json or "extra_fields" in json:
+                if "quality" in values or "extra_fields" in values:
                     return _Response(status=400, text="unsupported image options")
                 return _Response(
                     payload={
@@ -2098,18 +2094,15 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(generated.path.exists())
         self.assertEqual(calls[0][0], "https://api.scywl.cc/v1/images/edits")
-        self.assertIsNotNone(calls[0][2])
-        self.assertIsNone(calls[0][3])
+        self.assertIsNone(calls[0][2])
+        self.assertIsNotNone(calls[0][3])
         self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0][2]["model"], "gpt-image-2.5")
-        self.assertNotIn("quality", calls[0][2])
-        self.assertEqual(calls[0][2]["response_format"], "b64_json")
+        values = {name: value for name, value, _ in calls[0][3].fields}
+        self.assertEqual(values["model"], "gpt-image-2.5")
+        self.assertNotIn("quality", values)
+        self.assertEqual(values["response_format"], "b64_json")
         self.assertEqual(generated.path.read_bytes(), output_bytes)
-        image_url = calls[0][2]["image"]
-        self.assertTrue(image_url.startswith("data:image/png;base64,"))
-        self.assertEqual(
-            base64.b64decode(image_url.split(",", 1)[1]), reference.read_bytes()
-        )
+        self.assertEqual(values["image"], reference.read_bytes())
 
     async def test_edit_image_downloads_openai_url_response(self):
         output_bytes = _real_png_bytes(2, 2)

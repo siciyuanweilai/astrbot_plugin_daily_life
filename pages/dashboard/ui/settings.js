@@ -1643,10 +1643,6 @@ export function createConfigPanel({
     return wrap;
   }
 
-  function isImageGallerySpec(spec = {}) {
-    return ["character_reference_gallery", "friend_reference_gallery"].includes(spec._special);
-  }
-
   function isCharacterReferenceGallery(spec = {}) {
     return spec._special === "character_reference_gallery";
   }

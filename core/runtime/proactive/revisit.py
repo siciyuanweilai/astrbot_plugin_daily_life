@@ -35,21 +35,17 @@ class ProactiveRevisitComponentContext(Protocol):
     _current_proactive_persona: Any
     _event_message_id: Any
     _expression_review_passed: Any
-    _format_behavior_patterns_for_proactive: Any
     _format_behavior_scenes_for_proactive: Any
     _format_expression_profiles_for_proactive: Any
     _format_expression_reviews_for_proactive: Any
-    _format_focus_slots_for_proactive: Any
     _format_hidden_schedule_window: Any
     _format_life_terms_for_proactive: Any
-    _format_mid_summaries_for_proactive: Any
     _format_private_revisit_evidence_scope: Any
     _format_proactive_air_state: Any
     _format_proactive_expression_style: Any
     _format_proactive_persona_context: Any
     _format_recent_context_messages: Any
     _format_reply_effects_for_proactive: Any
-    _format_temporary_expression_states_for_proactive: Any
     _get_proactive_provider: Any
     _normalize_proactive_utility: Any
     _private_revisit_event: Any
@@ -354,9 +350,6 @@ class ProactiveRevisitComponent:
         return {
             "air_state": self.context._format_proactive_air_state(target_scope, now),
             "expression_profiles": expression_profiles,
-            "behavior_patterns": await self.context.archive.get_behavior_patterns(
-                limit=4, scope=target_scope
-            ),
             "reply_effects": await self.context.archive.get_reply_effects(
                 limit=4, scope=target_scope
             ),
@@ -365,15 +358,6 @@ class ProactiveRevisitComponent:
             ),
             "behavior_scenes": await self.context.archive.get_behavior_scenes(
                 limit=4, scope=target_scope
-            ),
-            "focus_slots": await self.context.archive.get_focus_slots(
-                limit=4, scope=target_scope
-            ),
-            "mid_summaries": await self.context.archive.get_session_mid_summaries(
-                limit=2, session_id=target_scope
-            ),
-            "temporary_expression_states": await self.context.archive.get_temporary_expression_states(
-                limit=3, scope=target_scope
             ),
             "life_terms": await self.context.archive.get_life_terms(
                 limit=5, scope=target_scope
@@ -464,17 +448,8 @@ JSON 输出要求：
 外部长期记忆参考：
 {memory_context["memos_context"] or "暂无外部长期记忆参考。"}
 
-会话中期摘要：
-{self.context._format_mid_summaries_for_proactive(expression_context["mid_summaries"])}
-
-此刻表达状态：
-{self.context._format_temporary_expression_states_for_proactive(expression_context["temporary_expression_states"])}
-
 表达习惯参考：
 {self.context._format_expression_profiles_for_proactive(expression_context["expression_profiles"])}
-
-行为模式参考：
-{self.context._format_behavior_patterns_for_proactive(expression_context["behavior_patterns"])}
 
 行为场景簇参考：
 {self.context._format_behavior_scenes_for_proactive(expression_context["behavior_scenes"])}
@@ -490,9 +465,6 @@ JSON 输出要求：
 
 会话空气感：
 {expression_context["air_state"]}
-
-短期注意槽：
-{self.context._format_focus_slots_for_proactive(expression_context["focus_slots"])}
 
 闲时发言频率：{self.context.config.proactive.private_talk_frequency:.2f}
 回访间隔：{max(5, int(self.context.config.proactive.revisit_interval_minutes or 30))} 分钟
@@ -1007,16 +979,22 @@ JSON 输出要求：
                 reason_code="proposal_approved",
                 outcome="准备发送私聊回访",
             )
-            if await self.context._send_proactive_message(
+            delivery_payload = {**payload, "source": "private_revisit"}
+            sent = await self.context._send_proactive_message(
                 target_scope,
                 reply_text,
                 "私聊回访发送失败",
                 relationship=relationship,
                 contact_type="friend",
-                send_payload={**payload, "source": "private_revisit"},
+                send_payload=delivery_payload,
                 source_event=event,
                 source_message_id=self.context._event_message_id(event),
-            ):
+            )
+            delivery = delivery_payload.get("_delivery") or {}
+            if delivery:
+                payload["_delivery"] = delivery
+            if sent:
+                reply_text = str(delivery.get("sent_text") or reply_text)
                 await self.context._commit_proactive_decision(
                     event,
                     sender_name,
@@ -1049,26 +1027,21 @@ JSON 输出要求：
                     logger.warning(f"{LOG_PREFIX} 私聊回访面板刷新通知失败：{exc}")
                 logger.info(f"{LOG_PREFIX} 私聊回访已发送：长度={len(reply_text)}")
             else:
+                status = str(delivery.get("status") or "failed")
+                stage = "waiting" if status == "deferred" else (
+                    "interrupted" if status == "interrupted" else "abandoned"
+                )
+                reason = str(delivery.get("reason") or "私聊回访未能成功发送")
+                code = str(delivery.get("reason_code") or "send_failed")
                 self.context._transition_proactive_lifecycle(
-                    key,
-                    "abandoned",
-                    event="send_failed",
-                    reason="私聊回访未能成功发送",
-                    now=now,
+                    key, stage, event=code, reason=reason, now=now,
                 )
                 await self.context._advance_proactive_decision_trace(
-                    event,
-                    payload,
-                    stage="abandoned",
-                    reason_code="send_failed",
-                    outcome="私聊回访发送失败",
+                    event, payload, stage=stage, reason_code=code, outcome=reason,
                 )
-                self.context._update_proactive_air_after_decision(
-                    key,
-                    {
-                        "decision": "observe",
-                        "reason": "私聊回访发送失败，暂时降低主动性",
-                    },
-                    now,
-                    sent=False,
-                )
+                if status == "unknown":
+                    self.context._proactive_private_last_revisit_at[key] = now
+                if status == "failed":
+                    self.context._update_proactive_air_after_decision(
+                        key, {"decision": "observe", "reason": reason}, now, sent=False,
+                    )

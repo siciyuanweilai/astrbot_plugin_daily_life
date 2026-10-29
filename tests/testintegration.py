@@ -173,7 +173,15 @@ class _ShareArchive:
 
     async def get_behavior_scenes(self, limit=4, *, scope=""):
         self.calls.append(("behavior_scenes", scope))
-        return []
+        return [
+            {
+                "scope": scope,
+                "scene": "日常分享",
+                "preferred_action": "先说结论",
+                "evidence": "内部模式证据不得透传",
+            },
+            {"scope": "", "scene": "未归属场景", "preferred_action": "不得透传"},
+        ]
 
     async def get_reply_effects(self, limit=8, *, scope=""):
         self.calls.append(("reply_effects", scope))
@@ -287,7 +295,11 @@ class TargetLifeContextTests(unittest.IsolatedAsyncioTestCase):
             [item["title"] for item in result["episodes"]],
             ["公共日程片段", "甲的私聊片段"],
         )
-        self.assertEqual(result["focus"][0]["label"], "当前目标")
+        self.assertNotIn("focus", result)
+        retired_queries = {
+            "focus_targets", "focus_slots", "behavior_patterns", "temporary_states"
+        }
+        self.assertFalse(retired_queries & {item[0] for item in snapshot.archive.calls})
         self.assertEqual(result["behavior"][0]["preferred"], "先说结论")
         self.assertEqual(result["interaction"]["positive"], 1)
         self.assertEqual(result["interaction"]["neutral"], 1)
@@ -316,7 +328,8 @@ class TargetLifeContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [item["title"] for item in result["episodes"]], ["公共日程片段"]
         )
-        self.assertIn(("focus_targets", "group-test-a"), snapshot.archive.calls)
+        self.assertNotIn("focus_targets", [item[0] for item in snapshot.archive.calls])
+        self.assertIn(("behavior_scenes", "group-test-a"), snapshot.archive.calls)
         self.assertIn(("reply_effects", target), snapshot.archive.calls)
         self.assertIn(("behavior_feedback", "group-test-a"), snapshot.archive.calls)
         self.assertIn(("behavior_feedback", target), snapshot.archive.calls)

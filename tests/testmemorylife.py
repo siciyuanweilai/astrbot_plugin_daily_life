@@ -1,12 +1,13 @@
 """六项记忆能力的来源、隐私、并发和真实进度回归。"""
 
+import json
 import tempfile
 import types
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock
 
-from support import LifeArchive, LongTermMemoryRecord
+from support import DayRecord, LifeArchive, LongTermMemoryRecord
 from core.archive.migrations import (
     CURRENT_SCHEMA_FINGERPRINT,
     SCHEMA_VERSION,
@@ -310,6 +311,73 @@ class MemoryLifeTest(unittest.IsolatedAsyncioTestCase):
         runtime.archive.get_continuous_life.return_value["run"]["status"] = "running"
         self.assertTrue(await service.read_current_activity())
         self.assertEqual((await self.life.library(["global"]))[0]["read_count"], 1)
+
+    async def reading_runtime(self, payload):
+        runtime = self.runtime()
+        date = "2026-10-29"
+        action = {"action_id": "reading-new", "action_type": "study", "payload": payload}
+        await self.archive.save_day(DayRecord(
+            date=date, meta={"planned_life_actions": json.dumps([action])},
+        ))
+        await self.archive.mutate_continuous_life(date, lambda day, world: world.update(
+            run={"status": "running", "date": date, "action": action},
+        ))
+        runtime.composer = types.SimpleNamespace(search=types.SimpleNamespace(
+            search=AsyncMock(return_value=types.SimpleNamespace(
+                status="ok", sources=[types.SimpleNamespace(as_dict=lambda: {
+                    "title": "水的流动", "url": "https://example.org/water",
+                })],
+            )),
+            fetch=AsyncMock(return_value={
+                "status": "ok", "mode": "page_extract", "url": "https://example.org/water",
+                "content": "水会沿着地势流向低处。观察水流也能帮助理解地形。",
+            }),
+        ))
+        service = MemoryLifeService(runtime)
+        service.model = AsyncMock(side_effect=[
+            {"index": 0},
+            {"understood": True, "quote": "水会沿着地势流向低处", "summary": "地势影响水流方向"},
+        ])
+        return runtime, service
+
+    async def test_autonomous_search_fetch_read_binds_real_source_to_action(self):
+        runtime, service = await self.reading_runtime({"knowledge_query": "水流方向"})
+        self.assertTrue(await service.read_current_activity())
+        runtime.composer.search.search.assert_awaited_once_with("水流方向", source_scope="web")
+        runtime.composer.search.fetch.assert_awaited_once_with("https://example.org/water")
+        sources = await self.life.library(["self"])
+        self.assertEqual(len(sources), 1)
+        self.assertEqual(sources[0]["read_count"], 1)
+        self.assertEqual(await self.life.library(["private:someone"]), [])
+        world = await self.archive.get_continuous_life()
+        sid = world["run"]["action"]["payload"]["knowledge_source_id"]
+        day = await self.archive.get_day("2026-10-29")
+        self.assertEqual(json.loads(day.meta["planned_life_actions"])[0]["payload"]["knowledge_source_id"], sid)
+        self.assertEqual(len(await self.life.reading_receipts("reading-new", sid)), 1)
+        self.assertFalse(await service.read_current_activity())
+        self.assertEqual(service.model.await_count, 2)
+
+    async def test_search_excerpt_does_not_count_as_page_or_reading(self):
+        runtime, service = await self.reading_runtime({"knowledge_url": "https://example.org/water"})
+        runtime.composer.search.fetch.return_value["mode"] = "search_fallback"
+        self.assertFalse(await service.read_current_activity())
+        self.assertEqual(await self.life.library(["self"]), [])
+        service.model.assert_not_awaited()
+
+    async def test_interrupted_page_fetch_does_not_import_or_credit_reading(self):
+        runtime, service = await self.reading_runtime({"knowledge_url": "https://example.org/water"})
+        page = runtime.composer.search.fetch.return_value
+
+        async def fetch(url):
+            await self.archive.mutate_continuous_life(
+                "2026-10-29", lambda day, world: world["run"].update(status="paused"),
+            )
+            return page
+
+        runtime.composer.search.fetch.side_effect = fetch
+        self.assertFalse(await service.read_current_activity())
+        self.assertEqual(await self.life.library(["self"]), [])
+        service.model.assert_not_awaited()
 
     async def test_knowledge_note_completes_matching_running_study(self):
         source = await self.life.import_source(

@@ -52,7 +52,7 @@ from componentfixtures import LifeAutonomyComponent
 from core.media import GeminiImageService, VolcengineVoiceService
 from core.memos import HostedMemOSService
 from core.runtime.background import BackgroundTaskScheduler
-from core.runtime.director import MediaPromptExtractionError
+from core.runtime.stage.error import MediaPromptExtractionError
 from core.runtime.reply import SegmentPart, SemanticSegmentPlan
 from core.sight import SightClip, SightInsight, SightVault, TranscriptResult
 from core.sight.bili import BiliMetadata, BiliTarget

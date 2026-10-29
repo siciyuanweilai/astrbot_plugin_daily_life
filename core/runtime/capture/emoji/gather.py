@@ -13,7 +13,6 @@ from astrbot.core.agent.message import TextPart
 from ....clock import now as life_now
 from ....models import EmojiAssetRecord
 from ....sight.animated import is_animated_gif
-from ....sight.visual import image_understanding_cache_key
 from ...markers import LOG_PREFIX
 from ...foreground import foreground_budget
 
@@ -55,7 +54,9 @@ class EmojiGatherComponentContext(Protocol):
     _media_fingerprint: Any
     _media_payload_from_item_async: Any
     _message_media_payload: Any
+    _plain_image_emoji_review_cached: Any
     _schedule_background_task: Any
+    _visual_context_cache_key: Any
     _visual_context_summary_cache: Any
     _visual_media_has_durable_source: Any
     _visual_media_sources: Any
@@ -384,11 +385,10 @@ class EmojiGatherComponent:
             return False
 
         cache = self.context._visual_context_summary_cache()
-        settings = self.context.config.vision
         user_text = str(getattr(event, "message_str", "") or "")
         cache_keys = [
-            image_understanding_cache_key(
-                settings, str(entry.get("fingerprint") or ""), user_text
+            await self.context._visual_context_cache_key(
+                str(entry.get("fingerprint") or ""), user_text
             )
             for entry in gif_entries
         ]
@@ -483,6 +483,14 @@ class EmojiGatherComponent:
             event, log_skip=True
         ):
             return
+        entries = [
+            entry for entry in await self._prepared_visual_media_from_event(event)
+            if entry.get("state") != "failed"
+            and self.context._emoji_asset_source_kind(entry.get("item"))
+            in {"trusted", "review", "plain_image"}
+        ]
+        if not entries:
+            return
         now = now or life_now()
         sender_name = sender_name or await self.context.contact_resolver.resolve_event_sender(
             event
@@ -496,7 +504,7 @@ class EmojiGatherComponent:
         plain_scheduled = 0
         review_limit = self.context._emoji_review_batch_size()
         seen: set[str] = set()
-        for entry in await self._prepared_visual_media_from_event(event):
+        for entry in entries:
             item = entry.get("item")
             source_kind = self.context._emoji_asset_source_kind(item)
             if source_kind not in {"trusted", "review", "plain_image"}:
@@ -511,8 +519,10 @@ class EmojiGatherComponent:
             if self.context.event_was_recalled(event, log_skip=True):
                 return
             if source_kind == "plain_image":
+                if await self.context._plain_image_emoji_review_cached(fingerprint):
+                    continue
                 if plain_scheduled + len(saved) < review_limit:
-                    self.context._schedule_background_task(
+                    scheduled = self.context._schedule_background_task(
                         self.context._classify_plain_image_emoji_candidate(
                             str(entry.get("path") or ""),
                             self.context._event_session_id(event),
@@ -522,7 +532,7 @@ class EmojiGatherComponent:
                         label="图片表情素材识别",
                         key=f"emoji_asset_vision:{fingerprint}",
                     )
-                    plain_scheduled += 1
+                    plain_scheduled += int(scheduled)
                 continue
             existing = await self.context.archive.get_emoji_asset_by_hash(fingerprint)
             if (
@@ -669,9 +679,7 @@ class EmojiGatherComponent:
         fingerprint = str(entry.get("fingerprint") or "")
         if not fingerprint or not self.context.config.vision.enabled:
             return
-        cache_key = image_understanding_cache_key(
-            self.context.config.vision, fingerprint, user_text
-        )
+        cache_key = await self.context._visual_context_cache_key(fingerprint, user_text)
         cached_summary = self.context._visual_context_summary_cache().get(cache_key, "")
         if cached_summary:
             self.context._apply_visual_context_summary_text(scope, message_key, cached_summary)

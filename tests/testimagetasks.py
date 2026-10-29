@@ -345,7 +345,7 @@ class ImageTaskTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_inline_image_requests_skip_async_storage_and_keep_channel_failover(self):
         for mode in ("text", "edit"):
-            for model in ("gpt-image-2", "gpt-image-2.5-flare"):
+            for model in ("gpt-image-2", "gpt-image-2.5", "gpt-image-2.5-flare"):
                 for primary_failed in (False, True):
                     with self.subTest(mode=mode, model=model, primary_failed=primary_failed):
                         result = {"data": [{"b64_json": base64.b64encode(b"image").decode()}]}
@@ -374,16 +374,21 @@ class ImageTaskTests(unittest.IsolatedAsyncioTestCase):
                         for method, url, options in session.calls:
                             self.assertEqual(method, "POST")
                             self.assertEqual(url, f"https://api.scywl.cc/v1/images/{endpoint}")
-                            self.assertEqual(options["json"]["response_format"], "b64_json")
-                            self.assertEqual(options["json"]["model"], model)
-                            if mode == "edit":
-                                image_url = (
-                                    options["json"]["image"] if model == "gpt-image-2"
-                                    else options["json"]["images"][0]["image_url"]
-                                )
-                                self.assertEqual(base64.b64decode(image_url.split(",", 1)[1]), b"reference")
+                            if mode == "edit" and model in {"gpt-image-2", "gpt-image-2.5"}:
+                                fields = options["data"].fields
+                                values = {name: value for name, value, _ in fields}
+                                self.assertNotIn("json", options)
+                                self.assertEqual(values["response_format"], "b64_json")
+                                self.assertEqual(values["model"], model)
+                                self.assertEqual(values["image"], b"reference")
                             else:
-                                self.assertNotIn("images", options["json"])
+                                self.assertEqual(options["json"]["response_format"], "b64_json")
+                                self.assertEqual(options["json"]["model"], model)
+                                if mode == "edit":
+                                    image_url = options["json"]["images"][0]["image_url"]
+                                    self.assertEqual(base64.b64decode(image_url.split(",", 1)[1]), b"reference")
+                                else:
+                                    self.assertNotIn("images", options["json"])
                         accepted.assert_not_awaited()
                         on_failed.assert_not_awaited()
 

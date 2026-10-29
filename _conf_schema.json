@@ -1743,13 +1743,13 @@
       "creative_wardrobe": {
         "description": "创意衣橱",
         "type": "object",
-        "hint": "按本次生成需求直接构思生活化完整造型，再生成图片并按可见内容写入视觉衣橱候选。",
+        "hint": "按本次生成需求构思生活化完整造型，生成图片并完成视觉核对后自动收入衣橱，衣物记为已拥有。",
         "items": {
           "enabled": {
             "description": "启用创意衣橱",
             "type": "bool",
             "default": false,
-            "hint": "开启后可从衣橱面板或工具调用生成新的生活化穿搭候选。"
+            "hint": "开启后可从衣橱面板或工具调用生成新的生活化造型，识别通过后自动收入衣橱。"
           },
           "default_mode": {
             "description": "默认生成方式",
@@ -3066,7 +3066,7 @@
         "description": "私信交流",
         "type": "bool",
         "default": true,
-        "hint": "仅与通过 /B站绑定 本人验证的同一会话身份交流。"
+        "hint": "仅与通过 /B站绑定 本人验证的同一身份交流B站相关话题；无关内容不回应，普通私聊不带入。"
       },
       "live_enabled": {
         "description": "顺路看直播与发弹幕",

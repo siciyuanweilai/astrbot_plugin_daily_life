@@ -847,7 +847,7 @@ class LifeSettingsTest(unittest.TestCase):
         browsing_model = schema["bili_browse_config"]["items"]["provider"]
 
         self.assertEqual(
-            action_model["description"], "自主生活行动规划"
+            action_model["description"], "生活行动规划"
         )
         self.assertIn("自主生活行动选择与目标复核使用的模型", action_model["hint"])
         self.assertEqual(
@@ -1547,7 +1547,7 @@ class LifeSettingsTest(unittest.TestCase):
         emoji_items = schema["emoji_config"]["items"]
         self.assertEqual(schema["emoji_config"]["description"], "视觉")
         self.assertEqual(
-            emoji_items["collect_chat_emojis"]["description"], "自动收集表情"
+            emoji_items["collect_chat_emojis"]["description"], "收集表情"
         )
         self.assertEqual(emoji_items["max_ready"]["description"], "表情数量上限")
         self.assertEqual(

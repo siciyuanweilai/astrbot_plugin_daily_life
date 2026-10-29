@@ -10,47 +10,6 @@ export const WEEKDAYS = [
 
 export const WEEKDAY_LABELS = Object.fromEntries(WEEKDAYS);
 
-export const DAY_ALIASES = new Map([
-  ["monday", "monday"],
-  ["mon", "monday"],
-  ["周一", "monday"],
-  ["星期一", "monday"],
-  ["礼拜一", "monday"],
-  ["tuesday", "tuesday"],
-  ["tue", "tuesday"],
-  ["周二", "tuesday"],
-  ["星期二", "tuesday"],
-  ["礼拜二", "tuesday"],
-  ["wednesday", "wednesday"],
-  ["wed", "wednesday"],
-  ["周三", "wednesday"],
-  ["星期三", "wednesday"],
-  ["礼拜三", "wednesday"],
-  ["thursday", "thursday"],
-  ["thu", "thursday"],
-  ["周四", "thursday"],
-  ["星期四", "thursday"],
-  ["礼拜四", "thursday"],
-  ["friday", "friday"],
-  ["fri", "friday"],
-  ["周五", "friday"],
-  ["星期五", "friday"],
-  ["礼拜五", "friday"],
-  ["saturday", "saturday"],
-  ["sat", "saturday"],
-  ["周六", "saturday"],
-  ["星期六", "saturday"],
-  ["礼拜六", "saturday"],
-  ["sunday", "sunday"],
-  ["sun", "sunday"],
-  ["周日", "sunday"],
-  ["周天", "sunday"],
-  ["星期日", "sunday"],
-  ["星期天", "sunday"],
-  ["礼拜日", "sunday"],
-  ["礼拜天", "sunday"],
-]);
-
 export const TIME_PERIOD_LABELS = {
   dawn: "凌晨",
   morning: "早晨",
@@ -831,20 +790,6 @@ export const ACTION_LABELS = {
   accepted: "已接受",
   committed: "已提交",
   none: "无动作",
-};
-
-export const DECISION_CATEGORY_LABELS = {
-  conversation: "会话响应",
-  memory: "记忆处理",
-  proactive: "主动互动",
-  expression: "表达方式",
-  other: "其他裁定",
-};
-
-export const DECISION_SOURCE_LABELS = {
-  chat_memory: "会话感知",
-  proactive_reply: "闲时回复",
-  private_revisit: "私聊回访",
 };
 
 export const UNDERSTANDING_LABELS = {

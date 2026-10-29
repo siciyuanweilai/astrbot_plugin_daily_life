@@ -7,7 +7,6 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 import aiohttp
-
 from astrbot.api import logger
 
 from ..base import (
@@ -128,11 +127,12 @@ def build_request(
         api_url=route.api_url,
     )
     images = inline_images(parts)
-    if scywl_image_api:
-        if any(mime not in {"image/png", "image/jpeg", "image/webp"} for _, mime in images):
-            raise ValueError("此图片接口的参考图须为 PNG、JPEG 或 WebP")
-    # JSON image 适用于单图；多图通过 multipart 重复上传 image，完整保留参考图。
-    if siciyuanweilai and (not scywl_image_api or len(images) <= 1):
+    if scywl_image_api and any(
+        mime not in {"image/png", "image/jpeg", "image/webp"} for _, mime in images
+    ):
+        raise ValueError("此图片接口的参考图须为 PNG、JPEG 或 WebP")
+    # 同名 GPT Image 模型可能路由至不同上游；编辑统一使用共同支持的 multipart。
+    if siciyuanweilai and (not images or not scywl_image_api):
         payload = {
             "model": route.model,
             "prompt": prompt_from_parts(parts),
@@ -142,12 +142,9 @@ def build_request(
             "response_format": "b64_json",
         }
         if images:
-            if scywl_image_api:
-                payload["image"] = image_data_url(*images[0])
-            else:
-                payload["images"] = [
-                    {"image_url": image_data_url(image, mime)} for image, mime in images
-                ]
+            payload["images"] = [
+                {"image_url": image_data_url(image, mime)} for image, mime in images
+            ]
         endpoint = "edits" if images else "generations"
         return ImageRequest(
             url=f"{base}/images/{endpoint}",

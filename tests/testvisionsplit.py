@@ -6,9 +6,10 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
-from core.sight.visual import image_understanding_cache_key
+from core.sight.visual import image_understanding_prompt
+from core.telemetry import cache_prefix_version
 from PIL import Image
 from support import (
     DailyLifeRuntime,
@@ -78,6 +79,131 @@ class VisionSplitTest(unittest.IsolatedAsyncioTestCase):
             return_value=False
         )
         return event
+
+    async def test_concurrent_identical_images_share_one_request_and_apply_to_each_message(self):
+        runtime, _ = self.runtime(Provider(provider_id="image"))
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def recognize(*args, **kwargs):
+            started.set()
+            await release.wait()
+            return {"summary": "桌上有一只红苹果"}
+
+        runtime._call_vision_payload = AsyncMock(side_effect=recognize)
+        runtime._apply_visual_context_summary = Mock()
+        jobs = [asyncio.create_task(runtime._describe_visual_context_with_vision(
+            "https://example.test/apple.png", f"scope-{index}", f"message-{index}",
+            "same-image", user_text="这是什么",
+        )) for index in range(24)]
+        try:
+            await asyncio.wait_for(started.wait(), 1)
+            await asyncio.sleep(0)
+            self.assertEqual(runtime._call_vision_payload.await_count, 1)
+        finally:
+            release.set()
+            await asyncio.gather(*jobs)
+        self.assertEqual(runtime._apply_visual_context_summary.call_count, 24)
+        self.assertEqual({call.args[0] for call in runtime._apply_visual_context_summary.call_args_list},
+                         {f"scope-{index}" for index in range(24)})
+        await runtime._describe_visual_context_with_vision(
+            "https://example.test/apple.png", "later", "later", "same-image", user_text="这是什么",
+        )
+        self.assertEqual(runtime._call_vision_payload.await_count, 1)
+
+    async def test_cancelling_one_waiter_preserves_shared_image_request(self):
+        runtime, _ = self.runtime(Provider(provider_id="image"))
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def recognize(*args, **kwargs):
+            started.set()
+            await release.wait()
+            return {"summary": "图片内容"}
+
+        runtime._call_vision_payload = AsyncMock(side_effect=recognize)
+        args = ("https://example.test/a.png", "scope", "message", "same-image")
+        first = asyncio.create_task(runtime._describe_visual_context_with_vision(*args))
+        await asyncio.wait_for(started.wait(), 1)
+        second = asyncio.create_task(runtime._describe_visual_context_with_vision(*args))
+        await asyncio.sleep(0)
+        first.cancel()
+        await asyncio.gather(first, return_exceptions=True)
+        release.set()
+        await second
+        self.assertEqual(runtime._call_vision_payload.await_count, 1)
+        self.assertTrue(runtime._visual_context_summary_cache())
+
+    async def test_failed_request_can_retry_and_shutdown_cancels_shared_work(self):
+        runtime, _ = self.runtime(Provider(provider_id="image"))
+        runtime._call_vision_payload = AsyncMock(side_effect=[RuntimeError("失败"), {"summary": "重试成功"}])
+        args = ("https://example.test/a.png", "scope", "message", "image")
+        await runtime._describe_visual_context_with_vision(*args)
+        self.assertFalse(runtime._visual_context_summary_cache())
+        await runtime._describe_visual_context_with_vision(*args)
+        self.assertEqual(runtime._call_vision_payload.await_count, 2)
+
+        started, cancelled = asyncio.Event(), asyncio.Event()
+
+        async def recognize(*args, **kwargs):
+            started.set()
+            try:
+                await asyncio.Future()
+            finally:
+                cancelled.set()
+
+        runtime._call_vision_payload = AsyncMock(side_effect=recognize)
+        pending = asyncio.create_task(runtime._describe_visual_context_with_vision(
+            "https://example.test/b.png", "scope", "message", "other-image",
+        ))
+        await asyncio.wait_for(started.wait(), 1)
+        await runtime._close_visual_context_flights()
+        await asyncio.gather(pending, return_exceptions=True)
+        self.assertTrue(cancelled.is_set())
+        await runtime._describe_visual_context_with_vision(*args)
+        self.assertEqual(runtime._call_vision_payload.await_count, 1)
+
+    async def test_changing_actual_model_invalidates_visual_and_negative_emoji_results(self):
+        image = Provider(['{"summary":"旧模型理解"}', '{"summary":"新模型理解"}'], provider_id="image")
+        emoji = Provider(['{"is_emoji_asset":false}', '{"is_emoji_asset":false}'], provider_id="emoji")
+        image.model_name = emoji.model_name = "first-model"
+        runtime, _ = self.runtime(image, emoji)
+        args = ("https://example.test/a.png", "scope", "message", "image")
+        await runtime._describe_visual_context_with_vision(*args)
+        image.model_name = "second-model"
+        await runtime._describe_visual_context_with_vision(*args)
+        self.assertEqual(len(image.vision_prompts), 2)
+        with tempfile.TemporaryDirectory() as directory:
+            runtime.data_path = Path(directory) / "life.db"
+            path = Path(directory) / "photo.png"
+            Image.new("RGB", (30, 30), "red").save(path)
+            await runtime._classify_plain_image_emoji_candidate(str(path), "scope", "first", "photo")
+            self.assertTrue(await runtime._plain_image_emoji_review_cached("photo"))
+            emoji.model_name = "second-model"
+            self.assertFalse(await runtime._plain_image_emoji_review_cached("photo"))
+            await runtime._classify_plain_image_emoji_candidate(str(path), "scope", "second", "photo")
+            self.assertEqual(len(emoji.vision_prompts), 2)
+
+    async def test_negative_review_is_checked_before_queue_and_empty_capture_skips_contact_lookup(self):
+        runtime, _ = self.runtime(Provider(provider_id="image"))
+        runtime.contact_resolver = types.SimpleNamespace(resolve_event_sender=AsyncMock())
+        event = self.prepared_event(runtime, count=0)
+        await runtime.maybe_collect_emoji_assets_from_event(event)
+        runtime.contact_resolver.resolve_event_sender.assert_not_awaited()
+
+        event = self.prepared_event(runtime)
+        runtime._plain_image_emoji_review_cached = AsyncMock(return_value=True)
+        runtime._schedule_background_task = Mock()
+        await runtime.maybe_collect_emoji_assets_from_event(event, sender_name="测试用户")
+        runtime._plain_image_emoji_review_cached.assert_awaited_once_with("image-0")
+        runtime._schedule_background_task.assert_not_called()
+
+    async def test_question_changes_keep_the_fixed_prompt_prefix(self):
+        runtime, _ = self.runtime(Provider(provider_id="image"))
+        first = image_understanding_prompt(runtime.config.vision, "这是什么？")
+        second = image_understanding_prompt(runtime.config.vision, "图片里有什么文字？")
+        self.assertNotEqual(first, second)
+        self.assertTrue(cache_prefix_version(first, has_dynamic_section=True))
+        self.assertEqual(cache_prefix_version(first, has_dynamic_section=True),
+                         cache_prefix_version(second, has_dynamic_section=True))
 
     async def test_question_reuses_visible_facts_and_reopens_image_when_details_are_missing(self):
         image = Provider([json.dumps({"summary": "桌上红苹果", "visible_facts": "白桌上有一只红苹果"}),
@@ -221,9 +347,7 @@ class VisionSplitTest(unittest.IsolatedAsyncioTestCase):
                 await runtime._part_emoji_gather_component._collect_visual_context_background(
                     event
                 )
-                key = image_understanding_cache_key(
-                    runtime.config.vision, "image-0", event.message_str
-                )
+                key = await runtime._visual_context_cache_key("image-0", event.message_str)
                 summary = runtime._visual_context_summary_cache()[key]
                 self.assertEqual(len(summary), limit + 3)
                 self.assertIn(f"不超过 {limit} 字", image.vision_prompts[0]["prompt"])
@@ -267,7 +391,7 @@ class VisionSplitTest(unittest.IsolatedAsyncioTestCase):
         await runtime._describe_emoji_asset_with_vision(asset)
         self.assertEqual(
             runtime._visual_context_summary_cache()[
-                image_understanding_cache_key(runtime.config.vision, "cat")
+                await runtime._visual_context_cache_key("cat")
             ],
             "小猫向镜头挥爪",
         )
@@ -395,7 +519,7 @@ class VisionSplitTest(unittest.IsolatedAsyncioTestCase):
         emoji = Provider([json.dumps(EMOJI_RESULT)], provider_id="emoji")
         runtime, _ = self.runtime(image, emoji)
         runtime._visual_context_summaries = {
-            image_understanding_cache_key(runtime.config.vision, "cat"): "已有图片描述"
+            await runtime._visual_context_cache_key("cat"): "已有图片描述"
         }
         scheduled = []
         runtime._schedule_background_task = lambda coro, **kwargs: (
@@ -420,7 +544,7 @@ class VisionSplitTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(emoji.vision_prompts), 1)
             self.assertEqual(
                 runtime._visual_context_summary_cache()[
-                    image_understanding_cache_key(runtime.config.vision, "cat")
+                    await runtime._visual_context_cache_key("cat")
                 ],
                 "已有图片描述",
             )

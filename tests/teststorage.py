@@ -15,12 +15,6 @@ import support  # noqa: F401 - 安装轻量级 AstrBot 测试替身
 from core.archive.categories import STORAGE_CATEGORIES, validate_storage_categories
 from core.archive.ddl import iter_schema_sql
 from core.archive import DayRevisionConflict
-from core.archive.migrations import (
-    CURRENT_SCHEMA_FINGERPRINT,
-    MIGRATIONS,
-    infer_schema_version,
-    schema_fingerprint,
-)
 from core.archive.schema import SCHEMA_VERSION, ArchiveSchemaError
 from core.clock import today as life_today
 from core.labels import event_status_label
@@ -596,7 +590,6 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                         "decisions",
                         "visibility",
                         "episodes",
-                        "focus_targets",
                         "feedback",
                         "emotion_arcs",
                         "physiological_rhythm_logs",
@@ -605,11 +598,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                         "memory_corrections",
                         "expression_profiles",
                         "expression_reviews",
-                        "behavior_patterns",
                         "behavior_scenes",
-                        "mid_summaries",
-                        "temporary_expression_states",
-                        "focus_slots",
                         "expression_intents",
                         "terms",
                         "boundaries",
@@ -1712,7 +1701,6 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                 [
                     "life_episodes",
                     "memory_evidence",
-                    "focus_targets",
                     "behavior_feedback",
                     "emotion_arcs",
                     "physiological_rhythm_logs",

@@ -11,6 +11,29 @@ from support import DailyLifeRuntime
 
 
 class BackgroundTaskSchedulerTest(unittest.IsolatedAsyncioTestCase):
+    async def test_capture_coordination_does_not_wait_for_saturated_vision_pool(self):
+        scheduler = BackgroundTaskScheduler(normal_limit=1, vision_limit=1)
+        vision_entered = asyncio.Event()
+        release = asyncio.Event()
+        capture_ran = asyncio.Event()
+
+        async def recognize():
+            vision_entered.set()
+            await release.wait()
+
+        async def capture():
+            capture_ran.set()
+
+        try:
+            self.assertTrue(scheduler.schedule(recognize(), key="visual_context:busy"))
+            await asyncio.wait_for(vision_entered.wait(), timeout=1)
+            self.assertTrue(scheduler.schedule(capture(), key="emoji_capture:message"))
+            await asyncio.wait_for(capture_ran.wait(), timeout=1)
+            self.assertFalse(release.is_set())
+        finally:
+            release.set()
+            await scheduler.cancel_all()
+
     async def test_background_tasks_are_limited_to_avoid_framework_pressure(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime._background_scheduler = BackgroundTaskScheduler(

@@ -587,6 +587,30 @@ class SemanticSegmentTest(unittest.TestCase):
         )
         self.assertIn("原文行布局", runtime.composer.prompts[0])
 
+    def test_background_cancellation_reports_proactive_completion_separately(self):
+        for source in ("proactive", "share"):
+            with self.subTest(source=source):
+                runtime = self._background_runtime(
+                    '{"segments":[{"text":"先说一句。","pause":"none"},'
+                    '{"text":"后面这句。","pause":"none"}]}'
+                )
+                runtime._proactive_send_is_current = lambda event: True
+                sent_parts = []
+
+                def interrupt(text):
+                    sent_parts.append(text)
+                    runtime.note_semantic_segment_incoming_message(
+                        Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
+                    )
+
+                completed = asyncio.run(runtime.send_background_text(
+                    "aiocqhttp:FriendMessage:10001", "先说一句。后面这句。",
+                    mode=BackgroundTextMode.EXPRESSIVE, source=source, on_sent=interrupt,
+                ))
+                self.assertEqual(completed, source != "proactive")
+                self.assertEqual(sent_parts, ["先说一句。"])
+                self.assertEqual(len(runtime.context.sent_messages), 1)
+
     def test_background_tool_text_respects_lines_and_cleans_punctuation(self):
         runtime = self._background_runtime(
             json.dumps(

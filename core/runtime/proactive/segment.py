@@ -33,6 +33,7 @@ class ProactiveSegmentComponent:
         source_event: Any = None,
         source_message_id: str = "",
         raise_delivery_errors: bool = False,
+        on_sent: Any = None,
     ) -> bool:
         return await self.context.send_background_text(
             target_scope,
@@ -42,6 +43,7 @@ class ProactiveSegmentComponent:
             source_message_id=source_message_id,
             source="proactive",
             raise_delivery_errors=raise_delivery_errors,
+            on_sent=on_sent,
             user_message=str(getattr(source_event, "message_str", "") or "").strip(),
             length_hint=self.context._chat_style_limit_for_scope(target_scope),
         )

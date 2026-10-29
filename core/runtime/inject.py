@@ -73,16 +73,12 @@ class InjectComponent:
         return _part_snapshot_export_component.SnapshotExportComponent._share_episode_payload.__func__(cls, episodes, people_keys, is_private=is_private)
 
     @classmethod
-    def _share_focus_payload(cls, targets: list[_part_snapshot_export_component.Any], slots: list[_part_snapshot_export_component.Any]) -> list[dict[str, str]]:
-        return _part_snapshot_export_component.SnapshotExportComponent._share_focus_payload.__func__(cls, targets, slots)
+    def _share_expression_payload(cls, profiles: list[_part_snapshot_export_component.Any]) -> dict[str, list[str]]:
+        return _part_snapshot_export_component.SnapshotExportComponent._share_expression_payload.__func__(cls, profiles)
 
     @classmethod
-    def _share_expression_payload(cls, profiles: list[_part_snapshot_export_component.Any], temporary_states: list[_part_snapshot_export_component.Any]) -> dict[str, list[str]]:
-        return _part_snapshot_export_component.SnapshotExportComponent._share_expression_payload.__func__(cls, profiles, temporary_states)
-
-    @classmethod
-    def _share_behavior_payload(cls, patterns: list[_part_snapshot_export_component.Any], scenes: list[_part_snapshot_export_component.Any]) -> list[dict[str, str]]:
-        return _part_snapshot_export_component.SnapshotExportComponent._share_behavior_payload.__func__(cls, patterns, scenes)
+    def _share_behavior_payload(cls, scenes: list[_part_snapshot_export_component.Any]) -> list[dict[str, str]]:
+        return _part_snapshot_export_component.SnapshotExportComponent._share_behavior_payload.__func__(cls, scenes)
 
     @classmethod
     def _share_terms_payload(cls, terms: list[_part_snapshot_export_component.Any]) -> list[dict[str, str]]:

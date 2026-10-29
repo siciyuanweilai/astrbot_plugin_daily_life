@@ -488,10 +488,12 @@ class RuntimeMemoryAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCa
                 "inner_monologue": "他们在说机器人像神兽",
                 "reply_strategy": "机器人先观察",
             },
-            "subjective_impression": {
+            "memory_targets": [{
+                "profile_id": "10001",
+                "name": "阿林",
                 "relationship_story": "与机器人之间有轻松玩梗关系",
-                "impression_delta": "用户把机器人叫成神兽，留下轻松印象",
-            },
+                "note": "用户把机器人叫成神兽，留下轻松印象",
+            }],
             "life_terms": [
                 {
                     "term": "神兽",
@@ -557,7 +559,7 @@ class RuntimeMemoryAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCa
         }
 
         await runtime._save_memory_awareness_records(payload, meta)
-        await runtime._part_capture_relation_component._save_subjective_impression(payload, meta)
+        await runtime._save_memory_targets(payload, meta)
         await runtime._save_experience_payload(payload, meta)
 
         relationship = (await runtime.archive.get_recent_relationships(10))[0]
@@ -571,7 +573,7 @@ class RuntimeMemoryAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCa
             )
         )[0]
         scene = (await runtime.archive.get_behavior_scenes(10))[0]
-        slot = (await runtime.archive.get_focus_slots(10, active_only=False))[0]
+        slots = await runtime.archive.get_focus_slots(10, active_only=False)
         correction = (await runtime.archive.get_memory_corrections(10))[0]
         intent = (await runtime.archive.get_expression_intents(10))[0]
 
@@ -596,7 +598,7 @@ class RuntimeMemoryAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCa
         self.assertIn("讨论机器人", combined)
         self.assertIn("把机器人叫神兽", combined)
         self.assertEqual(scene.scene, "围观称呼梗")
-        self.assertEqual(slot.label, "称呼梗")
+        self.assertEqual(slots, [])
         self.assertEqual(correction.correction, "这个旧片段不应作为事实引用")
         self.assertEqual(intent.emotion_category, "happy")
         self.assertEqual(intent.action_intent, "探头看一眼")
@@ -682,8 +684,10 @@ class RuntimeMemoryAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCa
         terms = await runtime.archive.get_life_terms(10)
 
         self.assertEqual(feedback[0].target_id, target)
-        for records in (profiles, patterns, scenes, temporary, targets, slots, terms):
+        for records in (profiles, scenes, terms):
             self.assertEqual({item.scope for item in records}, {target})
+        for records in (patterns, temporary, targets, slots):
+            self.assertEqual(records, [])
 
     async def test_life_adjustments_are_layered_into_short_and_long_term_records(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
@@ -705,6 +709,7 @@ class RuntimeMemoryAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCa
                     "reason": "用户给了短期恢复目标",
                     "priority": 86,
                     "confidence": 0.9,
+                    "session_scope": "other-scope",
                 },
                 {
                     "scope": "long_term",
@@ -744,16 +749,24 @@ class RuntimeMemoryAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCa
         corrections = await runtime.archive.get_memory_corrections(10)
         evidence = await runtime.archive.get_memory_evidence(limit=20)
 
-        self.assertEqual(slots[0].label, "这几天让她多休息")
-        self.assertEqual(slots[0].priority, 86)
-        self.assertEqual(slots[0].expires_at, "2026-05-31")
+        self.assertEqual(slots, [])
+        short_term = next(
+            item for item in runtime.archive.long_term_memories.values()
+            if item.category == "short_term"
+        )
+        self.assertEqual(short_term.title, "这几天让她多休息")
+        self.assertEqual(short_term.content, "这几天让她多休息")
+        self.assertEqual(short_term.weight, 1.72)
+        self.assertEqual(short_term.expires_at, "2026-05-31")
+        self.assertEqual(short_term.source_table, "life_adjustment")
+        self.assertEqual(short_term.scope, meta["session_id"])
         self.assertEqual(preferences[0].category, "hair")
         self.assertEqual(preferences[0].content, "她平时更适合清爽自然的发型变化")
         self.assertEqual(corrections[0].target_type, "life_episode")
         self.assertEqual(corrections[0].correction, "这个旧片段不应再当成事实引用")
         kinds = {(item.target_type, item.evidence_type) for item in evidence}
         self.assertIn(("life_adjustment", "instruction"), kinds)
-        self.assertIn(("focus", "correction"), kinds)
+        self.assertIn(("memory", "correction"), kinds)
         self.assertIn(("preference", "correction"), kinds)
         self.assertIn(("life_episode", "correction"), kinds)
 

@@ -31,19 +31,14 @@ class ProactivePromptComponentContext(Protocol):
     _event_group_meta: Any
     _event_is_group_message: Any
     _event_session_id: Any
-    _format_behavior_patterns_for_proactive: Any
     _format_behavior_scenes_for_proactive: Any
     _format_candidate_recent_messages: Any
     _format_expression_profiles_for_proactive: Any
     _format_expression_reviews_for_proactive: Any
-    _format_focus_slots_for_proactive: Any
     _format_life_terms_for_proactive: Any
-    _format_mid_summaries_for_proactive: Any
     _format_proactive_air_state: Any
     _format_proactive_persona_context: Any
     _format_reply_effects_for_proactive: Any
-    _format_temporary_expression_states_for_proactive: Any
-    _proactive_focus_lines: Any
     _proactive_readiness_text: Any
     _proactive_relationship_context: Any
     _proactive_scope_key: Any
@@ -115,20 +110,14 @@ class ProactivePromptComponent:
         expression_scope = group_id or session_id
         relationships = await self.context.archive.get_recent_relationships(6)
         summaries = await self.context.archive.get_recent_chat_summaries(6)
-        focus_targets = await self.context.archive.get_focus_targets(5)
         expression_profiles = await select_profiles(self.context, scope=expression_scope,
             profile_id=str(event.get_sender_id() or ""), query=message)
         expose_profiles(event, expression_profiles)
-        behavior_patterns = await self.context.archive.get_behavior_patterns(
-            limit=5, scope=expression_scope
-        )
         await self.context._settle_stale_reply_effects()
         return {
             "relationships": relationships,
             "summaries": summaries,
-            "focus_targets": focus_targets,
             "expression_profiles": expression_profiles,
-            "behavior_patterns": behavior_patterns,
             "reply_effects": await self.context.archive.get_reply_effects(
                 limit=4, scope=session_id
             ),
@@ -137,15 +126,6 @@ class ProactivePromptComponent:
             ),
             "behavior_scenes": await self.context.archive.get_behavior_scenes(
                 limit=4, scope=expression_scope
-            ),
-            "focus_slots": await self.context.archive.get_focus_slots(
-                limit=4, scope=expression_scope
-            ),
-            "mid_summaries": await self.context.archive.get_session_mid_summaries(
-                limit=3, session_id=session_id
-            ),
-            "temporary_expression_states": await self.context.archive.get_temporary_expression_states(
-                limit=3, scope=expression_scope
             ),
             "life_terms": await self.context.archive.get_life_terms(
                 limit=6, scope=expression_scope
@@ -197,13 +177,6 @@ class ProactivePromptComponent:
             if item.brief or item.long_summary
         ]
 
-    @staticmethod
-    def _proactive_focus_lines(focus_targets: list[Any]) -> list[str]:
-        return [
-            f"- {item.label or item.target_id}: 优先级 {item.priority}/100；{item.reason}"
-            for item in focus_targets[:5]
-            if item.label or item.target_id
-        ]
 
     def _proactive_reply_limit_for_prompt(self) -> int:
         proactive_limit = self.context.config.proactive.max_reply_length
@@ -313,7 +286,6 @@ class ProactivePromptComponent:
         )
         style = getattr(self.context.config, "chat_style", None)
         summary_lines = self.context._proactive_summary_lines(records["summaries"])
-        focus_lines = self.context._proactive_focus_lines(records["focus_targets"])
         return {
             "activity": activity,
             "audience_name": "群友" if is_group else "对方",
@@ -322,9 +294,6 @@ class ProactivePromptComponent:
             "interaction_context": interaction_context,
             "conversation_id": group_id or session_id or "未知ID",
             "conversation_name": group_name or group_id or session_id or "未知会话",
-            "focus_text": chr(10).join(focus_lines)
-            if focus_lines
-            else "暂无近期关注目标。",
             "frequency": self.context.config.proactive.talk_frequency
             if is_group
             else self.context.config.proactive.private_talk_frequency,
@@ -403,17 +372,8 @@ JSON 输出要求：
 MemOS 外部长期记忆参考：
 {records["memos_context"] or "暂无外部长期记忆参考。"}
 
-会话中期摘要：
-{self.context._format_mid_summaries_for_proactive(records["mid_summaries"])}
-
-此刻表达状态：
-{self.context._format_temporary_expression_states_for_proactive(records["temporary_expression_states"])}
-
 表达习惯参考：
 {self.context._format_expression_profiles_for_proactive(records["expression_profiles"])}
-
-行为模式参考：
-{self.context._format_behavior_patterns_for_proactive(records["behavior_patterns"])}
 
 行为场景簇参考：
 {self.context._format_behavior_scenes_for_proactive(records["behavior_scenes"])}
@@ -426,12 +386,6 @@ MemOS 外部长期记忆参考：
 
 语言参考：
 {self.context._format_life_terms_for_proactive(records["life_terms"])}
-
-近期关注目标：
-{scene["focus_text"]}
-
-短期注意槽：
-{self.context._format_focus_slots_for_proactive(records["focus_slots"])}
 
 当前生活状态：
 - 日期记录：{scene["target_date_str"]}；是否延续凌晨记录：{scene["using_extended_night_text"]}

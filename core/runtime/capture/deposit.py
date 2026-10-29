@@ -6,13 +6,10 @@ from typing import Any
 from ...clock import now as life_now
 from ...models import (
     BehaviorFeedbackRecord,
-    BehaviorPatternRecord,
     BehaviorSceneRecord,
     ChatSummaryRecord,
     ExpressionIntentRecord,
     ExpressionProfileRecord,
-    FocusSlotRecord,
-    FocusTargetRecord,
     LifeEpisodeRecord,
     LifeTermRecord,
     LongTermMemoryRecord,
@@ -20,8 +17,6 @@ from ...models import (
     MemoryCorrectionRecord,
     MemoryEvidenceRecord,
     PreferenceRecord,
-    SessionMidSummaryRecord,
-    TemporaryExpressionStateRecord,
 )
 
 from typing import Protocol
@@ -161,9 +156,6 @@ class ImprintDepositComponent:
             payload, meta, scope, saved_records
         )
         await self._save_behavior_context_payloads(payload, meta, scope)
-        await self._save_session_summary_payload(payload, meta)
-        await self._save_temporary_expression_payloads(payload, scope)
-        await self._save_focus_payloads(payload, meta, scope)
         await self._save_memory_correction_payloads(payload, meta)
         await self._save_life_adjustment_payloads(payload, meta, scope, saved_records)
         await self._save_expression_intent_payload(payload, meta, scope)
@@ -354,19 +346,6 @@ class ImprintDepositComponent:
         meta: dict[str, str],
         scope: str,
     ) -> None:
-        for raw_pattern in self.context._dict_payloads(payload.get("behavior_patterns"))[:5]:
-            await self.context.archive.upsert_behavior_pattern(
-                BehaviorPatternRecord.from_value(
-                    {
-                        **raw_pattern,
-                        "scope": scope,
-                        "last_seen": raw_pattern.get("last_seen") or meta["date"],
-                        "source": raw_pattern.get("source") or "chat_memory",
-                    },
-                    date=meta["date"],
-                )
-            )
-
         for raw_scene in self.context._dict_payloads(payload.get("behavior_scenes"))[:5]:
             await self.context.archive.upsert_behavior_scene(
                 BehaviorSceneRecord.from_value(
@@ -380,64 +359,8 @@ class ImprintDepositComponent:
                 )
             )
 
-    async def _save_session_summary_payload(
-        self, payload: dict, meta: dict[str, str]
-    ) -> None:
-        session_summary = payload.get("session_mid_summary")
-        if isinstance(session_summary, dict):
-            await self.context.archive.upsert_session_mid_summary(
-                SessionMidSummaryRecord.from_value(
-                    {
-                        **session_summary,
-                        "session_id": meta.get("session_id", ""),
-                        "scope_label": session_summary.get("scope_label")
-                        or meta.get("group_name")
-                        or meta.get("sender_name")
-                        or meta.get("session_id", ""),
-                        "last_message_id": session_summary.get("last_message_id")
-                        or meta.get("message_id", ""),
-                        "source": session_summary.get("source") or "chat_memory",
-                    }
-                )
-            )
 
-    async def _save_temporary_expression_payloads(
-        self, payload: dict, scope: str
-    ) -> None:
-        for raw_state in self.context._dict_payloads(
-            payload.get("temporary_expression_state"),
-            payload.get("temporary_expression_states"),
-        )[:3]:
-            await self.context.archive.upsert_temporary_expression_state(
-                TemporaryExpressionStateRecord.from_value(
-                    {
-                        **raw_state,
-                        "scope": scope,
-                        "source": raw_state.get("source") or "chat_memory",
-                    }
-                )
-            )
 
-    async def _save_focus_payloads(
-        self, payload: dict, meta: dict[str, str], scope: str
-    ) -> None:
-        for raw_focus in self.context._dict_payloads(payload.get("focus_updates"))[:6]:
-            record = FocusTargetRecord.from_value({**raw_focus, "scope": scope})
-            if not record:
-                continue
-            await self.context.archive.upsert_focus_target(record)
-
-        for raw_slot in self.context._dict_payloads(payload.get("focus_slots"))[:4]:
-            await self.context.archive.upsert_focus_slot(
-                FocusSlotRecord.from_value(
-                    {
-                        **raw_slot,
-                        "scope": scope,
-                        "last_active_at": raw_slot.get("last_active_at")
-                        or life_now().strftime("%Y-%m-%d %H:%M"),
-                    }
-                )
-            )
 
     async def _save_memory_correction_payloads(
         self, payload: dict, meta: dict[str, str]
@@ -554,46 +477,24 @@ class ImprintDepositComponent:
             raw_adjustment.get("expires_at")
         ) or self.context._life_adjustment_default_expiry(meta)
         priority = self.context._int_payload(raw_adjustment.get("priority"), 70)
-        saved_slot = await self.context.archive.upsert_focus_slot(
-            FocusSlotRecord.from_value(
-                {
-                    "scope": self.context._str_payload(raw_adjustment.get("session_scope"))
-                    or "",
-                    "focus_key": f"{item['target_type']}:{item['target_id']}"[:140],
-                    "label": self.context._str_payload(
-                        raw_adjustment.get("label"), item["content"]
-                    ),
-                    "priority": priority,
-                    "reason": item["reason"],
-                    "last_active_at": life_now().strftime("%Y-%m-%d %H:%M"),
-                    "expires_at": expires_at,
-                }
-            )
-        )
-        if not saved_slot:
-            return
-        saved_records.setdefault("life_adjustments", []).append(saved_slot)
-        await self.context._save_long_term_memory(
+        saved_memory = await self.context._save_long_term_memory(
             meta=meta,
             category="short_term",
-            title=saved_slot.label or item["target_type"],
-            content=saved_slot.reason or item["content"],
-            source_table="focus_slots",
-            source_id=str(saved_slot.id),
-            scope=saved_slot.scope,
+            title=self.context._str_payload(raw_adjustment.get("label"), item["content"]),
+            content=item["content"],
+            source_table="life_adjustment",
+            source_id=f"{item['target_type']}:{item['target_id']}",
             confidence=item["confidence"],
             weight=max(1.0, priority / 50),
-            expires_at=saved_slot.expires_at,
+            expires_at=expires_at,
         )
+        if not saved_memory:
+            return
+        saved_records.setdefault("life_adjustments", []).append(saved_memory)
         await self.context._save_experience_evidence(
-            "focus",
-            str(saved_slot.id),
-            item["evidence_summary"],
-            meta,
-            evidence_type="correction",
-            source_table="focus_slots",
-            source_id=str(saved_slot.id),
-            confidence=item["confidence"],
+            "memory", str(saved_memory.id), item["evidence_summary"], meta,
+            evidence_type="correction", source_table="long_term_memories",
+            source_id=str(saved_memory.id), confidence=item["confidence"],
         )
 
     async def _save_long_term_life_adjustment(

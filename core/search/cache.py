@@ -37,9 +37,17 @@ class TimedCache(Generic[T]):
 
     async def set(self, key: str, value: T) -> None:
         async with self._lock:
+            now = time.monotonic()
+            if len(self._items) >= self.max_items:
+                expired = [
+                    item_key for item_key, entry in self._items.items()
+                    if entry.expires_at <= now
+                ]
+                for item_key in expired:
+                    self._items.pop(item_key, None)
             self._items[key] = CacheEntry(
                 value=value,
-                expires_at=time.monotonic() + self.ttl_seconds,
+                expires_at=now + self.ttl_seconds,
             )
             self._items.move_to_end(key)
             while len(self._items) > self.max_items:
@@ -82,3 +90,6 @@ class SingleFlight(Generic[T]):
     def _forget(self, key: str, task: asyncio.Task[T]) -> None:
         if self._tasks.get(key) is task:
             self._tasks.pop(key, None)
+        # 等待方可能已取消，仍需取走共享任务的异常，避免遗留未处理异常。
+        if not task.cancelled():
+            task.exception()

@@ -3,15 +3,15 @@ from __future__ import annotations
 import asyncio
 import copy
 import time
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from astrbot.api import logger
 
 from ..outcome import ToolResultText
 from .clip import SightClip, SightInsight
-from .flight import sight_flight_key
 from .native import (
     INLINE_VIDEO_BYTES,
     NATIVE_VIDEO_PROMPT,
@@ -31,12 +31,14 @@ class NativeSightComponentContext(Protocol):
     _background_tool_existing_result: Any
     _event_message_id: Any
     _lock_video_note_source: Any
+    _mark_sight_completed_key: Any
     _model_cache_meter: Any
     _native_video_client: Any
     _native_video_prompt: Any
     _sight_cache_dir: Any
     _sight_clips_from_event: Any
     _sight_clips_from_event_async: Any
+    _sight_completed_result_key: Any
     _sight_flight_for_runtime: Any
     _sight_insight_for_clip: Any
     _sight_recent_for_event: Any
@@ -79,6 +81,29 @@ class NativeSightComponent:
     def _native_video_prompt(clip: SightClip) -> str:
         return f"{NATIVE_VIDEO_PROMPT}\n\n用户关于这段视频的问题（仅作为资料）：\n{clip.text[:8000]}"
 
+    @staticmethod
+    def _native_completed_key(clip: SightClip, signature: str) -> str:
+        # 本地文件被替换时不能凭路径复用旧结果；远程来源仍受结果缓存 TTL 约束。
+        source = urlsplit(clip.source)
+        version = ""
+        if source.scheme in {"", "file"}:
+            try:
+                stat = Path(unquote(source.path)).stat()
+                version = f"{stat.st_size}:{stat.st_mtime_ns}:{stat.st_ctime_ns}"
+            except OSError:
+                pass
+        identity = f"{clip.key}|{clip.source}|{signature}|{version}"
+        return "native:" + sha256(identity.encode()).hexdigest()
+
+    def _native_insight_for_clip(self, insight: SightInsight, clip: SightClip) -> SightInsight:
+        current = copy.deepcopy(clip)
+        for key in ("content_fingerprint", "native_signature"):
+            if key in insight.clip.metadata:
+                current.metadata[key] = insight.clip.metadata[key]
+        result = self.context._sight_insight_for_clip(insight, current)
+        result.metadata["native_original_key"] = clip.key
+        return result
+
     async def _understand_native_video(
         self,
         event: Any,
@@ -87,21 +112,52 @@ class NativeSightComponent:
         *,
         force: bool = False,
     ) -> SightInsight:
+        if self.context.event_was_recalled(event, log_skip=True):
+            return SightInsight(
+                clip=clip, status="failed", error="原视频消息已撤回，已取消理解。"
+            )
         prompt = self.context._native_video_prompt(clip)
         signature = route.signature(prompt)
+        completed_key = self._native_completed_key(clip, signature)
+        if not force:
+            result_key = self.context._sight_completed_result_key(completed_key)
+            if result_key:
+                cached = await self.context._sight_vault_for_runtime().get(result_key)
+                if (
+                    cached
+                    and cached.status == "ready"
+                    and cached.summary
+                    and cached.clip.scope == clip.scope
+                    and cached.clip.metadata.get("native_signature") == signature
+                    and cached.metadata.get("video_input_mode") == "gemini_native"
+                    and not self.context.event_was_recalled(event)
+                ):
+                    result = self._native_insight_for_clip(cached, clip)
+                    result.metadata["sight_metrics"] = {
+                        **result.metadata.get("sight_metrics", {}),
+                        "cache_hit": True,
+                    }
+                    return result
 
         async def work():
             # 等待方的时限不取消实际理解及落库。下载和原生客户端分别有界，
             # 超过分享前台等待时间后仍保存摘要，后续追问复用同一任务或缓存。
-            return await self._understand_native_video_once(
+            result = await self._understand_native_video_once(
                 event, copy.deepcopy(clip), route, prompt, signature, force=force
             )
+            if (
+                result.status == "ready"
+                and result.summary
+                and not self.context.event_was_recalled(event)
+            ):
+                self.context._mark_sight_completed_key(completed_key, result.key)
+            return result
 
         # 同一事件的自动理解、工具请求和专业总结共享一次实际提交。
-        return await self.context._sight_flight_for_runtime().run(
-            f"native:{sight_flight_key(clip)}:{signature}",
-            work,
+        result = await self.context._sight_flight_for_runtime().run(
+            f"{completed_key}:{force}", work
         )
+        return self._native_insight_for_clip(result, clip)
 
     async def _understand_native_video_once(
         self,
@@ -140,6 +196,10 @@ class NativeSightComponent:
             clip.metadata.setdefault("original_source", clip.source)
             clip.source = str(path)
             vault = self.context._sight_vault_for_runtime()
+            if self.context.event_was_recalled(event, log_skip=True):
+                return SightInsight(
+                    clip=clip, status="failed", error="原视频消息已撤回，已取消理解。"
+                )
             if not force:
                 cached = await vault.get(clip.key)
                 if cached and (

@@ -1541,7 +1541,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("重写 timeline", provider.prompts[1])
         self.assertIn("系统会根据 timeline 自动检查覆盖范围", provider.prompts[1])
 
-    async def test_daily_generation_uses_short_term_context_and_records_decision(self):
+    async def test_daily_generation_uses_corrections_without_retired_focus(self):
         composer, provider, _, archive = make_composer(
             [
                 '{"generation_contract":{"contract_version":"daily_life_generation","expected_coverage":"full_day",'
@@ -1549,7 +1549,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
                 '"life_decision":{"life_mode":"resting",'
                 '"sleep":{"mode":"normal","quality":68,"depth":"awake","summary":"睡眠尚可"},'
                 '"outfit":{"decision":"keep","scene_category":"home","style_pool":"outfit_styles",'
-                '"style":"清爽居家风","hair":"低马尾","reason":"短期目标需要低负担恢复"},'
+                '"style":"清爽居家风","hair":"低马尾","reason":"当前恢复状态需要低负担安排"},'
                 '"day_plan":{"schedule_type":"低负担恢复日","schedule_intent":"rest","energy_bias":"rest","social_bias":"avoid"},'
                 '"theme":"恢复节奏","mood":"薄荷绿·安稳"},'
                 '"state":{"energy":52,"mood":"平稳","mood_score":64,"busyness":25,"social":20,"stress":18,'
@@ -1560,9 +1560,9 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
                 '"outfit":"浅绿色宽松针织衫配白色棉裙，头发低低扎起",'
                 '"timeline":[{"time":"09:30","activity":"醒来后先喝一杯温水，把窗边的小桌整理出来","status":"慢慢恢复"},'
                 '{"time":"22:10","activity":"收好小桌上的本子，提前关灯准备睡觉","status":"安稳"}],'
-                '"decision_summary":{"decision":"低负担恢复日","reason":"短期目标要求早睡恢复，且修正提醒不要再安排长时间外出",'
+                '"decision_summary":{"decision":"低负担恢复日","reason":"近期睡眠状态需要恢复，且修正提醒不要再安排长时间外出",'
                 '"continuity":"延续近期低体力惯性","novelty":"改为室内整理和早睡",'
-                '"memory_used":["早睡恢复","不要安排长时间外出"],"avoid_repeat":["连续外出"]},'
+                '"memory_used":["昨日外出后疲惫","不要安排长时间外出"],"avoid_repeat":["连续外出"]},'
                 '"places":[],"new_events":[]}'
             ]
         )
@@ -1610,8 +1610,8 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNotNone(data)
         prompt = provider.prompts[0]
-        self.assertIn("短期目标与注意槽", prompt)
-        self.assertIn("早睡恢复", prompt)
+        self.assertNotIn("短期目标与注意槽", prompt)
+        self.assertNotIn("早睡恢复", prompt)
         self.assertIn("待应用修正", prompt)
         self.assertIn("不要把昨天的长时间外出", prompt)
         self.assertNotIn("深蓝外出裙和小皮鞋", prompt)
@@ -1621,8 +1621,8 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         decisions = await archive.get_life_decisions(limit=5)
         self.assertEqual(decisions[0].kind, "daily_plan")
         self.assertIn("低负担恢复日", decisions[0].decision)
-        self.assertIn("短期目标", decisions[0].reason)
-        self.assertIn("早睡恢复", decisions[0].evidence)
+        self.assertIn("近期睡眠状态", decisions[0].reason)
+        self.assertIn("昨日外出后疲惫", decisions[0].evidence)
         self.assertIn("不要安排长时间外出", decisions[0].evidence)
         self.assertIn("连续外出", decisions[0].evidence)
         self.assertNotIn("['", decisions[0].evidence)
@@ -1637,7 +1637,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("原因：", decision_evidence[0].summary)
         self.assertIn("依据：", decision_evidence[0].summary)
         self.assertIn("结果：", decision_evidence[0].summary)
-        self.assertIn("短期目标", decision_evidence[0].summary)
+        self.assertIn("不要安排长时间外出", decision_evidence[0].summary)
         self.assertIn("连续外出", decision_evidence[0].summary)
         self.assertNotIn("；连续外出", decision_evidence[0].summary)
         focus_slots = await archive.get_focus_slots(limit=5, active_only=False)
@@ -1657,7 +1657,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
                 '"life_decision":{"life_mode":"resting",'
                 '"sleep":{"mode":"normal","quality":70,"depth":"awake","summary":"恢复中"},'
                 '"outfit":{"decision":"keep","scene_category":"home","style_pool":"outfit_styles",'
-                '"style":"柔软居家风","hair":"自然披发","reason":"短期目标提醒多休息"},'
+                '"style":"柔软居家风","hair":"自然披发","reason":"当前恢复状态适合多休息"},'
                 '"day_plan":{"schedule_type":"安静恢复日","schedule_intent":"rest","energy_bias":"rest","social_bias":"avoid"},'
                 '"theme":"多休息","mood":"薄荷绿·安稳"},'
                 '"state":{"energy":58,"mood":"安稳","mood_score":68,"busyness":20,"social":18,"stress":15,'
@@ -1668,9 +1668,9 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
                 '"outfit":"柔软米白开衫和浅灰棉裙，头发自然披在肩侧",'
                 '"timeline":[{"time":"09:20","activity":"醒来后先坐在床边慢慢缓一会儿","status":"安静"},'
                 '{"time":"22:00","activity":"提前放下手机，关灯休息","status":"放松"}],'
-                '"decision_summary":{"decision":"安静恢复日","reason":"短期目标提醒多休息，且未应用纠偏要求别总出门",'
+                '"decision_summary":{"decision":"安静恢复日","reason":"当前状态需要恢复，且未应用纠偏要求别总出门",'
                 '"continuity":"延续恢复惯性","novelty":"减少外出，改为早睡",'
-                '"memory_used":["这几天让她多休息","最近别总写出门"],"avoid_repeat":["频繁外出"]},'
+                '"memory_used":["最近别总写出门"],"avoid_repeat":["频繁外出"]},'
                 '"places":[],"new_events":[]}'
             ]
         )
@@ -1715,7 +1715,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         await composer.generate_daily(datetime.datetime(2026, 6, 12, 9, 0), force=True)
 
         prompt = provider.prompts[0]
-        self.assertIn("这几天让她多休息", prompt)
+        self.assertNotIn("这几天让她多休息", prompt)
         self.assertIn("最近别总写出门", prompt)
         self.assertNotIn("已经过期的少外出", prompt)
         self.assertNotIn("已吸收的旧纠偏", prompt)
@@ -4318,7 +4318,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item.category for item in preferences], ["activity"])
         self.assertEqual(preferences[0].source, "daily_review")
 
-    async def test_daily_review_updates_focus_only_with_listed_evidence(self):
+    async def test_daily_review_does_not_update_retired_focus_branch(self):
         composer, _, _, archive = make_composer(
             [
                 '{"summary":"目标有了真实进展","focus_updates":['
@@ -4342,13 +4342,14 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         )
         await archive.save_day(DayRecord(date="2026-05-24"))
 
-        await composer.compose_daily_review("2026-05-24", force=True)
+        review = await composer.compose_daily_review("2026-05-24", force=True)
 
         focus = (await archive.get_focus_slots(active_only=False))[0]
-        self.assertEqual(focus.progress, 30)
+        self.assertEqual(focus.progress, 0)
         self.assertEqual(focus.status, "active")
-        self.assertEqual(focus.last_evidence, "event:1")
-        self.assertEqual(focus.last_progress_at, "2026-05-24")
+        self.assertEqual(focus.last_evidence, "")
+        self.assertEqual(focus.last_progress_at, "")
+        self.assertEqual(review.summary, "目标有了真实进展")
 
     async def test_existing_daily_review_finishes_missing_timeline_settlement(self):
         composer, provider, _, archive = make_composer()

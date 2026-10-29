@@ -99,11 +99,16 @@ def timeline_complete(day, action: LifeActionIntent) -> bool:
 
 
 async def prepare_new_actions(host, day, steps: list[LifeActionIntent]) -> str:
-    """即时换装复用日程生成的衣橱解析，不让模型自由编写服装事实。"""
+    """核验自主步骤的结构；库存和地点在每一步实际开始时重新核验。"""
     from .engine import _resolve_planned_outfit_catalog
 
     raw = [item.as_dict() for item in steps]
     for item in steps:
+        if item.action_type in {"move", "travel"}:
+            origin = str(item.payload.get("origin") or "").strip()
+            destination = str(item.payload.get("destination") or "").strip()
+            if not origin or not destination or origin == destination:
+                return "移动需要明确且不同的起点和终点"
         if item.action_type != "change_outfit":
             continue
         references = item.payload.get("catalog_reference_ids")

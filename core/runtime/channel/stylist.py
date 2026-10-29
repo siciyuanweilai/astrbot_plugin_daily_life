@@ -713,7 +713,7 @@ class RuntimeStyleCatalogComponent:
         image_service = getattr(getattr(self.context, "media", None), "image", None)
         if image_service is None:
             return ToolResultText(
-                "图片生成服务不可用，暂时不能创建创意衣橱候选。",
+                "图片生成服务不可用，暂时不能生成新的衣橱造型。",
                 status="failed",
                 media="style_catalog",
             )

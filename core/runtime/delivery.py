@@ -148,13 +148,13 @@ class ReplyDeliveryService:
                     self._clear_result(event)
                     return DeliveryResult("cancelled", sent_count)
                 message = await self._send_one(request, chain, index, send)
+                sent_count += 1
                 await self._log_sent(
                     message,
                     scope=request.scope,
                     source_event=event,
                     source=request.source,
                 )
-                sent_count += 1
         except Exception as exc:
             if sent_count > 0:
                 self._clear_result(event)

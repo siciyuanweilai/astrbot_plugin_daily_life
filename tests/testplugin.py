@@ -1951,6 +1951,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
                 "life_shared_activity",
                 "life_object",
                 "life_memory_correct",
+                "life_knowledge",
                 "life_commitment",
                 "life_wardrobe_manage",
                 "life_bili_browse",
@@ -2732,12 +2733,12 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         suite_result = await plugin.tool_life_photo_suite_generate(
             event,
             prompt="雨后公园散步",
-            count=6,
+            count=10,
             reference_image="https://example.com/scene.png",
             continue_last_result=True,
             subject_route="group",
             participants=["friend-1"],
-            retry_indexes=[2, 4],
+            retry_indexes=[2, 10],
             resolution="2K",
         )
         edit_result = await plugin.tool_edit_life_image(
@@ -2817,12 +2818,12 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
                     "photo_suite",
                     event,
                     "雨后公园散步",
-                    6,
+                    10,
                     "https://example.com/scene.png",
                     True,
                     "group",
                     ["friend-1"],
-                    [2, 4],
+                    [2, 10],
                     "2K",
                 ),
                 (
@@ -2921,7 +2922,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("count(int)", suite_doc)
         self.assertIn("retry_indexes(list[int])", suite_doc)
         self.assertIn("默认 3", suite_doc)
-        self.assertIn("2 至 6 张", suite_doc)
+        self.assertIn("2 至 10 张", suite_doc)
         self.assertIn("实际送达后才谈结果", image_doc)
         self.assertIn("用户明确请求视频", video_doc)
         self.assertNotIn("用户没有先索要也可以", video_doc)

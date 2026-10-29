@@ -33,7 +33,7 @@ class SightIdentityComponent:
 
     def _init_sight_identity(self) -> None:
         self.context._sight_upload_ids: dict[tuple[str, str, str, str], tuple[str, float]] = {}
-        self.context._sight_completed_keys: dict[str, float] = {}
+        self.context._sight_completed_keys: dict[str, tuple[float, str]] = {}
 
     @staticmethod
     def _sight_raw_message(source: Any) -> Any:
@@ -139,7 +139,8 @@ class SightIdentityComponent:
                 break
         return clips
 
-    def _sight_completed_key_is_fresh(self, key: str) -> bool:
+    def _sight_completed_result_key(self, key: str) -> str:
+        """读取完成索引；实际结果的有效期仍由 SightVault 校验。"""
         now = time.monotonic()
         values = getattr(self.context, "_sight_completed_keys", None)
         if not isinstance(values, dict):
@@ -149,24 +150,25 @@ class SightIdentityComponent:
             60.0,
             float(self.context._sight_cache_ttl_seconds() or SIGHT_COMPLETED_KEY_TTL_SECONDS),
         )
-        for item, marked_at in list(values.items()):
+        for item, (marked_at, _) in list(values.items()):
             if now - marked_at >= ttl:
                 values.pop(item, None)
         normalized = str(key or "").strip()
-        return bool(normalized and normalized in values)
+        return values[normalized][1] if normalized in values else ""
 
-    def _mark_sight_completed_key(self, key: str) -> None:
+    def _mark_sight_completed_key(self, key: str, result_key: str) -> None:
         normalized = str(key or "").strip()
-        if not normalized:
+        result_key = str(result_key or "").strip()
+        if not normalized or not result_key:
             return
         values = getattr(self.context, "_sight_completed_keys", None)
         if not isinstance(values, dict):
             values = {}
             self.context._sight_completed_keys = values
-        values[normalized] = time.monotonic()
+        values[normalized] = (time.monotonic(), result_key)
         maximum = max(8, self.context._sight_cache_max_items())
         if len(values) > maximum:
-            stale = sorted(values.items(), key=lambda item: item[1])[
+            stale = sorted(values.items(), key=lambda item: item[1][0])[
                 : len(values) - maximum
             ]
             for item, _ in stale:

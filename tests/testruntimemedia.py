@@ -35,7 +35,6 @@ from runtimehelpers import (
 
 
 from astrbot.api import logger
-from core.sight.visual import image_understanding_cache_key
 
 
 class FrameworkStopEvent(Event):
@@ -4011,9 +4010,14 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
                 gather._prepared_visual_media_is_gif = AsyncMock(return_value=True)
                 gather._visual_media_source_is_gif = AsyncMock(return_value=False)
                 runtime.config = LifeSettings.from_dict({})
-                runtime._visual_context_summary_cache = lambda: {
-                    image_understanding_cache_key(runtime.config.vision, "animation", Event().message_str): "小猫在挥手"
-                }
+                provider = Provider([], provider_id="vision-model")
+
+                async def candidates(_provider_id=""):
+                    yield provider
+
+                runtime.get_text_provider_candidates = candidates
+                cache_key = await runtime._visual_context_cache_key("animation", Event().message_str)
+                runtime._visual_context_summary_cache = lambda: {cache_key: "小猫在挥手"}
                 runtime._event_message_items = lambda event: items
                 runtime._emoji_asset_is_image_item = lambda item: item["type"] == "image"
                 request = ProviderRequest(
@@ -4089,6 +4093,12 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
 
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.config = LifeSettings.from_dict({})
+        provider = Provider([], provider_id="vision-model")
+
+        async def candidates(_provider_id=""):
+            yield provider
+
+        runtime.get_text_provider_candidates = candidates
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_root = Path(tmpdir)
             runtime.data_path = tmp_root / "daily_life.db"
@@ -4105,7 +4115,7 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
             event.message_obj.message = event.message_items
             await runtime.prepare_visual_media_from_event(event)
             entries = getattr(event, runtime._PREPARED_VISUAL_MEDIA_ATTR)
-            runtime._visual_context_summary_cache()[image_understanding_cache_key(runtime.config.vision, entries[1]["fingerprint"], event.message_str)] = "小猫在挥手"
+            runtime._visual_context_summary_cache()[await runtime._visual_context_cache_key(entries[1]["fingerprint"], event.message_str)] = "小猫在挥手"
             request = ProviderRequest(
                 image_urls=[str(static_path), str(animated_path), "quoted-static.jpg"],
                 extra_user_content_parts=[{"type": "image_url", "image_url": {"url": str(static_path)}}],
@@ -5133,9 +5143,6 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         runtime.maybe_collect_emoji_assets_from_event = (
             lambda event, now, sender_name="": async_return(None)
         )
-        runtime.maybe_capture_commitment_from_event = (
-            lambda event, now, sender_name="": async_return(None)
-        )
         runtime.maybe_capture_chat_memory_from_event = (
             lambda event, now, sender_name="": async_return(None)
         )
@@ -5191,9 +5198,6 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         )
         runtime.resolve_injection_target = lambda now: async_return(
             ("2026-05-24", False)
-        )
-        runtime.maybe_capture_commitment_from_event = (
-            lambda event, now, sender_name="": async_return(None)
         )
         runtime.maybe_capture_chat_memory_from_event = (
             lambda event, now, sender_name="": async_return(None)
@@ -5255,9 +5259,6 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         runtime.resolve_injection_target = lambda now: async_return(
             ("2026-05-24", False)
         )
-        runtime.maybe_capture_commitment_from_event = (
-            lambda event, now, sender_name="": async_return(None)
-        )
         runtime.maybe_capture_chat_memory_from_event = (
             lambda event, now, sender_name="": async_return(None)
         )
@@ -5311,9 +5312,6 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         )
         runtime.resolve_injection_target = lambda now: async_return(
             ("2026-05-24", False)
-        )
-        runtime.maybe_capture_commitment_from_event = (
-            lambda event, now, sender_name="": async_return(None)
         )
         runtime.maybe_capture_chat_memory_from_event = (
             lambda event, now, sender_name="": async_return(None)

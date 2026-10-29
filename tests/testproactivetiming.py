@@ -5,7 +5,7 @@ import datetime
 import json
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, call, patch
+from unittest.mock import AsyncMock, Mock, call, patch
 
 from runtimehelpers import (
     DayRecord,
@@ -644,6 +644,48 @@ class ProactiveTimingTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase)
             await runtime.run_private_revisit_check()
         targets.assert_not_awaited()
         self.assertEqual(provider.prompts, [])
+
+
+    async def test_delivery_status_controls_retry_and_actual_text_memory(self):
+        for status in ("deferred", "unknown", "partial"):
+            with self.subTest(status=status):
+                runtime, _ = self._make_proactive_runtime([])
+                event = self.private_event()
+                key = event.unified_msg_origin
+                base = datetime.datetime(2026, 5, 24, 12)
+                runtime.note_proactive_activity(event, now=base)
+                candidate = runtime._proactive_idle_candidates[key]
+                runtime.evaluate_proactive_reply = AsyncMock(return_value={
+                    "should_reply": True, "decision": "reply", "reply_text": "第一句\n第二句",
+                })
+
+                async def send(*args, **kwargs):
+                    kwargs["send_payload"]["_delivery"] = {
+                        "status": status, "reason_code": "test_delivery", "reason": "测试传输结果",
+                        "sent_text": "第一句" if status == "partial" else "",
+                    }
+                    return status == "partial"
+
+                runtime._send_proactive_message = send
+                runtime._commit_proactive_decision = AsyncMock()
+                runtime._save_pending_reply_effect = AsyncMock()
+                runtime._track_proactive_reply_effect = Mock()
+                runtime._update_proactive_air_after_decision = Mock()
+                await runtime._evaluate_idle_candidate(key, candidate, base + datetime.timedelta(minutes=60))
+                if status == "partial":
+                    self.assertEqual(runtime._commit_proactive_decision.await_args.args[3], "第一句")
+                    self.assertEqual(runtime._save_pending_reply_effect.await_args.args[3], "第一句")
+                    self.assertEqual(candidate["state"], "after_proactive_reply")
+                else:
+                    runtime._commit_proactive_decision.assert_not_awaited()
+                    runtime._save_pending_reply_effect.assert_not_awaited()
+                    runtime._update_proactive_air_after_decision.assert_not_called()
+                    if status == "deferred":
+                        self.assertIs(runtime._proactive_idle_candidates[key], candidate)
+                        self.assertGreater(candidate["next_evaluation_at"], base + datetime.timedelta(minutes=60))
+                    else:
+                        self.assertNotIn(key, runtime._proactive_idle_candidates)
+
 
 
 class IdleReplyTimeoutTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase):

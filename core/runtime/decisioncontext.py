@@ -5,6 +5,17 @@ from __future__ import annotations
 import hashlib
 import json
 
+from ..contextbudget import compact_json
+
+
+def decision_prompt_context(context: dict) -> str:
+    """较稳定的角色资料在前，实时事实在后；嵌套字段仍用稳定编码。"""
+    keys = dict.fromkeys(("persona", "preferences", "focus", "self_model", *sorted(context)))
+    return "{" + ",".join(
+        f"{compact_json(key)}:{compact_json(context[key])}"
+        for key in keys if key in context
+    ) + "}"
+
 
 def decision_observation(day, world: dict) -> dict:
     """仅保留会改变行动选择的事实，不让时钟、普通聊天或身体微小波动触发重评。"""

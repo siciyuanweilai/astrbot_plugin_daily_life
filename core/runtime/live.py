@@ -35,7 +35,6 @@ from .capture.harvest import ImprintHarvestComponent
 from .capture.payload import CapturePayloadComponent
 from .capture.persona import CapturePersonaComponent
 from .capture.portrait import ImprintPortraitComponent
-from .capture.relation import CaptureRelationComponent
 from .capture.tune.packet import PacketComponent
 from .capture.tune.profile import ProfileComponent
 from .capture.tune.target import TargetComponent
@@ -1760,6 +1759,12 @@ class DailyLifeRuntime:
         "_visual_context_summary_cache",
     )
 
+    _remember_visual_context_summary = ComponentCall(
+        "_part_emoji_base_component",
+        EmojiBaseComponent,
+        "_remember_visual_context_summary",
+    )
+
     _emoji_asset_suffix = classmethod(EmojiBaseComponent._emoji_asset_suffix.__func__)
 
     _emoji_asset_filename = staticmethod(EmojiBaseComponent._emoji_asset_filename)
@@ -1901,6 +1906,21 @@ class DailyLifeRuntime:
         "_part_emoji_vision_component",
         _part_emoji_vision_component.EmojiVisionComponent,
         "_classify_plain_image_emoji_candidate",
+    )
+    _plain_image_emoji_review_cached = ComponentCall(
+        "_part_emoji_vision_component",
+        _part_emoji_vision_component.EmojiVisionComponent,
+        "_plain_image_emoji_review_cached",
+    )
+    _visual_context_cache_key = ComponentCall(
+        "_part_emoji_vision_component",
+        _part_emoji_vision_component.EmojiVisionComponent,
+        "_visual_context_cache_key",
+    )
+    _close_visual_context_flights = ComponentCall(
+        "_part_emoji_vision_component",
+        _part_emoji_vision_component.EmojiVisionComponent,
+        "_close_visual_context_flights",
     )
     _save_plain_image_emoji_candidate = ComponentCall(
         "_part_emoji_vision_component",
@@ -2649,6 +2669,12 @@ class DailyLifeRuntime:
         "_part_sight_identity_component",
         SightIdentityComponent,
         "_sight_enrich_clips_from_raw_message",
+    )
+
+    _sight_completed_result_key = ComponentCall(
+        "_part_sight_identity_component",
+        SightIdentityComponent,
+        "_sight_completed_result_key",
     )
 
     _mark_sight_completed_key = ComponentCall(
@@ -3405,23 +3431,6 @@ class DailyLifeRuntime:
         "log_chat_style_trace",
     )
 
-    _CHAT_STYLE_SEGMENT_DELAY_RANGE = ChatDelayComponent._CHAT_STYLE_SEGMENT_DELAY_RANGE
-
-    _CHAT_STYLE_SHORT_DELAY_RANGE = ChatDelayComponent._CHAT_STYLE_SHORT_DELAY_RANGE
-
-    _CHAT_STYLE_LONG_DELAY_RANGE = ChatDelayComponent._CHAT_STYLE_LONG_DELAY_RANGE
-
-    _CHAT_STYLE_LEAD_SHORT_DELAY_RANGE = (
-        ChatDelayComponent._CHAT_STYLE_LEAD_SHORT_DELAY_RANGE
-    )
-
-    _CHAT_STYLE_LEAD_MEDIUM_DELAY_RANGE = (
-        ChatDelayComponent._CHAT_STYLE_LEAD_MEDIUM_DELAY_RANGE
-    )
-
-    _CHAT_STYLE_LEAD_LONG_DELAY_RANGE = (
-        ChatDelayComponent._CHAT_STYLE_LEAD_LONG_DELAY_RANGE
-    )
 
     _CHAT_STYLE_MAX_DELAY_SECONDS = ChatDelayComponent._CHAT_STYLE_MAX_DELAY_SECONDS
 
@@ -3637,10 +3646,6 @@ class DailyLifeRuntime:
 
     _share_episode_payload = classmethod(
         SnapshotExportComponent._share_episode_payload.__func__
-    )
-
-    _share_focus_payload = classmethod(
-        SnapshotExportComponent._share_focus_payload.__func__
     )
 
     _share_expression_payload = classmethod(
@@ -4137,11 +4142,6 @@ class DailyLifeRuntime:
         "_format_expression_profiles_for_proactive",
     )
 
-    _format_behavior_patterns_for_proactive = ComponentCall(
-        "_part_proactive_context_component",
-        ProactiveContextComponent,
-        "_format_behavior_patterns_for_proactive",
-    )
 
     _format_reply_effects_for_proactive = ComponentCall(
         "_part_proactive_context_component",
@@ -4161,23 +4161,8 @@ class DailyLifeRuntime:
         "_format_behavior_scenes_for_proactive",
     )
 
-    _format_focus_slots_for_proactive = ComponentCall(
-        "_part_proactive_context_component",
-        ProactiveContextComponent,
-        "_format_focus_slots_for_proactive",
-    )
 
-    _format_mid_summaries_for_proactive = ComponentCall(
-        "_part_proactive_context_component",
-        ProactiveContextComponent,
-        "_format_mid_summaries_for_proactive",
-    )
 
-    _format_temporary_expression_states_for_proactive = ComponentCall(
-        "_part_proactive_context_component",
-        ProactiveContextComponent,
-        "_format_temporary_expression_states_for_proactive",
-    )
 
     _format_life_terms_for_proactive = ComponentCall(
         "_part_proactive_context_component",
@@ -4461,9 +4446,6 @@ class DailyLifeRuntime:
         ProactivePromptComponent._proactive_summary_lines
     )
 
-    _proactive_focus_lines = staticmethod(
-        ProactivePromptComponent._proactive_focus_lines
-    )
 
     _proactive_readiness_text = staticmethod(
         ProactivePromptComponent._proactive_readiness_text
@@ -6324,9 +6306,6 @@ class DailyLifeRuntime:
     def _part_capture_payload_component(self):
         return CapturePayloadComponent(self)
 
-    @cached_property
-    def _part_capture_relation_component(self):
-        return CaptureRelationComponent(self)
 
     @cached_property
     def _part_capture_persona_component(self):

@@ -37,7 +37,6 @@ class SnapshotExportComponentContext(Protocol):
     _share_episode_payload: Any
     _share_exact_scope: Any
     _share_expression_payload: Any
-    _share_focus_payload: Any
     _share_interaction_payload: Any
     _share_scope_context: Any
     _share_terms_payload: Any
@@ -235,7 +234,6 @@ class SnapshotExportComponent:
             summaries,
             commitments,
             episodes,
-            focus_targets,
             feedback,
             physiological_rhythm_logs,
             physiological_rhythm_trend,
@@ -243,11 +241,7 @@ class SnapshotExportComponent:
             memory_corrections,
             expression_profiles,
             expression_reviews,
-            behavior_patterns,
             behavior_scenes,
-            mid_summaries,
-            temporary_expression_states,
-            focus_slots,
             expression_intents,
             terms,
             boundaries,
@@ -259,7 +253,6 @@ class SnapshotExportComponent:
             self.context.archive.get_recent_chat_summaries(5),
             self.context.archive.get_commitments(status="active", limit=8),
             self.context.archive.get_life_episodes(limit=8),
-            self.context.archive.get_focus_targets(limit=8),
             self.context.archive.get_behavior_feedback(limit=8),
             self.context.archive.get_physiological_rhythm_logs(limit=8),
             self.context.archive.get_physiological_rhythm_trend(days=7, limit=8),
@@ -267,11 +260,7 @@ class SnapshotExportComponent:
             self.context.archive.get_memory_corrections(limit=8, unapplied_only=True),
             self.context.archive.get_expression_context(limit=16, scope="self"),
             self.context.archive.get_expression_reviews(limit=8),
-            self.context.archive.get_behavior_patterns(limit=8),
             self.context.archive.get_behavior_scenes(limit=8),
-            self.context.archive.get_session_mid_summaries(limit=8),
-            self.context.archive.get_temporary_expression_states(limit=8),
-            self.context.archive.get_focus_slots(limit=8),
             self.context.archive.get_expression_intents(limit=8),
             self.context.archive.get_life_terms(limit=8),
             self.context.archive.get_memory_boundaries(limit=8),
@@ -285,7 +274,6 @@ class SnapshotExportComponent:
             "commitments": commitments,
             "experience": {
                 "episodes": episodes,
-                "focus_targets": focus_targets,
                 "feedback": feedback,
                 "physiological_rhythm_logs": physiological_rhythm_logs,
                 "physiological_rhythm_trend": physiological_rhythm_trend,
@@ -293,11 +281,7 @@ class SnapshotExportComponent:
                 "memory_corrections": memory_corrections,
                 "expression_profiles": expression_profiles,
                 "expression_reviews": expression_reviews,
-                "behavior_patterns": behavior_patterns,
                 "behavior_scenes": behavior_scenes,
-                "mid_summaries": mid_summaries,
-                "temporary_expression_states": temporary_expression_states,
-                "focus_slots": focus_slots,
                 "expression_intents": expression_intents,
                 "terms": terms,
                 "boundaries": boundaries,
@@ -455,35 +439,13 @@ class SnapshotExportComponent:
         return result
 
     @classmethod
-    def _share_focus_payload(
-        cls, targets: list[Any], slots: list[Any]
-    ) -> list[dict[str, str]]:
-        result: list[dict[str, str]] = []
-        seen: set[str] = set()
-        for item in [*targets, *slots]:
-            label = cls._share_text(item, "label", 80)
-            if not label or label in seen:
-                continue
-            seen.add(label)
-            result.append(
-                {
-                    "label": label,
-                    "reason": cls._share_text(item, "reason", 120),
-                }
-            )
-            if len(result) >= 4:
-                break
-        return result
-
-    @classmethod
     def _share_expression_payload(
-        cls, profiles: list[Any], temporary_states: list[Any]
+        cls, profiles: list[Any]
     ) -> dict[str, list[str]]:
         result: dict[str, list[str]] = {
             "tones": [],
             "habits": [],
             "avoid": [],
-            "temporary": [],
         }
 
         def append_unique(key: str, value: Any, limit: int = 4) -> None:
@@ -500,32 +462,14 @@ class SnapshotExportComponent:
                 append_unique("habits", value)
             for value in cls._share_record_value(item, "avoid", []) or []:
                 append_unique("avoid", value)
-        for item in temporary_states:
-            label = cls._share_text(item, "label", 60)
-            tone = cls._share_text(item, "tone", 80)
-            append_unique(
-                "temporary", "：".join(value for value in (label, tone) if value)
-            )
         return {key: values for key, values in result.items() if values}
 
     @classmethod
     def _share_behavior_payload(
-        cls, patterns: list[Any], scenes: list[Any]
+        cls, scenes: list[Any]
     ) -> list[dict[str, str]]:
         result: list[dict[str, str]] = []
         seen: set[tuple[str, str, str]] = set()
-        for item in patterns:
-            payload = {
-                "scene": cls._share_text(item, "scene", 80),
-                "preferred": cls._share_text(item, "suggested_action", 100)
-                or cls._share_text(item, "pattern", 100),
-                "avoid": "",
-                "outcome": "",
-            }
-            key = (payload["scene"], payload["preferred"], payload["avoid"])
-            if any(key) and key not in seen:
-                seen.add(key)
-                result.append(payload)
         for item in scenes:
             payload = {
                 "scene": cls._share_text(item, "scene", 80),
@@ -618,11 +562,7 @@ class SnapshotExportComponent:
         (
             episodes,
             rhythm_trend,
-            focus_targets,
-            focus_slots,
             scoped_profiles,
-            temporary_states,
-            behavior_patterns,
             behavior_scenes,
             reply_effects,
             behavior_feedback,
@@ -631,23 +571,9 @@ class SnapshotExportComponent:
         ) = await asyncio.gather(
             self.context.archive.get_life_episodes(limit=16),
             self.context.archive.get_physiological_rhythm_trend(days=7, limit=8),
-            self.context.archive.get_focus_targets(limit=6, scope=experience_scope)
-            if experience_scope
-            else asyncio.sleep(0, result=[]),
-            self.context.archive.get_focus_slots(limit=6, scope=experience_scope)
-            if experience_scope
-            else asyncio.sleep(0, result=[]),
             self.context.archive.get_expression_context(
                 limit=16, scope=experience_scope or "self", profile_id=profile_id
             ),
-            self.context.archive.get_temporary_expression_states(
-                limit=3, scope=experience_scope
-            )
-            if experience_scope
-            else asyncio.sleep(0, result=[]),
-            self.context.archive.get_behavior_patterns(limit=4, scope=experience_scope)
-            if experience_scope
-            else asyncio.sleep(0, result=[]),
             self.context.archive.get_behavior_scenes(limit=4, scope=experience_scope)
             if experience_scope
             else asyncio.sleep(0, result=[]),
@@ -680,11 +606,7 @@ class SnapshotExportComponent:
                 profile_keys.add(key)
                 profiles.append(item)
 
-        focus_targets = self.context._share_exact_scope(focus_targets, experience_scope)
-        focus_slots = self.context._share_exact_scope(focus_slots, experience_scope)
         scoped_profiles = self.context._share_exact_scope(scoped_profiles, experience_scope)
-        temporary_states = self.context._share_exact_scope(temporary_states, experience_scope)
-        behavior_patterns = self.context._share_exact_scope(behavior_patterns, experience_scope)
         behavior_scenes = self.context._share_exact_scope(behavior_scenes, experience_scope)
         terms = self.context._share_exact_scope(terms, experience_scope)
 
@@ -714,11 +636,8 @@ class SnapshotExportComponent:
                 episodes, people_keys, is_private=is_private
             ),
             "rhythm_trend": trend_summary,
-            "focus": self.context._share_focus_payload(focus_targets, focus_slots),
-            "expression": self.context._share_expression_payload(profiles, temporary_states),
-            "behavior": self.context._share_behavior_payload(
-                behavior_patterns, behavior_scenes
-            ),
+            "expression": self.context._share_expression_payload(profiles),
+            "behavior": self.context._share_behavior_payload(behavior_scenes),
             "interaction": self.context._share_interaction_payload(
                 reply_effects, [*behavior_feedback, *session_behavior_feedback]
             ),
@@ -872,10 +791,6 @@ class SnapshotExportComponent:
                     item.as_dict()
                     for item in archive_snapshot["experience"].get("episodes", [])
                 ],
-                "focus_targets": [
-                    item.as_dict()
-                    for item in archive_snapshot["experience"].get("focus_targets", [])
-                ],
                 "feedback": [
                     item.as_dict()
                     for item in archive_snapshot["experience"].get("feedback", [])
@@ -911,31 +826,11 @@ class SnapshotExportComponent:
                         "expression_reviews", []
                     )
                 ],
-                "behavior_patterns": [
-                    item.as_dict()
-                    for item in archive_snapshot["experience"].get(
-                        "behavior_patterns", []
-                    )
-                ],
                 "behavior_scenes": [
                     item.as_dict()
                     for item in archive_snapshot["experience"].get(
                         "behavior_scenes", []
                     )
-                ],
-                "mid_summaries": [
-                    item.as_dict()
-                    for item in archive_snapshot["experience"].get("mid_summaries", [])
-                ],
-                "temporary_expression_states": [
-                    item.as_dict()
-                    for item in archive_snapshot["experience"].get(
-                        "temporary_expression_states", []
-                    )
-                ],
-                "focus_slots": [
-                    item.as_dict()
-                    for item in archive_snapshot["experience"].get("focus_slots", [])
                 ],
                 "expression_intents": [
                     item.as_dict()

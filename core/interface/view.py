@@ -364,7 +364,6 @@ class PageViewComponent:
         physiological_rhythm_trend = (
             await self.context.runtime.archive.get_physiological_rhythm_trend(days=1, limit=20)
         )
-        focus_targets = await self.context.runtime.archive.get_focus_targets(limit=20)
         memory_evidence = self.context._page_records_for_date(
             await self.context.runtime.archive.get_memory_evidence(limit=30),
             target_date,
@@ -375,7 +374,6 @@ class PageViewComponent:
             relationship_records,
             summaries=summaries,
             episodes=episodes,
-            focus_targets=focus_targets,
         )
         feedback = self.context._page_feedback_records(
             self.context._page_records_for_date(
@@ -386,19 +384,6 @@ class PageViewComponent:
         )
         expression_profiles = await self.context.runtime.archive.get_expression_profiles(
             limit=20
-        )
-        behavior_patterns = await self.context.runtime.archive.get_behavior_patterns(limit=20)
-        mid_summaries = self.context._page_records_for_date(
-            await self.context.runtime.archive.get_session_mid_summaries(limit=20),
-            target_date,
-            "created_at",
-            "updated_at",
-        )
-        temporary_expression_states = self.context._page_records_for_date(
-            await self.context.runtime.archive.get_temporary_expression_states(limit=20),
-            target_date,
-            "created_at",
-            "updated_at",
         )
         life_terms = await self.context.runtime.archive.get_life_terms(limit=20)
         memory_boundaries = await self.context.runtime.archive.get_memory_boundaries(
@@ -498,12 +483,6 @@ class PageViewComponent:
             "evidence": evidence,
             "feedback": [item.as_dict() for item in feedback],
             "expression_profiles": [item.as_dict() for item in expression_profiles],
-            "behavior_patterns": [item.as_dict() for item in behavior_patterns],
-            "mid_summaries": [item.as_dict() for item in mid_summaries],
-            "temporary_expression_states": [
-                item.as_dict() for item in temporary_expression_states
-            ],
-            "focus_targets": [item.as_dict() for item in focus_targets],
             "terms": [
                 self.context._page_readable_evidence_record(item.as_dict())
                 for item in life_terms
@@ -1075,7 +1054,6 @@ class PageViewComponent:
         *,
         summaries: list | None = None,
         episodes: list | None = None,
-        focus_targets: list | None = None,
     ) -> list[dict]:
         relationship_names = {
             str(item.id or "").strip(): str(
@@ -1099,19 +1077,6 @@ class PageViewComponent:
             label = self.context._page_compact(getattr(item, "title", ""), 40)
             if item_id and label:
                 target_labels[("life_episode", item_id)] = label
-        for item in focus_targets or []:
-            item_id = str(getattr(item, "id", "") or "").strip()
-            target_id = str(getattr(item, "target_id", "") or "").strip()
-            label = self.context._page_compact(
-                getattr(item, "label", "") or target_id,
-                40,
-            )
-            if label:
-                for target_type in ("focus", "focus_target"):
-                    if item_id:
-                        target_labels[(target_type, item_id)] = label
-                    if target_id:
-                        target_labels[(target_type, target_id)] = label
         get_relationship = getattr(self.context.runtime.archive, "get_relationship", None)
         for item in evidence:
             data = item.as_dict()

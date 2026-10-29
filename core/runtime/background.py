@@ -274,7 +274,7 @@ class BackgroundTaskScheduler:
         ):
             return "video"
         if value.startswith(
-            ("visual_context:", "emoji_capture:", "emoji_asset_vision:")
+            ("visual_context:", "emoji_asset_vision:")
         ):
             return "vision"
         return "normal"

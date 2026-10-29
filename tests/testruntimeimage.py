@@ -3427,7 +3427,8 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         self.assertEqual(DailyLifeRuntime._photo_suite_count(None), 3)
         self.assertEqual(DailyLifeRuntime._photo_suite_count(1), 2)
         self.assertEqual(DailyLifeRuntime._photo_suite_count(4), 4)
-        self.assertEqual(DailyLifeRuntime._photo_suite_count(20), 6)
+        self.assertEqual(DailyLifeRuntime._photo_suite_count(10), 10)
+        self.assertEqual(DailyLifeRuntime._photo_suite_count(20), 10)
         parsed = DailyLifeRuntime._photo_suite_parse_plan(
             '{"shared":{"setting":"室内","subject":"一个人","style":"真实摄影","continuity":"外观一致"},'
             '"shots":[{"title":"全景","action":"站在桌边","camera":"远景平视","composition":"人物融入环境"},'
@@ -3444,17 +3445,17 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
             [],
         )
         person_fallback = DailyLifeRuntime._photo_suite_fallback_plan(
-            "雨后公园散步", 6, "current_character"
+            "雨后公园散步", 10, "current_character"
         )
         object_fallback = DailyLifeRuntime._photo_suite_fallback_plan(
-            "窗边的一杯咖啡", 3, "object"
+            "窗边的一杯咖啡", 10, "object"
         )
         group_fallback = DailyLifeRuntime._photo_suite_fallback_plan(
-            "深夜客厅合影，浅灰棉质睡裙", 3, "group"
+            "深夜客厅合影，浅灰棉质睡裙", 10, "group"
         )
-        self.assertEqual(len(person_fallback), 6)
-        self.assertEqual(len({item["title"] for item in person_fallback}), 6)
-        self.assertEqual(len(object_fallback), 3)
+        for fallback in (person_fallback, object_fallback, group_fallback):
+            self.assertEqual(len(fallback), 10)
+            self.assertEqual(len({item["title"] for item in fallback}), 10)
         self.assertTrue(
             all("不要拼图或多宫格" in item["prompt"] for item in person_fallback)
         )
@@ -3501,12 +3502,12 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         self.assertEqual(
             person_fallback,
             DailyLifeRuntime._photo_suite_fallback_plan(
-                "雨后公园散步", 6, "current_character"
+                "雨后公园散步", 10, "current_character"
             ),
         )
         self.assertNotEqual(
             [item["title"] for item in person_fallback[:3]],
-            [item["title"] for item in object_fallback],
+            [item["title"] for item in object_fallback[:3]],
         )
 
     async def test_photo_suite_planner_uses_configured_timeout_and_logs_model(self):
@@ -3875,7 +3876,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
                         "camera": "平视中景",
                         "composition": "自然生活抓拍",
                     }
-                    for index in range(1, 5)
+                    for index in range(1, 11)
                 ],
                 "shared": {
                     "setting": "雨后公园",
@@ -3959,7 +3960,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         result = await runtime.life_photo_suite_generate(
             event,
             "雨后公园散步，浅色风衣",
-            count=4,
+            count=10,
             subject_route="scene",
             resolution="2K",
         )
@@ -3984,6 +3985,7 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         self.assertEqual(len(manifests), 1)
         manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
         self.assertEqual(manifest["status"], "partial")
+        self.assertEqual(manifest["count"], 10)
         self.assertEqual(manifest["resolution"], "2K")
         self.assertTrue(generation_options)
         self.assertTrue(
@@ -3991,17 +3993,17 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         )
         self.assertEqual(
             [shot["status"] for shot in manifest["shots"]],
-            ["sent", "failed", "sent", "sent"],
+            ["sent", "failed"] + ["sent"] * 8,
         )
         self.assertFalse(manifests[0].with_suffix(".json.tmp").exists())
         self.assertEqual(runtime.context.sent_messages, [])
-        first_messages = event.sent_messages[:3]
+        first_messages = event.sent_messages[:9]
         self.assertEqual(
             [
                 [Path(item["file"]).name for item in chain.items]
                 for chain in first_messages
             ],
-            [["01.png"], ["03.png"], ["04.png"]],
+            [[f"{index:02d}.png"] for index in range(1, 11) if index != 2],
         )
 
         failed_second = False
@@ -4017,15 +4019,16 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         self.assertTrue(
             all(options == {"resolution": "2K"} for options in generation_options)
         )
-        for shot_index, expected_calls in ((1, 1), (2, 3), (3, 1), (4, 1)):
+        for shot_index in range(1, 11):
+            expected_calls = 3 if shot_index == 2 else 1
             shot_calls = sum(
                 count
                 for prompt, count in prompt_calls.items()
-                if f"雨后公园镜头{shot_index}" in prompt
+                if f"action：雨后公园镜头{shot_index}；" in prompt
             )
             self.assertEqual(shot_calls, expected_calls, prompt_calls)
         self.assertEqual(
-            [Path(item["file"]).name for item in event.sent_messages[3].items],
+            [Path(item["file"]).name for item in event.sent_messages[9].items],
             ["02.png"],
         )
         self.assertEqual(len(expressed), 2)

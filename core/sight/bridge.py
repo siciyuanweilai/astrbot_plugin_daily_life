@@ -151,6 +151,7 @@ class SightComponentContext(Protocol):
     _log_sight_fusion: Any
     _log_sight_professional_metrics: Any
     _mark_sight_completed_key: Any
+    _sight_completed_result_key: Any
     _mark_sight_note_sent: Any
     _native_sight_route: Any
     _prepare_sight_clip_material: Any
@@ -787,7 +788,6 @@ class SightComponent:
                 return
             insight = await self.context._understand_sight_clip(event, clip)
             if insight and insight.summary:
-                self.context._mark_sight_completed_key(clip.key)
                 self.context._apply_sight_insight_to_structured(insight)
 
     async def _send_bili_summary_background(
@@ -1216,6 +1216,10 @@ class SightComponent:
         purpose: str = "chat",
     ) -> SightInsight:
         purpose = "professional" if purpose == "professional" else "chat"
+        if self.context.event_was_recalled(event, log_skip=True):
+            return SightInsight(
+                clip=clip, status="failed", error="原视频消息已撤回，已取消理解。"
+            )
         clip = await self.context._resolve_sight_clip_source(event, clip)
         try:
             route = await self.context._native_sight_route(clip)
@@ -1230,14 +1234,32 @@ class SightComponent:
                 metrics["cache_hit"] = True
                 cached.metadata["sight_metrics"] = metrics
                 if purpose == "chat" and cached.metadata.get("brief_ready") is False:
-                    return await self.context._complete_cached_sight_brief(event, cached)
+                    completed = await self.context._complete_cached_sight_brief(event, cached)
+                    if (
+                        completed.status == "ready"
+                        and completed.summary
+                        and not self.context.event_was_recalled(event)
+                    ):
+                        self.context._mark_sight_completed_key(clip.key, completed.key)
+                    return completed
                 return cached
-        return await self.context._sight_flight_for_runtime().run(
-            f"{sight_flight_key(clip)}:{purpose}",
-            lambda: self.context._understand_sight_clip_with_timeout(
+
+        async def work():
+            result = await self.context._understand_sight_clip_with_timeout(
                 event, clip, purpose=purpose
-            ),
+            )
+            if (
+                result.status == "ready"
+                and result.summary
+                and not self.context.event_was_recalled(event)
+            ):
+                self.context._mark_sight_completed_key(clip.key, result.key)
+            return result
+
+        result = await self.context._sight_flight_for_runtime().run(
+            f"{sight_flight_key(clip)}:{purpose}:{force}", work
         )
+        return self.context._sight_insight_for_clip(result, clip)
 
     async def _understand_sight_clip_with_timeout(
         self, event: Any, clip: SightClip, *, purpose: str = "chat"
@@ -1294,17 +1316,28 @@ class SightComponent:
     async def _cached_sight_insight_for_clip(
         self, clip: SightClip
     ) -> SightInsight | None:
-        cached = await self.context._sight_vault_for_runtime().get(clip.key)
-        if cached and cached.status == "ready" and cached.metadata.get("video_input_mode") != "gemini_native":
-            return cached
+        vault = self.context._sight_vault_for_runtime()
+        result_key = self.context._sight_completed_result_key(clip.key) or clip.key
+        cached = await vault.get(result_key)
+        if (
+            cached
+            and cached.status == "ready"
+            and cached.metadata.get("video_input_mode") != "gemini_native"
+        ):
+            return self.context._sight_insight_for_clip(cached, clip)
         keys = set(sight_resource_keys(clip))
         if not keys:
             return None
         limit = self.context._sight_cache_max_items()
-        for item in await self.context._sight_vault_for_runtime().recent(
+        for item in await vault.recent(
             clip.scope, limit=limit
         ):
-            if item.status == "ready" and item.metadata.get("video_input_mode") != "gemini_native" and sight_resource_matches(clip, item.clip):
+            if (
+                item.status == "ready"
+                and item.metadata.get("video_input_mode") != "gemini_native"
+                and sight_resource_matches(clip, item.clip)
+            ):
+                self.context._mark_sight_completed_key(clip.key, item.key)
                 return self.context._sight_insight_for_clip(item, clip)
         return None
 

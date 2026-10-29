@@ -68,7 +68,7 @@ class ClipArchiveComponent:
         )
         clip_metadata = {
             key: metadata[key]
-            for key in ("content_fingerprint", "platform_id", "file_size")
+            for key in ("content_fingerprint", "platform_id", "file_size", "native_signature")
             if metadata.get(key) not in ("", None)
         }
         return {

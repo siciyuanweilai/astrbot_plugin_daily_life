@@ -1014,7 +1014,7 @@ def _migrate_expression_evolution(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_memory_life(conn: sqlite3.Connection) -> None:
-    from .tables.memorylife import MEMORY_LIFE_V32_SQL
+    from .tables.lifeschema import MEMORY_LIFE_V32_SQL
     # 逐条执行以保留外层升级事务。
     for statement in MEMORY_LIFE_V32_SQL.split(";"):
         if statement.strip():

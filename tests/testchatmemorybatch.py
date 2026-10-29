@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from core.archive import LifeArchive
+from core.clock import now as life_now
 from core.config.options import LifeSettings
 from core.models import DayRecord
 from core.runtime.capture.actioncontract import COMMITMENT_ACTION_CONTRACT
@@ -844,16 +845,18 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.runtime.archive.get_commitments(limit=10), [])
 
     async def test_batch_reuses_scheduled_invite_without_regressing_action_item(self):
+        target_date = (life_now() + datetime.timedelta(days=1)).date().isoformat()
         message = ChatMemoryArchiveTest.snapshot(
             session_id="private:1",
             message_id="m-invite",
             text="傍晚一起去测试公园",
+            occurred_at=target_date + "T12:00:00",
         )
         message["id"] = 1
         accepted = await self.runtime.archive.save_commitment(
             {
                 "content": "傍晚一起去测试公园",
-                "trigger_date": "2026-07-10",
+                "trigger_date": target_date,
                 "time_window": "evening",
                 "source": "invite",
                 "source_session": "private:1",
@@ -861,7 +864,7 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
                 "source_message": "傍晚一起去测试公园",
             }
         )
-        await self.runtime.archive.link_commitments_to_day("2026-07-10", [accepted.id])
+        await self.runtime.archive.link_commitments_to_day(target_date, [accepted.id])
 
         await self.runtime._part_chat_memory_batch_component._save_chat_memory_batch_payload(
             {
@@ -870,7 +873,7 @@ class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
                     {
                         "content": "傍晚一起去旧测试地点",
                         "kind": "plan",
-                        "trigger_date": "2026-07-10",
+                        "trigger_date": target_date,
                         "time_window": "evening",
                         "confidence": 0.95,
                         "source_message_ids": ["1"],

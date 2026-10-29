@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import AsyncMock
 
 from core.runtime.voice.modality import VoiceExpressionPlan
 from core.sight.flight import SightFlight
@@ -91,12 +92,13 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
 
         with patch("core.sight.identity.time.monotonic", return_value=100.0):
             for index in range(12):
-                runtime._mark_sight_completed_key(f"video-{index}")
+                runtime._mark_sight_completed_key(f"video-{index}", f"result-{index}")
             self.assertLessEqual(len(runtime._sight_completed_keys), 8)
-            self.assertTrue(runtime._part_sight_identity_component._sight_completed_key_is_fresh("video-11"))
+            self.assertEqual(runtime._sight_completed_result_key("video-11"), "result-11")
+            self.assertEqual(runtime._sight_completed_result_key("video-0"), "")
 
         with patch("core.sight.identity.time.monotonic", return_value=4001.0):
-            self.assertFalse(runtime._part_sight_identity_component._sight_completed_key_is_fresh("video-11"))
+            self.assertEqual(runtime._sight_completed_result_key("video-11"), "")
             self.assertEqual(runtime._sight_completed_keys, {})
 
     async def test_life_video_generate_runs_in_background_and_sends_result(self):
@@ -2603,6 +2605,14 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         self.assertIsNotNone(result)
         self.assertEqual(result.summary, "已经理解过的视频")
         self.assertEqual(result.clip.message_id, "m-current")
+
+        runtime._sight_vault.recent = AsyncMock(
+            side_effect=AssertionError("完成索引命中后不应扫描历史结果")
+        )
+        again = await runtime._cached_sight_insight_for_clip(current)
+        self.assertIsNotNone(again)
+        self.assertEqual(again.summary, result.summary)
+        runtime._sight_vault.recent.assert_not_awaited()
 
     async def test_sight_resource_alias_cache_remains_isolated_by_scope(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
