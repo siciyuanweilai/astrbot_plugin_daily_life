@@ -48,6 +48,7 @@ from .core.runtime.tooling import (
     guard_tool_arguments,
     prepare_tool_argument_checks,
 )
+from .core.sources.events import is_chat_message_event
 from .core.sources.location import enrich_location_message
 from .core.telemetry import cache_prefix_version
 
@@ -948,11 +949,11 @@ class DailyLifePlugin(Star):
         date: str = "",
     ):
         """
-        调整当前角色的日常生活状态或生成节奏。
+        执行角色自主决定的生活调整；动作是否完成以返回结果为准。
 
         Args:
-            action(string): 调整动作：refresh_state 刷新实时状态；reset_day 重新生成当天；update_outfit 保持日程只更新穿搭；set_schedule_time 设置每日生成时间。
-            detail(string): 用户补充的自然语言要求，例如“今天少出门”“刚刚聊了很久所以状态偏困”。
+            action(string): update_outfit 执行当前换装决定；review_action 将当前行动意愿提交生活执行器；refresh_state 刷新实时状态；reset_day 重新生成当天；set_schedule_time 设置每日生成时间。
+            detail(string): 角色自主决定或接受建议后想实际做的事及缘由，或用户补充的状态要求；行动意愿不代表已经完成。
             period(string): 可选目标时段，例如 凌晨/早晨/上午/中午/下午/傍晚/晚上/深夜；用于重生成某时段状态或穿搭。
             schedule_time(string): action=set_schedule_time 时使用，格式 HH:MM。
             date(string): 可选日期，格式 YYYY-MM-DD；留空使用当前生活日。
@@ -2853,6 +2854,8 @@ class DailyLifePlugin(Star):
                 reason="原消息已撤回",
                 trigger="撤回事件",
             )
+            return
+        if not is_chat_message_event(event):
             return
         self._runtime_hook_call("note_runtime_scope_activity", event)
         self._runtime_hook_call("note_conversation_incoming", event)

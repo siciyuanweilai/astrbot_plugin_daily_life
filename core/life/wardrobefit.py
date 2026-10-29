@@ -88,6 +88,10 @@ def wardrobe_targets(conditions: dict, upcoming: list[dict]) -> list[dict]:
             scene = "sleep"
         elif place == "home":
             scene = "home"
+        elif current and place in {"", "none"} and conditions.get(
+            "current_scene_category"
+        ) in {"home", "public", "sleep"}:
+            scene = conditions["current_scene_category"]
         else:
             continue
         identity = (scene, kind)

@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from typing import Any
 
 
@@ -35,6 +36,24 @@ def iter_event_sources(event: Any, limit: int = 4) -> list[Any]:
             continue
         break
     return sources
+
+
+def is_chat_message_event(event: Any) -> bool:
+    """排除明确的平台通知和请求，保留未提供事件类型的平台消息。"""
+    if event is None:
+        return False
+    for source in iter_event_sources(event):
+        message_obj = getattr(source, "message_obj", None)
+        for raw in (
+            getattr(message_obj, "raw_message", None),
+            getattr(source, "raw_message", None),
+        ):
+            if not isinstance(raw, Mapping):
+                continue
+            post_type = str(raw.get("post_type") or "").strip()
+            if post_type and post_type not in {"message", "message_sent"}:
+                return False
+    return True
 
 
 def event_call(event: Any, method_name: str) -> str:

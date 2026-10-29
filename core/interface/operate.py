@@ -39,6 +39,7 @@ class OperateCommandComponent:
         *,
         detail: str = "",
         period: str = "",
+        instruction_source: str = "",
     ) -> tuple[DayRecord | None, bool]:
         input_period = CN_PERIOD_MAP.get(period, period)
         target_period = input_period if input_period in PERIOD_HOURS else req.period
@@ -62,11 +63,13 @@ class OperateCommandComponent:
             return result.day, True
 
         async with operation_lock(self.context.runtime, f"outfit:{req.target_date_str}"):
+            options = {"instruction_source": instruction_source} if instruction_source else {}
             updated = await self.context.runtime.composer.update_outfit(
                 req.target_date_str,
                 target_period,
                 current_time=current_time,
                 instruction=detail,
+                **options,
             )
         if updated is not None:
             notify = getattr(self.context.runtime, "mark_page_status_changed", None)

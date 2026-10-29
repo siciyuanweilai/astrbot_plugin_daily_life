@@ -3,16 +3,15 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 
 from astrbot.api import logger
 from astrbot.api.message_components import Image
 from astrbot.core.agent.message import TextPart
 
-from .markers import LOG_PREFIX
+from ..sources.events import is_chat_message_event
 from .elapsed import RECEIVED_AT, TURN_RECEIVED_AT, event_time
-
-from typing import Protocol
+from .markers import LOG_PREFIX
 
 
 @dataclass(slots=True)
@@ -356,6 +355,8 @@ class ContinuousTurnComponent:
         return min(max_tail_wait, max(base_wait, cadence_wait))
 
     def note_continuous_turn_incoming(self, event: Any) -> bool:
+        if not is_chat_message_event(event):
+            return False
         scope, participant = self.context._continuous_turn_identity(event)
         if scope:
             store = getattr(self.context, "_media_chat_tokens", None)

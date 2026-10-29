@@ -2799,7 +2799,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         decisions = await archive.get_life_decisions(limit=5, kind="outfit")
         self.assertNotIn("21:10", decisions[0].reason)
         self.assertIn(
-            '"current_outfit_basis": "stored | occurred_schedule | live_state"',
+            '"current_outfit_basis": "stored | occurred_schedule | live_state | action_intent"',
             provider.prompts[0],
         )
         self.assertIn("已经换装则选择", provider.prompts[0])
@@ -3271,7 +3271,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
             current_time=datetime.datetime(2026, 8, 12, 12, 32),
         )
 
-        self.assertIsNotNone(result)
+        self.assertIsNone(result)
         stored = await archive.get_day("2026-08-12")
         self.assertEqual(stored.outfit, confirmed_outfit)
         self.assertEqual(stored.meta["outfit_fact_source"], "user_instruction")
@@ -3395,7 +3395,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
             current_time=datetime.datetime(2026, 8, 15, 11, 25),
         )
 
-        self.assertIsNotNone(result)
+        self.assertIsNone(result)
         stored = await archive.get_day("2026-08-15")
         self.assertEqual(stored.outfit, confirmed_outfit)
         self.assertEqual(stored.meta["outfit_fact_source"], "user_instruction")

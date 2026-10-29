@@ -116,6 +116,9 @@ class ContinuousDecisionService:
                    for r in library if r["status"] == "available"][:30]
         reading_notes = await memory_life.reading_notes(["global", "self"], 6) if memory_life is not None else []
         sources = {"persona", f"state:{day.date}:{day.revision}"}
+        conversation_request = world.get("conversation_action_request") or {}
+        if conversation_request.get("status") == "pending":
+            sources.add(conversation_request["id"])
         sources.update(f"reading:{r['id']}" for r in reading_notes)
         sources.update(item["source_id"] for item in browsing)
         for run in [*(world.get("history") or [])[-4:], world.get("run") or {}]:
@@ -200,7 +203,8 @@ class ContinuousDecisionService:
             return {}
         run = world.get("run") or {}
         if (run.get("status") in {"running", "paused"} and not goal_review_due
-                and not unreflected_outcomes and not achievement_candidates):
+                and not unreflected_outcomes and not achievement_candidates
+                and conversation_request.get("status") != "pending"):
             # 已在做的事只复核是否还能继续；需要新行动或完整资料时由模型主动展开。
             protected = protected_indexes(day, world)
             continuation = {
@@ -376,6 +380,7 @@ class ContinuousDecisionService:
                 "skills": skill_context(world),
             },
             "recent_internal_actions": world.get("history", [])[-4:],
+            "conversation_action_request": conversation_request,
             "recent_chats": recent_chats[-3000:],
             "pantry": await self._archive().get_pantry_items(limit=30),
             "latest_exchange": latest_exchange,

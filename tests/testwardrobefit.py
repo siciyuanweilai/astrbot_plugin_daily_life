@@ -10,10 +10,18 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from support import DayRecord, LifeArchive, make_composer
-from core.life.dressing import digest, suitability_key
+
+# isort: split
+
+from core.life.dressing import digest, suitability_key, wardrobe_conditions
 from core.life.wardrobefit import (
-    generation_need, item_traits, understanding_current, understanding_key, validate_scene_choices,
-    validate_understanding, wardrobe_targets,
+    generation_need,
+    item_traits,
+    understanding_current,
+    understanding_key,
+    validate_scene_choices,
+    validate_understanding,
+    wardrobe_targets,
 )
 from core.models import TimelineItem, WeatherInfo
 from testwardrobelife import Runtime
@@ -415,6 +423,62 @@ class WardrobeFitTest(unittest.IsolatedAsyncioTestCase):
         snapshot = await self.archive.get_wardrobe_snapshot()
         self.assertEqual(snapshot["recent_jobs"][0]["status"], "cancelled")
 
+    async def test_current_scene_fallback_covers_unlocated_activity(self):
+        self.day.timeline[0].place_kind = "none"
+        self.day.meta["outfit_scene_category"] = "home"
+        conditions = wardrobe_conditions(self.day, self.runtime.now)
+        targets = wardrobe_targets(conditions, [])
+        self.assertEqual([t["scene_category"] for t in targets], ["home"])
+        self.assertTrue(targets[0]["current"])
+        self.assertNotEqual(suitability_key(conditions), suitability_key({
+            **conditions, "current_scene_category": "public",
+        }))
+        self.day.timeline[0].place_kind = "poi"
+        conditions = wardrobe_conditions(self.day, self.runtime.now)
+        self.assertEqual(wardrobe_targets(conditions, [])[0]["scene_category"], "public")
+        self.assertEqual(wardrobe_targets({"current_activity": {}}, []), [])
+
+    async def test_forced_shortage_review_ignores_routine_interval_but_respects_retry(self):
+        self.runtime.call_text_model.return_value = json.dumps({
+            "acquisition": {"decision": "keep", "reason": "先评价已有衣物"},
+        })
+        await self.runtime.check_wardrobe_life()
+        await self.drain()
+        service = self.runtime.wardrobe_life
+        service._review_wardrobe = AsyncMock()
+        # 近期已评估且条件未变化时，普通周期不会再次调用模型。
+        service._review_retry_after = None
+        await self.runtime.check_wardrobe_life()
+        await self.drain()
+        service._review_wardrobe.assert_not_awaited()
+        await service.check_wardrobe_life(force_review=True)
+        await self.drain()
+        service._review_wardrobe.assert_awaited_once()
+        service._review_retry_after = self.runtime.now + datetime.timedelta(minutes=10)
+        await service.check_wardrobe_life(force_review=True)
+        await self.drain()
+        service._review_wardrobe.assert_awaited_once()
+
+    async def test_invalid_selection_uses_existing_clothes_without_requesting_generation(self):
+        owned = await self.item(owned=True, attrs={"scene_categories": ["public"]})
+        candidate = await self.item(seed=2, attrs={
+            "scene_categories": ["public"], "wardrobe_job": "pending",
+        })
+        result = {
+            "outfit_decision": "change", "current_outfit_basis": "stored", "scene_category": "public",
+            "style_pool": "outfit_styles", "style": "轻便外出", "outfit": candidate.description,
+            "catalog_reference_ids": [candidate.id], "reason": "准备去书店",
+        }
+        composer, provider, _, _ = make_composer([
+            json.dumps(result), json.dumps({**result, "catalog_reference_ids": [owned.id]}),
+        ])
+        composer.archive = self.archive
+        composer.wardrobe_shortage_callback = AsyncMock(return_value=True)
+        changed = await composer.update_outfit(self.day.date, "daytime", current_time=self.runtime.now)
+        self.assertEqual(changed.meta["style_catalog_reference_ids"], str(owned.id))
+        self.assertEqual(len(provider.prompts), 2)
+        composer.wardrobe_shortage_callback.assert_not_awaited()
+
     async def test_gap_generation_adoption_review_and_actual_change_form_one_loop(self):
         generated = None
         path = Path(self.tmp.name) / "new.png"
@@ -440,13 +504,28 @@ class WardrobeFitTest(unittest.IsolatedAsyncioTestCase):
             target = data["targets"][0]
             return json.dumps({
                 "scene_choices": [{"target_id": target["id"], "verdict": "fits" if generated else "missing",
-                    "item_ids": [generated.id] if generated else [], "considered_ids": [],
+                    "item_ids": [generated.id] if generated else [], "considered_ids": [candidate.id],
                     "confidence": 0.9, "reason": "新衣已满足外出需要" if generated else "没有可用的完整外出衣物"}],
                 "acquisition": {"decision": "keep", "reason": "先从现有衣橱选择"},
             })
 
         self.runtime.call_text_model.side_effect = model
-        await self.runtime.check_wardrobe_life()
+        candidate = await self.item(attrs={
+            "scene_categories": ["public"], "wardrobe_job": "pending",
+        })
+        composer, provider, _, _ = make_composer([json.dumps({
+            "outfit_decision": "change", "current_outfit_basis": "stored", "scene_category": "public",
+            "style_pool": "outfit_styles", "style": "轻便外出", "outfit": candidate.description,
+            "catalog_reference_ids": [candidate.id], "reason": "准备去书店但衣橱没有可穿搭配",
+        })])
+        composer.archive = self.archive
+        composer.wardrobe_shortage_callback = lambda: self.runtime.wardrobe_life.check_wardrobe_life(
+            force_review=True,
+        )
+        reviewed = await composer.update_outfit(self.day.date, "daytime", current_time=self.runtime.now)
+        self.assertIsNotNone(reviewed)
+        self.assertEqual(reviewed.outfit, "原来的衣服")
+        self.assertEqual(len(provider.prompts), 1)
         await self.drain()
         self.runtime._generate_life_image_with_policy_retry.assert_awaited_once()
         prompt = self.runtime._generate_life_image_with_policy_retry.await_args.args[1]

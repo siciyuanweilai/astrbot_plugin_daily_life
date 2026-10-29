@@ -2,12 +2,12 @@ import json
 
 OUTFIT_SCENE_CATEGORY_ENUM = "home | sleep | outdoor | public | mixed"
 OUTFIT_STYLE_POOL_ENUM = "sleep_styles | outfit_styles | mixed"
-OUTFIT_CURRENT_BASIS_ENUM = "stored | occurred_schedule | live_state"
+OUTFIT_CURRENT_BASIS_ENUM = "stored | occurred_schedule | live_state | action_intent"
 
 _VALID_OUTFIT_SCENE_CATEGORIES = {"home", "sleep", "outdoor", "public", "mixed"}
 _VALID_OUTFIT_DECISIONS = {"keep", "change", "partial_change", "sleepwear", "outdoor"}
 _VALID_OUTFIT_STYLE_POOLS = {"sleep_styles", "outfit_styles", "mixed"}
-_VALID_OUTFIT_CURRENT_BASES = {"stored", "occurred_schedule", "live_state"}
+_VALID_OUTFIT_CURRENT_BASES = {"stored", "occurred_schedule", "live_state", "action_intent"}
 OUTFIT_COMPONENT_KEYS = (
     "main_clothing",
     "footwear",

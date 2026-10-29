@@ -330,7 +330,8 @@ class RefreshComponent:
         values = (
             # 普通活动、时段和实时数值都会频繁变化。只有实体生活场景、
             # 最近一次穿衣相关事件、穿衣相关天气或明确要求才触发重审。
-            "event_driven_v3",
+            # 执行契约升级后重审一次，避免沿用旧流程未执行的选装结果。
+            "event_driven_v5",
             data.date,
             scene,
             latest_event,

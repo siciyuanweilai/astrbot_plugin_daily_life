@@ -314,9 +314,10 @@ class LifeCommandsTest(unittest.IsolatedAsyncioTestCase):
                 period,
                 current_time=None,
                 instruction="",
+                instruction_source="",
             ):
                 self.calls.append(
-                    ("update_outfit", date_str, period, current_time, instruction)
+                    ("update_outfit", date_str, period, current_time, instruction, instruction_source)
                 )
                 return DayRecord(date=date_str, outfit="新穿搭")
 
@@ -363,7 +364,29 @@ class LifeCommandsTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsInstance(runtime.composer.calls[0][3], datetime.datetime)
         self.assertEqual(runtime.composer.calls[0][4], "换成浅粉色荷叶边睡裙")
+        self.assertEqual(runtime.composer.calls[0][5], "autonomous")
         self.assertEqual(status_reasons, ["outfit_update"])
+
+    async def test_life_adjust_unchanged_outfit_does_not_report_completion(self):
+        day = DayRecord(date="2026-05-24", outfit="当前居家服")
+
+        async def keep_outfit(*args, **kwargs):
+            return day
+
+        runtime = types.SimpleNamespace(
+            config=LifeSettings.from_dict({}), generation_lock=asyncio.Lock(),
+            archive=types.SimpleNamespace(get_day=lambda date: async_return(day)),
+            composer=types.SimpleNamespace(update_outfit=keep_outfit),
+            _get_curr_period=lambda: "afternoon",
+            _target_datetime_for_command=lambda date, now: now,
+            _resolve_command_target_date=lambda now: async_return((day.date, False)),
+        )
+        result = await DailyLifeCommandCenter(runtime).adjust_life(
+            Event(), action="update_outfit", detail="想换一身衣服",
+        )
+        self.assertIn("当前穿搭保持：当前居家服", result)
+        self.assertIn("未完成新的换装", result)
+        self.assertNotIn("穿搭已更新", result)
 
     async def test_life_adjust_update_outfit_generates_only_when_day_is_missing(self):
         class EmptyArchive:

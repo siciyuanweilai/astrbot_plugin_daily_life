@@ -63,6 +63,7 @@ class LifeBackgroundComposer:
         contact_resolver=None,
         search_service: SearchService | None = None,
         domain_service=None,
+        wardrobe_shortage_callback=None,
     ):
         self.context = context
         self.config = config
@@ -72,6 +73,7 @@ class LifeBackgroundComposer:
         self.saved_history = SavedHistoryReader(context)
         self.search = search_service or SearchService(context, config.search)
         self.domains = domain_service
+        self.wardrobe_shortage_callback = wardrobe_shortage_callback
         self._reference_name_cache = {}
         self._gen_lock = asyncio.Lock()
         self._preference_maintenance_done = False
@@ -466,6 +468,12 @@ class LifeBackgroundComposer:
         "_part_style_catalog_component",
         StyleCatalogComponent,
         "_style_catalog_has_clothing_candidates",
+    )
+
+    _style_catalog_has_eligible_clothing = ComponentCall(
+        "_part_style_catalog_component",
+        StyleCatalogComponent,
+        "_style_catalog_has_eligible_clothing",
     )
 
     _style_catalog_resolve_new_outfit_reference_ids = ComponentCall(

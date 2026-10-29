@@ -8,6 +8,7 @@ from typing import Any
 from astrbot.api import logger
 
 from ..clock import now as life_now
+from ..config.vocab import PERIOD_HOURS
 from ..models import (
     INTERNAL_SIMULATED_ACTION_TYPES,
     LIFE_ACTION_TYPES,
@@ -34,6 +35,7 @@ from .wardrobe import (
     format_outfit_components,
     outfit_action_components,
     outfit_action_issue,
+    normalize_outfit_decision,
     normalize_outfit_scene_category,
     resolve_outfit_style_pool,
     serialize_outfit_components,
@@ -437,11 +439,21 @@ class LifeActionComponent:
             resolved_outfit = component_outfit or action.target
             day.outfit = resolved_outfit
             day.outfit_history[committed_at] = resolved_outfit
-            day.meta["outfit_decision"] = "life_action"
+            period = str(action.payload.get("time_period") or "").strip()
+            if period in PERIOD_HOURS:
+                day.time_period = period
+                day.outfit_history[period] = resolved_outfit
+            decision = normalize_outfit_decision(
+                action.payload.get("outfit_decision"), default="life_action"
+            )
+            day.meta["outfit_decision"] = decision
             day.meta["outfit_fact_source"] = "life_action"
             day.meta["outfit_fact_confirmed_at"] = committed_at
             day.meta["outfit_fact_evidence"] = action.action_id
-            day.meta.pop("outfit_reason", None)
+            if action.evidence:
+                day.meta["outfit_reason"] = action.evidence
+            else:
+                day.meta.pop("outfit_reason", None)
             if components:
                 day.meta["outfit_components"] = serialize_outfit_components(components)
             scene = normalize_outfit_scene_category(
@@ -450,7 +462,17 @@ class LifeActionComponent:
             previous_scene = day.meta.get("outfit_scene_category")
             if scene:
                 day.meta["outfit_scene_category"] = scene
-                day.meta["outfit_style_pool"] = resolve_outfit_style_pool(scene)
+                day.meta["outfit_style_pool"] = resolve_outfit_style_pool(
+                    scene, decision=normalize_outfit_decision(decision, default="change"),
+                    requested=action.payload.get("style_pool"),
+                    current=day.meta.get("outfit_style_pool"),
+                )
+            if "outing_outfit_reserve" in action.payload:
+                reserve = str(action.payload["outing_outfit_reserve"] or "").strip()
+                if reserve:
+                    day.meta["outing_outfit_reserve"] = reserve
+                else:
+                    day.meta.pop("outing_outfit_reserve", None)
             if "style" in action.payload:
                 value = appearance["style"]
                 if value:

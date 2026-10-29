@@ -9,6 +9,7 @@ from ...clock import local_datetime
 from ...clock import now as life_now
 from ...config.options.cast import as_bool
 from ...life.tools import build_time_context, timeline_item_datetime
+from ...sources.events import is_chat_message_event
 from .procontext import ProactiveSyntheticEvent
 
 
@@ -428,6 +429,8 @@ class ProactiveScopeComponent:
     def note_proactive_activity(
         self, event: Any, now: datetime.datetime | None = None
     ) -> None:
+        if not is_chat_message_event(event):
+            return
         key = self.context._proactive_scope_key(event)
         now = now or life_now()
         learning = getattr(getattr(self.context, "config", None), "memory", None)

@@ -390,6 +390,14 @@ class DailyLifeRuntime:
     async def note_continuous_chat_exchange(self, event: Any) -> None:
         await self.continuous_life.note_continuous_chat_exchange(event)
 
+    async def request_conversation_action(self, event: Any, detail: str) -> str:
+        result = await self.continuous_life.request_conversation_action(event, detail)
+        self._schedule_background_task(
+            self.continuous_life.check_continuous_life(),
+            label="对话生活行动", key="conversation_action", category="life",
+        )
+        return result
+
     async def sync_continuous_kernel_state(
         self,
         day,

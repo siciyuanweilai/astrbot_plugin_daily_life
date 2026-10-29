@@ -79,6 +79,7 @@ def wardrobe_conditions(day, now, *, residence: str = "") -> dict:
         ],
         "actual_execution": execution_evidence(day),
         "current_place": day.meta.get("current_place", ""),
+        "current_scene_category": day.meta.get("outfit_scene_category", ""),
         "current_outfit": day.outfit,
         "current_ids": day.meta.get("style_catalog_reference_ids", ""),
         "outfit_confirmed_at": day.meta.get("outfit_fact_confirmed_at", ""),
@@ -161,6 +162,7 @@ def suitability_key(conditions: dict) -> str:
                     "current_outfit",
                     "current_ids",
                     "current_place",
+                    "current_scene_category",
                 )
             },
             "current_activity": activity_context(conditions.get("current_activity")),

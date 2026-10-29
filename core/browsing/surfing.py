@@ -14,9 +14,10 @@ from astrbot.api import logger
 
 from ..life.body import instant
 from ..life.tools import extract_json_from_text
-from ..runtime.expressionlearning import LEARNING_RULES, learn_from_browsing
 from ..runtime.contact import contact_rhythm
+from ..runtime.expressionlearning import LEARNING_RULES, learn_from_browsing
 from ..sight.bili import BVID_RE, find_bili_target, resolve_bili_target
+from ..sources.events import is_chat_message_event
 from .bookmarks import BrowseArchive, record_id
 from .feed import BiliLoginRequired, BiliReader, BiliReadError, clean
 from .material import BrowseMaterial
@@ -676,6 +677,8 @@ class BiliBrowseService:
                 )
 
     async def incoming(self, event):
+        if not is_chat_message_event(event):
+            return
         # 先改变 epoch，耗时理解无需等待此处拿锁就会失效。
         self._epoch += 1
         self._incoming_at = time.monotonic()

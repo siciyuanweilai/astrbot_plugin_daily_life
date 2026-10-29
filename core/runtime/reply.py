@@ -12,6 +12,7 @@ from astrbot.api import logger
 from astrbot.api.event import MessageChain
 
 from ..prompts import cache_friendly_prompt
+from ..sources.events import is_chat_message_event
 from ..telemetry import model_task
 from .delivery import (
     BackgroundTextMode,
@@ -159,6 +160,8 @@ class SemanticSegmentRuntimeComponent:
         return int(getattr(self.context, "_semantic_segment_epochs", {}).get(scope, 0))
 
     def note_semantic_segment_incoming_message(self, event: Any) -> None:
+        if not is_chat_message_event(event):
+            return
         if not self.context._semantic_segment_enabled():
             return
         scope = self.context._semantic_segment_scope_from_event(event)

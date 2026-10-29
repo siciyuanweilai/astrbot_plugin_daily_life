@@ -9,14 +9,23 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from support import LifeArchive
-from core.browsing.feed import BiliReader, BiliReadError, BiliLoginRequired, duration, video
-from core.browsing.material import BrowseMaterial
+from support import Event, LifeArchive
+
+# isort: split
+
 from core.browsing.bookmarks import record_id
-from core.sight.bridge import SightFrameDescriptionResult
-from core.browsing.surfing import BiliBrowseService, opportunity, stamp
+from core.browsing.feed import (
+    BiliLoginRequired,
+    BiliReader,
+    BiliReadError,
+    duration,
+    video,
+)
+from core.browsing.material import BrowseMaterial
 from core.browsing.receipts import MATCH_RULES
+from core.browsing.surfing import BiliBrowseService, opportunity, stamp
 from core.config.options.viewing import BiliBrowseSettings
+from core.sight.bridge import SightFrameDescriptionResult
 
 BV = "BV1xx411c7mD"
 BV2 = "BV1yy411c7mD"
@@ -114,6 +123,24 @@ class BrowsingTest(unittest.IsolatedAsyncioTestCase):
         self.service._model.side_effect = interrupted
         self.assertEqual(await self.service.process(record, 60), 0)
         self.assertEqual((await self.store.get(record["id"]))["status"], "paused")
+
+    async def test_input_notice_does_not_pause_or_invalidate_inflight_model(self):
+        record = await self.record(status="watching")
+        before = self.service._epoch, self.service._incoming_at
+        notice = Event()
+        notice.message_obj.raw_message = {
+            "post_type": "notice", "notice_type": "notify", "sub_type": "input_status",
+        }
+
+        async def notified(*args):
+            await self.service.incoming(notice)
+            return self.review
+
+        self.service._model.side_effect = notified
+        self.assertEqual(await self.service.process(record, 60), 60)
+        result = await self.store.get(record["id"])
+        self.assertEqual((result["status"], result["position"]), ("watching", 60))
+        self.assertEqual((self.service._epoch, self.service._incoming_at), before)
 
     async def test_receipt_not_overwritten_by_model(self):
         record = await self.record()
@@ -582,7 +609,7 @@ class ReaderMaterialTest(unittest.IsolatedAsyncioTestCase):
     async def test_audience_deduplicated(self):
         reader = BiliReader(lambda: {})
         reader.require_login = AsyncMock(return_value="1234")
-        xml = '<i>' + '<d p="1,1">这是一条反复刷屏的弹幕</d>' * 4 + '<d p="8,1">这是一个具体的不同观点</d></i>'
+        xml = "<i>" + '<d p="1,1">这是一条反复刷屏的弹幕</d>' * 4 + '<d p="8,1">这是一个具体的不同观点</d></i>'
         reader._request = AsyncMock(side_effect=[{"replies": [{"content": {"message": "这里评论的是观众的个人看法"}}]}, xml])
         result = await reader.audience({"aid": 1, "cid": 2})
         self.assertEqual(len(result["danmaku"]), 1)

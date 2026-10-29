@@ -111,7 +111,7 @@ class WardrobeLifeService:
             residence=str(self._config().domains.home_address or ""),
         )
 
-    async def check_wardrobe_life(self) -> None:
+    async def check_wardrobe_life(self, *, force_review: bool = False) -> bool:
         """每轮仅读取状态、推进洗护并排队，不等待模型或生成接口。"""
         now = self._now().replace(tzinfo=None)
         observer = self._wardrobe_owner()
@@ -135,11 +135,11 @@ class WardrobeLifeService:
             not self._config().domains.enabled
             or not self._config().domains.simulate_internal_actions
         ):
-            return
+            return False
         date, _ = await self._resolve_target(now)
         day = await self._archive().get_day(date)
         if day is None:
-            return
+            return False
         await self._archive().advance_wardrobe_care(now=now, observer=observer)
         if day.meta.get("outfit_fact_confirmed_at"):
             await self._archive().record_wardrobe_wear(
@@ -178,7 +178,8 @@ class WardrobeLifeService:
         due = self._wardrobe_review_due(profile, now)
         context_key = suitability_key(conditions)
         urgent = (
-            profile.get("review_version") != _WARDROBE_REVIEW_VERSION
+            force_review
+            or profile.get("review_version") != _WARDROBE_REVIEW_VERSION
             or profile.get("context_key") != context_key
             or profile.get("inventory_key") != inventory_key
             or profile.get("catalog_key") != catalog_key
@@ -233,6 +234,7 @@ class WardrobeLifeService:
                 date, lambda latest: latest.meta.update(wardrobe_context=text)
             )
             await self._notify_status("wardrobe")
+        return not self._in_quiet_hours(self._now())
 
     async def _understand_wardrobe(self, items) -> None:
         """旧资料分批补齐并缓存，后续仅处理新增或实际修改过的衣物。"""

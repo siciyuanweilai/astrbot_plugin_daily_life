@@ -9,6 +9,7 @@ from typing import Any
 from astrbot.api import logger
 
 from ..clock import TIMEZONE
+from ..sources.events import is_chat_message_event
 
 RECEIVED_AT = "_daily_life_received_at"
 SENT_AT = "_daily_life_sent_at"
@@ -60,7 +61,7 @@ class ConversationTimingService:
 
     def note_conversation_incoming(self, event: Any) -> None:
         if (
-            event is None
+            not is_chat_message_event(event)
             or getattr(event, "is_proactive_synthetic", False)
             or self._is_self_message(event)
             or event_time(event, RECEIVED_AT)
@@ -81,7 +82,7 @@ class ConversationTimingService:
 
     async def record_conversation_arrival(self, event: Any) -> None:
         if (
-            event is None
+            not is_chat_message_event(event)
             or getattr(event, "is_proactive_synthetic", False)
             or self._is_self_message(event)
         ):

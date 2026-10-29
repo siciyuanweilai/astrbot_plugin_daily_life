@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from astrbot.api import logger
 from astrbot.core.star.context import Context
@@ -38,8 +38,6 @@ from ..timer import LifeRhythmClock
 from ..voicecall import VoiceCallManager
 from ..voicecall.voicegateway import voice_gateway_start_error_detail
 from .providerrecovery import recover_provider_commitments, remember_provider_block
-
-from typing import Protocol
 
 _DURABLE_TASK_LABELS = {
     "daily_refresh": "每日生活刷新",
@@ -558,6 +556,9 @@ class SpineBootComponent:
             contact_resolver,
             search,
             domains,
+            wardrobe_shortage_callback=lambda: self.context.wardrobe_life.check_wardrobe_life(
+                force_review=True,
+            ),
         )
         composer.model_cache_metrics = self.context._model_cache_meter()
         return RuntimeServices(

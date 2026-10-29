@@ -1013,6 +1013,11 @@ class ContinuousLifeService:
                 if step:
                     world["run"].update(goal_id=goal["id"], step_id=step["id"])
                 bind_interest(world, world["run"], payload)
+            request = world.get("conversation_action_request") or {}
+            offered = snapshot.get("conversation_action_request") or {}
+            if request.get("status") == "pending" and request.get("id") == offered.get("id"):
+                request.update(status="reviewed", reviewed_at=now.isoformat(),
+                               decision=decision, reason=reason)
             synchronize_run(latest, world, now)
             running = world.get("run") or {}
             if not observation_pending(running):
@@ -1039,6 +1044,42 @@ class ContinuousLifeService:
 
             await self._archive().mutate_continuous_life(day.date, record_blocked)
         await self._notify_status("continuous_life")
+
+    async def request_conversation_action(self, event, detail: str) -> str:
+        """将角色在当前对话中的行动意愿交给执行器，不把意愿记成完成。"""
+        if (self._closed or not self._config().domains.enabled
+                or not self._config().domains.simulate_internal_actions):
+            return "生活执行器当前未启用，动作尚未执行。"
+        detail = str(detail or "").strip()[:800]
+        message_id, scope = self._message_id(event), self._session_id(event)
+        if not detail or not message_id or not scope:
+            return "缺少当前对话或具体行动意愿，动作尚未执行。"
+        now = self._now().replace(tzinfo=None)
+        date, _ = await self._resolve_target(now)
+        snapshot = await self._archive().get_continuous_life()
+        date = (snapshot.get("run") or {}).get("date") or date
+        token = "conversation_action:" + uuid.uuid5(
+            uuid.NAMESPACE_URL, f"{scope}:{message_id}:{detail}"
+        ).hex
+
+        def record(day, world):
+            if token in world.get("conversation_action_ids", []):
+                return False
+            world["conversation_action_request"] = {
+                "id": token, "detail": detail, "at": now.isoformat(),
+                "scope": scope, "status": "pending",
+            }
+            world["conversation_action_ids"] = [
+                *world.get("conversation_action_ids", []), token,
+            ][-32:]
+            world["last_chat_scope"] = scope
+            world.pop("next_decision_at", None)
+            record_event(world, kind="conversation_action_request", source_id=token,
+                         at=now, summary=detail, evidence_ids=[f"{scope}:{message_id}"])
+
+        await self._archive().mutate_continuous_life(date, record)
+        await self._notify_status("continuous_life")
+        return "行动意愿已交给生活执行器复核，尚不代表完成；根据实际开始、进度或阻碍自然回应。"
 
     async def note_continuous_chat_exchange(self, event) -> None:
         """只记真实已发送的对话证据，不在消息钩子内调用模型。"""

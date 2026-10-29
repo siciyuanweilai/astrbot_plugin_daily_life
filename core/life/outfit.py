@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import datetime
 import copy
+import datetime
 import json
 import time
 import uuid
 from collections.abc import Callable
+from typing import Any, Protocol
 
 from astrbot.api import logger
 
@@ -18,27 +19,27 @@ from ..labels import (
     schedule_tone_label,
     sleep_mode_label,
 )
-from ..models import normalize_timeline_day_offsets
+from ..models import LifeActionIntent, normalize_timeline_day_offsets
 from ..models.coerce import compact_explanation_text
 from ..prompts import cache_friendly_prompt
+from .actionchain import execution_evidence
 from .appearance import (
     APPEARANCE_PREFERENCE_CATEGORIES,
     CURRENT_APPEARANCE_GENERATION_RULES,
     format_life_preference_context,
     strip_hair_from_outfit,
 )
-from .actionchain import execution_evidence
 from .condition import format_physiological_rhythm_prompt
-from .fashion import outfit_style_contamination_reason
 from .dressing import wardrobe_conditions
+from .fashion import outfit_style_contamination_reason
 from .future import future_outfit_timing_issue
 from .lookback import record_appearance_snapshot
 from .outfitstate import (
     OutfitCommit,
     normalize_outfit_appearance,
-    select_outfit_appearance,
     prepare_outfit_components,
     review_outfit_decision,
+    select_outfit_appearance,
 )
 from .tools import (
     extract_json_from_text,
@@ -68,8 +69,6 @@ from .wardrobe import (
     serialize_outfit_components,
 )
 
-from typing import Any, Protocol
-
 PERIOD_TIME_RANGES = {
     "dawn": "00:00-06:00",
     "morning": "06:00-09:00",
@@ -93,6 +92,12 @@ _OUTFIT_FACT_SOURCE_LABELS = {
 }
 
 
+def _has_user_outfit_instruction(context: dict) -> bool:
+    return bool(context.get("instruction")) and str(
+        context.get("instruction_source") or ""
+    ).strip() in {"", "user"}
+
+
 
 
 class OutfitComponentContext(Protocol):
@@ -114,6 +119,7 @@ class OutfitComponentContext(Protocol):
     _state_outfit_evidence_text: Any
     _style_catalog_context: Any
     _style_catalog_has_clothing_candidates: Any
+    _style_catalog_has_eligible_clothing: Any
     _style_catalog_new_outfit_selection: Any
     _style_catalog_reference_appearance: Any
     _style_catalog_reference_ids: Any
@@ -125,6 +131,7 @@ class OutfitComponentContext(Protocol):
     archive: Any
     config: Any
     generate_daily: Any
+    record_life_action_receipt: Any
 
 
 class OutfitComponent:
@@ -522,7 +529,7 @@ class OutfitComponent:
         )
         current_outfit = format_outfit_components(current_components)
         persona = await self.context._get_persona()
-        wardrobe_weather = wardrobe_conditions(old_data, current_time, residence=str(getattr(getattr(self.context.config, 'domains', None), 'home_address', '') or ''))
+        wardrobe_weather = wardrobe_conditions(old_data, current_time, residence=str(getattr(getattr(self.context.config, "domains", None), "home_address", "") or ""))
         style_catalog_context = await self.context._style_catalog_context(
             limit=14, conditions=wardrobe_weather, scene_category=current_scene_category
         )
@@ -577,6 +584,7 @@ class OutfitComponent:
             "instruction_source_label": {
                 "user": "用户明确要求",
                 "commitment": "已确认约定",
+                "autonomous": "角色自主决定",
             }.get(normalized_instruction_source, "无明确来源"),
             "persona": str(persona or "").strip(),
             "appearance_context": await self._outfit_appearance_context(
@@ -617,7 +625,7 @@ class OutfitComponent:
 2. 未发生的未来安排只能作为预告，不能提前覆盖当前穿搭；等对应时间/场景实际到达后再换装。
 3. 当前或下一项安排需要外出时，先判断现有穿搭是否适合场景和天气；明显不合适时不能直接 keep。
 3.1 scene_category 为 home 或 sleep 时，outfit 只能写组成状态中当前仍穿着或携带的内容；已放下、待用或不适配当前场景的组成写入对应状态，不得混入当前 outfit。实际场景转换时再更新组成状态。
-4. current_outfit_basis 用于说明最终穿搭依据：stored 表示数据库中的当前穿搭仍有效；occurred_schedule 表示当前或已发生日程明确完成了换装；live_state 表示实时状态明确确认已经换装。未发生日程不能作为依据。
+4. current_outfit_basis 用于说明最终穿搭依据：stored 表示数据库中的当前穿搭仍有效；occurred_schedule 表示当前或已发生日程明确完成了换装；live_state 表示实时状态明确确认已经换装；action_intent 表示角色决定现在实际执行换装，由执行器校验衣物并结算。未发生日程不能作为完成依据。
 5. keep 只能与 stored 搭配，并原样返回当前 outfit、style、hair_style、hair、makeup_style、makeup、nails_style、nails；已经换装则选择 change、partial_change、sleepwear 或 outdoor，不能用 keep 表示“换装后继续穿着”。
 6. component_review 必须分别审视主体服装、鞋履、外层、随身配饰、发型、妆容和美甲；不存在的组成写 not_present，无法确认写 unknown。任一组成需要调整时，不能返回 keep。
 7. partial_change 只写局部调整后的最终状态；component_review 标记 adjust 时，outfit 必须写调整后实际可见的完整穿搭。
@@ -626,9 +634,10 @@ class OutfitComponent:
 9. reason 使用自然中文，不写内部枚举，也不复述具体日期、钟点或时间轴编号。
 10. 用户明确提出穿搭要求时，在不违背当前真实场景和天气的前提下优先执行，不能用 keep 回避。
 11. 只返回穿搭决策，不得改写时间轴、实时状态、主题、地点、事件或睡眠信息。
-12. change_evidence 只描述本轮更换主体服装的事实依据，证据发生时间必须晚于当前穿搭确认时间：
+12. change_evidence 描述本轮更换主体服装的依据；完成证据发生时间必须晚于当前穿搭确认时间：
 - 只有 execution_state=completed 的日程明确确认已经换装时，kind=explicit_outfit_change、source=occurred_schedule，timeline_time 填对应节点时间，quote 必须原样摘录该节点中明确确认换装的短句。到点、已过和当前计划均不算完成证据。
 - 实时生活状态明确记载已经换装时，kind=explicit_outfit_change、source=live_state，quote 必须原样摘录实时状态中的确认短句。
+- 当前换装决定使用 kind=action_intent、source=autonomous，由执行器产生完成记录。
 - 只是基于舒适度自主建议换装时，kind=comfort_adjustment、source=autonomous；场景变化但没有已发生换装事实时使用 scene_transition；没有变化依据时使用 none。不得把未来安排、普通活动或换装建议标成已经换装。
 13. 本轮提供视觉衣橱候选且自主决定产生新主体服装时，必须选择一条完整套装，或同时选择上装与下装；采用编号写入 catalog_reference_ids，未采用候选时写空数组。长期偏好只能帮助比较候选，不能直接改写成具体衣服。用户本轮明确指定衣服时不受此限制。
 
@@ -650,7 +659,7 @@ class OutfitComponent:
   "nails": "当前实际美甲细节或空字符串",
   "catalog_reference_ids": ["实际采用的视觉衣橱候选编号"],
   "reason": "一句很短的内部原因",
-  "change_evidence": {{"kind": "none | explicit_outfit_change | comfort_adjustment | scene_transition", "source": "stored | occurred_schedule | live_state | autonomous", "timeline_time": "已发生节点时间或空字符串", "quote": "原样证据短句或空字符串"}}
+  "change_evidence": {{"kind": "none | explicit_outfit_change | action_intent | comfort_adjustment | scene_transition", "source": "stored | occurred_schedule | live_state | autonomous", "timeline_time": "已发生节点时间或空字符串", "quote": "原样证据短句或空字符串"}}
 }}
 """
         dynamic = f"""生活日程日期：{context["timeline_date"]}
@@ -702,10 +711,11 @@ class OutfitComponent:
         context: dict,
     ) -> tuple[list[int], dict] | None:
         """选择衣橱候选，并限制局部调整可以替换的服装组成。"""
+        user_instruction = _has_user_outfit_instruction(context)
         if component_only:
             appearance = await self.context._style_catalog_reference_appearance(
                 reference_ids,
-                scene_category="" if context.get("instruction") else scene_category,
+                scene_category="" if user_instruction else scene_category,
             )
             appearance.pop("outfit", None)
             components = normalize_outfit_components(appearance.get("outfit_components"))
@@ -714,7 +724,7 @@ class OutfitComponent:
                 appearance["outfit_components"] = serialize_outfit_components(components)
             else:
                 appearance.pop("outfit_components", None)
-        elif requires_catalog_clothing and not context.get("instruction"):
+        elif requires_catalog_clothing and not user_instruction:
             selection_kwargs = {"scene_category": scene_category}
             if context.get("wardrobe_conditions") is not None:
                 selection_kwargs["conditions"] = context["wardrobe_conditions"]
@@ -731,13 +741,13 @@ class OutfitComponent:
                 reference_ids, **selection_kwargs,
             )
             if issue:
-                logger.warning(f"[穿搭更新] 已忽略脱离衣橱的新穿搭：{issue}")
                 context["catalog_selection_issue"] = issue
+                context["catalog_selection_scene"] = scene_category
                 return None
         else:
             appearance = await self.context._style_catalog_reference_appearance(
                 reference_ids,
-                scene_category="" if context.get("instruction") else scene_category,
+                scene_category="" if user_instruction else scene_category,
             )
         return reference_ids, appearance
 
@@ -1012,10 +1022,28 @@ class OutfitComponent:
             str(old_meta.get("outfit_fact_source") or "").strip() == "user_instruction"
         )
         instruction_source = str(context.get("instruction_source") or "").strip()
-        user_instruction = bool(context.get("instruction")) and (
-            instruction_source in {"", "user"}
-        )
+        user_instruction = _has_user_outfit_instruction(context)
         evidence = result.get("change_evidence")
+        action_intent = (
+            decision != "keep"
+            and appearance_changed
+            and (
+                (
+                    current_basis == "action_intent"
+                    and isinstance(evidence, dict)
+                    and evidence.get("kind") == "action_intent"
+                    and evidence.get("source") == "autonomous"
+                )
+                or (
+                    not user_instruction
+                    and not verified_change_source
+                    and reference_ids
+                    and catalog_appearance
+                )
+            )
+        )
+        # 本轮选择已通过当前衣橱与场景校验，交给执行器执行。
+        # 模型的完成叙述和来源标签都不能代替当前执行，也不能回填历史完成时间。
         claims_completed = (
             isinstance(evidence, dict)
             and evidence.get("kind") == "explicit_outfit_change"
@@ -1025,15 +1053,18 @@ class OutfitComponent:
             and not user_instruction
             and claims_completed
             and not verified_change_source
+            and not action_intent
         ):
-            logger.debug("[穿搭更新] 已保留当前穿搭：声称完成的换装没有执行证据")
-            return old_data
+            context["outfit_decision_issue"] = "声称完成的换装没有执行证据"
+            logger.debug("[穿搭更新] 需要重新决策：声称完成的换装没有执行证据")
+            return None
         if (
             user_confirmed
             and not user_instruction
             and decision != "keep"
             and appearance_changed
             and not verified_change_source
+            and not action_intent
         ):
             logger.debug("[穿搭更新] 已保留用户确认的当前穿搭：本轮没有已发生换装证据")
             return old_data
@@ -1070,6 +1101,44 @@ class OutfitComponent:
             return None
         if should_abort and should_abort():
             return None
+        if action_intent:
+            action_id = "outfit_update:" + uuid.uuid4().hex
+            action = LifeActionIntent(
+                action_id=action_id,
+                action_type="change_outfit",
+                target=final["outfit"],
+                requested_at=current_time.strftime("%Y-%m-%d %H:%M:%S"),
+                payload={
+                    **final,
+                    "outfit_components": serialize_outfit_components(effective_components),
+                    "scene_category": scene_category,
+                    "outfit_decision": decision,
+                    "style_pool": style_pool,
+                    "time_period": target_period,
+                    "outing_outfit_reserve": str(catalog_appearance.get("outing_reserve") or "").strip(),
+                    "catalog_reference_ids": reference_ids,
+                },
+                evidence=self.context._localize_outfit_reason(result.get("reason")),
+                source="outfit_update",
+            )
+            outcome = await self.context.record_life_action_receipt(
+                old_data, action_id,
+                {"status": "simulated", "source": "outfit_update",
+                 "evidence": [action.evidence], "occurred_at": action.requested_at},
+                now=current_time, planned_action=action,
+            )
+            if outcome is None or outcome.status != "committed":
+                context["outfit_decision_issue"] = (
+                    getattr(outcome, "reason", "") or "换装未通过生活执行器校验"
+                )
+                return None
+            updated = await self.context.archive.get_day(date_str)
+            if updated is not None:
+                await self._record_outfit_update_decision(
+                    updated, date_str=date_str, target_period=target_period,
+                    decision=decision, result=result, context=context,
+                )
+            return updated
         meta_updates = {
             "outfit_decision": decision,
             "outfit_scene_category": scene_category,
@@ -1114,7 +1183,7 @@ class OutfitComponent:
             outfit_changed=outfit_changed, appearance_changed=appearance_changed,
             reference_ids=reference_ids, previous_reference_ids=current_reference_ids,
             partial_catalog=not full_change and decision != "keep",
-            require_wearable=requires_catalog_clothing and not context.get("instruction"),
+            require_wearable=requires_catalog_clothing and not user_instruction,
         )
         try:
             reference_ids = await self._persist_outfit_commit(
@@ -1216,12 +1285,15 @@ class OutfitComponent:
                         update_session_id,
                         primary_provider_id=provider_id,
                     )
-                    if not completion_text or (should_abort and should_abort()):
+                    if should_abort and should_abort():
+                        return None
+                    if not completion_text:
                         return None
                     result = extract_json_from_text(completion_text)
                     if not result:
                         return None
                     context.pop("catalog_selection_issue", None)
+                    context.pop("outfit_decision_issue", None)
                     updated = await self._apply_outfit_update_result(
                         result,
                         date_str=date_str,
@@ -1237,7 +1309,38 @@ class OutfitComponent:
                             f"[穿搭更新] 完成：日期={date_str}；日程保持不变；"
                             f"耗时={time.monotonic() - started_at:.2f} 秒"
                         )
+                    decision_issue = context.get("outfit_decision_issue")
+                    if updated is None and decision_issue:
+                        if attempt == 0:
+                            prompt += (
+                                "\n" + json.dumps(
+                                    {"validation_result": {"status": "rejected", "reason": decision_issue}},
+                                    ensure_ascii=False,
+                                )
+                            )
+                            continue
+                        logger.warning(f"[穿搭更新] 换装未执行，保持当前穿着：{decision_issue}")
+                        return None
                     issue = context.get("catalog_selection_issue")
+                    if updated is None and issue and not _has_user_outfit_instruction(context):
+                        callback = getattr(self.context, "wardrobe_shortage_callback", None)
+                        scene = context.get("catalog_selection_scene") or context.get(
+                            "current_scene_category", ""
+                        )
+                        if callable(callback) and not await self.context._style_catalog_has_eligible_clothing(
+                            scene_category=scene,
+                            conditions=context.get("wardrobe_conditions"),
+                        ):
+                            if should_abort and should_abort():
+                                return None
+                            if await callback():
+                                logger.info(
+                                    "[穿搭更新] 当前缺少可用整套搭配，已交给衣橱服务评估补充；"
+                                    "入库后重新选装，当前穿着保持到实际换装"
+                                )
+                                # 记下本轮已处理，衣橱入库后的 selection_key 会触发新一轮选装。
+                                return await self.context.archive.get_day(date_str)
+                        logger.warning(f"[穿搭更新] 已忽略脱离衣橱的新穿搭：{issue}")
                     if updated is None and issue and attempt == 0:
                         prompt += (
                             f"\n上一轮衣橱选择未通过校验：{issue}。"

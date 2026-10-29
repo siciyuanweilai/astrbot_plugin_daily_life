@@ -1339,6 +1339,38 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         await runtime.check_autonomous_life_update()
         self.assertEqual(composer.calls, [])
 
+    async def test_failed_outfit_review_is_not_cached_and_can_retry(self):
+        archive = DataManager()
+        now = datetime.datetime(2026, 10, 29, 22, 30)
+        day = DayRecord(
+            date="2026-10-29", outfit="日间穿搭", time_period="afternoon",
+            timeline=[TimelineItem(time="22:00", activity="在家休息", place_kind="home")],
+            meta={"auto_outfit_context": "event_driven_v4|stale"},
+        )
+        await archive.save_day(day)
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.config = LifeSettings.from_dict({"state_config": {"enabled": True}})
+        runtime.archive = archive
+        runtime.composer = types.SimpleNamespace(update_outfit=AsyncMock(return_value=None))
+        runtime.generation_lock = asyncio.Lock()
+        runtime._page_status_version = 0
+        runtime._page_status_changed = asyncio.Condition()
+        runtime._runtime_now = lambda: now
+        runtime.try_update_weather = lambda *args: async_return(None)
+        runtime.resolve_injection_target = lambda now: async_return((day.date, False))
+        runtime._get_curr_period = lambda now=None: "late_night"
+        runtime.refresh_state_for_day = lambda date, data, now, **kwargs: async_return(data)
+
+        await runtime.check_autonomous_life_update()
+        stored = await archive.get_day(day.date)
+        self.assertEqual(stored.outfit, "日间穿搭")
+        self.assertEqual(stored.meta["auto_outfit_context"], "event_driven_v4|stale")
+        runtime.composer.update_outfit.return_value = stored
+        await runtime.check_autonomous_life_update()
+        self.assertEqual(runtime.composer.update_outfit.await_count, 2)
+        await runtime.check_autonomous_life_update()
+        self.assertEqual(runtime.composer.update_outfit.await_count, 2)
+
     async def test_auto_life_update_continues_during_quiet_hours(self):
         archive = DataManager()
         today = "2026-06-24"

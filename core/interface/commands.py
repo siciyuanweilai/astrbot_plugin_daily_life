@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import copy
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -224,6 +225,7 @@ class DailyLifeCommandCenter:
         )
         if action_key in {
             "refresh_state",
+            "review_action",
             "刷新状态",
             "reset_day",
             "regenerate",
@@ -255,6 +257,8 @@ class DailyLifeCommandCenter:
             parts = ["/生活", "刷新状态", str(detail or "").strip()]
             req = await self._make_request(parts, target_date=date)
             return await self._run_text_handler(event, self._refresh_state, req)
+        if action_key == "review_action":
+            return await self.runtime.request_conversation_action(event, detail)
         if action_key in {"reset_day", "regenerate", "重生成", "重置"}:
             parts = ["/生活", "重置"]
             if period:
@@ -265,16 +269,26 @@ class DailyLifeCommandCenter:
             return await self._run_text_handler(event, self._reset, req)
         if action_key in {"update_outfit", "outfit", "换装", "更新穿搭"}:
             req = await self._make_request(["/生活", "换装"], target_date=date)
+            before = copy.deepcopy(await self.runtime.archive.get_day(req.target_date_str))
             try:
                 result, generated_day = await self._execute_outfit_update(
                     req,
                     detail=str(detail or "").strip(),
                     period=str(period or "").strip(),
+                    instruction_source="autonomous",
                 )
             except DailyGenerationBusy as exc:
                 return str(exc)
             if not result:
                 return "穿搭更新失败。"
+            appearance_keys = (
+                "outfit_components", "style", "hair_style", "hair", "makeup_style",
+                "makeup", "nails_style", "nails",
+            )
+            if before is not None and before.outfit == result.outfit and all(
+                before.meta.get(key) == result.meta.get(key) for key in appearance_keys
+            ):
+                return f"当前穿搭保持：{result.outfit or '未记录'}。本轮未完成新的换装，请按当前记录回复。"
             prefix = "当天尚无生活安排，已先生成基础日程。\n" if generated_day else ""
             suffix = "" if generated_day else "\n日程保持不变。"
             return f"{prefix}穿搭已更新：{result.outfit or '未记录'}{suffix}"

@@ -721,6 +721,30 @@ class ContinuousLifeTest(unittest.IsolatedAsyncioTestCase):
         await self.tick()
         self.assertEqual(decide.await_count, 3)
 
+    async def test_conversation_action_is_reviewed_immediately_once_without_false_completion(self):
+        await self.start(duration=120)
+        self.runtime.config.state.refresh_minutes = 30
+        decide = self.runtime.continuous_life._decide
+        decide.reset_mock()
+        decide.return_value = {"decision": "continue", "reason": "先完成当前练习再安排"}
+        event = SimpleNamespace(message_id="action-1", unified_msg_origin="chat")
+        for _ in range(2):
+            result = await self.runtime.continuous_life.request_conversation_action(
+                event, "想先完成这一段练习再去休息",
+            )
+            self.assertIn("尚不代表完成", result)
+        world = await self.archive.get_continuous_life()
+        self.assertEqual(len(world["conversation_action_ids"]), 1)
+        self.assertEqual(world["conversation_action_request"]["status"], "pending")
+        self.assertEqual(world["run"]["status"], "running")
+        await self.runtime.continuous_life._check_continuous_life_once()
+        decide.assert_awaited_once()
+        world = await self.archive.get_continuous_life()
+        self.assertEqual(world["conversation_action_request"]["status"], "reviewed")
+        self.assertEqual(world["run"]["status"], "running")
+        await self.runtime.continuous_life._check_continuous_life_once()
+        decide.assert_awaited_once()
+
     async def test_new_scene_and_schedule_bypass_routine_interval(self):
         await self.start(duration=120)
         decide = self.runtime.continuous_life._decide

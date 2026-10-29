@@ -37,6 +37,7 @@ def decision_observation(day, world: dict) -> dict:
         "place": day.meta.get("current_place", ""),
         "outfit": day.outfit,
         "outfit_ids": day.meta.get("style_catalog_reference_ids", ""),
+        "conversation_action_request": (world.get("conversation_action_request") or {}).get("id"),
         "condition": {key: getattr(rhythm.body_condition, key, None) for key in (
             "label", "kind", "phase", "burden_present", "intensity",
         )} if rhythm else {},
