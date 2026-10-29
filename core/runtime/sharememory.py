@@ -72,10 +72,22 @@ async def search_share_memories(runtime, query, scope, limit=4):
             chunks.append(
                 f"{row.get('author_name') or row.get('author_id') or '评论者'}：{str(row.get('content') or '')[:120]}"
             )
-        chunks.append(f"我：{str(receipt.get('content') or '')[:180]}")
+        scene = receipt.get("scene")
+        if scene == "qzone_observation":
+            chunks.append("实际看到以上文字，未查看图片画面，未确认回应")
+        elif scene == "qzone_like":
+            chunks.append("已确认点赞以上动态，未表示发出评论")
+        else:
+            chunks.append(f"我：{str(receipt.get('content') or '')[:180]}")
         candidates.append(
             {
-                "kind": "public_dialogue"
+                "kind": (
+                    "public_observation"
+                    if scene == "qzone_observation"
+                    else "public_like"
+                    if scene == "qzone_like"
+                    else "public_dialogue"
+                )
                 if scope == "qzone_broadcast"
                 else "shared_activity",
                 "text": "；".join(chunks)[:500],

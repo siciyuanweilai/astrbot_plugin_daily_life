@@ -4,13 +4,45 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import hashlib
+import json
 import math
+import unicodedata
 
-from ...clock import TIMEZONE, now as life_now
+from ...clock import TIMEZONE
+from ...clock import now as life_now
 
 
 def _text(value, limit=160):
     return " ".join(value.split())[:limit] if isinstance(value, str) else ""
+
+
+def _progress_version(row: dict) -> str:
+    """只对实质内容取版本；更新时间、存储 revision 和标点变化不制造新经历。"""
+    meaningful = {}
+    for key in (
+        "state",
+        "detail",
+        "progress",
+        "artifact_version",
+        "owner",
+        "quantity",
+        "unit",
+        "delivery",
+        "available_at",
+    ):
+        value = row.get(key)
+        if isinstance(value, str):
+            value = "".join(
+                ch
+                for ch in value
+                if not ch.isspace() and not unicodedata.category(ch).startswith("P")
+            )
+        if value is not None:
+            meaningful[key] = value
+    return hashlib.sha256(
+        json.dumps(meaningful, ensure_ascii=False, sort_keys=True).encode()
+    ).hexdigest()[:24]
 
 
 def project_continuity(items: list, world: dict, scope: str) -> dict:
@@ -44,8 +76,13 @@ def project_continuity(items: list, world: dict, scope: str) -> dict:
             key = "activities"
         elif kind == "object":
             fields.update(
-                progress=160, next_step=160, provenance=120, delivery=32, delivered_at=40,
-                unit=30, available_at=40,
+                progress=160,
+                next_step=160,
+                provenance=120,
+                delivery=32,
+                delivered_at=40,
+                unit=30,
+                available_at=40,
             )
             # 物品正文与位置可能含私人资料，只在其所属私聊使用。
             if private and item.get("scope") == scope:
@@ -57,7 +94,12 @@ def project_continuity(items: list, world: dict, scope: str) -> dict:
             row = {name: _text(item.get(name), limit) for name, limit in fields.items()}
             if kind == "object":
                 owner = item.get("owner")
-                if isinstance(owner, str) and owner in {"self", "user", "shared", "unknown"}:
+                if isinstance(owner, str) and owner in {
+                    "self",
+                    "user",
+                    "shared",
+                    "unknown",
+                }:
                     row["owner"] = owner
                 quantity = item.get("quantity")
                 if (
@@ -69,8 +111,15 @@ def project_continuity(items: list, world: dict, scope: str) -> dict:
                 ):
                     row["quantity"] = quantity
                 version = item.get("artifact_version")
-                if isinstance(version, int) and not isinstance(version, bool) and version > 0:
+                if (
+                    isinstance(version, int)
+                    and not isinstance(version, bool)
+                    and version > 0
+                ):
                     row["artifact_version"] = version
+            if kind in {"shared_activity", "object"}:
+                row["event_id"] = str(item.get("id") or "")[:120]
+                row["progress_version"] = _progress_version(row)
             result[key].append(row)
 
     model = (world.get("kernel") or {}).get("self_model") or {}

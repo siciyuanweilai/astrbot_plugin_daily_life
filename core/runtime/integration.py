@@ -187,7 +187,8 @@ class ShareExpressionService:
         settings = self._chat_style_config()
         voice_settings = self._voice_config() if scene == "share_voice" else None
         provider_id = str(
-            voice_settings.expression_provider if voice_settings is not None
+            voice_settings.expression_provider
+            if voice_settings is not None
             else getattr(settings, "semantic_provider", "") or ""
         ).strip()
         constraints = requirements if isinstance(requirements, dict) else {}
@@ -262,7 +263,11 @@ class ShareExpressionService:
                     else ""
                 ),
             )
-            timeout = expression_timeout_seconds(voice_settings) if voice_settings is not None else 20
+            timeout = (
+                expression_timeout_seconds(voice_settings)
+                if voice_settings is not None
+                else 20
+            )
             async with asyncio.timeout(timeout):
                 provider = await self._text_provider(provider_id)
                 if provider is None:
@@ -348,7 +353,11 @@ class ExternalActivityService:
             return False
         try:
             occurred_at = datetime.datetime.fromisoformat(str(receipt["occurred_at"]))
-            occurred_at = (occurred_at.replace(tzinfo=TIMEZONE) if occurred_at.tzinfo is None else occurred_at.astimezone(TIMEZONE)).replace(tzinfo=None)
+            occurred_at = (
+                occurred_at.replace(tzinfo=TIMEZONE)
+                if occurred_at.tzinfo is None
+                else occurred_at.astimezone(TIMEZONE)
+            ).replace(tzinfo=None)
         except (KeyError, ValueError, TypeError):
             return False
         if occurred_at > life_now() + datetime.timedelta(minutes=5):
@@ -357,8 +366,12 @@ class ExternalActivityService:
             first = await self._archive().record_external_activity_receipt(receipt)
             # 保持原始时间稳定，可确保在持久化完成后、确认回执前取消时，
             # 语义记忆队列仍保持幂等。
-            media = {"image": "图片", "video": "视频", "audio": "语音"}.get(receipt.get("media_kind"), "")
-            await self._capture_proactive_reply(scope, text, media=media, now=occurred_at)
+            media = {"image": "图片", "video": "视频", "audio": "语音"}.get(
+                receipt.get("media_kind"), ""
+            )
+            await self._capture_proactive_reply(
+                scope, text, media=media, now=occurred_at
+            )
             if event_id not in self._applied_receipts:
                 event = ProactiveSyntheticEvent(message=text, target_scope=scope)
                 self._mark_proactive_sent(event, occurred_at)
@@ -370,17 +383,27 @@ class ExternalActivityService:
                     self._applied_receipts = {event_id}
             if first and receipt.get("sync_memory"):
                 description = str(receipt.get("image_description") or "").strip()
-                memory = text + (f"\n[已发送媒体: {description}]" if description else "")
+                memory = text + (
+                    f"\n[已发送媒体: {description}]" if description else ""
+                )
                 self._schedule_memos(
-                    self._external_activity_memos_meta(scope), [memory],
+                    self._external_activity_memos_meta(scope),
+                    [memory],
                     reason=str(receipt.get("reason") or "外部主动活动"),
-                    user_message=str(receipt.get("reason") or ""), marker=memory,
+                    user_message=str(receipt.get("reason") or ""),
+                    marker=memory,
                 )
             return True
 
     async def record_public_activity(self, receipt: dict) -> bool:
         """公开发布不等于私聊，也不能视为行动已完成。"""
-        if receipt.get("scene") not in {"qzone_post", "qzone_comment", "qzone_reply"}:
+        if receipt.get("scene") not in {
+            "qzone_post",
+            "qzone_comment",
+            "qzone_reply",
+            "qzone_observation",
+            "qzone_like",
+        }:
             raise ValueError("不支持的公开动态场景")
         if not receipt.get("event_id") or not str(receipt.get("content") or "").strip():
             return False
@@ -401,14 +424,30 @@ class ExternalActivityService:
         def record(day, world):
             return record_event(
                 world,
-                kind="public_activity",
+                kind="public_observation"
+                if receipt["scene"] == "qzone_observation"
+                else "public_activity",
                 source_id=hashlib.sha256(str(receipt["event_id"]).encode()).hexdigest(),
                 at=occurred_at,
                 summary=(
                     "；".join(
-                        [f"动态：{str((receipt.get('post_context') or {}).get('content') or '')[:70]}"]
-                        + [f"{str(row.get('author_name') or row.get('author_id') or '评论者')[:30]}：{str(row.get('content') or '')[:70]}" for row in (receipt.get("conversation") or [])[-2:] if isinstance(row, dict)]
-                        + [f"我：{str(receipt['content'])[:100]}"]
+                        [
+                            f"动态：{str((receipt.get('post_context') or {}).get('content') or '')[:70]}"
+                        ]
+                        + [
+                            f"{str(row.get('author_name') or row.get('author_id') or '评论者')[:30]}：{str(row.get('content') or '')[:70]}"
+                            for row in (receipt.get("conversation") or [])[-2:]
+                            if isinstance(row, dict)
+                        ]
+                        + [
+                            (
+                                "实际看到以上文字；未查看图片画面"
+                                if receipt["scene"] == "qzone_observation"
+                                else "已确认点赞以上动态"
+                                if receipt["scene"] == "qzone_like"
+                                else f"我：{str(receipt['content'])[:100]}"
+                            )
+                        ]
                     )
                 )[:300],
                 evidence_ids=[str(receipt["event_id"])],

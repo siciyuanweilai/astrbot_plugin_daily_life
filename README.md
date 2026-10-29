@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.5.4-ef6f8f" alt="版本 1.5.4"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.5.5-ef6f8f" alt="版本 1.5.5"></a>
   <img src="https://img.shields.io/badge/AstrBot-%3E%3D4.26%2C%3C5-4c78a8" alt="AstrBot >= 4.26,<5">
   <img src="https://img.shields.io/badge/platform-aiocqhttp%20%7C%20qq__official%20%7C%20weixin__oc-4f8a66" alt="支持 OneBot、QQ 官方机器人和个人微信">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-555555" alt="MIT License"></a>
@@ -34,7 +34,7 @@
 [![Yousa Ling](https://count.getloli.com/get/@DailyLife?theme=yousa-ling)](https://github.com/siciyuanweilai/astrbot_plugin_daily_life)
 
 > [!TIP]
-> **v1.5.4 更新说明**：接通缺衣后的自主补充与重新选装，让对话中的行动意愿及时进入生活复核；换装执行成功后同步当前穿搭、衣橱和行动记录，修复未变化却报告已更新及失败缓存阻止重试的问题。OneBot「正在输入」等通知不再误打断回复或改变聊天节奏。完整说明见 [CHANGELOG.md](./CHANGELOG.md)。
+> **v1.5.5 更新说明**：分享协作新增稳定的生活事件与进展版本，时间刷新或标点变化不再被当成新进展；公开动态区分文字观察、确认点赞和实际发言，保留原动态与互动关系，让后续回忆准确承接实际经历。完整说明见 [CHANGELOG.md](./CHANGELOG.md)。
 
 ---
 
@@ -632,7 +632,11 @@ B站身份只需本人验证一次：在与你聊天的原私聊中发送 `/B站
 
 daily_share 的活动回执支持按事件幂等补录，并按原始发送时间更新记忆和主动联系节奏。两插件对自动联系使用会话预约，发送前复核新消息及生活活动；普通聊天和用户手动要求的分享沿用原流程。
 
-公开互动可保留原动态、评论及回复关系，相关记忆通过只读接口按目标与公开权限检索，不额外调用模型。daily_share 可选用生活插件的语音表达判断，默认关闭；启用后会调用表达判断模型，并复用其语音风格。
+共同活动与物品的生活投影提供稳定事件编号和进展版本，便于 daily_share 识别同一件事的实际变化；仅更新时间、存储修订号或标点变化不产生新进展，公开分享继续按所属范围读取。
+
+公开互动可保留原动态、评论及回复关系，并区分文字观察、已确认点赞和实际发言。文字观察不冒充看过图片或已经回应，点赞不冒充发出评论；同一事件重复补录只保存一份，不创建私聊记录。相关记忆通过只读接口按目标与公开权限检索，不额外调用模型。
+
+daily_share 可选用生活插件的语音表达判断，默认关闭；启用后会调用表达判断模型，并复用其语音风格。
 
 ## 🧪 测试与回归
 
