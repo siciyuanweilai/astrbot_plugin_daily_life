@@ -1680,13 +1680,28 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}根据当前对话和实�
     async def _photo_suite_write_manifest(
         self, path: Path, manifest: dict[str, Any]
     ) -> None:
-        manifest["updated_at"] = self.context._photo_suite_now()
-        text = json.dumps(manifest, ensure_ascii=False, indent=2)
+        async with operation_lock(self.context, f"photo-suite-manifest:{path}"):
+            manifest["updated_at"] = self.context._photo_suite_now()
+            text = json.dumps(manifest, ensure_ascii=False, indent=2)
 
-        def write() -> None:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = path.with_suffix(".json.tmp")
-            temporary.write_text(text, encoding="utf-8")
-            temporary.replace(path)
+            def write() -> None:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                temporary = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+                try:
+                    temporary.write_text(text, encoding="utf-8")
+                    for attempt in range(5):
+                        try:
+                            temporary.replace(path)
+                            return
+                        except PermissionError:
+                            if attempt == 4:
+                                raise
+                            # Windows 短暂文件占用只重试本地原子替换，不重做生成或发送。
+                            time.sleep(0.02 * 2 ** attempt)
+                finally:
+                    try:
+                        temporary.unlink(missing_ok=True)
+                    except OSError:
+                        pass
 
-        await asyncio.to_thread(write)
+            await asyncio.to_thread(write)

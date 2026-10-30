@@ -14,6 +14,7 @@ from astrbot.api import logger
 
 from ..contextbudget import compact_json
 from ..life.body import instant
+from ..life.outfitrequest import make_outfit_request
 from ..life.curation import (
     upcoming_outfit_plans,
     validate_wardrobe_choice,
@@ -35,6 +36,7 @@ from ..life.wardrobefit import (
     UNDERSTANDING_RULES,
     generation_need,
     item_traits,
+    required_scene_candidates,
     understanding_current,
     understanding_key,
     validate_scene_choices,
@@ -47,7 +49,7 @@ from ..outcome import ToolResultText
 from ..paths import path_is_file
 from ..prompts import cache_friendly_prompt
 
-_WARDROBE_REVIEW_VERSION = "wardrobe_scene_v3"
+_WARDROBE_REVIEW_VERSION = "wardrobe_scene_v4"
 
 
 class WardrobeLifeService:
@@ -75,6 +77,7 @@ class WardrobeLifeService:
         edit_image: Callable[..., Awaitable[Any]],
         generate_image: Callable[..., Awaitable[Any]],
         learn_style: Callable[..., Awaitable[Any]],
+        review_outfit: Callable[[], Awaitable[Any]] | None = None,
     ) -> None:
         self._archive = archive
         self._config = config
@@ -95,6 +98,8 @@ class WardrobeLifeService:
         self._edit_image = edit_image
         self._generate_image = generate_image
         self._learn_style = learn_style
+        self._review_outfit = review_outfit
+        self._outfit_review_key = ""
         self._observer = "wardrobe:" + uuid.uuid4().hex
         self._recovered = False
         self._review_retry_after: datetime.datetime | None = None
@@ -104,12 +109,41 @@ class WardrobeLifeService:
     def _wardrobe_owner(self) -> str:
         return self._observer
 
+    async def remember_outfit_request(self, date: str, instruction: str) -> bool:
+        """保存已接下的当下意愿；换装成功或六小时后自动退出复核上下文。"""
+        now = self._now().replace(tzinfo=None)
+        current_date, _ = await self._resolve_target(now)
+        if date != current_date or not instruction.strip():
+            return False
+
+        def update(day):
+            value = json.dumps(
+                make_outfit_request(day, instruction, now), ensure_ascii=False,
+            )
+            if day.meta.get("outfit_request") == value:
+                return False
+            day.meta["outfit_request"] = value
+
+        return await self._archive().mutate_day(date, update) is not None
+
     def _wardrobe_conditions(self, day, now) -> dict:
         return wardrobe_conditions(
             day,
             now,
             residence=str(self._config().domains.home_address or ""),
         )
+
+    def _schedule_ready_outfit_review(self, profile: dict) -> None:
+        choices = [c for c in profile.get("scene_choices", [])
+                   if c.get("current") and c.get("verdict") == "fits"
+                   and c.get("outfit_basis") == "selection"]
+        if not choices or not self._review_outfit or self._in_quiet_hours(self._now()):
+            return
+        key = digest([profile.get("context_key"), [(c["id"], c["item_ids"]) for c in choices]])
+        if key != self._outfit_review_key and self._schedule_background(
+            self._review_outfit(), label="衣橱选装复核", key="wardrobe-outfit-review", category="normal",
+        ):
+            self._outfit_review_key = key
 
     async def check_wardrobe_life(self, *, force_review: bool = False) -> bool:
         """每轮仅读取状态、推进洗护并排队，不等待模型或生成接口。"""
@@ -229,6 +263,10 @@ class WardrobeLifeService:
                 category="normal",
             )
         text = wardrobe_fact_text(snapshot)
+        if (profile.get("context_key") == context_key
+                and profile.get("inventory_key") == inventory_key
+                and profile.get("catalog_key") == catalog_key):
+            self._schedule_ready_outfit_review(profile)
         if day.meta.get("wardrobe_context") != text:
             await self._archive().mutate_day(
                 date, lambda latest: latest.meta.update(wardrobe_context=text)
@@ -294,6 +332,41 @@ class WardrobeLifeService:
         previous = instant(profile.get("reviewed_at"))
         return previous is None or previous.date() != now.date()
 
+    async def _choose_wardrobe_review(
+        self, provider, provider_id, session, data, items, snapshot, targets, conditions,
+    ) -> dict | None:
+        """向决策器返回机器可读校验结果，最多纠正一次，不放宽执行条件。"""
+        result = None
+        for attempt in range(2):
+            raw = await self._call_text_model(
+                provider, cache_friendly_prompt(WARDROBE_REVIEW_RULES, compact_json(data)),
+                session, empty_retries=0, primary_provider_id=provider_id,
+                timeout_seconds=self._config().llm_timeout_seconds,
+            )
+            result = extract_json_from_text(raw)
+            if not isinstance(result, dict):
+                return None
+            adoptable = {
+                i.id for i in items if i.confidence >= 0.72
+                and i.id in self._style_item_ids(result.get("adopt_ids", []))
+            } if str(result.get("adopt_reason") or "").strip() else set()
+            issues = []
+            choices = validate_scene_choices(
+                result.get("scene_choices"), targets, items, snapshot, adoptable,
+                current_ids=self._style_item_ids(str(conditions.get("current_ids") or "").split(",")),
+                current_outfit=str(conditions.get("current_outfit") or "") if conditions.get("outfit_confirmed_at") else "",
+                issues=issues,
+            )
+            present = {c["id"] for c in choices} | {i["target_id"] for i in issues}
+            issues.extend({"target_id": t["id"], "code": "requested_target_not_evaluated"}
+                          for t in targets if t.get("request") and t["id"] not in present)
+            if not issues:
+                return result
+            logger.debug(f"[日常生活] 衣橱决策校验：尝试={attempt + 1}；问题={compact_json(issues)}")
+            data = {**data, "previous_decision": result,
+                    "validation_result": {"status": "rejected", "issues": issues}}
+        return result
+
     async def _review_wardrobe(
         self, day, conditions, snapshot, inventory_key, feedback_key
     ) -> None:
@@ -313,7 +386,10 @@ class WardrobeLifeService:
         sources = {persona_id: {"kind": "persona", "text": persona}}
         sources["conditions:" + suitability_key(conditions)] = {"kind": "conditions", **conditions}
         upcoming = upcoming_outfit_plans(day, now)
-        targets = wardrobe_targets(conditions, upcoming)
+        targets = [
+            {**target, "required_considered_ids": required_scene_candidates(items, snapshot, target["scene_category"])}
+            for target in wardrobe_targets(conditions, upcoming)
+        ]
         for item in upcoming:
             sources["plan:" + digest(item)] = {"kind": "upcoming_plan", **item}
         for point in snapshot["profile"].get("aesthetics", []):
@@ -330,6 +406,13 @@ class WardrobeLifeService:
                 "occurred_at": event["occurred_at"],
                 **event["payload"],
             }
+        for item_id, state in snapshot["items"].items():
+            if (state.get("ownership") == "owned" and state.get("condition") == "dirty"
+                    and not state.get("currently_worn")):
+                sources[f"inventory:{item_id}:{state.get('revision', 0)}"] = {
+                    "kind": "inventory_state", "item_id": int(item_id),
+                    "condition": "dirty", "currently_worn": False,
+                }
         for index, item in enumerate(day.timeline):
             if item.execution_state == "completed":
                 sources[f"activity:{day.date}:{index}:{item.execution_updated_at}"] = {
@@ -352,6 +435,7 @@ class WardrobeLifeService:
                 "preference_score": i.preference_score,
             }
             for i in items
+            if i.kind in CLOTHING_KINDS
         ]
         # 同一身体、天气、活动、审美和来源下，单品外观与库存均未变化的适配可复用。
         fit_context_key = digest([suitability_key(conditions), targets, sources,
@@ -398,18 +482,11 @@ class WardrobeLifeService:
         try:
             if provider is None or self._in_quiet_hours(self._now()):
                 return
-            raw = await self._call_text_model(
-                provider,
-                cache_friendly_prompt(
-                    WARDROBE_REVIEW_RULES, compact_json(data)
-                ),
-                session,
-                empty_retries=0,
-                primary_provider_id=provider_id,
-                timeout_seconds=45,
+            result = await self._choose_wardrobe_review(
+                provider, provider_id, session, data, items, snapshot, targets, conditions,
             )
-            result = extract_json_from_text(raw)
             if not isinstance(result, dict):
+                logger.warning("[日常生活] 衣橱复核未返回有效结构化决策，保留需求并按既有退避重试。")
                 return
             latest = await self._archive().get_day(day.date)
             if latest is None or suitability_key(
@@ -495,7 +572,8 @@ class WardrobeLifeService:
                         "motive": "need",
                         "key": gap_key,
                         "requirement": (
-                            "为已安排的"
+                            (gap.get("request") + "；根据当前天气与审美补充一套完整、可复用的新造型")
+                            if gap.get("request") else "为已安排的"
                             + ("外出" if scene_category in {"outdoor", "public"} else "当前活动")
                             + "准备一套适合此场景与天气、可重复使用的完整日常穿搭"
                         ),
@@ -573,6 +651,7 @@ class WardrobeLifeService:
                 await self._archive().mutate_day(
                     day.date, lambda latest: latest.meta.update(wardrobe_selection_key=selection_key)
                 )
+                self._schedule_ready_outfit_review(profile)
             for care in (
                 result.get("care", []) if isinstance(result.get("care"), list) else []
             ):
@@ -587,13 +666,21 @@ class WardrobeLifeService:
                     and sources[k]["kind"]
                     in {"wear", "feedback", "care_receipt", "activity"}
                 ]
-                if not evidence:
-                    continue
                 ids = [
                     i
                     for i in self._style_item_ids(care.get("item_ids", []))
                     if i in allowed
                 ]
+                if str(care.get("decision") or "") == "washing":
+                    inventory_evidence = [
+                        key for key in care["evidence_ids"]
+                        if key in sources and sources[key]["kind"] == "inventory_state"
+                    ]
+                    covered = {sources[key]["item_id"] for key in inventory_evidence}
+                    if ids and set(ids) <= covered:
+                        evidence.extend(inventory_evidence)
+                if not evidence:
+                    continue
                 try:
                     duration = int(care.get("duration_minutes") or 30)
                     drying = int(care.get("drying_minutes") or 120)

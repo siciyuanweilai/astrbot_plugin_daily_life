@@ -4,12 +4,14 @@ import asyncio
 import hashlib
 import inspect
 import json
+import ssl
 import time
 import uuid
 from dataclasses import dataclass, field, replace
 from typing import Any
 
 import aiohttp
+import certifi
 
 from astrbot.api import logger
 
@@ -52,6 +54,7 @@ from .evidence import (
 )
 from .model import (
     SearchAnswer,
+    SearchPlan,
     SearchResult,
     SearchSource,
     normalize_providers,
@@ -90,7 +93,6 @@ RESEARCH_TASK_TTL_SECONDS = 3600.0
 RESEARCH_TASK_MAX_ITEMS = 128
 TOOL_SOURCE_SNIPPET_MAX_CHARS = 400
 TOOL_SESSION_TTL_SECONDS = 300.0
-DEEP_PLANNING_TIMEOUT_SECONDS = 8.0
 DEEP_MIN_FOLLOWUP_SECONDS = 20.0
 WEEKDAY_NAMES = (
     "星期一",
@@ -327,6 +329,13 @@ class SearchService:
 
     @staticmethod
     def _tool_search_guidance(result: SearchResult) -> str:
+        assessment = result.metadata.get("search_assessment", {})
+        if assessment.get("status") == "sufficient":
+            return "已有来源已覆盖本次问题及限定范围，直接据此回答，停止重复搜索；不扩大为未经核实的结论。"
+        if assessment.get("status") == "supplemented":
+            return "本轮补充检索已结束，综合已有结果回答，明确仍不能确认的部分，不要重复同轮搜索。"
+        if assessment.get("status") == "unknown":
+            return "补查评估未完成，先依据已有来源回答并说明未核实之处；不要自动重复同一轮搜索。"
         quality = str(result.quality or "weak").strip().lower()
         missing = [
             str(item).strip() for item in result.missing_aspects if str(item).strip()
@@ -378,6 +387,7 @@ class SearchService:
             "evidence_count": len(evidence),
             "quality": result.quality,
             "missing_aspects": list(result.missing_aspects),
+            "assessment": result.metadata.get("search_assessment", {}),
             "search_guidance": cls._tool_search_guidance(result),
             "images": list(result.images[:IMAGE_TOOL_LIMIT]),
             "image_count": len(result.images),
@@ -412,6 +422,7 @@ class SearchService:
             "sources_count": len(sources),
             "quality": result.quality,
             "missing_aspects": list(result.missing_aspects),
+            "assessment": result.metadata.get("search_assessment", {}),
             "search_guidance": cls._tool_search_guidance(result),
             "images": list(result.images[:IMAGE_TOOL_LIMIT]),
             "image_count": len(result.images),
@@ -563,7 +574,13 @@ class SearchService:
 
     async def _http(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
+            # Retain system/custom trust roots and supplement public roots on
+            # hosts where the default certificate store is incomplete.
+            tls = ssl.create_default_context()
+            tls.load_verify_locations(cafile=certifi.where())
+            self._session = aiohttp.ClientSession(
+                connector=aiohttp.TCPConnector(ssl=tls)
+            )
         return self._session
 
     async def _provider(self):
@@ -699,7 +716,7 @@ class SearchService:
         tavily_depth: str = "fast",
     ) -> SearchAnswer:
         if not self.tavily_available(umo):
-            return SearchAnswer(source_scope=source_scope)
+            return SearchAnswer(source_scope=source_scope, invalid_reason="未配置 Tavily API Key")
         started = time.monotonic()
         operation = f"Tavily {step_label}" if step_label else "Tavily 搜索"
         query_log = f"：查询={query[:80]}" if step_label else ""
@@ -733,6 +750,8 @@ class SearchService:
                     f"- {item.title or item.url}: {item.snippet}"
                     for item in answer.sources
                 )
+            if not answer.content:
+                answer.invalid_reason = "上游返回空结果"
             image_log = (
                 f"；图片候选={answer.image_candidates}；可用图片={len(answer.images)}"
                 if include_images
@@ -745,12 +764,13 @@ class SearchService:
             )
             return answer
         except asyncio.TimeoutError:
+            reason = f"请求超时（上限={self.settings.timeout_seconds}秒）"
             logger.warning(
                 f"{LOG_PREFIX} {operation}{separator}失败：原因=超时；"
                 f"耗时={time.monotonic() - started:.2f} 秒；"
                 f"上限={self.settings.timeout_seconds}秒"
             )
-            return SearchAnswer(source_scope=source_scope)
+            return SearchAnswer(source_scope=source_scope, invalid_reason=reason)
         except asyncio.CancelledError:
             logger.debug(
                 f"{LOG_PREFIX} {operation}{separator}已取消：已采用其他搜索来源；"
@@ -758,11 +778,12 @@ class SearchService:
             )
             raise
         except Exception as exc:
+            reason = _compact(str(exc), 500) or type(exc).__name__
             logger.warning(
                 f"{LOG_PREFIX} {operation}{separator}失败：原因={exc}；"
                 f"耗时={time.monotonic() - started:.2f} 秒"
             )
-            return SearchAnswer(source_scope=source_scope)
+            return SearchAnswer(source_scope=source_scope, invalid_reason=reason)
 
     async def _grok_once(
         self,
@@ -811,7 +832,9 @@ class SearchService:
                 f"{LOG_PREFIX} {result_operation}{separator}未形成有效搜索结果："
                 f"原因={reason}；耗时={time.monotonic() - started:.2f} 秒"
             )
+            return replace(answer, content="", invalid_reason=reason)
         except SearchRequestTimeout:
+            reason = f"请求超时（上限={grok.timeout_seconds}秒）"
             logger.warning(
                 f"{LOG_PREFIX} {result_operation}{separator}失败：原因=超时；"
                 f"耗时={time.monotonic() - started:.2f} 秒；"
@@ -824,11 +847,12 @@ class SearchService:
             )
             raise
         except Exception as exc:
+            reason = _compact(str(exc), 500) or type(exc).__name__
             logger.warning(
                 f"{LOG_PREFIX} {result_operation}{separator}失败：原因={exc}；"
                 f"耗时={time.monotonic() - started:.2f} 秒"
             )
-        return SearchAnswer(source_scope=source_scope)
+        return SearchAnswer(source_scope=source_scope, invalid_reason=reason)
 
     def _merge_provider_answers(
         self,
@@ -845,7 +869,11 @@ class SearchService:
                 if _has_searched_content(answer)
             ]
         if not valid:
-            return SearchAnswer(source_scope=source_scope)
+            reasons = [
+                f"{label}：{answer.invalid_reason or '未返回可用结果'}"
+                for label, answer in answers
+            ]
+            return SearchAnswer(source_scope=source_scope, invalid_reason="；".join(reasons))
         if len(valid) == 1:
             return valid[0][1]
 
@@ -950,7 +978,7 @@ class SearchService:
             return await self._within_search_budget(tavily_operation, deadline)
         if source_scope == "x":
             if grok is None:
-                return SearchAnswer(source_scope="x")
+                return SearchAnswer(source_scope="x", invalid_reason="搜索模型初始化失败，请检查模型配置及前序日志")
             return await self._within_search_budget(
                 self._grok_once(
                     grok,
@@ -1089,27 +1117,57 @@ class SearchService:
         grok: GrokClient,
         request: SearchRequest,
         findings: str,
+        sources: list[SearchSource],
         *,
         limit: int,
         deadline: float,
-    ) -> list[str]:
+        queries_executed: list[str] | None = None,
+    ) -> SearchPlan:
         remaining = deadline - time.monotonic()
-        if remaining < DEEP_MIN_FOLLOWUP_SECONDS:
+        reserve = min(self.settings.timeout_seconds, DEEP_MIN_FOLLOWUP_SECONDS) if limit else 0.0
+        finalize_reserve = min(0.5, max(0.0, remaining) * 0.1)
+        budget = min(float(self.settings.timeout_seconds), max(0.0, remaining - reserve - finalize_reserve))
+        if budget <= 0:
             logger.debug(
                 f"{LOG_PREFIX} 深度搜索结束：剩余时间不足以执行补充搜索；"
                 f"剩余={max(0.0, remaining):.2f} 秒"
             )
-            return []
+            return SearchPlan(reason="insufficient_budget")
+        started = time.monotonic()
+        logger.debug(
+            f"{LOG_PREFIX} 深度搜索证据评估开始：协议=responses；"
+            f"上限={budget:.2f} 秒；补查预留={reserve:.2f} 秒"
+        )
         try:
-            return await asyncio.wait_for(
-                grok.plan(request.query, findings, limit=limit),
-                timeout=min(remaining, DEEP_PLANNING_TIMEOUT_SECONDS),
+            plan = await asyncio.wait_for(
+                grok.plan(
+                    request.query, findings, limit=limit, sources=sources,
+                    queries_executed=queries_executed,
+                    constraints={
+                        "source_scope": request.source_scope, "platform": request.platform,
+                        "start_date": request.start_date, "end_date": request.end_date,
+                        "include_domains": list(request.include_domains),
+                        "exclude_domains": list(request.exclude_domains),
+                        "current_time": self._time_context(),
+                    },
+                ),
+                timeout=budget,
             )
-        except asyncio.TimeoutError:
-            logger.debug(f"{LOG_PREFIX} 深度搜索补充查询规划超时，保留已有结果")
+            logger.debug(
+                f"{LOG_PREFIX} 深度搜索证据评估完成：状态={plan.status}；"
+                f"缺口={len(plan.missing_aspects)}；补查={len(plan.queries)}；"
+                f"原因={plan.reason or '完成'}；耗时={time.monotonic() - started:.2f} 秒"
+            )
+            return plan
+        except (asyncio.TimeoutError, SearchRequestTimeout):
+            logger.debug(
+                f"{LOG_PREFIX} 深度搜索证据评估超时，保留已有结果；"
+                f"上限={budget:.2f} 秒；耗时={time.monotonic() - started:.2f} 秒"
+            )
+            return SearchPlan(reason="timeout")
         except Exception as exc:
             logger.debug(f"{LOG_PREFIX} 深度搜索追问生成失败，保留已有结果：{exc}")
-        return []
+            return SearchPlan(reason="request_failed")
 
     @staticmethod
     def _new_deep_followups(
@@ -1147,8 +1205,9 @@ class SearchService:
             )
             for index, followup in indexed
         ]
+        remaining = max(0.0, deadline - time.monotonic())
         done, unfinished = await asyncio.wait(
-            tasks, timeout=max(0.0, deadline - time.monotonic())
+            tasks, timeout=max(0.0, remaining - min(0.5, remaining * 0.1))
         )
         completed: list[tuple[str, SearchAnswer]] = []
         for (_index, followup), task in zip(indexed, tasks):
@@ -1202,16 +1261,9 @@ class SearchService:
         )
 
     @staticmethod
-    def _deep_followups_needed(
-        findings: str, sources: list[SearchSource], max_followups: int
-    ) -> bool:
+    def _deep_followups_needed(max_followups: int) -> bool:
         if max_followups <= 0:
             logger.debug(f"{LOG_PREFIX} 深度搜索结束：补充搜索数量为 0")
-            return False
-        if _evidence_quality(findings, sources) == "strong":
-            logger.debug(
-                f"{LOG_PREFIX} 深度搜索结束：首轮来源充分，来源={len(sources)}"
-            )
             return False
         return True
 
@@ -1220,16 +1272,11 @@ class SearchService:
         *,
         timed_out: bool,
         new_source_count: int,
-        findings: str,
-        sources: list[SearchSource],
     ) -> bool:
         if timed_out:
             return True
         if new_source_count <= 0:
             logger.debug(f"{LOG_PREFIX} 深度搜索结束：没有新增来源")
-            return True
-        if _evidence_quality(findings, sources) == "strong":
-            logger.debug(f"{LOG_PREFIX} 深度搜索结束：已有来源充分")
             return True
         return False
 
@@ -1245,27 +1292,35 @@ class SearchService:
         deadline: float,
         queries_executed: list[str] | None = None,
         providers_used: set[str] | None = None,
+        assessment: dict[str, Any] | None = None,
     ) -> tuple[list[str], list[SearchSource]]:
         sections: list[str] = []
         image_bucket = images if images is not None else []
         searched_queries = {_query_key(request.query)}
         followup_count = 0
         max_followups = self.settings.deep_max_followups
-        if not self._deep_followups_needed(findings, sources, max_followups):
+        if not self._deep_followups_needed(max_followups):
             return sections, sources
         for round_index in range(1, max_followups + 1):
             remaining_slots = max_followups - followup_count
             if remaining_slots <= 0:
                 break
-            followups = await self._plan_deep_followups(
+            plan = await self._plan_deep_followups(
                 grok,
                 request,
                 findings,
+                sources,
                 limit=remaining_slots,
                 deadline=deadline,
+                queries_executed=queries_executed,
             )
+            if assessment is not None:
+                assessment.clear()
+                assessment.update(plan.as_dict())
+            if plan.status != "needs_search":
+                break
             pending = self._new_deep_followups(
-                followups, searched_queries, remaining_slots
+                plan.queries, searched_queries, remaining_slots
             )
             if not pending:
                 logger.debug(f"{LOG_PREFIX} 深度搜索结束：没有新的追问")
@@ -1311,6 +1366,12 @@ class SearchService:
             section = "\n\n".join(round_lines)
             sections.append(section)
             findings = f"{findings}\n\n{section}"[-6000:]
+            if assessment is not None:
+                assessment.clear()
+                assessment.update(SearchPlan(
+                    status="supplemented", reason="followups_completed",
+                    evidence_urls=[item.url for item in sources],
+                ).as_dict())
             logger.debug(
                 f"{LOG_PREFIX} 深度搜索完成第 {round_index + 1} 轮："
                 f"查询={len(indexed)}；完成={len(completed)}；"
@@ -1319,8 +1380,6 @@ class SearchService:
             if self._deep_round_should_stop(
                 timed_out=timed_out,
                 new_source_count=new_source_count,
-                findings=findings,
-                sources=sources,
             ):
                 break
         if images is not None:
@@ -1412,6 +1471,7 @@ class SearchService:
         images = list(first.images)
         image_candidate_total = [first.image_candidates]
         providers_used = set(first.effective_providers() if first.content else [])
+        assessment: dict[str, Any] = {}
         if request.depth == "deep" and first.content and grok is not None:
             extra, sources = await self._deep_search_sections(
                 grok,
@@ -1423,11 +1483,14 @@ class SearchService:
                 deadline=deadline,
                 queries_executed=queries_executed,
                 providers_used=providers_used,
+                assessment=assessment,
             )
             sections.extend(extra)
         content = "\n\n".join(item for item in sections if item).strip()
         if not content:
-            raise RuntimeError("Tavily 与 Grok X 均未返回可用搜索结果")
+            provider = {"web": "Tavily", "x": "Grok X", "both": "Tavily 与 Grok X"}[request.source_scope]
+            detail = f"：{first.invalid_reason}" if first.invalid_reason else ""
+            raise RuntimeError(f"{provider} 未返回可用搜索结果{detail}")
         if request.include_images:
             images, enriched_candidates = await self._enrich_images(
                 request,
@@ -1442,6 +1505,11 @@ class SearchService:
             candidates=image_candidate_total[0],
         )
         quality = _evidence_quality(content, sources)
+        missing = _missing_aspects(quality)
+        if assessment:
+            missing = list(assessment.get("missing_aspects", []))
+            if assessment.get("status") == "unknown" and not missing:
+                missing = ["尚未完成问题覆盖评估"]
         return SearchResult(
             status="ok",
             query=request.query,
@@ -1453,7 +1521,8 @@ class SearchService:
             start_date=request.start_date,
             end_date=request.end_date,
             quality=quality,
-            missing_aspects=_missing_aspects(quality),
+            missing_aspects=missing,
+            metadata={"search_assessment": assessment} if assessment else {},
             queries_executed=queries_executed,
             providers=normalize_providers(
                 [*providers_used, *(item.provider for item in sources)]

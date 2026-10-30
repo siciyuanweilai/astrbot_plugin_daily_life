@@ -1,4 +1,5 @@
 from __future__ import annotations
+import copy
 
 from collections.abc import AsyncIterator
 from typing import Any
@@ -93,6 +94,7 @@ class OperateCommandComponent:
             return
 
         plan = self.context._build_reset_daily_plan(req)
+        before = copy.deepcopy(await self.context.runtime.archive.get_day(req.target_date_str))
         yield event.plain_result(plan.progress)
         try:
             result = await self.context._execute_reset_daily(req, plan)
@@ -100,6 +102,12 @@ class OperateCommandComponent:
             yield event.plain_result(str(exc))
             return
         if result:
+            if plan.keep_schedule and not plan.extra_instruction and before is not None:
+                from ..life.outfitstate import outfit_update_feedback
+                feedback = outfit_update_feedback(before, result)
+                if feedback:
+                    yield event.plain_result(str(feedback))
+                    return
             outfit_str = result.outfit or "无"
             tl_text = format_timeline_to_text(result.timeline)
             yield event.plain_result(

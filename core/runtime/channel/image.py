@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import re
 import time
@@ -1954,10 +1955,11 @@ JSON 字段：
             target_date, _ = await self.context.resolve_injection_target(current_time)
             target_period = self.context._get_curr_period(current_time)
             previous_appearance = ""
+            previous_day = None
             archive = getattr(self.context, "archive", None)
             get_day = getattr(archive, "get_day", None)
             if callable(get_day):
-                previous_day = await get_day(target_date)
+                previous_day = copy.deepcopy(await get_day(target_date))
                 previous_appearance = format_current_appearance_context(previous_day)
             async with operation_lock(self.context, f"outfit:{target_date}"):
                 updated_day = await self.context.composer.update_outfit(
@@ -1970,6 +1972,10 @@ JSON 字段：
             if updated_day is None:
                 logger.warning(f"{LOG_PREFIX} 当前角色穿搭更新失败，已取消图片生成。")
                 return "这次换装状态没有更新成功，已取消图片生成。"
+            if previous_day is not None:
+                from ...life.outfitstate import outfit_change, outfit_update_feedback
+                if not outfit_change(previous_day, updated_day).clothing_changed:
+                    return str(outfit_update_feedback(previous_day, updated_day)) + "\n本次真实换装照未生成。"
 
             current_item, _next_item = get_current_timeline_status(
                 getattr(updated_day, "timeline", []) or [],

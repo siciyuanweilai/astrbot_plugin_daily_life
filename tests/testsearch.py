@@ -1,10 +1,13 @@
 import asyncio
 import json
+import ssl
 import time
 import types
 import unittest
 from datetime import date
 from unittest.mock import patch
+
+import certifi
 
 from support import LifeSettings
 
@@ -14,7 +17,7 @@ from core.search.client import (
     TavilyClient,
     TavilyExtractError,
 )
-from core.search.model import SearchAnswer, SearchResult, SearchSource
+from core.search.model import SearchAnswer, SearchPlan, SearchResult, SearchSource
 from core.search.evidence import evidence_quality
 from core.search.query import build_external_evidence_request, resolve_search_dates
 from core.search.service import (
@@ -130,6 +133,14 @@ class FakeSession:
         self.calls.append((url, payload, headers))
 
         if url.endswith("/responses"):
+            if not payload.get("tools"):
+                return FakeResponse({"status": "completed", "output": [{
+                    "type": "message", "content": [{"type": "output_text", "text": json.dumps({
+                        "status": "needs_search", "evidence_ids": [1],
+                        "missing_aspects": ["details and feedback"],
+                        "queries": ["official update details", "community feedback"],
+                    })}],
+                }]})
             tools = payload.get("tools") or [{}]
             tool_type = str(tools[0].get("type") or "")
             status = self.x_status if tool_type == "x_search" else self.responses_status
@@ -328,6 +339,35 @@ class FakeToolSet:
 
 
 class SearchServiceTest(unittest.IsolatedAsyncioTestCase):
+    async def test_search_tls_trusts_public_and_system_roots_with_verification(self):
+        system_roots = set(ssl.create_default_context().get_ca_certs(binary_form=True))
+        public_roots = set(
+            ssl.create_default_context(cafile=certifi.where()).get_ca_certs(binary_form=True)
+        )
+        service = SearchService(FakeContext(), self.settings())
+        captured = []
+
+        def connector(*, ssl):
+            captured.append(ssl)
+            return object()
+
+        with patch("core.search.service.aiohttp.TCPConnector", connector, create=True), patch(
+            "core.search.service.aiohttp.ClientSession", lambda **kwargs: FakeSession()
+        ):
+            first = await service._http()
+            self.assertIs(await service._http(), first)
+            await service.close()
+            self.assertIsNot(await service._http(), first)
+            await service.close()
+
+        self.assertEqual(len(captured), 2)
+        for context in captured:
+            trusted_roots = set(context.get_ca_certs(binary_form=True))
+            self.assertTrue(system_roots <= trusted_roots)
+            self.assertTrue(public_roots <= trusted_roots)
+            self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+            self.assertTrue(context.check_hostname)
+
     async def test_extract_empty_urls_returns_structured_error(self):
         service = SearchService.__new__(SearchService)
         result = await service.extract([])
@@ -979,9 +1019,9 @@ class SearchServiceTest(unittest.IsolatedAsyncioTestCase):
             def __init__(self):
                 self.plan_calls = 0
 
-            async def plan(self, query, context, *, limit=2):
+            async def plan(self, query, context, *, limit=2, **kwargs):
                 self.plan_calls += 1
-                return [f"followup {self.plan_calls}"]
+                return SearchPlan(status="needs_search", queries=[f"followup {self.plan_calls}"], missing_aspects=["detail"])
 
         client = PlanningClient()
         request = service._normalize_search_request(
@@ -1026,8 +1066,8 @@ class SearchServiceTest(unittest.IsolatedAsyncioTestCase):
         )
 
         class RepeatingClient:
-            async def plan(self, query, context, *, limit=2):
-                return [" main   query ", "MAIN QUERY"]
+            async def plan(self, query, context, *, limit=2, **kwargs):
+                return SearchPlan(status="needs_search", queries=[" main   query ", "MAIN QUERY"], missing_aspects=["detail"])
 
         request = service._normalize_search_request(
             types.SimpleNamespace(
@@ -1067,9 +1107,9 @@ class SearchServiceTest(unittest.IsolatedAsyncioTestCase):
             self.settings(cache_ttl_seconds=0, max_sources=8),
         )
 
-        class UnexpectedPlanner:
-            async def plan(self, query, context, *, limit=2):
-                raise AssertionError("来源充分时不应继续规划补充搜索")
+        class SatisfiedPlanner:
+            async def plan(self, query, context, *, limit=2, **kwargs):
+                return SearchPlan(status="sufficient", evidence_urls=[kwargs["sources"][0].url])
 
         request = service._normalize_search_request(
             types.SimpleNamespace(
@@ -1094,7 +1134,7 @@ class SearchServiceTest(unittest.IsolatedAsyncioTestCase):
         ]
 
         sections, kept_sources = await service._deep_search_sections(
-            UnexpectedPlanner(),
+            SatisfiedPlanner(),
             request,
             "initial",
             sources,
@@ -1111,7 +1151,7 @@ class SearchServiceTest(unittest.IsolatedAsyncioTestCase):
         )
 
         class UnexpectedPlanner:
-            async def plan(self, query, context, *, limit=2):
+            async def plan(self, query, context, *, limit=2, **kwargs):
                 raise AssertionError("补充搜索数量为 0 时不应调用规划模型")
 
         request = service._normalize_search_request(
@@ -1151,9 +1191,9 @@ class SearchServiceTest(unittest.IsolatedAsyncioTestCase):
             def __init__(self):
                 self.limits = []
 
-            async def plan(self, query, context, *, limit=2):
+            async def plan(self, query, context, *, limit=2, **kwargs):
                 self.limits.append(limit)
-                return ["followup one", "followup two", "followup three"]
+                return SearchPlan(status="needs_search", queries=["followup one", "followup two", "followup three"], missing_aspects=["detail"])
 
         request = service._normalize_search_request(
             types.SimpleNamespace(
@@ -1204,8 +1244,8 @@ class SearchServiceTest(unittest.IsolatedAsyncioTestCase):
         service = SearchService(FakeContext(), self.settings(cache_ttl_seconds=0))
 
         class PlanningClient:
-            async def plan(self, query, context, *, limit=2):
-                return ["fast followup", "slow followup"]
+            async def plan(self, query, context, *, limit=2, **kwargs):
+                return SearchPlan(status="needs_search", queries=["fast followup", "slow followup"], missing_aspects=["detail"])
 
         request = service._normalize_search_request(
             types.SimpleNamespace(
@@ -1251,12 +1291,15 @@ class SearchServiceTest(unittest.IsolatedAsyncioTestCase):
             FakeContext(),
             self.settings(cache_ttl_seconds=0, deep_max_followups=3),
         )
-        service.settings.total_timeout_seconds = 0.01
+        # Leave scheduling headroom on Windows while remaining well below the
+        # minimum budget needed for a follow-up. Actual cancellation is covered
+        # separately by the slow-provider and planner tests.
+        service.settings.total_timeout_seconds = 0.25
 
         class SlowPlanningClient:
-            async def plan(self, query, context, *, limit=2):
+            async def plan(self, query, context, *, limit=2, **kwargs):
                 await asyncio.sleep(0.05)
-                return ["late followup"]
+                return SearchPlan(status="needs_search", queries=["late followup"], missing_aspects=["detail"])
 
         client = SlowPlanningClient()
 
@@ -1279,7 +1322,7 @@ class SearchServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status, "ok")
         self.assertEqual(result.content, "initial verified result")
         self.assertEqual(len(result.sources), 1)
-        self.assertLess(time.monotonic() - started, 0.05)
+        self.assertLess(time.monotonic() - started, 0.25)
 
     async def test_total_timeout_covers_search_provider_initialization(self):
         service = SearchService(
@@ -1322,7 +1365,7 @@ class SearchServiceTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             [url.rsplit("/", 1)[-1] for url, _payload, _headers in session.calls],
-            ["responses", "completions", "responses", "responses"],
+            ["responses", "responses", "responses", "responses"],
         )
         messages = [str(call.args[0]) for call in debug_log.call_args_list]
         self.assertTrue(

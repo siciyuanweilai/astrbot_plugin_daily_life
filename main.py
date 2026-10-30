@@ -947,6 +947,7 @@ class DailyLifePlugin(Star):
         period: str = "",
         schedule_time: str = "",
         date: str = "",
+        change_scope: str = "clothing",
     ):
         """
         执行角色自主决定的生活调整；动作是否完成以返回结果为准。
@@ -957,6 +958,7 @@ class DailyLifePlugin(Star):
             period(string): 可选目标时段，例如 凌晨/早晨/上午/中午/下午/傍晚/晚上/深夜；用于重生成某时段状态或穿搭。
             schedule_time(string): action=set_schedule_time 时使用，格式 HH:MM。
             date(string): 可选日期，格式 YYYY-MM-DD；留空使用当前生活日。
+            change_scope(string): update_outfit 的目标范围：clothing 更换主体衣物，appearance 仅调整妆发、鞋饰等局部外观。
         """
         return await self.commands.adjust_life(
             event,
@@ -965,6 +967,7 @@ class DailyLifePlugin(Star):
             period=str(period or "").strip(),
             schedule_time=str(schedule_time or "").strip(),
             date=str(date or "").strip(),
+            change_scope=str(change_scope or "clothing").strip(),
         )
 
     @filter.llm_tool(name="life_rest_timing")

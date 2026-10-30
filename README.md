@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.5.5-ef6f8f" alt="版本 1.5.5"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.5.6-ef6f8f" alt="版本 1.5.6"></a>
   <img src="https://img.shields.io/badge/AstrBot-%3E%3D4.26%2C%3C5-4c78a8" alt="AstrBot >= 4.26,<5">
   <img src="https://img.shields.io/badge/platform-aiocqhttp%20%7C%20qq__official%20%7C%20weixin__oc-4f8a66" alt="支持 OneBot、QQ 官方机器人和个人微信">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-555555" alt="MIT License"></a>
@@ -34,7 +34,7 @@
 [![Yousa Ling](https://count.getloli.com/get/@DailyLife?theme=yousa-ling)](https://github.com/siciyuanweilai/astrbot_plugin_daily_life)
 
 > [!TIP]
-> **v1.5.5 更新说明**：分享协作新增稳定的生活事件与进展版本，时间刷新或标点变化不再被当成新进展；公开动态区分文字观察、确认点赞和实际发言，保留原动态与互动关系，让后续回忆准确承接实际经历。完整说明见 [CHANGELOG.md](./CHANGELOG.md)。
+> **v1.5.6 更新说明**：换装意愿持续进入生活判断，已有搭配、洗护与新造型生成衔接到实际穿上；完善 X 原生搜索协议兼容，深度补查按证据缺口和剩余预算推进；修复搜索证书兼容问题，完善回复投递诊断与 Windows 套图清单写入。完整说明见 [CHANGELOG.md](./CHANGELOG.md)。
 
 ---
 
@@ -49,6 +49,8 @@
 私聊主动联系也会顺着生活节奏变化：“私聊联系参考间隔”用于安排重新考虑联系的时机，忙碌、困倦时延后，日程转场时可提前留意。主动说过一轮后仍会继续生活与观察，结合真实交流、未完的话题和新的进展决定是否再联系。“私聊频率”同时供 daily_share 和 B站账号活动参考；私聊、日常分享与已绑定身份的 B站私信共用实际收发记录，连续联系未获回应时逐步放缓，对方回应后重新计算。暂时没话说不会积累成负面反馈；明确的拒绝、睡眠和免打扰仍会约束联系。
 
 <a id="upgrade"></a>
+
+从 v1.5.6 起，未完成的换装意愿保留为短期目标：衣橱根据实际需求选择已有组合、安排洗护，或在确认缺口后设计新造型。生成、核验入库与实际穿上分别记录；衣橱列表显示可穿状态，局部妆发和风格标签调整不再反馈为已换好整套衣服。工具 `life_adjust(action="update_outfit")` 可用 `change_scope="clothing"`（默认）或 `"appearance"` 明确目标范围。
 
 ## ✨ 能力概览
 
@@ -245,6 +247,14 @@
 - 聊天模型只负责提出结构化生活动作，插件会再次执行权限、归属、参数和状态校验后才提交；数据库迁移、事务、任务恢复、媒体投递和权限判断始终由确定性代码完成。
 - 正常运行建议使用 AstrBot 的 `INFO` 日志并关闭 trace。需要排障时再临时开启 `DEBUG`，排障结束后及时恢复，避免聊天、地点、关系和日程上下文长期写入日志。
 
+### 🔊 语音投递与 FFmpeg
+
+OneBot 发送语音时，AstrBot 会先将音频转换为平台需要的格式。请确保 **AstrBot 运行进程**能够执行 `ffmpeg -version`；使用容器部署时需要安装在容器内，Windows 服务则需要将 FFmpeg 所在目录加入该服务的 `PATH`，修改环境变量后重启 AstrBot。
+
+若日志显示语音生成成功，随后出现 `ffmpeg not found`，表示音频在本地转换阶段失败，尚未进入平台发送。插件依赖中的 `imageio-ffmpeg` 供部分媒体处理使用，不保证 AstrBot 平台适配器可以直接调用名为 `ffmpeg` 的命令。插件升级不会自动安装系统可执行文件。
+
+后台回复告警会标明失败阶段、异常详情和调用栈；已经发送但投递记录更新失败会单独记录。音频转换通过后，实际投递仍以平台回执为准。
+
 ### 🎧 安装本地 ASR 依赖
 
 1. 打开 AstrBot 管理面板，在左侧进入 **更多 → 平台日志**。
@@ -344,6 +354,10 @@
 ## 🌐 联网搜索
 
 插件提供一套独立于 AstrBot 默认网页搜索的联网能力：Tavily 负责网页搜索、正文提取、站点映射、站点抓取和研究任务，Grok 只负责 X 平台原生搜索。直接用自然语言说明要搜索、核实、读取或研究的内容，聊天模型会选择合适的工具。
+
+搜索连接保留系统与自定义 CA 信任配置，并补充 `certifi` 的公共根证书，以兼容默认根证书不完整的运行环境。域名与证书链校验始终开启；遇到证书错误时应检查证书库、代理及服务器证书链。
+
+X 搜索要求所选模型通道实际支持原生 `x_search`：请求沿用 `tool_choice=auto`，执行次数和来源从结构化返回字段读取。自动选择不代表放宽结果校验；若上游只返回“将调用工具”等正文而没有执行凭据，插件会说明 Grok X 的具体失败原因。仅搜索 X 时不会自动改成网页搜索。提供模型名称或支持普通聊天，不等于该通道提供原生 X 搜索能力。
 
 ### 1. 🔑 准备 Tavily 密钥
 
@@ -458,9 +472,9 @@ Tavily 密钥只从 `search_config.tavily_api_keys` 读取，不会读取 AstrBo
 
 `quick` 用于单个问题，首轮使用 Tavily Fast Search，一般只执行一次主查询；向聊天模型回填最多 2000 字、5 条证据。适合当前事实、单条新闻、简单资料和普通问答。
 
-`deep` 用于需要多来源核验的问题，首轮使用 Tavily Advanced Search。首轮证据不足且已配置搜索模型时，模型会规划独立的补充问题，并在剩余总时间内并发执行；补充查询总数受“补充搜索数量”限制，取得强证据、没有新增来源或时间不足时会提前停止。未配置搜索模型时，Deep 仍会完成一次 Tavily Advanced Search，但不会生成补充查询。Deep 向聊天模型回填最多 6000 字、8 条来源。
+`deep` 用于需要核验或补充证据的问题。首轮按来源范围使用 Tavily Advanced Search、Grok X 或两者。已配置搜索模型时，通过同一 Responses 协议评估原问题、限定范围、已执行查询和已有来源，返回 `sufficient`（已回答）、`needs_search`（存在具体缺口）或 `unknown`（暂不能判断）。完成判断必须引用本轮实际来源，不以来源数或域名数代替问题覆盖判断。只有具体缺口才进入补查，补查总数仍受“补充搜索数量”限制；已回答、没有新增来源或时间不足时停止。评估使用配置的单次超时，并在总预算中为补查和结果返回预留时间；超时或无效响应保留已有结果并标记原因。未配置搜索模型时，Deep 仍会完成一次 Tavily Advanced Search。Deep 向聊天模型回填最多 6000 字、8 条来源。
 
-模型第一次调用时应提交一个完整问题，不需要一次生成多个近似搜索。工具结果会返回 `quality`、`missing_aspects`、`search_guidance`、`queries_executed` 和 `session_id`：证据为 `strong` 且没有缺失项时应停止；只有仍有缺失、来源冲突、用户追问或明确的新问题时才继续。
+模型第一次调用时应提交一个完整问题，不需要一次生成多个近似搜索。工具结果返回 `assessment`、`quality`、`missing_aspects`、`search_guidance`、`queries_executed` 和 `session_id`。`assessment` 表示对本次问题的覆盖评估，`quality` 保留来源相关性与多样性指标，两者含义不同。`assessment.status=sufficient` 时停止同一问题的补查；`unknown` 时依据已有来源回答并说明未核实之处，不自动重试同轮搜索。补查完成后标记 `supplemented`，由回复模型综合全部证据；补查额度已用完时不额外请求一轮规划，也不将“补查已完成”表述为“问题已完全核实”。没有评估信息时，仍遵循原有证据质量与缺失项判断。
 
 ### 6. 📅 搜索来源、日期和参数
 

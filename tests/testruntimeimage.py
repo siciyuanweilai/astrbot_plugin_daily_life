@@ -30,6 +30,39 @@ from runtimehelpers import (
 
 
 class RuntimeImageAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase):
+    async def test_manifest_retries_temporary_file_sharing_failure(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "manifest.json"
+            path.write_text('{"status":"pending"}', encoding="utf-8")
+            replace = Path.replace
+            attempts = []
+
+            def temporarily_locked(source, target):
+                attempts.append(source)
+                if len(attempts) < 3:
+                    raise PermissionError("temporary sharing violation")
+                return replace(source, target)
+
+            with patch.object(Path, "replace", temporarily_locked):
+                await runtime._photo_suite_write_manifest(path, {"status": "generated"})
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["status"], "generated")
+            self.assertEqual(len(attempts), 3)
+            self.assertEqual(list(Path(folder).glob("*.tmp")), [])
+
+    async def test_manifest_permanent_failure_preserves_last_good_state(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "manifest.json"
+            original = '{"status":"pending"}'
+            path.write_text(original, encoding="utf-8")
+            with patch.object(Path, "replace", side_effect=PermissionError("still locked")) as replace:
+                with self.assertRaises(PermissionError):
+                    await runtime._photo_suite_write_manifest(path, {"status": "generated"})
+            self.assertEqual(replace.call_count, 5)
+            self.assertEqual(path.read_text(encoding="utf-8"), original)
+            self.assertEqual(list(Path(folder).glob("*.tmp")), [])
+
     async def test_edit_passes_directors_character_reference_decision(self):
         from unittest.mock import AsyncMock
 

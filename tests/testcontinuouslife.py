@@ -1063,7 +1063,8 @@ class ContinuousLifeTest(unittest.IsolatedAsyncioTestCase):
     async def test_v19_database_upgrades_without_losing_day_or_checkpoint(self):
         before = await self.archive.get_continuous_life()
         await self.archive.aclose()
-        with sqlite3.connect(self.path) as connection:
+        from contextlib import closing
+        with closing(sqlite3.connect(self.path)) as connection, connection:
             connection.execute("DROP TABLE continuous_life_entries")
             connection.execute("UPDATE meta SET value='19' WHERE key='schema_version'")
         self.archive = LifeArchive(self.path)

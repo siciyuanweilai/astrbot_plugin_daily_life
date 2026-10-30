@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import copy
 import json
 import math
 from typing import Any
@@ -327,6 +328,8 @@ class RefreshComponent:
         else:
             weather_kind = "dry"
         pending_outfit, _ = self.context._pending_commitment_outfit(data, now)
+        from ..life.outfitrequest import active_outfit_request
+        pending_request = active_outfit_request(data, now)
         values = (
             # 普通活动、时段和实时数值都会频繁变化。只有实体生活场景、
             # 最近一次穿衣相关事件、穿衣相关天气或明确要求才触发重审。
@@ -338,6 +341,7 @@ class RefreshComponent:
             weather_kind,
             str(temperature_bucket),
             pending_outfit,
+            str(pending_request.get("id") or ""),
             component_signature,
             str((data.meta or {}).get("wardrobe_selection_key") or ""),
         )
@@ -609,7 +613,7 @@ class RefreshComponent:
                         else:
                             data = latest
                             current_outfit_context = latest_context
-                            outfit_before = (data.outfit, data.time_period)
+                            outfit_before = copy.deepcopy(data)
                             outfit_kwargs: dict[str, Any] = {"current_time": now}
                             pending_outfit_instruction, _ = (
                                 self.context._pending_commitment_outfit(data, now)
@@ -633,12 +637,10 @@ class RefreshComponent:
                                 or data
                                 or await self.context.archive.get_day(target_date_str)
                             )
-                            outfit_changed = bool(
-                                data
-                                and (data.outfit, data.time_period) != outfit_before
-                            )
+                            from ..life.outfitstate import outfit_change
+                            outfit_changed = bool(data and outfit_change(outfit_before, data).changed)
                             if data and updated:
-                                if pending_outfit_instruction:
+                                if pending_outfit_instruction and outfit_change(outfit_before, data).clothing_changed:
                                     data.meta.pop("pending_commitment_outfit", None)
                                 # 在释放租约前落下去重标记，后续排队任务
                                 # 才能看到这次自动判断已经完成。

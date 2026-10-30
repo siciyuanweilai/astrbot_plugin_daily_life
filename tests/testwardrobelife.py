@@ -27,6 +27,7 @@ from core.life.wardrobefit import (
 from core.media.picture.polling import ImageTaskFailed
 from core.models import LifeActionIntent, TimelineItem, WeatherInfo
 from core.runtime.background import BackgroundTaskScheduler
+from core.runtime.clothier import _WARDROBE_REVIEW_VERSION
 from support import (
     DailyLifeRuntime,
     DayRecord,
@@ -53,6 +54,7 @@ class Runtime(DailyLifeRuntime):
         self.get_text_provider = AsyncMock(return_value=object())
         self.call_text_model = AsyncMock()
         self.close_text_session = AsyncMock()
+        self.check_autonomous_life_update = AsyncMock()
         self.media = SimpleNamespace(
             image=SimpleNamespace(
                 first_configured_character_reference_image=lambda: "/tmp/character.png",
@@ -1560,7 +1562,7 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
         )
         profile = {
             **snapshot["profile"],
-            "review_version": "wardrobe_scene_v3",
+            "review_version": _WARDROBE_REVIEW_VERSION,
             "catalog_key": digest({}),
             "context_key": suitability_key(conditions),
             "inventory_key": inventory_key,

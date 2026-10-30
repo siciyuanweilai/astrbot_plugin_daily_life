@@ -102,6 +102,16 @@ def wardrobe_targets(conditions: dict, upcoming: list[dict]) -> list[dict]:
             "id": digest([identity, plan.get("activity", "") if scene == "public" else ""]),
             "current": current, "scene_category": scene, "plan": plan,
         })
+    request = conditions.get("outfit_request") or {}
+    if request.get("id") and request.get("instruction"):
+        current = next((target for target in targets if target["current"]), None)
+        if current:
+            targets.insert(0, {
+                **current,
+                "id": digest(["outfit_request", request["id"], current["scene_category"]]),
+                "request": request["instruction"],
+                "plan": {**current["plan"], "outfit_requirement": request["instruction"]},
+            })
     return targets
 
 
@@ -113,11 +123,44 @@ def complete_combination(ids, items: dict) -> bool:
     )
 
 
+def scene_inventory(catalog: dict, snapshot: dict, scene: str, adoptable_ids=()) -> tuple[set, set]:
+    from .inspiration import StyleCatalogComponent
+
+    potential = {
+        i for i, item in catalog.items()
+        if item.confidence >= 0.72
+        and snapshot.get("items", {}).get(str(i), {}).get("condition") in {"clean", "worn", "stored"}
+        and StyleCatalogComponent._style_catalog_scene_compatible(item, scene)
+    }
+    available = {
+        i for i, item in catalog.items()
+        if StyleCatalogComponent._style_catalog_item_eligible(item, snapshot, scene_category=scene)
+        or (i in adoptable_ids and i in potential)
+    }
+    # 待洗但仍穿着的衣物可以延续，脱下或进入洗护后不能重新穿回。
+    available |= {
+        i for i, item in catalog.items()
+        if (state := snapshot.get("items", {}).get(str(i), {})).get("ownership") == "owned"
+        and state.get("condition") == "dirty" and state.get("currently_worn")
+        and StyleCatalogComponent._style_catalog_scene_compatible(item, scene)
+    }
+    return available, potential
+
+
+def required_scene_candidates(items, snapshot: dict, scene: str) -> list[int]:
+    catalog = {item.id: item for item in items if item.kind in CLOTHING_KINDS}
+    available, potential = scene_inventory(catalog, snapshot, scene)
+    return sorted(i for i in available | potential if catalog[i].kind in MAIN_KINDS)
+
+
 def validate_scene_choices(
     values, targets, items, snapshot, adoptable_ids=(), *, current_ids=(), current_outfit="",
+    issues: list[dict] | None = None,
 ) -> list[dict]:
     """只接受模型明确评价过的整套组合；未知与未评价都不算场景覆盖。"""
-    from .inspiration import StyleCatalogComponent
+    def reject(target, code, **details):
+        if issues is not None:
+            issues.append({"target_id": target["id"], "code": code, **details})
 
     if not isinstance(values, list):
         return []
@@ -141,6 +184,10 @@ def validate_scene_choices(
         if confidence < 0.72:
             verdict, ids = "unknown", []
         current_basis = verdict == "fits" and value.get("outfit_basis") == "current"
+        if target.get("request") and current_basis:
+            # 当前穿搭仍可生活，并不等于已经满足明确的新穿搭意愿。
+            reject(target, "change_requires_selection")
+            continue
         uncatalogued_current = False
         if current_basis:
             from .wardrobe import merge_outfit_catalog_references
@@ -159,31 +206,22 @@ def validate_scene_choices(
                 uncatalogued_current = True
             else:
                 continue
-        potential = {
-            i for i, item in catalog.items()
-            if item.confidence >= 0.72
-            and snapshot.get("items", {}).get(str(i), {}).get("condition") in {"clean", "worn", "stored"}
-            and StyleCatalogComponent._style_catalog_scene_compatible(item, target["scene_category"])
-        }
-        available = {
-            i for i, item in catalog.items()
-            if StyleCatalogComponent._style_catalog_item_eligible(
-                item, snapshot, scene_category=target["scene_category"]
-            ) or (i in adoptable_ids and i in potential)
-        }
-        # 待洗但仍穿着的衣物可以延续；脱下或进入洗护后不能借此重新穿回。
-        retained = {
-            i for i, item in catalog.items()
-            if (state := snapshot.get("items", {}).get(str(i), {})).get("ownership") == "owned"
-            and state.get("condition") == "dirty" and state.get("currently_worn")
-            and StyleCatalogComponent._style_catalog_scene_compatible(item, target["scene_category"])
-        }
-        available |= retained
+        available, potential = scene_inventory(catalog, snapshot, target["scene_category"], adoptable_ids)
         # 缺口必须来自对全部可用主体衣物的评价，不能把省略的候选认定为不存在。
         required = {i for i in available | potential if catalog[i].kind in MAIN_KINDS}
         if verdict == "fits" and (not set(ids) <= available or not (uncatalogued_current or complete_combination(ids, catalog))):
+            reject(target, "selection_unavailable_or_incomplete", available_ids=sorted(available))
+            continue
+        if target.get("request") and verdict == "fits" and not any(
+            catalog[i].kind in MAIN_KINDS
+            and not snapshot.get("items", {}).get(str(i), {}).get("currently_worn")
+            for i in ids
+        ):
+            reject(target, "selection_has_no_new_main_clothing")
             continue
         if verdict == "missing" and (ids or not required <= considered):
+            reject(target, "missing_requires_candidate_review", unassessed_ids=sorted(required - considered),
+                   required_considered_ids=sorted(required), item_ids_must_be_empty=True)
             continue
         accepted[target["id"]] = {
             **target, "verdict": verdict, "item_ids": ids if verdict == "fits" else [],

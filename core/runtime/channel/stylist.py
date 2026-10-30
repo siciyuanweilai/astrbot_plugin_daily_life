@@ -15,6 +15,7 @@ from astrbot.api import logger
 
 from ...clock import today as life_today
 from ...life.tools import extract_json_from_text
+from ...life.dressing import CONDITION_LABELS
 from ...media.base import REFERENCE_IMAGE_MAX_BYTES, image_mime_and_ext
 from ...models import (
     STYLE_CATALOG_CARRY_MODES,
@@ -896,6 +897,7 @@ class RuntimeStyleCatalogComponent:
         items: list[StyleCatalogItemRecord],
         *,
         heading: str = "已收入视觉衣橱：",
+        wardrobe_states: dict | None = None,
     ) -> str:
         if not items:
             return "图片中没有足够清晰、可保存的衣橱信息。"
@@ -905,11 +907,18 @@ class RuntimeStyleCatalogComponent:
             key = str(item.source_image_hash or item.image_path or item.id)
             groups.setdefault(key, []).append(item)
         for group in groups.values():
-            parts = [
-                f"{STYLE_CATALOG_KIND_LABELS.get(item.kind, '造型')} #{item.id}："
-                f"{item.title or item.description}"
-                for item in group
-            ]
+            parts = []
+            for item in group:
+                text = (f"{STYLE_CATALOG_KIND_LABELS.get(item.kind, '造型')} #{item.id}："
+                        f"{item.title or item.description}")
+                if wardrobe_states is not None and item.kind in {
+                    "outfit", "top", "bottom", "footwear", "accessory"
+                }:
+                    state = wardrobe_states.get(str(item.id), {})
+                    condition = CONDITION_LABELS.get(state.get("condition"), "洗护状态待核实")
+                    available = state.get("ownership") == "owned" and bool(state.get("available"))
+                    text += f"〔{condition}；{'当前可穿' if available else '当前不可用于换装'}〕"
+                parts.append(text)
             lines.append(f"- {'；'.join(parts)}")
         lines.append("衣橱资料已保存，实际穿戴会随生活需要自然安排。")
         return "\n".join(lines)
@@ -1082,6 +1091,10 @@ class RuntimeStyleCatalogComponent:
                 "用户可发送或上传图片学习，也可明确要求调用 life_style_generate 创意生成新造型。"
             )
         shown_count = len(items)
+        wardrobe_states = {}
+        snapshot_getter = getattr(self.context.archive, "get_wardrobe_snapshot", None)
+        if callable(snapshot_getter):
+            wardrobe_states = (await snapshot_getter()).get("items", {})
         if normalized_kind:
             label = STYLE_CATALOG_KIND_LABELS[normalized_kind]
             display_summary = (
@@ -1102,8 +1115,9 @@ class RuntimeStyleCatalogComponent:
             )
         return (
             f"{inventory_summary}\n{display_summary}\n"
-            f"{self.context._style_catalog_result_text(items, heading=heading)}"
+            f"{self.context._style_catalog_result_text(items, heading=heading, wardrobe_states=wardrobe_states)}"
             f"{remaining_hint}\n"
+            "已启用表示资料可查询；当前可穿状态以衣橱的归属和洗护记录为准。\n"
             "用户追问套装、上装、下装、鞋袜、配饰、发型、妆容或美甲时，"
             "必须重新调用 life_style_catalog 并传入对应 kind，不能沿用混合查询的展示子集。"
         )

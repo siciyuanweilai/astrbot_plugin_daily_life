@@ -75,6 +75,24 @@ class SearchSource:
 
 
 @dataclass(slots=True)
+class SearchPlan:
+    status: str = "unknown"
+    queries: list[str] = field(default_factory=list)
+    missing_aspects: list[str] = field(default_factory=list)
+    evidence_urls: list[str] = field(default_factory=list)
+    reason: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "queries": list(self.queries),
+            "missing_aspects": list(self.missing_aspects),
+            "evidence_urls": list(self.evidence_urls),
+            "reason": self.reason,
+        }
+
+
+@dataclass(slots=True)
 class SearchAnswer:
     content: str = ""
     sources: list[SearchSource] = field(default_factory=list)

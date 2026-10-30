@@ -62,6 +62,8 @@ class ReplyPreparationService:
         return True
 
     async def _run(self, event: Any, finish: Callable[[], None]) -> None:
+        stage = "表达加工"
+        sent = False
         try:
             if not self._is_current(event):
                 return
@@ -70,10 +72,17 @@ class ReplyPreparationService:
                 return
             result = event.get_result()
             if result is not None and getattr(result, "chain", None):
+                stage = "消息发送"
                 await event.send(result)
+                sent = True
+                stage = "投递记录"
                 await self._delivered(event)
         except Exception as exc:
-            logger.warning(f"{LOG_PREFIX} 回复投递未完成：{type(exc).__name__}")
+            status = "回复已发送，投递记录更新失败" if sent else "回复投递未完成"
+            logger.warning(
+                f"{LOG_PREFIX} {status}（阶段：{stage}）：{type(exc).__name__}: {exc}",
+                exc_info=True,
+            )
         finally:
             event.clear_result()
             finish()

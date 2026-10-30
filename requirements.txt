@@ -2,6 +2,7 @@ chinese-calendar>=1.10
 lunardate>=0.2.0
 APScheduler>=3.10
 aiohttp>=3.9
+certifi>=2024.2.2
 yt-dlp>=2024.1
 imageio-ffmpeg>=0.5
 segno>=1.6

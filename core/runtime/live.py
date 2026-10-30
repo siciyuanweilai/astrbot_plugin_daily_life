@@ -248,6 +248,7 @@ class DailyLifeRuntime:
             learn_style=lambda *args, **kwargs: self._learn_style_catalog_image(
                 *args, **kwargs
             ),
+            review_outfit=lambda: self.check_autonomous_life_update(),
         )
 
     async def check_wardrobe_life(self) -> None:

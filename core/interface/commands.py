@@ -206,6 +206,7 @@ class DailyLifeCommandCenter:
         period: str = "",
         schedule_time: str = "",
         date: str = "",
+        change_scope: str = "clothing",
     ) -> str:
         action_key = str(action or "").strip().lower()
         action_scope = (
@@ -268,8 +269,23 @@ class DailyLifeCommandCenter:
             req = await self._make_request(parts, target_date=date)
             return await self._run_text_handler(event, self._reset, req)
         if action_key in {"update_outfit", "outfit", "换装", "更新穿搭"}:
+            from ..outcome import ToolResultText
+
+            change_scope = str(change_scope or "clothing").strip().lower()
+            if change_scope not in {"clothing", "appearance"}:
+                return ToolResultText(
+                    "change_scope 只支持 clothing 或 appearance。",
+                    status="failed", media="outfit",
+                )
             req = await self._make_request(["/生活", "换装"], target_date=date)
             before = copy.deepcopy(await self.runtime.archive.get_day(req.target_date_str))
+            wardrobe = getattr(self.runtime, "wardrobe_life", None)
+            remember_request = getattr(wardrobe, "remember_outfit_request", None)
+            request_pending = bool(
+                before is not None and change_scope == "clothing" and str(detail or "").strip()
+                and callable(remember_request)
+                and await remember_request(req.target_date_str, str(detail).strip())
+            )
             try:
                 result, generated_day = await self._execute_outfit_update(
                     req,
@@ -280,15 +296,27 @@ class DailyLifeCommandCenter:
             except DailyGenerationBusy as exc:
                 return str(exc)
             if not result:
+                if request_pending:
+                    await wardrobe.check_wardrobe_life(force_review=True)
+                    return ToolResultText(
+                        "本轮换装未完成，当前衣物尚未改变。需求已保留，衣橱正在复核可穿替代、洗护或新造型。",
+                        status="pending", media="outfit",
+                        facts={"clothing_changed": False, "request_pending": True},
+                    )
                 return "穿搭更新失败。"
-            appearance_keys = (
-                "outfit_components", "style", "hair_style", "hair", "makeup_style",
-                "makeup", "nails_style", "nails",
-            )
-            if before is not None and before.outfit == result.outfit and all(
-                before.meta.get(key) == result.meta.get(key) for key in appearance_keys
-            ):
-                return f"当前穿搭保持：{result.outfit or '未记录'}。本轮未完成新的换装，请按当前记录回复。"
+            from ..life.outfitstate import outfit_update_feedback
+
+            if before is not None:
+                feedback = outfit_update_feedback(before, result)
+                if feedback:
+                    if request_pending:
+                        await wardrobe.check_wardrobe_life(force_review=True)
+                        feedback = ToolResultText(
+                            str(feedback) + "\n穿搭需求已进入后台复核，尚无生成或换装完成回执。",
+                            status="pending", media="outfit",
+                            facts={**feedback.facts, "request_pending": True},
+                        )
+                    return feedback
             prefix = "当天尚无生活安排，已先生成基础日程。\n" if generated_day else ""
             suffix = "" if generated_day else "\n日程保持不变。"
             return f"{prefix}穿搭已更新：{result.outfit or '未记录'}{suffix}"

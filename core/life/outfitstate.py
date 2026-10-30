@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from typing import Any
+from ..outcome import ToolResultText
 
 from .appearance import normalize_appearance_fact
 from .wardrobe import (
@@ -51,7 +52,8 @@ def review_outfit_decision(
         for key in ("main_clothing", "footwear", "outer_layer", "carried_accessories")
     )
     appearance_differs = any(
-        value and value != stored[key] for key, value in generated.items()
+        generated[key] and generated[key] != stored[key]
+        for key in ("outfit", "hair", "makeup", "nails")
     )
     partial = decision == "keep" and any((
         clothing_adjusted and bool(generated["outfit"])
@@ -90,6 +92,57 @@ class OutfitCommit:
     previous_reference_ids: list[int]
     partial_catalog: bool
     require_wearable: bool
+
+
+@dataclass(frozen=True, slots=True)
+class OutfitChange:
+    clothing_changed: bool
+    components_changed: bool
+    appearance_changed: bool
+
+    @property
+    def changed(self) -> bool:
+        return self.clothing_changed or self.components_changed or self.appearance_changed
+
+    @property
+    def status(self) -> str:
+        return "completed" if self.clothing_changed else "partial" if self.changed else "unchanged"
+
+
+def outfit_change(before: Any, after: Any) -> OutfitChange:
+    """统一衣物与局部外观的状态差异；风格标签不作为物理变化。"""
+    previous = normalize_outfit_components(before.meta.get("outfit_components"))
+    current = normalize_outfit_components(after.meta.get("outfit_components"))
+    old_main = previous.get("main_clothing", {})
+    new_main = current.get("main_clothing", {})
+    same_main = bool(old_main and new_main and old_main == new_main)
+    detail_keys = ("hair", "makeup", "nails")
+    appearance = any(before.meta.get(key) != after.meta.get(key) for key in detail_keys)
+    components = any(
+        previous.get(key) != current.get(key)
+        for key in ("footwear", "outer_layer", "carried_accessories")
+    )
+    return OutfitChange(bool(before.outfit != after.outfit and not same_main), components, appearance)
+
+
+def outfit_update_feedback(before: Any, after: Any) -> str:
+    change = outfit_change(before, after)
+    if change.clothing_changed:
+        return ""
+    reason = str(after.meta.get("outfit_reason") or "").strip()
+    lines = [
+        f"当前穿搭保持：{after.outfit or '未记录'}。",
+        "本轮未完成新的换装。",
+    ]
+    if change.changed:
+        lines.append("仅局部外观或穿戴记录发生调整；以当前记录为准。")
+    if reason:
+        lines.append(f"本次判断：{reason}")
+    return ToolResultText("\n".join(lines), status=change.status, media="outfit", facts={
+        "clothing_changed": False, "components_changed": change.components_changed,
+        "appearance_changed": change.appearance_changed, "current_outfit": after.outfit,
+        "reason": reason,
+    })
 
 
 def normalize_outfit_appearance(values: dict) -> dict[str, str]:

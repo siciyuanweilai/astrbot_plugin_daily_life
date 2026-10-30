@@ -29,6 +29,7 @@ def digest(value: Any) -> str:
 
 def wardrobe_conditions(day, now, *, residence: str = "") -> dict:
     from .curation import upcoming_outfit_plans
+    from .outfitrequest import active_outfit_request
 
     current, following = get_current_timeline_status(
         day.timeline, now, day.date, meta=day.meta
@@ -83,6 +84,7 @@ def wardrobe_conditions(day, now, *, residence: str = "") -> dict:
         "current_outfit": day.outfit,
         "current_ids": day.meta.get("style_catalog_reference_ids", ""),
         "outfit_confirmed_at": day.meta.get("outfit_fact_confirmed_at", ""),
+        "outfit_request": active_outfit_request(day, now),
         "body": day.state.physiological_rhythm.as_dict()
         if day.state and day.state.physiological_rhythm
         else {},
@@ -169,6 +171,7 @@ def suitability_key(conditions: dict) -> str:
             "next_activity": activity_context(conditions.get("next_activity")),
             "upcoming_outings": conditions.get("upcoming_outings", []),
             "upcoming_scene_plans": conditions.get("upcoming_scene_plans", []),
+            "outfit_request": conditions.get("outfit_request", {}),
         }
     )
 
@@ -340,6 +343,7 @@ def wardrobe_fact_text(snapshot: dict) -> str:
 WARDROBE_REVIEW_RULES = """你是当前角色的数字衣橱生活执行者。只返回结构化决策，不扮演用户。
 根据实际天气、室内外活动、身体记录、自身审美和可用衣物选择；季节只是背景，天气未知时不编造温度。
 先保留合适的当前穿搭，再考虑已有单品叠穿和鞋饰调整；干净适配的喜欢衣物允许复穿，不为轮换强制换新。
+带 request 的 target 是已接下的状态变更目标：按目标要求评价候选，以 selection 表示可执行方案、missing 表示经过评估的缺口、unknown 表示尚不确定。
 衣物用途已分批整理并缓存。wardrobe 是新增或条件变化后需审阅的单品；assessed_wardrobe 是相同证据条件下已核实的适配，可直接用于组合，只有新组合确实改变判断时才重评。本轮 suitability 只返回新评估或修正的单品，不重复抄写已核实结果；仅能推断视觉厚薄与可能的用途，不能编造面料成分、精确保暖温度或真实试穿体感。
 对 targets 分别给出 scene_choices，必须区分当前与未来用途。fits 代表已判断整套协调、适合该活动和天气的完整套装或上下装组合，不是单品各自可穿就算搭配成功。outfit_basis 为 current 时以当前实际穿着为基础，item_ids 只列调整的单品（不调整可为空）；selection 则列出完整主体服装，鞋饰按需补充。已有候选能组合采用时同时填 adopt_ids 和理由。missing 只能在审视所有可用主体衣物及可纳入候选后给出，considered_ids 列出实际评估过的主体衣物；资料不足用 unknown，不能把未知当作适配或缺衣。保持适配当前穿着优先，未来组合只作准备。
 衣橱选择 acquisition 可以 keep（复穿）、remix（已有单品尝试新组合）、consider（先记下想法）、generate（现在设计并生成新造型）。每次说明自己的具体理由，允许什么都不添。
@@ -349,6 +353,7 @@ WARDROBE_REVIEW_RULES = """你是当前角色的数字衣橱生活执行者。�
 item_ids 只引用本轮真实衣物，remix 必须能实际取用。acquisition 只是想法和待办，不能改变当前穿着，也不代表现实购物。
 只纳入完整套装，或能与已拥有物品组合的单品；生成衣物应延续自己的审美并能复用，避免每天无限生成。
 洗护基于实际穿着和已完成活动证据，不能凭季节认定衣服脏；洗护中的物品不能采用，不洗正在穿的衣物。洗涤和晾晒时长根据天气、室内外条件和可见衣物类型估计，不编造真实触感。
+inventory_state 是持久化的洗护事实，可作为对应衣物 washing 的依据；维护行为按当前活动条件自主安排，完成状态由执行器推进。
 审美只从给定人设或明确反馈引用原文依据；自己的穿着倾向至少三个独立采用回执且跨两日才形成软偏好。
 用户反馈是他人的建议，自身偏好由角色人设和经历决定；不机械服从所有赞美，不凭一次选择永久定型。修订旧软偏好时在 replaces 引用旧 preference_id；仅允许修订同来源偏好，其他人的反馈不能改写角色自身审美。
 返回 JSON：

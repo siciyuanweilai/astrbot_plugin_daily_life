@@ -535,6 +535,11 @@ class OutfitComponent:
         )
         catalog_has_clothing = await self.context._style_catalog_has_clothing_candidates()
         instruction_text = str(instruction or "").strip()
+        if not instruction_text:
+            pending_request = wardrobe_weather.get("outfit_request") or {}
+            instruction_text = str(pending_request.get("instruction") or "").strip()
+            if instruction_text:
+                instruction_source = "autonomous"
         normalized_instruction_source = (
             str(
                 instruction_source
@@ -927,7 +932,7 @@ class OutfitComponent:
         full_change = decision in {"change", "sleepwear", "outdoor"}
         projection = prepare_outfit_components(
             old_meta.get("outfit_components"),
-            result.get("outfit_components"),
+            result.get("outfit_components") if decision != "keep" else {},
             catalog_appearance.get("outfit_components"),
             full_change=full_change,
             component_only=component_only_partial_change,
@@ -1006,7 +1011,9 @@ class OutfitComponent:
         )
         if not final["outfit"]:
             return None
-        appearance_changed = any(value != stored[key] for key, value in final.items())
+        appearance_changed = any(
+            final[key] != stored[key] for key in ("outfit", "hair", "makeup", "nails")
+        ) or components_changed
         comparable_old_outfit = strip_hair_from_outfit(
             stored["outfit"],
             stored["hair_style"],
