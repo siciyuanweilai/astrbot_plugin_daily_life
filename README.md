@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.5.8-ef6f8f" alt="版本 1.5.8"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.5.7-ef6f8f" alt="版本 1.5.7"></a>
   <img src="https://img.shields.io/badge/AstrBot-%3E%3D4.26%2C%3C5-4c78a8" alt="AstrBot >= 4.26,<5">
   <img src="https://img.shields.io/badge/platform-aiocqhttp%20%7C%20qq__official%20%7C%20weixin__oc-4f8a66" alt="支持 OneBot、QQ 官方机器人和个人微信">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-555555" alt="MIT License"></a>
@@ -34,7 +34,7 @@
 [![Yousa Ling](https://count.getloli.com/get/@DailyLife?theme=yousa-ling)](https://github.com/siciyuanweilai/astrbot_plugin_daily_life)
 
 > [!TIP]
-> **v1.5.8 更新说明**：修复 B站视频自动总结、自然回应与后续追问的衔接，完善真实穿搭执行和工具结果边界；整合绑定互动、图文动态及 daily_share 分享接管。包含此前尚未发布的 v1.5.7 本地修改。完整说明见 [CHANGELOG.md](./CHANGELOG.md)。
+> **v1.5.7 更新说明**：修复 B站视频自动总结、自然回应与后续追问的衔接，完善真实穿搭执行和工具结果边界；整合绑定互动、图文动态及 daily_share 分享接管。完整说明见 [CHANGELOG.md](./CHANGELOG.md)。
 
 > 本地穿搭补充修复：衣物使用用途与更衣地点分开判断；对话中的已接受行动通过原执行器落实，并依据实际回执校准回复与历史。核对增加文本模型调用，不按关键词、正则或特定问法触发。当前最终回复核对覆盖非流式回复；核对服务不可用且尚未识别行动时保留原文，不能保证消除所有模型事实错误。
 
