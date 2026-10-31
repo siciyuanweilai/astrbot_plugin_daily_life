@@ -73,6 +73,42 @@ class OutfitExecutionTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(receipts), 1)
         self.assertEqual(receipts[0].status, "simulated")
 
+    async def test_dressing_at_home_can_execute_owned_outdoor_suit(self):
+        day = await self.archive.get_day("2026-08-16")
+        day.timeline[0].place_kind = "home"
+        day.timeline[0].activity_kind = "personal_care"
+        day.timeline[0].activity = "在家换好衣服，准备出门"
+        day.meta["outfit_scene_category"] = "home"
+        await self.archive.save_day(day)
+        suit = await self.archive.upsert_style_catalog_item({
+            "kind": "outfit", "title": "外出套装", "description": "米白短开衫搭淡紫长裙",
+            "source_image_hash": "b" * 64, "confidence": 0.95,
+            "attributes": {"scene_categories": ["public", "outdoor"]},
+        })
+        choice = {**self.decision(), "outfit_decision": "outdoor", "scene_category": "public",
+                  "outfit": suit.description, "catalog_reference_ids": [suit.id],
+                  "style_pool": "outfit_styles", "style": "清新日常风"}
+        self.provider.responses.append(json.dumps(choice, ensure_ascii=False))
+        result = await self.update(instruction="换上这套长裙出门", instruction_source="autonomous")
+        self.assertIsNotNone(result)
+        self.assertIn("淡紫长裙", result.outfit)
+        self.assertEqual(result.meta["outfit_scene_category"], "public")
+        self.assertEqual(result.meta["outfit_fact_source"], "life_action")
+        self.assertEqual(len(self.provider.prompts), 1)
+        self.assertEqual(len(await self.archive.get_life_action_receipts()), 1)
+
+    async def test_stale_request_during_selection_does_not_commit(self):
+        self.provider.responses.append(json.dumps(self.decision()))
+        checks = 0
+        def stale():
+            nonlocal checks
+            checks += 1
+            return checks > 1
+        await self.update(instruction="换装", instruction_source="autonomous", should_abort=stale)
+        stored = await self.archive.get_day("2026-08-16")
+        self.assertEqual(stored.outfit, "日间外出装")
+        self.assertEqual(await self.archive.get_life_action_receipts(), [])
+
     async def test_owned_current_choice_executes_without_trusting_completion_claim(self):
         unsupported = self.decision()
         unsupported["current_outfit_basis"] = "live_state"

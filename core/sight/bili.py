@@ -214,7 +214,7 @@ def target_from_value(
             target = target_from_value(item, source=source, depth=depth + 1)
             if target:
                 return target
-    for attr in ("raw_message", "message_str", "text", "content", "data", "url"):
+    for attr in ("raw_message", "message_str", "text", "content", "data", "url", "chain"):
         if hasattr(value, attr):
             target = target_from_value(
                 getattr(value, attr, None), source=attr, depth=depth + 1

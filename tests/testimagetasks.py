@@ -103,6 +103,25 @@ def _accepted(**kwargs):
 
 
 class ImageTaskTests(unittest.IsolatedAsyncioTestCase):
+    async def test_snapshot_retries_only_windows_file_contention(self):
+        from core.media.picture.recovery import ImageRecovery
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "snapshot.json"
+            original = Path.replace
+            calls = []
+            def replace(source, target):
+                calls.append(target)
+                if len(calls) == 1:
+                    error = PermissionError("temporarily held")
+                    error.winerror = 32
+                    raise error
+                return original(source, target)
+            with patch.object(Path, "replace", replace), patch("core.media.picture.recovery.time.sleep"):
+                ImageRecovery._write(path, {"text": "中文恢复资料"})
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {"text": "中文恢复资料"})
+
     async def test_submit_once_poll_same_key_and_return_url_for_b64_request(self):
         for reference in (False, True):
             with self.subTest(reference=reference):
@@ -531,9 +550,9 @@ class ImageTaskTests(unittest.IsolatedAsyncioTestCase):
                 reference = routes.task_reference(original_routes[0])
                 snapshots = list((service.output_dir / "tasks").glob("*.json"))
                 for path in snapshots:
-                    self.assertNotIn('"api_key"', path.read_text())
-                    self.assertNotIn("test-key", path.read_text())
-                    self.assertNotIn("backup-key", path.read_text())
+                    self.assertNotIn('"api_key"', path.read_text(encoding="utf-8"))
+                    self.assertNotIn("test-key", path.read_text(encoding="utf-8"))
+                    self.assertNotIn("backup-key", path.read_text(encoding="utf-8"))
                 # 模拟重启，配置重新排序；第二通道继续等待时必须持久保存新任务。
                 fresh = GeminiImageService(service.settings, service.data_dir)
                 self._use_url_responses(fresh)

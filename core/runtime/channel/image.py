@@ -1384,10 +1384,20 @@ JSON 字段：
         text_model: str = "",
         edit_model: str = "",
         identity_profile: str | None = None,
+        public_only: bool = False,
     ) -> Any:
         prompt = str(prompt or "").strip()
         if not prompt:
             raise ValueError("没有收到图片提示词。")
+        if public_only:
+            # 公开分享只使用已隔离的画面要求与角色稳定体貌，不进入读取日程/私聊的导演流程。
+            profile = await self.context._character_appearance_profile(None) if contains_character else ""
+            reference = self.context._life_character_reference_image() if contains_character else ""
+            options = {"identity_profile": profile, "include_character_reference": contains_character}
+            async with self.context.runtime_service_lease():
+                if reference:
+                    return await self.context.media.image.edit_image(prompt, reference, preserve_reference_ratio=False, **options)
+                return await self.context.media.image.generate_image(prompt, **options)
         aspect_ratio = str(
             aspect_ratio or ""
         ).strip() or self.context._image_prompt_aspect_ratio(prompt)

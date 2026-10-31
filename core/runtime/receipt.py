@@ -106,6 +106,7 @@ class RuntimeActionReceiptComponent:
         task_key: str,
         contains_character: bool = False,
         target_umo: str = "",
+        public_only: bool = False,
     ) -> dict:
         return await self._generate_share_asset_task(
             event,
@@ -114,6 +115,7 @@ class RuntimeActionReceiptComponent:
             kind="image",
             contains_character=contains_character,
             target_umo=target_umo,
+            public_only=public_only,
         )
 
     async def generate_share_video_task(
@@ -139,6 +141,7 @@ class RuntimeActionReceiptComponent:
         contains_character: bool = False,
         reference_image: str = "",
         target_umo: str = "",
+        public_only: bool = False,
     ) -> dict:
         """外部媒体任务恢复后仍作为媒体素材处理，不发送到聊天会话。"""
         label = "图片" if kind == "image" else "视频"
@@ -199,6 +202,7 @@ class RuntimeActionReceiptComponent:
                         contains_character=contains_character,
                         preserve_reference_ratio=False,
                         trusted_identity=contains_character,
+                        **({"public_only": True} if public_only else {}),
                     )
                 else:
                     result = await self.context.generate_life_video_asset(

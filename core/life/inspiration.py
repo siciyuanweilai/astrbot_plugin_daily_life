@@ -350,7 +350,7 @@ class StyleCatalogComponent:
                 return False
         if not StyleCatalogComponent._style_catalog_scene_compatible(item, scene_category):
             return False
-        if conditions:
+        if conditions and scene_category and scene_category == conditions.get("current_scene_category"):
             from .dressing import suitability_key
 
             profile = snapshot.get("profile") or {}

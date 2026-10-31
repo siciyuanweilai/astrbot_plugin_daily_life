@@ -302,7 +302,8 @@ class BrowsingTest(unittest.IsolatedAsyncioTestCase):
             await self.service.control(record["id"], "resume")
         self.service.reader.metadata = AsyncMock()
         event = types.SimpleNamespace(scope="private:a", message_str=BV)
-        await self.service._read_shared_video(event, BV, "private:a")
+        from core.sight.bili import BiliTarget
+        await self.service._read_shared_video(event, BiliTarget(bvid=BV), "private:a")
         self.assertIn("请先登录", event._daily_life_bili_error)
         self.service.reader.metadata.assert_not_awaited()
         self.service.material.window.assert_not_awaited()
@@ -493,7 +494,8 @@ class BrowsingTest(unittest.IsolatedAsyncioTestCase):
         await self.service.process(record, 9999)
         self.assertEqual((await self.store.get(record["id"]))["position"], 300)
 
-    async def test_links_are_natural_but_summary_remains_explicit(self):
+    async def test_conversation_route_and_background_dedup_use_video_page(self):
+        self.service._model.return_value = {"mode": "conversation"}
         scheduled = []
         def schedule(coro, **kwargs):
             scheduled.append(kwargs["key"])

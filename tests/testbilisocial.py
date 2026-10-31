@@ -14,14 +14,14 @@ from unittest.mock import AsyncMock, patch
 from support import LifeArchive
 from core.browsing.feed import API, BiliReadError, BiliReader, BiliLoginRequired, video
 from core.browsing.platform import BiliPlatform, BiliWriteUncertain
-from core.browsing.socializing import BiliSocialService, BiliDMScopeError, DM_SCOPE_RULE
+from core.browsing.socializing import BiliSocialService, BiliBoundIdentityChanged, BiliDMScopeError, DM_SCOPE_RULE
 from core.browsing.correspondence import BiliSocialStore
 from core.browsing.surfing import BiliBrowseService
 from core.browsing.visiting import BiliLiveVisit, capture_live, capture_hls, hls_parts
 from core.browsing.material import BrowseMaterial
 from core.browsing.storyboards import snapshot_entries, storyboard, tile, public_bytes
 from core.config.options.viewing import BiliBrowseSettings
-from core.clock import local_timestamp
+from core.clock import local_timestamp, now as life_now
 from core.runtime.contact import contact_rhythm
 from core.runtime.sharegate import ShareContactGate
 from core.sight.bridge import SightFrameDescriptionResult
@@ -33,7 +33,7 @@ class SocialTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.db = LifeArchive(Path(self.temp.name) / 'life.db')
-        self.now = dt.datetime.now()
+        self.now = life_now()
         self.day = types.SimpleNamespace(state=None, timeline=[])
         self.world = {'body': {'energy': 70}, 'run': {}, 'kernel': {}, 'goals': []}
         self.runtime = types.SimpleNamespace(
@@ -58,6 +58,7 @@ class SocialTest(unittest.IsolatedAsyncioTestCase):
             'folders', 'favorites', 'comments', 'notifications', 'dm_history', 'dynamics', 'live_rooms', 'live_history')})
         for name in ('favorite', 'comment', 'dm', 'dynamic', 'danmaku'):
             setattr(self.platform, name, AsyncMock(return_value={'accepted': True, 'remote_id': '999', 'folder_id': '7'}))
+        self.platform.user_card = AsyncMock(return_value={'mid': '5678', 'name': '绑定朋友'})
         self.platform.dynamic_page = AsyncMock(return_value={'rows': [], 'offset': ''})
         self.platform.dm_page = AsyncMock(return_value={'rows': [], 'more': False, 'oldest': 0, 'before': ''})
         self.platform.find_comment = AsyncMock(return_value=None)
@@ -88,9 +89,12 @@ class SocialTest(unittest.IsolatedAsyncioTestCase):
         record = await self.browse.archive.get(record['id']) or record
         return await self.browse._save(record, evidence=[{'quote': '对照组', 'start': 0, 'end': 8}], impression='有意思', **changes)
 
-    async def incoming(self, scope='private:a', key='1'):
-        await self.store.update({'bindings': {scope: {'uid': '5678', 'since': 0, 'seen': []}}})
-        return await self.store.put('dm-in:'+key, {'kind': 'dm_in', 'scope': scope, 'uid': '5678', 'text': '我们刚才聊的呢',
+    async def incoming(self, scope='private:a', key='1', uid=None):
+        uid = uid or ('6789' if scope == 'private:b' else '5678')
+        bindings = dict((await self.store.state()).get('bindings') or {})
+        bindings[scope] = {'uid': uid, 'since': 0, 'seen': []}
+        await self.store.update({'bindings': bindings})
+        return await self.store.put('dm-in:'+key, {'kind': 'dm_in', 'scope': scope, 'uid': uid, 'text': '我们刚才聊的呢',
                                                    'at': self.now.isoformat(), 'status': 'new'})
 
     async def test_claim_is_atomic_and_survives_restart(self):
@@ -529,6 +533,94 @@ class SocialTest(unittest.IsolatedAsyncioTestCase):
         await self.social.poll(self.store, await self.store.state())
         row = next(r for r in await self.store.records() if r['kind']=='notification')
         self.assertEqual((row['parent'],row['text']), ('10','实际回复'))
+        self.assertFalse(row['bound_contact'])
+        self.assertEqual(row['scope'], 'global')
+
+    async def test_bound_notification_links_identity_and_contact_arrival(self):
+        remote_at = int(local_timestamp(self.now))
+        self.platform.notification_page.side_effect = [
+            {'items':[{'id':'7','reply_time':remote_at,'user':{'mid':'5678'},
+                       'item':{'business_id':1,'subject_id':'42','root_id':'8','source_id':'9'}}], 'cursor':None},
+            {'items':[], 'cursor':None},
+        ]
+        self.platform.notification_comment.return_value = {
+            'id':'10','root':'8','parent':'9','uid':'5678','text':'这个视频最后一步你怎么看','at':remote_at,
+        }
+        await self.store.update({'bindings':{'private:a':{'uid':'5678'}}, 'poll_after':0, 'notification_ready':True})
+        await self.social.poll(self.store, await self.store.state())
+        row = next(r for r in await self.store.records() if r['kind']=='notification')
+        self.assertEqual((row['scope'], row['contact_scope'], row['uid']), ('private:a', 'private:a', '5678'))
+        self.assertTrue(row['bound_contact'] and row['public_interaction'])
+        rhythm = await contact_rhythm(self.runtime, 'private:a', self.now)
+        self.assertEqual(rhythm['last_received_at'], float(remote_at))
+
+    async def test_bound_public_context_uses_public_history_without_private_dialogue(self):
+        private = await self.incoming()
+        await self.store.finish(private, text='私密约定：今晚十一点提醒我', topic_scope='bilibili', status='handled')
+        await self.store.put('notify:bound-public', {
+            'kind':'notification', 'scope':'private:a', 'at':self.now.isoformat(), 'status':'new',
+            'uid':'5678', 'text':'刚才那个结尾很有意思', 'bound_contact':True,
+            'contact_scope':'private:a', 'public_interaction':True, 'aid':'42', 'parent':'10',
+        })
+        context = await self.social._bound_public_context('private:a', '5678', self.store)
+        encoded = json.dumps(context, ensure_ascii=False)
+        self.assertTrue(context['verified_identity'])
+        self.assertIn('刚才那个结尾很有意思', encoded)
+        self.assertNotIn('私密约定', encoded)
+        self.assertNotIn('十一点提醒', encoded)
+
+    async def test_bound_notification_is_considered_before_unbound_notification(self):
+        bound = await self.store.put('notify:bound-priority', {
+            'kind':'notification', 'scope':'private:a', 'at':self.now.isoformat(), 'status':'new',
+            'uid':'5678', 'text':'你刚看的那个视频呢', 'bound_contact':True,
+            'contact_scope':'private:a', 'public_interaction':True, 'aid':'42', 'root':'8', 'parent':'10',
+        })
+        await self.store.put('notify:unbound-priority', {
+            'kind':'notification', 'scope':'global', 'at':self.now.isoformat(), 'status':'new',
+            'uid':'9999', 'text':'普通观众的评论', 'bound_contact':False,
+            'contact_scope':'', 'public_interaction':True, 'aid':'42', 'root':'8', 'parent':'11',
+        })
+        await self.store.update({'bindings':{'private:a':{'uid':'5678'}}})
+        self.browse._model.return_value = {'action':'wait', 'review_minutes':5}
+        await self.social.tick(self.day, self.world)
+        context = self.browse._model.await_args.args[1]
+        self.assertEqual(context['incoming']['id'], bound['id'])
+        self.assertTrue(context['bound_contact']['verified_identity'])
+        self.assertIn('recent_public_interactions', context['bound_contact'])
+        self.assertNotIn('普通观众的评论', json.dumps(context, ensure_ascii=False))
+
+    async def test_bound_public_reply_updates_cross_channel_receipts(self):
+        await self.store.update({'bindings':{'private:a':{'uid':'5678'}}})
+        remote_at = int(local_timestamp(self.now))
+        target = await self.store.put('notify:bound-reply', {
+            'kind':'notification', 'scope':'private:a', 'at':self.now.isoformat(), 'status':'new',
+            'uid':'5678', 'text':'这个视频最后一步你怎么看', 'remote_at':remote_at,
+            'bound_contact':True, 'contact_scope':'private:a', 'public_interaction':True,
+            'aid':'42', 'root':'8', 'parent':'10',
+        })
+        self.platform.find_comment.return_value = {'id':'10','uid':'5678','text':target['text']}
+        await self.social._record_contact(target)
+        await self.social.act('reply', target=target, text='我也在想最后这一步', scope='private:a')
+        sent = (await self.store.pending(['accepted']))[0]
+        self.assertTrue(sent['bound_contact'] and sent['public_interaction'])
+        self.assertEqual(sent['scope'], 'private:a')
+        self.assertEqual(self.platform.comment.await_args.kwargs['parent'], '10')
+        state = await self.db.get_conversation_contact_state('private:a', local_timestamp(self.now))
+        self.assertGreater(state['last_received_at'], 0)
+        self.assertGreater(state['last_sent_at'], 0)
+
+    async def test_bound_reply_is_cancelled_after_unbinding(self):
+        await self.store.update({'bindings':{'private:a':{'uid':'5678'}}})
+        target = {
+            'kind':'notification', 'scope':'private:a', 'id':'notify:unbinding', 'uid':'5678',
+            'text':'原评论', 'bound_contact':True, 'contact_scope':'private:a',
+            'aid':'42', 'root':'8', 'parent':'10',
+        }
+        self.platform.find_comment.return_value = {'text':'原评论'}
+        await self.store.update({'bindings':{}})
+        with self.assertRaises(BiliBoundIdentityChanged):
+            await self.social.act('reply', target=target, text='回复', scope='private:a')
+        self.platform.comment.assert_not_awaited()
 
     async def test_busy_life_never_calls_interaction_model(self):
         await self.video()
@@ -664,6 +756,325 @@ class SocialTest(unittest.IsolatedAsyncioTestCase):
         await self.social.tick(self.day, self.world)
         self.assertNotIn('contact', self.browse._model.await_args.args[1]['allowed_actions'])
         self.platform.dm.assert_awaited_once()
+
+    async def test_public_mention_is_model_chosen_public_only_and_records_contact_receipt(self):
+        await self.video()
+        await self.incoming()
+        incoming = (await self.store.pending(['new']))[0]
+        await self.store.finish(incoming, status='handled', topic_scope='bilibili')
+        await self.store.update({'bindings': {'private:a': {'uid': '5678'}}})
+        record = await self.video(position=30)
+        self.browse._model.side_effect = [
+            {'action': 'mention', 'id': record['id']},
+            {'action': 'mention', 'text': '刚看到这个实验的转折，想和你一起聊聊'},
+        ]
+
+        await self.social.tick(self.day, self.world)
+
+        self.platform.comment.assert_awaited_once_with(
+            record, '刚看到这个实验的转折，想和你一起聊聊',
+            mention={'uid': '5678', 'name': '绑定朋友'},
+        )
+        expression = self.browse._model.await_args_list[1].args[1]
+        encoded = json.dumps(expression, ensure_ascii=False)
+        self.assertNotIn('私密约定', encoded)
+        self.assertNotIn('B站验证码', encoded)
+        self.assertEqual(expression['public_material'][0]['id'], record['id'])
+        sent = (await self.store.pending(['accepted']))[0]
+        self.assertEqual((sent['kind'], sent['scope'], sent['uid']), ('mention', 'private:a', '5678'))
+        self.assertTrue(sent['bound_contact'] and sent['public_interaction'])
+        self.assertTrue(sent['text'].startswith('@绑定朋友 '))
+        self.assertFalse((await contact_rhythm(self.runtime, 'private:a', self.now))['ready'])
+
+    async def test_public_mention_is_withheld_during_contact_cooldown(self):
+        await self.store.update({'bindings': {'private:a': {'uid': '5678'}}})
+        first = await self.video()
+        await self.social.act('mention', record=first, text='这个实验的变化挺有意思',
+                              target={'id': 'candidate', 'uid': '5678', 'scope': 'private:a', 'proactive': True},
+                              scope='private:a')
+        self.now += dt.timedelta(minutes=1)
+        second = await self.video(position=30)
+        target, candidates, _ = await self.social._mention_candidates(
+            self.store, await self.store.state(), [first, second]
+        )
+        self.assertIsNone(target)
+        self.assertEqual(candidates, [])
+
+    async def test_public_mention_is_cancelled_after_unbinding_during_generation(self):
+        record = await self.video()
+        await self.store.update({'bindings': {'private:a': {'uid': '5678'}}})
+        calls = 0
+
+        async def model(rule, context):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                await self.store.update({'bindings': {}})
+                return {'action': 'mention', 'text': '这个实验挺有意思'}
+            return {'action': 'mention', 'id': record['id']}
+
+        self.browse._model.side_effect = model
+        await self.social.tick(self.day, self.world)
+        self.platform.user_card.assert_not_awaited()
+        self.platform.comment.assert_not_awaited()
+
+    async def mention(self, record=None, scope='private:a'):
+        return await self.social.act('mention', record=record or await self.video(), text='实验中的这个变化值得一起看看',
+                                     target={'id':'candidate', 'uid':'5678', 'scope':scope, 'proactive':True}, scope=scope)
+
+    async def another_video(self, aid='43', page=1):
+        record = self.browse.new_record({'bvid': 'BV2xx411c7mD' if aid != '42' else BV,
+                                        'page':page, 'aid':aid, 'cid':9, 'duration':120, 'title':'另一个实验'})
+        return await self.browse._save(record, evidence=[{'quote':'不同的对照实验','start':0,'end':8}], impression='新的观察')
+
+    async def test_new_video_can_be_shared_after_contact_interval_not_next_day(self):
+        await self.store.update({'bindings': {'private:a': {'uid':'5678'}}})
+        await self.mention()
+        self.now += dt.timedelta(minutes=10)
+        record = await self.another_video()
+        contact, candidates, _ = await self.social._mention_candidates(self.store, await self.store.state(), [record])
+        self.assertEqual(contact['uid'], '5678')
+        self.assertEqual([r['id'] for r in candidates], [record['id']])
+        await self.mention(record)
+        self.assertEqual(self.platform.comment.await_count, 2)
+
+    async def test_video_dedup_survives_multiple_parts_and_rebinding(self):
+        await self.store.update({'bindings': {'private:a': {'uid':'5678'}}})
+        await self.mention()
+        self.now += dt.timedelta(days=2)
+        await self.social.binding('private:a', remove=True)
+        await self.store.update({'bindings': {'private:b': {'uid':'5678'}}})
+        second_part = await self.another_video(aid='42', page=2)
+        with self.assertRaises(ValueError):
+            await self.mention(second_part, scope='private:b')
+        contact, candidates, _ = await self.social._mention_candidates(self.store, await self.store.state(), [second_part])
+        self.assertIsNone(contact)
+        self.platform.comment.assert_awaited_once()
+
+    async def test_comment_only_contacts_rotate_even_when_model_waits(self):
+        self.runtime.config.browsing.dm_enabled = False
+        await self.video()
+        await self.store.update({'bindings': {'private:a': {'uid':'5678'}, 'private:b': {'uid':'6789'}}})
+        await self.social.tick(self.day, self.world)
+        await self.store.update({'review_after':0})
+        await self.social.tick(self.day, self.world)
+        self.assertEqual(set((await self.store.state())['contact_reviews']), {'private:a','private:b'})
+
+    async def test_public_candidate_never_uses_a_different_contacts_private_context(self):
+        record = await self.video()
+        bindings = {'private:a': {'uid':'5678'}, 'private:b': {'uid':'6789'}}
+        await self.store.update({'bindings':bindings})
+        previous, _ = await self.social._contact(self.store, {'bindings':{'private:a':bindings['private:a']}}, [], [record])
+        await self.store.put('dm:' + previous['id'] + ':once', {'kind':'dm','scope':'private:a', 'uid':'5678',
+                             'at':self.now.isoformat(), 'status':'confirmed', 'outbound':True})
+        self.runtime.get_persona_text.reset_mock()
+        await self.social.tick(self.day, self.world)
+        context = self.browse._model.await_args.args[1]
+        self.assertIn('mention', context['allowed_actions'])
+        self.assertNotIn('contact', context['allowed_actions'])
+        self.assertNotIn('private:b', str(self.runtime.get_persona_text.await_args_list))
+
+    async def test_actual_unbind_command_during_generation_does_not_wait_for_tick(self):
+        record = await self.video()
+        await self.store.update({'bindings': {'private:a': {'uid':'5678'}}})
+        async def model(rule, context):
+            if 'mention_candidates' in context:
+                return {'action':'mention', 'id':record['id']}
+            await asyncio.wait_for(self.social.binding('private:a', remove=True), timeout=1)
+            return {'action':'mention', 'text':'一起看看这个实验'}
+        self.browse._model.side_effect = model
+        await self.social.tick(self.day, self.world)
+        self.assertEqual((await self.store.state())['bindings'], {})
+        self.platform.comment.assert_not_awaited()
+
+    async def test_poll_cannot_restore_a_binding_removed_during_network_read(self):
+        await self.store.update({'bindings': {'private:a': {'uid':'5678'}}, 'poll_after':0})
+        async def history(*args, **kwargs):
+            await self.social.binding('private:a', remove=True)
+            return [], True, ''
+        self.social._history = AsyncMock(side_effect=history)
+        await self.social.poll(self.store, await self.store.state())
+        self.assertEqual((await self.store.state())['bindings'], {})
+
+    async def test_profile_lookup_cannot_bypass_new_receipt_or_disabled_comments(self):
+        await self.store.update({'bindings': {'private:a': {'uid':'5678'}}})
+        async def profile(uid):
+            await self.db.save_conversation_receipt('private:a', local_timestamp(self.now))
+            return {'mid':uid, 'name':'绑定朋友'}
+        self.platform.user_card.side_effect = profile
+        with self.assertRaises(ValueError):
+            await self.mention()
+        self.platform.comment.assert_not_awaited()
+        self.now += dt.timedelta(hours=1)
+        async def disabled(uid):
+            self.runtime.config.browsing.comments_enabled = False
+            return {'mid':uid, 'name':'绑定朋友'}
+        self.platform.user_card.side_effect = disabled
+        with self.assertRaises(ValueError):
+            await self.mention()
+        self.platform.comment.assert_not_awaited()
+
+    async def test_successful_send_is_not_rejected_when_receipt_bookkeeping_fails(self):
+        await self.store.update({'bindings': {'private:a': {'uid':'5678'}}})
+        with patch.object(self.db, 'save_conversation_receipt', AsyncMock(side_effect=ValueError('本地写入失败'))):
+            with self.assertRaises(ValueError):
+                await self.mention()
+        row = (await self.store.pending(['accepted']))[0]
+        self.assertTrue(row['bookkeeping_pending'])
+        self.assertEqual(await self.store.pending(['rejected']), [])
+        await self.social.reconcile(self.store)
+        self.assertFalse((await self.store.get(row['id']))['bookkeeping_pending'])
+        with self.assertRaises(ValueError):
+            await self.mention()
+        self.platform.comment.assert_awaited_once()
+
+    async def test_unbinding_during_final_contact_check_prevents_network_write(self):
+        await self.store.update({'bindings': {'private:a': {'uid':'5678'}}})
+        async def rhythm(*args):
+            await self.social.binding('private:a', remove=True)
+            return {'ready':True}
+        with patch('core.browsing.socializing.contact_rhythm', side_effect=rhythm):
+            with self.assertRaises(BiliBoundIdentityChanged):
+                await self.mention()
+        self.platform.comment.assert_not_awaited()
+
+    async def test_uncertain_mention_requires_matching_uid_in_remote_comment(self):
+        await self.store.update({'bindings': {'private:a': {'uid':'5678'}}})
+        self.platform.comment.side_effect = BiliWriteUncertain('连接中断')
+        with self.assertRaises(BiliWriteUncertain):
+            await self.mention()
+        row = (await self.store.pending(['uncertain']))[0]
+        remote = {'id':'999','uid':'1234','text':row['text'], 'at':int(local_timestamp(self.now)), 'parent':'', 'mentioned_uids':['9999']}
+        self.platform.comments.return_value = [remote]
+        await self.social.reconcile(self.store)
+        self.assertEqual((await self.store.get(row['id']))['status'], 'uncertain')
+        remote['mentioned_uids'] = ['5678']
+        await self.social.reconcile(self.store)
+        self.assertEqual((await self.store.get(row['id']))['status'], 'confirmed')
+        self.assertFalse((await contact_rhythm(self.runtime, 'private:a', self.now))['ready'])
+
+    async def test_uncertain_dm_blocks_public_mention_to_same_uid(self):
+        await self.store.update({'bindings': {'private:a': {'uid':'5678'}}})
+        await self.store.put('old-dm', {'kind':'dm','scope':'private:old','uid':'5678', 'at':self.now.isoformat(),
+                                      'status':'uncertain','outbound':True})
+        contact, _, _ = await self.social._mention_candidates(self.store, await self.store.state(), [await self.video()])
+        self.assertIsNone(contact)
+        with self.assertRaises(ValueError):
+            await self.mention()
+        self.platform.comment.assert_not_awaited()
+
+    async def test_unsent_drafts_do_not_become_public_relationship_history(self):
+        await self.store.update({'bindings': {'private:a': {'uid':'5678'}}})
+        for status in ('sending','uncertain','rejected'):
+            await self.store.put('draft:'+status, {'kind':'mention','scope':'private:a','uid':'5678',
+                'at':self.now.isoformat(),'text':'未发表草稿','bound_contact':True,'public_interaction':True,'status':status})
+        context = await self.social._bound_public_context('private:a','5678',self.store)
+        self.assertEqual(context['recent_public_interactions'], [])
+
+    async def test_new_chat_during_public_expression_invalidates_contact_snapshot(self):
+        record = await self.video()
+        await self.store.update({'bindings': {'private:a': {'uid':'5678'}}})
+        self.runtime.share_contact_gate = ShareContactGate(self.runtime)
+        self.runtime._media_chat_tokens = {}
+        async def model(rule, context):
+            if 'mention_candidates' in context:
+                return {'action':'mention', 'id':record['id']}
+            self.runtime._media_chat_tokens[('private:a','user')] = 'new-message'
+            return {'action':'mention', 'text':'一起看看'}
+        self.browse._model.side_effect = model
+        await self.social.tick(self.day, self.world)
+        self.platform.comment.assert_not_awaited()
+        self.assertEqual(self.runtime.share_contact_gate.leases, {})
+
+    async def test_profile_mismatch_cancels_public_mention(self):
+        await self.store.update({'bindings': {'private:a': {'uid':'5678'}}})
+        self.platform.user_card.return_value = {'mid':'9999','name':'其他人'}
+        with self.assertRaises(BiliBoundIdentityChanged):
+            await self.mention()
+        self.platform.comment.assert_not_awaited()
+
+    async def test_mention_claim_is_atomic_per_uid_even_for_different_videos(self):
+        base = {'kind':'mention','scope':'private:a','uid':'5678','at':self.now.isoformat(),'text':'分享', 'outbound':True}
+        rows = await asyncio.gather(self.store.claim('first', {**base,'aid':'42'}), self.store.claim('second', {**base,'aid':'43'}))
+        self.assertEqual(sum(r is not None for r in rows), 1)
+
+    async def test_rebound_context_and_history_exclude_old_uid_and_unsent_drafts(self):
+        old = await self.incoming(key='old-identity')
+        await self.store.finish(old, text='旧账号的对话', status='handled', topic_scope='bilibili')
+        current = await self.incoming(key='new-identity', uid='6789')
+        await self.store.finish(current, text='新账号的对话', status='handled', topic_scope='bilibili')
+        draft = await self.store.put('draft', {'kind':'dm', 'scope':'private:a', 'uid':'6789',
+            'text':'尚未确认发出的草稿', 'at':self.now.isoformat(), 'status':'uncertain', 'topic_scope':'bilibili'})
+        private = await self.social._private_context('private:a', self.store)
+        history = await self.social.message('private:a', 'history')
+        self.assertEqual([r['id'] for r in private['bili_dialogue']], [current['id']])
+        self.assertEqual([r['id'] for r in history['dialogue']], [current['id']])
+        self.assertNotIn('旧账号的对话', json.dumps(await self.social.context('private:a'), ensure_ascii=False))
+        self.assertEqual((await self.store.get(draft['id']))['status'], 'uncertain')
+
+    async def test_public_reply_only_receives_material_for_its_video(self):
+        record = await self.video()
+        await self.another_video()
+        target = await self.store.put('notify:material', {'kind':'notification', 'scope':'global',
+            'at':self.now.isoformat(), 'status':'new', 'uid':'5678', 'text':'这个实验怎么看',
+            'aid':'42', 'root':'8', 'parent':'10'})
+        self.platform.find_comment.return_value = {'text':target['text']}
+        self.browse._model.side_effect = [
+            {'action':'reply', 'id':target['id']}, {'action':'reply', 'text':'这个对照确实有意思'}]
+        await self.social.tick(self.day, self.world)
+        for call in self.browse._model.await_args_list:
+            self.assertEqual([r['id'] for r in call.args[1]['public_material']], [record['id']])
+        self.platform.comment.assert_awaited_once()
+
+    async def test_cancelled_challenge_is_not_verified_after_network_returns(self):
+        result = await self.social.binding('private:a', '5678')
+        token = result.splitlines()[1]
+        await self.store.update({'poll_after':0})
+        async def history(*args, **kwargs):
+            await self.social.binding('private:a', remove=True)
+            return [{'id':'1', 'uid':'5678', 'text':token, 'at':int(time.time())}], True, ''
+        self.social._history = AsyncMock(side_effect=history)
+        await self.social.poll(self.store, await self.store.state())
+        self.assertEqual((await self.store.state())['bindings'], {})
+        self.assertEqual((await self.store.state())['challenges'], {})
+        self.assertIsNone(await self.store.get(self.store.identity('binding:private:a')))
+
+    async def test_replaced_challenge_cannot_overwrite_existing_identity(self):
+        await self.store.update({'bindings':{'private:a':{'uid':'5678'}}})
+        await self.social.binding('private:a', '6789')
+        original = await self.store.state()
+        await self.social.binding('private:a', '7890')
+        replacement = (await self.store.state())['challenges']['private:a']
+        state = await self.store.merge_identities(original, {'private:a':{'uid':'6789'}}, {})
+        self.assertEqual(state['bindings']['private:a']['uid'], '5678')
+        self.assertEqual(state['challenges']['private:a'], replacement)
+
+    async def test_legacy_rejected_mention_keeps_attempt_count_and_identity(self):
+        await self.store.update({'bindings':{'private:a':{'uid':'5678'}}})
+        old = await self.store.put('legacy-scope-page-key', {'kind':'mention', 'scope':'private:old',
+            'uid':'5678', 'aid':'42', 'at':self.now.isoformat(), 'text':'被拒绝的分享',
+            'status':'rejected', 'attempts':2, 'retry_after':0, 'outbound':True})
+        sent = await self.mention()
+        self.assertEqual((sent['id'], sent['attempts'], sent['status']), (old['id'], 3, 'accepted'))
+        self.assertEqual(len(await self.store.public_contact_records('5678')), 1)
+
+    async def test_disabled_comments_defer_reply_without_clearing_bound_identity(self):
+        await self.store.update({'bindings':{'private:a':{'uid':'5678'}}})
+        target = await self.store.put('notify:disabled', {'kind':'notification', 'scope':'private:a',
+            'at':self.now.isoformat(), 'status':'new', 'uid':'5678', 'text':'这个实验怎么看',
+            'bound_contact':True, 'contact_scope':'private:a', 'public_interaction':True,
+            'aid':'42', 'root':'8', 'parent':'10'})
+        async def find(*args):
+            self.runtime.config.browsing.comments_enabled = False
+            return {'text':target['text']}
+        self.platform.find_comment.side_effect = find
+        self.browse._model.side_effect = [
+            {'action':'reply', 'id':target['id']}, {'action':'reply', 'text':'这个对照确实有意思'}]
+        await self.social.tick(self.day, self.world)
+        saved = await self.store.get(target['id'])
+        self.assertTrue(saved['bound_contact'])
+        self.assertEqual(saved['scope'], 'private:a')
+        self.platform.comment.assert_not_awaited()
 
     async def test_unverified_person_never_becomes_autonomous_contact(self):
         await self.social.tick(self.day, self.world)
@@ -822,7 +1233,7 @@ class SocialTest(unittest.IsolatedAsyncioTestCase):
     async def test_reconciliation_resumes_comment_page_after_budget(self):
         row = await self.store.put('comment:pending', {'kind':'comment', 'status':'uncertain', 'at':self.now.isoformat(),
             'text':'实际评论', 'aid':'42', 'outbound':True, 'target':{}})
-        now = int(self.now.timestamp())
+        now = int(local_timestamp(self.now))
         async def comments(aid, root='', page=1):
             if page == 4:
                 return [{'id':'9','uid':'1234','text':'实际评论','at':now,'parent':''}]
@@ -839,7 +1250,7 @@ class SocialTest(unittest.IsolatedAsyncioTestCase):
             'text':'实际动态', 'outbound':True, 'target':{}})
         self.platform.dynamic_page.side_effect = [
             {'rows':[], 'offset':'older'},
-            {'rows':[{'id':'10','text':'实际动态','at':int(self.now.timestamp())}], 'offset':''},
+            {'rows':[{'id':'10','text':'实际动态','at':int(local_timestamp(self.now))}], 'offset':''},
         ]
         await self.social.reconcile(self.store)
         self.assertEqual((await self.store.get(row['id']))['status'], 'confirmed')
@@ -1015,11 +1426,50 @@ class PlatformTest(unittest.IsolatedAsyncioTestCase):
         self.reader._request.assert_not_awaited()
 
     async def test_dynamic_uses_json_and_signed_csrf(self):
+        self.reader._request.return_value = {"dyn_id_str": "123"}
         self.reader.sign_values=lambda p:{**p,'w_rid':'signed'}
         await self.platform.dynamic('公开内容')
         call=self.reader._request.await_args
         self.assertEqual(call.kwargs['json_body']['dyn_req']['content']['contents'][0]['raw_text'],'公开内容')
         self.assertEqual(call.args[1]['w_rid'],'signed')
+
+    async def test_comment_mention_sends_exact_name_to_uid_mapping(self):
+        await self.platform.comment({'aid': '42'}, '这段想和你分享', mention={'uid': '5678', 'name': '绑定朋友'})
+        payload = self.reader._request.await_args.kwargs['data']
+        self.assertEqual(payload['message'], '@绑定朋友 这段想和你分享')
+        self.assertEqual(json.loads(payload['at_name_to_mid']), {'绑定朋友': '5678'})
+
+    async def test_write_guard_is_forwarded_through_platform_to_transport(self):
+        guard = self.platform.before_write = AsyncMock()
+        await self.platform.comment({'aid':'42'},'正文',mention={'uid':'5678','name':'绑定朋友'})
+        self.assertIs(self.reader._request.await_args.kwargs['before_write'], guard)
+
+    async def test_transport_rechecks_after_rate_limit_before_creating_http_session(self):
+        reader = BiliReader(lambda: {'SESSDATA':'fake','bili_jct':'a'*32})
+        reader._last_request = time.monotonic()
+        active = True
+        async def wait(*args):
+            nonlocal active
+            active = False
+        async def guard():
+            if not active:
+                raise BiliBoundIdentityChanged('排队时已解绑')
+        with patch('core.browsing.feed.asyncio.sleep', AsyncMock(side_effect=wait)) as sleep, patch('core.browsing.feed.aiohttp.ClientSession') as http:
+            with self.assertRaises(BiliBoundIdentityChanged):
+                await reader._request(API+'/x/v2/reply/add', method='POST', data={}, before_write=guard)
+            sleep.assert_awaited_once()
+            http.assert_not_called()
+
+    async def test_comments_keep_mention_uid_for_receipt_verification(self):
+        self.reader._request.return_value = {'replies':[{'rpid':9,'member':{'mid':1234},'ctime':123,
+            'content':{'message':'@绑定朋友 正文','members':[{'mid':5678,'uname':'绑定朋友'}]}}]}
+        rows = await self.platform.comments('42')
+        self.assertEqual(rows[0]['mentioned_uids'], ['5678'])
+
+    async def test_user_card_requires_uid_matched_profile(self):
+        self.reader._request.return_value = {'card': {'mid': 5678, 'name': '绑定朋友'}}
+        self.assertEqual(await self.platform.user_card('5678'), {'mid': '5678', 'name': '绑定朋友'})
+        self.assertEqual(self.reader._request.await_args.args[1], {'mid': '5678'})
 
     async def test_nontext_dm_still_supplies_pagination_cursor(self):
         self.reader._request.return_value={'messages':[{'msg_type':2,'msg_seqno':77,'timestamp':99}], 'has_more':1}

@@ -234,6 +234,7 @@ class OutfitFollowthroughTest(unittest.IsolatedAsyncioTestCase):
             for target in data["targets"]:
                 requested = bool(target.get("request"))
                 choices.append({"target_id": target["id"], "verdict": "missing" if requested and not generated else "fits",
+                    "usage_scene": "sleep",
                     "outfit_basis": "selection" if requested else "current",
                     "item_ids": [generated.id] if requested and generated else [], "considered_ids": [],
                     "reason": "新睡衣已可用" if generated else "当前没有满足轻薄需求的可穿睡衣", "confidence": 0.9})
@@ -284,6 +285,7 @@ class OutfitFollowthroughTest(unittest.IsolatedAsyncioTestCase):
             for target in data["targets"]:
                 requested = bool(target.get("request"))
                 choices.append({"target_id": target["id"], "confidence": 0.9,
+                    "usage_scene": "sleep",
                     "verdict": ("missing" if len(inputs) == 1 else "fits") if requested else "unknown",
                     "outfit_basis": "selection", "item_ids": [item.id] if requested and len(inputs) > 1 else [],
                     "considered_ids": [], "reason": "按完整候选资料重新评价"})

@@ -5,8 +5,9 @@ import sqlite3
 import tempfile
 import types
 import unittest
+from contextlib import closing
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import support  # noqa: F401 -- 先安装 AstrBot 测试桩
 
@@ -43,8 +44,9 @@ class WardrobeMigrationBoundaryTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(await archive._run_db(lambda: archive._conn.total_changes), changes)
             finally:
                 archive.close()
-            with sqlite3.connect(path) as connection:
-                connection.execute("UPDATE meta SET value='29' WHERE key='schema_version'")
+            with closing(sqlite3.connect(path)) as connection:
+                with connection:
+                    connection.execute("UPDATE meta SET value='29' WHERE key='schema_version'")
             upgraded = LifeArchive(path)
             try:
                 state = (await upgraded.get_wardrobe_snapshot())["items"][str(item.id)]
@@ -68,7 +70,8 @@ class NaturalBiliRouteTest(unittest.IsolatedAsyncioTestCase):
             case.runtime._schedule_background_task = schedule
             case.runtime.event_was_recalled = lambda event, **kwargs: False
             case.runtime._suppress_default_llm = Mock()
-            for text in ("不用总结，陪我看看就好", "这是读书笔记的视频", "帮我总结这个视频"):
+            case.service._model = AsyncMock(return_value={"mode": "conversation"})
+            for text in ("不用总结，陪我看看就好", "这是读书笔记的视频"):
                 event = types.SimpleNamespace(scope="private:a", message_str=f"{text} {bili_fixture.BV}")
                 await case.service.incoming(event)
                 self.assertTrue(event._daily_life_bili_natural)

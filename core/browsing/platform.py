@@ -4,6 +4,9 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from urllib.parse import urlsplit
+
+import aiohttp
 
 from .feed import API, BiliReadError, clean, video
 
@@ -24,6 +27,7 @@ class BiliPlatform:
     def __init__(self, reader, expected_mid=""):
         self.reader = reader
         self.expected_mid = expected_mid
+        self.before_write = None
 
     async def get(self, path, params=None, *, base=API):
         mid = await self.reader.require_login()
@@ -33,7 +37,7 @@ class BiliPlatform:
             raise ValueError("不支持的B站接口")
         return await self.reader._request(base + path, params, expected_account=self.reader._account)
 
-    async def post(self, path, payload, *, base=API, json_body=False, signed=False):
+    async def post(self, path, payload, *, base=API, json_body=False, signed=False, files=None):
         mid = await self.reader.require_login()
         if self.expected_mid and self.expected_mid != mid:
             raise BiliReadError("B站账号已切换，发送已停止")
@@ -51,9 +55,19 @@ class BiliPlatform:
             params = self.reader.sign_values({"csrf": csrf}) if signed else {"csrf": csrf}
         else:
             values.update(csrf=csrf, csrf_token=csrf)
+        if files:
+            if json_body:
+                raise ValueError("图片上传不能使用 JSON 请求体")
+            form = aiohttp.FormData()
+            for key, value in values.items():
+                form.add_field(key, str(value))
+            for key, (name, content, mime) in files.items():
+                form.add_field(key, content, filename=name, content_type=mime)
+            values = form
         return await self.reader._request(base + path, params, method="POST",
                                           data=None if json_body else values,
-                                          json_body=values if json_body else None, expected_account=account)
+                                          json_body=values if json_body else None, expected_account=account,
+                                          **({"before_write": self.before_write} if self.before_write is not None else {}))
 
     async def folders(self):
         mid = await self.reader.require_login()
@@ -106,9 +120,19 @@ class BiliPlatform:
         items = ([data["root"]] if isinstance(data.get("root"), dict) else []) + (data.get("replies") or [])
         return [{"id": positive(item.get("rpid_str") or item.get("rpid")),
                  "uid": positive((item.get("member") or {}).get("mid") or item.get("mid")),
-                 "text": clean((item.get("content") or {}).get("message"), 1000),
+                 "text": clean((item.get("content") or {}).get("message"), 2100),
+                 "mentioned_uids": [positive(member.get("mid")) for member in (item.get("content") or {}).get("members") or []
+                                    if isinstance(member, dict) and positive(member.get("mid"))],
                  "root": positive(item.get("root")), "parent": positive(item.get("parent")), "at": int(item.get("ctime") or 0)}
                 for item in items if isinstance(item, dict)][:21]
+
+    async def user_card(self, uid):
+        uid = positive(uid)
+        if not uid:
+            raise ValueError("无效的B站用户 UID")
+        data = await self.get("/x/web-interface/card", {"mid": uid})
+        card = data.get("card") or {}
+        return {"mid": positive(card.get("mid")), "name": clean(card.get("name"), 80)}
 
     async def find_comment(self, aid, root, identity, uid):
         for page in range(1, 7):
@@ -134,8 +158,14 @@ class BiliPlatform:
                 break
         return next(iter(candidates.values())) if len(candidates) == 1 else None
 
-    async def comment(self, record, text, *, root="", parent=""):
+    async def comment(self, record, text, *, root="", parent="", mention=None):
         payload = {"type": 1, "oid": record["aid"], "message": text, "plat": 1}
+        if mention is not None:
+            uid, name = positive(mention.get("uid")), clean(mention.get("name"), 80)
+            if not uid or not name:
+                raise ValueError("@ 提及需要有效的用户 UID 和昵称")
+            payload["message"] = f"@{name} {text}".strip()
+            payload["at_name_to_mid"] = json.dumps({name: uid}, ensure_ascii=False, separators=(",", ":"))
         if positive(parent):
             payload.update(root=positive(root) or positive(parent), parent=positive(parent))
         data = await self.post("/x/v2/reply/add", payload)
@@ -195,25 +225,67 @@ class BiliPlatform:
             "msg[dev_id]": device, "msg[content]": json.dumps({"content": text}, ensure_ascii=False)}, base=IM)
         return {"accepted": True, "remote_id": positive(data.get("msg_key"))}
 
-    async def dynamic(self, text):
-        data = await self.post("/x/dynamic/feed/create/dyn", {"dyn_req": {
+    @staticmethod
+    def picture_key(url):
+        parsed = urlsplit(str(url or ""))
+        if (parsed.scheme not in {"http", "https"} or parsed.username or parsed.password or
+                parsed.port not in {None, 80, 443} or not (parsed.hostname or "").endswith(".hdslb.com")):
+            raise ValueError("动态配图必须是 B站上传接口返回的图片")
+        return parsed.hostname + parsed.path
+
+    async def upload_dynamic_picture(self, picture):
+        data = await self.post("/x/dynamic/feed/draw/upload_bfs", {"biz": "new_dyn", "category": "daily"},
+                               files={"file_up": ("dynamic.jpg", picture["data"], "image/jpeg")})
+        url = str(data.get("image_url") or "")
+        self.picture_key(url)
+        width, height = positive(data.get("image_width")), positive(data.get("image_height"))
+        if not width or not height or int(width) * int(height) > 40_000_000:
+            raise BiliReadError("图片上传回执缺少有效尺寸，未发布动态")
+        return {"img_src": url, "img_width": int(width), "img_height": int(height)}
+
+    async def dynamic(self, text, *, pictures=None):
+        pictures = list(pictures or [])
+        if len(pictures) > 9:
+            raise ValueError("一条图文动态最多选择 9 张图片")
+        for picture in pictures:
+            self.picture_key(picture.get("img_src"))
+            if not positive(picture.get("img_width")) or not positive(picture.get("img_height")):
+                raise ValueError("动态配图缺少尺寸")
+        request = {
             "content": {"contents": [{"raw_text": text, "type": 1, "biz_id": ""}]},
-            "scene": 1, "meta": {"app_meta": {"from": "create.dynamic.web", "mobi_app": "web"}}}},
-            json_body=True, signed=True)
-        return {"accepted": True, "remote_id": positive(data.get("dyn_id_str") or data.get("dyn_id"))}
+            "scene": 2 if pictures else 1,
+            "meta": {"app_meta": {"from": "create.dynamic.web", "mobi_app": "web"}}}
+        if pictures:
+            request["pics"] = pictures
+        data = await self.post("/x/dynamic/feed/create/dyn", {"dyn_req": request}, json_body=True, signed=True)
+        identity = positive(data.get("dyn_id_str") or data.get("dyn_id"))
+        if not identity:
+            raise BiliWriteUncertain("动态发布未返回编号，结果留待回查")
+        return {"accepted": True, "remote_id": identity}
 
     async def dynamics(self):
         return (await self.dynamic_page())["rows"]
 
     async def dynamic_page(self, *, offset=""):
         mid = await self.reader.require_login()
-        params = {"host_mid": mid}
+        # 新版图文正文只在 Opus 结构中返回；旧版字段可能只有图片而没有正文。
+        params = {"host_mid": mid, "features": "itemOpusStyle"}
         if offset:
             params["offset"] = offset
         data = await self.get("/x/polymer/web-dynamic/v1/feed/space", params)
-        rows = [{"id": positive(item.get("id_str")), "at": int(((item.get("modules") or {}).get("module_author") or {}).get("pub_ts") or 0), "text": clean(
-            (((item.get("modules") or {}).get("module_dynamic") or {}).get("desc") or {}).get("text"), 2000)}
-                for item in data.get("items") or []]
+        rows = []
+        for item in data.get("items") or []:
+            modules = item.get("modules") or {}
+            dynamic = modules.get("module_dynamic") or {}
+            major = dynamic.get("major") or {}
+            opus = major.get("opus") or {}
+            draw = major.get("draw") or {}
+            description = (opus.get("summary") if opus else dynamic.get("desc")) or {}
+            pictures = (opus.get("pics") if opus else draw.get("items")) or []
+            rows.append({"id": positive(item.get("id_str")),
+                         "at": int((modules.get("module_author") or {}).get("pub_ts") or 0),
+                         "text": clean(description.get("text"), 2000),
+                         "pictures": [str(pic.get("url" if opus else "src") or "") for pic in pictures]})
         return {"rows": rows, "offset": str(data.get("offset") or "") if data.get("has_more") else ""}
 
     async def live_rooms(self):

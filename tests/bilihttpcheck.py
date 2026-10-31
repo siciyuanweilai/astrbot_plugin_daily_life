@@ -36,10 +36,12 @@ async def main():
         process = await asyncio.create_subprocess_exec(
             ffmpeg, '-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc=size=160x90:rate=10',
             '-t', '6', '-pix_fmt', 'yuv420p', '-c:v', 'libx264', '-g', '10', '-f', 'hls', '-hls_time', '1',
-            '-hls_list_size', '0', '-hls_segment_type', kind, str(directory / 'index.m3u8'),
-            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+            '-hls_list_size', '0', '-hls_segment_type', kind, 'index.m3u8',
+            cwd=directory, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
         _, error = await process.communicate()
         assert process.returncode == 0, error.decode()[:200]
+        if kind == 'fmp4':
+            assert (directory / 'init.mp4').is_file(), '初始化分片必须位于测试播放列表目录'
     app = web.Application()
     app.router.add_get("/split", stream)
     app.router.add_get("/large", large)

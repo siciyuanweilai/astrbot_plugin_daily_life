@@ -36,7 +36,7 @@ class ResponseGateEventComponent:
         is_stopped = getattr(event, "is_stopped", None)
         if callable(is_stopped) and is_stopped():
             return True
-        if bool(getattr(event, "_has_send_oper", False)):
+        if bool(getattr(event, "_has_send_oper", False)) and not getattr(event, "_daily_life_bili_natural", False):
             return True
         if self.context._event_has_command_handler(event):
             return True

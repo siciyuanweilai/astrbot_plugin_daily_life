@@ -267,7 +267,7 @@ class BiliReader:
             )
 
     async def _request(self, url, params=None, *, raw=False, credentials=True,
-                       method="GET", data=None, json_body=None, expected_account=""):
+                       method="GET", data=None, json_body=None, expected_account="", before_write=None):
         async with self._lock:
             if time.time() < self.backoff_until:
                 raise BiliReadError("B站请求正在退避，稍后再看")
@@ -293,6 +293,8 @@ class BiliReader:
                 if header:
                     headers["Cookie"] = header
             self._last_request = time.monotonic()
+            if method != "GET" and before_write is not None:
+                await before_write()
             try:
                 async with aiohttp.ClientSession(
                     timeout=aiohttp.ClientTimeout(total=18),

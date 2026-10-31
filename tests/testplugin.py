@@ -1131,6 +1131,21 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(calls, [(event, response)])
 
+    async def test_life_action_reconciliation_precedes_history_marker(self):
+        calls = []
+        plugin = DailyLifePlugin.__new__(DailyLifePlugin)
+        async def reconcile(event, response, execute):
+            calls.append("reconcile")
+            response.completion_text = "还没换好，正在准备。"
+        plugin.runtime = types.SimpleNamespace(
+            reconcile_life_action_reply=reconcile,
+            mark_structured_pending_bot_text=lambda event, text: calls.append(text),
+        )
+        plugin.commands = types.SimpleNamespace(adjust_life=AsyncMock())
+        response = types.SimpleNamespace(completion_text="已经换好了。")
+        await plugin.on_llm_response(Event(), response)
+        self.assertEqual(calls, ["reconcile", "还没换好，正在准备。"])
+
     async def test_tool_lifecycle_hooks_delegate_to_runtime(self):
         calls = []
 
@@ -1170,6 +1185,51 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
                 ("reaction_end", event, tool, args, result),
             ],
         )
+
+    async def test_external_tool_hooks_protect_final_reply_and_history_marker(self):
+        from core.runtime.actionreply import ActionReplyService
+        for returned in (False, True):
+            with self.subTest(returned=returned):
+                plugin = DailyLifePlugin.__new__(DailyLifePlugin)
+                runtime = types.SimpleNamespace(call_text_model=AsyncMock())
+                service = ActionReplyService(runtime)
+                marked = []
+                runtime.reconcile_life_action_reply = service.reconcile
+                runtime.mark_structured_pending_bot_text = lambda event, text: marked.append(text)
+                plugin.runtime = runtime
+                plugin.commands = types.SimpleNamespace(adjust_life=AsyncMock())
+                event = Event()
+                event._daily_life_expression_context = {"activity": "坐在沙发上"}
+                tool = types.SimpleNamespace(name="sub2api_manage")
+                if returned:
+                    await plugin.on_llm_tool_respond(event, tool, {"action": "test_model"},
+                        {"success": False, "status": "failed"})
+                else:
+                    await plugin.on_using_llm_tool(event, tool, {"action": "test_model"})
+                draft = "已测试 deepseek-chat，上游测试失败。" if returned else "请求结果未知。"
+                response = types.SimpleNamespace(completion_text=draft)
+                await plugin.on_llm_response(event, response)
+                self.assertEqual(response.completion_text, draft)
+                self.assertEqual(marked, [draft])
+                runtime.call_text_model.assert_not_awaited()
+                plugin.commands.adjust_life.assert_not_awaited()
+
+    async def test_rejected_tool_arguments_still_protect_the_original_result(self):
+        from astrbot.core.agent.tool import FunctionTool
+        from core.runtime.actionreply import TOOLS_ATTR
+        plugin = DailyLifePlugin.__new__(DailyLifePlugin)
+        plugin.runtime = types.SimpleNamespace(
+            handle_llm_tool_start=AsyncMock(), handle_llm_tool_respond=AsyncMock())
+        tool = plugin_module.ArgumentCheckedTool(FunctionTool(
+            name="sub2api_manage", description="管理操作",
+            parameters={"type": "object", "properties": {"action": {"type": "string"}},
+                        "required": ["action"]}))
+        event = Event()
+        await plugin.on_using_llm_tool(event, tool, {})
+        await plugin.on_llm_tool_respond(event, tool, {}, {"executed": False})
+        self.assertEqual(getattr(event, TOOLS_ATTR), frozenset({"sub2api_manage"}))
+        plugin.runtime.handle_llm_tool_start.assert_not_awaited()
+        plugin.runtime.handle_llm_tool_respond.assert_not_awaited()
 
     async def test_agent_done_delegates_reaction_round_completion(self):
         calls = []
@@ -2226,8 +2286,9 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
             return "查询结果"
 
         async def adjust_life(
-            event, action, *, detail="", period="", schedule_time="", date=""
+            event, action, *, detail="", period="", schedule_time="", date="", change_scope="clothing"
         ):
+            self.assertEqual(change_scope, "clothing")
             calls.append(("adjust", event, action, detail, period, schedule_time, date))
             return "调整结果"
 

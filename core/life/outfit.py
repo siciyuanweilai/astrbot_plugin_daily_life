@@ -530,8 +530,13 @@ class OutfitComponent:
         current_outfit = format_outfit_components(current_components)
         persona = await self.context._get_persona()
         wardrobe_weather = wardrobe_conditions(old_data, current_time, residence=str(getattr(getattr(self.context.config, "domains", None), "home_address", "") or ""))
+        requested_change = bool(instruction.strip() or wardrobe_weather.get("outfit_request"))
+        resolve_usage = requested_change or (
+            wardrobe_weather.get("current_activity") or {}
+        ).get("activity_kind") == "personal_care"
         style_catalog_context = await self.context._style_catalog_context(
-            limit=14, conditions=wardrobe_weather, scene_category=current_scene_category
+            limit=14, conditions=wardrobe_weather,
+            scene_category="" if resolve_usage else current_scene_category,
         )
         catalog_has_clothing = await self.context._style_catalog_has_clothing_candidates()
         instruction_text = str(instruction or "").strip()
@@ -565,6 +570,8 @@ class OutfitComponent:
                 else (current_item or {}).get("place_kind", "")
             ).strip(),
             "current_scene_category": current_scene_category,
+            "requested_change": requested_change,
+            "resolve_usage": resolve_usage,
             "current_components": current_components or None,
             "current_outfit": current_outfit,
             "next_timeline": next_timeline,
@@ -637,7 +644,7 @@ class OutfitComponent:
 8. outfit/style/hair_style/hair/makeup_style/makeup/nails_style/nails 只写最终视觉状态；新换装或局部调整时遵循以下描述要求，keep 仍须原样返回已有状态：
 {CURRENT_APPEARANCE_GENERATION_RULES}
 9. reason 使用自然中文，不写内部枚举，也不复述具体日期、钟点或时间轴编号。
-10. 用户明确提出穿搭要求时，在不违背当前真实场景和天气的前提下优先执行，不能用 keep 回避。
+10. 本轮已接下的换装要求按穿着用途与天气选衣；scene_category 表示衣物使用场景，不是更衣所在地点。可以在家准备外出服，不必等到出门后才换；keep 或仅调整鞋饰不算完成主体换装。
 11. 只返回穿搭决策，不得改写时间轴、实时状态、主题、地点、事件或睡眠信息。
 12. change_evidence 描述本轮更换主体服装的依据；完成证据发生时间必须晚于当前穿搭确认时间：
 - 只有 execution_state=completed 的日程明确确认已经换装时，kind=explicit_outfit_change、source=occurred_schedule，timeline_time 填对应节点时间，quote 必须原样摘录该节点中明确确认换装的短句。到点、已过和当前计划均不算完成证据。
@@ -868,9 +875,13 @@ class OutfitComponent:
         ) or normalize_outfit_scene_category(
             old_meta.get("outfit_scene_category"), default="mixed"
         )
-        scene_category = scene_category_for_place_kind(
-            context.get("current_place_kind"), default=scene_category
-        )
+        if not context.get("resolve_usage", context.get("requested_change")):
+            scene_category = scene_category_for_place_kind(
+                context.get("current_place_kind"), default=scene_category
+            )
+        elif decision != "keep" and result.get("scene_category") not in {"home", "sleep", "public", "outdoor"}:
+            context["outfit_decision_issue"] = "换装需要明确衣物使用场景"
+            return None
         stored = normalize_outfit_appearance(
             {**old_meta, "outfit": old_data.outfit}
         )

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import time
 import uuid
 from dataclasses import asdict
 from pathlib import Path
@@ -85,10 +86,10 @@ class ImageRecovery:
             alias = cls._alias(directory, task_id, reference)
             if not alias.is_file():
                 return None
-            identifier = json.loads(alias.read_text())["id"]
+            identifier = json.loads(alias.read_text(encoding="utf-8"))["id"]
             # 文件名只接受本插件产生的 UUID，不能借助别名访问其他路径。
             identifier = uuid.UUID(identifier).hex
-            return cls(directory, json.loads((directory / f"{identifier}.json").read_text()))
+            return cls(directory, json.loads((directory / f"{identifier}.json").read_text(encoding="utf-8")))
 
         try:
             return await asyncio.to_thread(read)
@@ -101,7 +102,15 @@ class ImageRecovery:
         temporary = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
         try:
             temporary.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-            temporary.replace(path)
+            # Windows 文件索引/扫描可能短暂占用目标；只重试本地原子替换，不重发生成请求。
+            for attempt in range(4):
+                try:
+                    temporary.replace(path)
+                    break
+                except PermissionError as exc:
+                    if attempt == 3 or getattr(exc, "winerror", None) not in {5, 32, 33}:
+                        raise
+                    time.sleep(0.05 * (2 ** attempt))
         finally:
             temporary.unlink(missing_ok=True)
 

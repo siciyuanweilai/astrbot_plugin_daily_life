@@ -753,7 +753,8 @@ class SightComponent:
         )
 
     def schedule_bili_summary_from_event(self, event: Any) -> bool:
-        if getattr(event, "_daily_life_bili_natural", False):
+        route = getattr(event, "_daily_life_bili_route", "")
+        if route in {"conversation", "observe"} or getattr(event, "_daily_life_bili_natural", False):
             return False
         if (
             event is None
@@ -762,7 +763,7 @@ class SightComponent:
         ):
             return False
         settings = getattr(getattr(self.context, "config", None), "sight", None)
-        if not bool(getattr(settings, "bili_auto_summary", True)):
+        if route != "summary" and not bool(getattr(settings, "bili_auto_summary", True)):
             return False
         target = find_bili_target(event)
         if not target:
@@ -770,15 +771,25 @@ class SightComponent:
         scope = self.context._event_session_id(event)
         if not scope:
             return False
-        stopper = getattr(self.context, "_suppress_default_llm", None)
-        if callable(stopper):
-            stopper(event)
         message_id = self.context._event_message_id(event) or f"event:{id(event)}"
-        return self.context._schedule_background_task(
-            self.context._send_bili_summary_background(event, target),
-            label="B站视频总结",
-            key=f"bili:{scope}:{target.identity or message_id}",
-        )
+        key = f"bili:{scope}:{target.identity or message_id}:{target.page or 1}"
+        scheduler = getattr(self.context, "_background_scheduler", None)
+        scheduled = key in getattr(scheduler, "keys", set())
+        if not scheduled:
+            scheduled = self.context._schedule_background_task(
+                self.context._send_bili_summary_background(event, target),
+                label="B站视频总结",
+                key=key,
+            )
+        if scheduled:
+            stopper = getattr(self.context, "_suppress_default_llm", None)
+            if callable(stopper):
+                stopper(event)
+        else:
+            # 队列未接收任务时仍给正常聊天一次处理机会。
+            setattr(event, "_daily_life_bili_route", "conversation")
+            setattr(event, "_daily_life_bili_natural", True)
+        return scheduled
 
     async def _collect_sight_context_background(self, event: Any) -> None:
         if self.context.event_was_recalled(event, log_skip=True):
@@ -808,6 +819,8 @@ class SightComponent:
                 event, detail, scope=scope, message_id=message_id
             )
             return
+        if getattr(event, "_daily_life_bili_route", ""):
+            await self.context.bili_browsing.shared.remember(event, resolved)
         jar = await asyncio.to_thread(self.context._bili_cookie_jar_for_runtime)
         metadata = await fetch_bili_metadata(
             resolved,
@@ -859,6 +872,9 @@ class SightComponent:
         )
         if note_unavailable:
             logger.warning(f"{LOG_PREFIX} B站视频自动总结失败：{note_unavailable}")
+            await self.context._send_bili_summary_failure(
+                event, note_unavailable, scope=scope, message_id=message_id
+            )
             return
         markdown = self.context._cached_sight_note_markdown(insight, style="professional")
         note_cache_hit = bool(markdown)

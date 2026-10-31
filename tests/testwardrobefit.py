@@ -59,6 +59,38 @@ class WardrobeFitTest(unittest.IsolatedAsyncioTestCase):
         while self.runtime.background.tasks:
             await asyncio.gather(*list(self.runtime.background.tasks))
 
+    async def test_requested_usage_is_resolved_independently_of_dressing_location(self):
+        conditions = {"current_scene_category": "home",
+            "current_activity": {"place_kind": "home", "activity_kind": "personal_care"},
+            "outfit_request": {"id": "accepted", "instruction": "换好外出套装去散步"}}
+        targets = wardrobe_targets(conditions, [])
+        suit = await self.item(owned=True, attrs={"scene_categories": ["public"]})
+        snapshot = await self.archive.get_wardrobe_snapshot()
+        choice = {"target_id": targets[0]["id"], "usage_scene": "public", "verdict": "fits",
+            "item_ids": [suit.id], "confidence": 0.9, "reason": "适合外出散步"}
+        result = validate_scene_choices([choice], targets, [suit], snapshot)
+        self.assertEqual(result[0]["scene_category"], "public")
+        self.assertEqual(result[0]["item_ids"], [suit.id])
+        issues = []
+        choice.pop("usage_scene")
+        self.assertEqual(validate_scene_choices([choice], targets, [suit], snapshot, issues=issues), [])
+        self.assertEqual(issues[0]["code"], "usage_scene_required")
+
+    async def test_home_unsuitability_does_not_discard_outdoor_inventory(self):
+        from core.life.inspiration import StyleCatalogComponent
+        conditions = {"current_scene_category": "home"}
+        suit = await self.item(owned=True, attrs={"scene_categories": ["public"]})
+        snapshot = await self.archive.get_wardrobe_snapshot()
+        snapshot["profile"] = {"context_key": suitability_key(conditions),
+            "suitability": {str(suit.id): {"verdict": "unsuitable"}}}
+        self.assertTrue(StyleCatalogComponent._style_catalog_item_eligible(
+            suit, snapshot, scene_category="public", conditions=conditions))
+        self.assertTrue(StyleCatalogComponent._style_catalog_item_eligible(
+            suit, snapshot, conditions=conditions))
+        snapshot["items"][str(suit.id)]["available"] = False
+        self.assertFalse(StyleCatalogComponent._style_catalog_item_eligible(
+            suit, snapshot, scene_category="public", conditions=conditions))
+
     async def test_understanding_batches_all_items_and_reuses_unchanged_results(self):
         items = [await self.item(seed=i + 1, owned=i == 0, attrs={"custom": "保留"}) for i in range(35)]
         await self.archive.start_wardrobe_care(

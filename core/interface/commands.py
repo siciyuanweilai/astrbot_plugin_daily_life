@@ -198,6 +198,26 @@ class DailyLifeCommandCenter:
         return await self._run_text_handler(event, handler, req)
 
     async def adjust_life(
+        self, event: Any, action: str, *, detail: str = "", period: str = "",
+        schedule_time: str = "", date: str = "", change_scope: str = "clothing",
+    ) -> str:
+        from ..runtime.actionreply import RECEIPTS_ATTR, action_event_stale
+
+        if action_event_stale(self.runtime, event):
+            return "当前对话已更新，本轮生活动作未执行。"
+        receipt = {"action": action, "detail": detail, "status": "unknown"}
+        receipts = getattr(event, RECEIPTS_ATTR, None)
+        if receipts is None:
+            receipts = []
+            setattr(event, RECEIPTS_ATTR, receipts)
+        receipts.append(receipt)
+        result = await self._adjust_life(event, action, detail=detail, period=period,
+            schedule_time=schedule_time, date=date, change_scope=change_scope)
+        receipt.update(status=getattr(result, "status", "returned"), result=str(result),
+                       facts=getattr(result, "facts", {}))
+        return result
+
+    async def _adjust_life(
         self,
         event: Any,
         action: str,
@@ -270,6 +290,7 @@ class DailyLifeCommandCenter:
             return await self._run_text_handler(event, self._reset, req)
         if action_key in {"update_outfit", "outfit", "换装", "更新穿搭"}:
             from ..outcome import ToolResultText
+            from ..runtime.actionreply import action_event_stale
 
             change_scope = str(change_scope or "clothing").strip().lower()
             if change_scope not in {"clothing", "appearance"}:
@@ -292,6 +313,7 @@ class DailyLifeCommandCenter:
                     detail=str(detail or "").strip(),
                     period=str(period or "").strip(),
                     instruction_source="autonomous",
+                    should_abort=lambda: action_event_stale(self.runtime, event),
                 )
             except DailyGenerationBusy as exc:
                 return str(exc)

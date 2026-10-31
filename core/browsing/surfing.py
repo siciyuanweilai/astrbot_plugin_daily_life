@@ -23,6 +23,7 @@ from .feed import BiliLoginRequired, BiliReader, BiliReadError, clean
 from .material import BrowseMaterial
 from .receipts import MATCH_RULES, BrowseReceiptStore
 from .socializing import BiliSocialService
+from .shared import SharedVideos
 
 _DECIDE_RULE = """你在过自己的日常生活，决定此刻是否想刷一会B站。只返回 JSON。
 参考当前真实日程、正在做的事、精力、情绪、未完成事项与自己的长期兴趣；浏览是可选生活，不能每天强制刷或总是分享。
@@ -95,6 +96,7 @@ class BiliBrowseService:
         self._shared_locks = {}
         self._receipt_lock = asyncio.Lock()
         self.social = BiliSocialService(self)
+        self.shared = SharedVideos(self)
 
     @property
     def archive(self):
@@ -683,19 +685,28 @@ class BiliBrowseService:
         self._epoch += 1
         self._incoming_at = time.monotonic()
         await self.pause("被聊天打断，先放下视频")
-        if (
-            not self.runtime.config.browsing.natural_link_reply
-            or self.runtime._event_has_command_handler(event)
-        ):
+        if (self.runtime._event_has_command_handler(event)
+                or getattr(event, "is_stopped", lambda: False)()
+                or getattr(self.runtime, "_proactive_is_self_message", lambda _: False)(event)):
             return
         target = find_bili_target(event)
         if not target:
             return
-        # 先理解分享内容，再由聊天模型结合完整语义选择交流或总结工具。
-        setattr(event, "_daily_life_bili_natural", True)
         scope = self.runtime._event_session_id(event)
         if not scope or self.runtime.event_was_recalled(event):
             return
+        await self.shared.remember(event, target)
+        if not (self.runtime.config.browsing.natural_link_reply
+                or self.runtime.config.sight.bili_auto_summary):
+            return
+        mode = await self.shared.response_mode(event)
+        if self.runtime.event_was_recalled(event):
+            return
+        setattr(event, "_daily_life_bili_route", mode)
+        logger.debug(f"[日常生活] 视频分享回应方式：{mode}")
+        if mode != "conversation":
+            return
+        setattr(event, "_daily_life_bili_natural", True)
         try:
             # 素材准备交给受运行期管理的后台任务，聊天注入最多等待短时间。
             task = asyncio.get_running_loop().create_future()
@@ -718,7 +729,7 @@ class BiliBrowseService:
         try:
             async with lock:
                 if not self._closed:
-                    await self._read_shared_video(event, target, scope)
+                    return await self._read_shared_video(event, target, scope)
         finally:
             self._tasks.discard(task)
             if not lock.locked() and not getattr(lock, "_waiters", None):
@@ -728,17 +739,27 @@ class BiliBrowseService:
 
     async def _read_shared_video(self, event, target, scope):
         record = None
+        setattr(event, "_daily_life_bili_error", "")
         try:
-            await self.reader.require_login()
+            if self.runtime.event_was_recalled(event):
+                return
             resolved = await resolve_bili_target(target)
             if not resolved or not BVID_RE.fullmatch(resolved.bvid):
                 return
+            current = find_bili_target(event)
+            if current and (current.identity, current.page or 1) == (target.identity, target.page or 1):
+                await self.shared.remember(event, resolved)
+            record = await self.archive.get(record_id(resolved.bvid, resolved.page or 1, scope))
+            if record and record.get("evidence"):
+                await self.delivered_text(scope, resolved.bvid)
+                return record
+            await self.reader.require_login()
             metadata = await self.reader.metadata(resolved.bvid, resolved.page or 1)
             identity = record_id(metadata["bvid"], metadata["page"], scope)
             record = await self.archive.get(identity)
             if record and record.get("evidence"):
                 await self.delivered_text(scope, metadata["bvid"])
-                return
+                return record
             record = record or await self._save(
                 self.new_record(
                     metadata,
@@ -754,6 +775,7 @@ class BiliBrowseService:
                 return
             # 对方已发来该视频，不把回应当作主动推荐同一条的理由。
             await self.delivered_text(scope, metadata["bvid"])
+            return await self.archive.get(record["id"])
         except BiliLoginRequired as exc:
             setattr(event, "_daily_life_bili_error", clean(exc, 180))
             await self._login_blocked(exc)
@@ -769,6 +791,35 @@ class BiliBrowseService:
                     pause_reason="暂时读不到视频内容，保留原进度",
                 )
             logger.info("[日常生活] 分享的视频暂未读取成功，聊天中保留不确定性")
+
+    async def understand(self, event, *, selected_id="", target=""):
+        resolved, error = await self.shared.resolve(event, selected_id=selected_id, explicit=target)
+        if error:
+            return json.dumps(error, ensure_ascii=False)
+        scope = self.runtime._event_session_id(event)
+        if self.runtime.event_was_recalled(event):
+            return json.dumps({"status": "recalled"}, ensure_ascii=False)
+        from ..sight.bili import target_from_text
+        from ..sight.digest import tool_result_text
+        recent = getattr(self.runtime, "_sight_recent_for_event", None)
+        if callable(recent):
+            for insight in await recent(event, limit=20):
+                cached = target_from_text(insight.clip.source)
+                if (cached and cached.identity == resolved.identity
+                        and (cached.page or 1) == (resolved.page or 1)
+                        and insight.scope == scope and insight.status == "ready"
+                        and insight.summary):
+                    return tool_result_text(insight)
+        # 显式选择的自身浏览经历也可以直接复用，无需重新登录或重复解析。
+        record = await self.archive.get(selected_id) if selected_id else None
+        if not record or not record.get("evidence"):
+            record = await self._shared_video(event, resolved, scope)
+        if self.runtime.event_was_recalled(event):
+            return json.dumps({"status": "recalled"}, ensure_ascii=False)
+        if not record or not record.get("evidence"):
+            return json.dumps({"status": "unavailable", "url": resolved.canonical_url,
+                               "reason": getattr(event, "_daily_life_bili_error", "") or "该视频暂时没有可确认的内容依据。"}, ensure_ascii=False)
+        return json.dumps({"status": "ready", "video": self.card(record)}, ensure_ascii=False)
 
     @staticmethod
     def card(record):
@@ -847,14 +898,15 @@ class BiliBrowseService:
                 pass
         records = await self.context(scope)
         social = await self.social.context(scope)
-        if not records and not natural and not social:
+        shared = await self.shared.candidates(event) if event else []
+        if not records and not natural and not social and not shared:
             return ""
-        payload = html.escape(json.dumps({"videos": records, "account_activities": social}, ensure_ascii=False))
+        payload = html.escape(json.dumps({"videos": records, "shared_videos": shared, "account_activities": social}, ensure_ascii=False))
         return (
             "\n<video_life_experiences>\n"
             "真实浏览经历，仅按已处理片段谈内容，completed 才表示完整处理；impression 是自己的主观感受，evidence 是字幕/画面的依据。"
             "用户分享视频时自然接话，挑具体内容表达想法或疑问，允许不同意；不用先报幕或列报告，不强迫输出感想。"
-            "若尚无该视频的内容依据，明确还未了解，不凭标题猜测、不承诺稍后必发；需要了解时可调用 life_bili_browse 的 understand 操作。"
+            "若尚无该视频的内容依据，明确还未了解，不凭标题猜测、不承诺稍后必发；shared_videos 是本会话近期分享的来源；需要了解时调用 life_bili_browse 的 understand，并用 record_id 选择对应来源。"
             "自主分享仅在当前话题或关系合适且 share_worthy 时考虑，已分享内容不重复推荐，不能把对方的沉默视为负面反馈。"
             "delivery_pending 表示发送回执正在核对，暂不主动重复推荐；只在用户主动提及时正常承接。"
             "账号活动 accepted/confirmed 才代表B站已接收；uncertain/sending 不能说已发出。私信仅与已验证的同一会话身份交流B站相关内容。"

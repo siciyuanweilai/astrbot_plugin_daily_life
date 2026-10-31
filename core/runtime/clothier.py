@@ -49,7 +49,7 @@ from ..outcome import ToolResultText
 from ..paths import path_is_file
 from ..prompts import cache_friendly_prompt
 
-_WARDROBE_REVIEW_VERSION = "wardrobe_scene_v4"
+_WARDROBE_REVIEW_VERSION = "wardrobe_usage_v5"
 
 
 class WardrobeLifeService:
@@ -387,7 +387,8 @@ class WardrobeLifeService:
         sources["conditions:" + suitability_key(conditions)] = {"kind": "conditions", **conditions}
         upcoming = upcoming_outfit_plans(day, now)
         targets = [
-            {**target, "required_considered_ids": required_scene_candidates(items, snapshot, target["scene_category"])}
+            {**target, "required_considered_ids": required_scene_candidates(
+                items, snapshot, "" if target.get("resolve_usage") else target["scene_category"])}
             for target in wardrobe_targets(conditions, upcoming)
         ]
         for item in upcoming:
@@ -795,6 +796,21 @@ class WardrobeLifeService:
             if release:
                 leased = False
 
+        async def reject_material(reason, learned):
+            rejected = progress.setdefault("rejected_materials", [])
+            current = progress.get("current") or {}
+            rejected.append({"path": current.get("path", ""),
+                             "item_ids": [item.id for item in learned], "reason": reason,
+                             "observed": [{"kind": item.kind, "description": item.description}
+                                          for item in learned]})
+            # 只有拿到且核验过的失败产物可以纠正一次；传输未知继续走原恢复协议。
+            retry = bool(payload.get("automatic") and len(rejected) == 1)
+            if retry:
+                progress["current"] = {}
+                self._review_attempt_context = ""
+                self._review_retry_after = None
+            await save("pending" if retry else "failed", error=reason, release=True)
+
         try:
             if not self._config().image_generation.creative_wardrobe.enabled:
                 await save("pending", error="创意衣橱暂未启用", release=True)
@@ -955,6 +971,7 @@ class WardrobeLifeService:
                                     "target": payload.get("verified_need", {}),
                                     "reason": payload.get("reason", ""),
                                     "difference": payload.get("difference", ""),
+                                    "previous_validation": progress.get("rejected_materials", []),
                                 },
                                 ensure_ascii=False,
                             )
@@ -1004,20 +1021,22 @@ class WardrobeLifeService:
                     require_complete_clothing=not automatic,
                 )
                 if not learned:
-                    await save(
-                        "failed", error="生成图未识别出可入库的完整衣物", release=True
-                    )
+                    # 识别失败不等于衣物不合格；保留原图，避免视觉服务故障导致重画。
+                    failures = int(progress.get("recognition_failures", 0)) + 1
+                    progress["recognition_failures"] = failures
+                    await save("pending" if failures < 2 else "failed",
+                               error="生成图未识别出可入库衣物，保留原图", release=True)
                     return
+                progress.pop("recognition_failures", None)
                 ids = [i.id for i in learned]
-                if automatic and not await self._validate_wardrobe_acquisition(
-                    learned, payload
-                ):
-                    await save(
-                        "failed",
-                        error="生成衣物与补衣需求不符，保留为待核验资料",
-                        release=True,
-                    )
-                    return
+                if automatic:
+                    validation = await self._validate_wardrobe_acquisition(learned, payload)
+                    if validation is None:
+                        await save("pending", error="生成衣物尚未完成用途核验，保留原图等待复核", release=True)
+                        return
+                    if not validation["fits"]:
+                        await reject_material(validation["reason"], learned)
+                        return
                 clothing_ids = [
                     i.id
                     for i in learned
@@ -1078,12 +1097,12 @@ class WardrobeLifeService:
             )
             logger.warning(f"[日常生活] 衣橱补充暂未完成：{type(exc).__name__}")
 
-    async def _validate_wardrobe_acquisition(self, items, payload) -> bool:
+    async def _validate_wardrobe_acquisition(self, items, payload) -> dict | None:
         provider_id = str(self._config().outfit.provider or "")
         provider = await self._text_provider(provider_id)
         session = "daily_life_acquisition_" + uuid.uuid4().hex
         if provider is None:
-            return False
+            return None
         prompt = cache_friendly_prompt(
             "只核对已生成并完成视觉识别的衣物是否满足本次自主造型目标；必须有完整套装或上下装组合。"
             "如果本次目标本身是可独立使用的衣橱单品（例如鞋履、配饰、上衣或下装），按目标核对该单品，不要求强行生成整套穿搭。"
@@ -1120,11 +1139,10 @@ class WardrobeLifeService:
                 timeout_seconds=30,
             )
             result = extract_json_from_text(answer)
-            return (
-                isinstance(result, dict)
-                and result.get("fits") is True
-                and bool(str(result.get("reason") or "").strip())
-            )
+            if (not isinstance(result, dict) or not isinstance(result.get("fits"), bool)
+                    or not str(result.get("reason") or "").strip()):
+                return None
+            return {"fits": result["fits"], "reason": str(result["reason"]).strip()[:500]}
         finally:
             await self._close_text_session(session)
 

@@ -501,6 +501,7 @@ class DailyLifePlugin(Star):
         task_key: str,
         contains_character: bool = False,
         target_umo: str = "",
+        public_only: bool = False,
     ) -> dict:
         async with self._external_runtime_lease() as runtime:
             return await runtime.generate_share_image_task(
@@ -509,6 +510,7 @@ class DailyLifePlugin(Star):
                 task_key=task_key,
                 contains_character=contains_character,
                 target_umo=target_umo,
+                public_only=public_only,
             )
 
     async def get_share_image_task(self, task_key: str) -> dict:
@@ -2046,28 +2048,20 @@ class DailyLifePlugin(Star):
     @filter.llm_tool(name="life_bili_browse")
     @guard_tool_arguments
     @_runtime_guard
-    async def life_bili_browse(self, event: AstrMessageEvent, operation: str = "history", record_id: str = "") -> str:
+    async def life_bili_browse(self, event: AstrMessageEvent, operation: str = "history", record_id: str = "", target: str = "") -> str:
         """查看真实的B站浏览经历，或继续了解用户分享的视频；不会主动发送消息。
 
         Args:
-            operation(string): history 查看记录；understand 理解本轮分享的视频；pause 暂停；resume 续看；abandon 不再看；continue_later 留待以后；favorite 收藏；unfavorite 取消收藏；revisit 重看收藏。
-            record_id(string): 记录 id；history 与 understand 可留空。仅允许访问当前会话或角色自己的记录。
+            operation(string): history 查看记录；understand 理解当前、引用或本会话此前分享的视频；pause 暂停；resume 续看；abandon 不再看；continue_later 留待以后；favorite 收藏；unfavorite 取消收藏；revisit 重看收藏。
+            record_id(string): 浏览记录或分享来源 id；understand 留空时解析当前消息，或本会话唯一近期来源；多个候选时按对话选择 id。仅允许访问当前会话或角色自己的记录。
+            target(string): understand 可指定对话中的B站链接或BV号；无来源时不要猜测。
         """
         import json
 
         service = self.runtime.bili_browsing
         scope = self.runtime._event_session_id(event)
         if operation == "understand":
-            from .core.sight.bili import find_bili_target
-
-            target = find_bili_target(event)
-            if not target:
-                return "本轮没有识别到B站视频链接。"
-            await service._shared_video(event, target, scope)
-            error = getattr(event, "_daily_life_bili_error", "")
-            if error:
-                return error
-            return await service.prompt(event) or "视频内容暂时无法确认，不要凭标题猜测。"
+            return await service.understand(event, selected_id=record_id, target=target)
         if operation == "history":
             records = await service.archive.list(scope=scope, limit=12)
             return json.dumps([service.card(item) for item in records], ensure_ascii=False)
@@ -2420,6 +2414,11 @@ class DailyLifePlugin(Star):
         if response_failed:
             setattr(event, self._AGENT_ERROR_SEEN_ATTR, True)
         else:
+            reconcile = getattr(self.runtime, "reconcile_life_action_reply", None)
+            if callable(reconcile):
+                await reconcile(event, response, self.commands.adjust_life)
+            if self._runtime_hook_bool("stop_stale_continuous_turn_event", event):
+                return
             setattr(event, self._LLM_RESPONSE_SEEN_ATTR, True)
             completion = str(getattr(response, "completion_text", "") or "").strip()
             marker = getattr(self.runtime, "mark_structured_pending_bot_text", None)
@@ -2437,7 +2436,8 @@ class DailyLifePlugin(Star):
     @filter.on_agent_done()
     @_runtime_guard
     async def on_agent_done(self, event: AstrMessageEvent, run_context, response):
-        del run_context
+        from .core.runtime.actionreply import sync_action_reply_history
+        sync_action_reply_history(event, run_context)
         agent_error = self._response_is_agent_error(response)
         if agent_error:
             setattr(event, self._AGENT_ERROR_SEEN_ATTR, True)
@@ -2467,6 +2467,8 @@ class DailyLifePlugin(Star):
     async def on_using_llm_tool(
         self, event: AstrMessageEvent, tool, tool_args: dict | None = None
     ):
+        from .core.runtime.actionreply import note_action_reply_tool
+        note_action_reply_tool(event, tool)
         if isinstance(tool, ArgumentCheckedTool) and tool.argument_error(
             {} if tool_args is None else tool_args
         ):
@@ -2512,6 +2514,8 @@ class DailyLifePlugin(Star):
         tool_args: dict | None = None,
         tool_result=None,
     ):
+        from .core.runtime.actionreply import note_action_reply_tool
+        note_action_reply_tool(event, tool)
         if isinstance(tool, ArgumentCheckedTool) and tool.argument_error(
             {} if tool_args is None else tool_args
         ):
@@ -2878,6 +2882,10 @@ class DailyLifePlugin(Star):
             self._runtime_hook_call(name, event)
         self._runtime_hook_call("note_semantic_segment_incoming_message", event)
         await self._capture_chat_memory(event)
+        if getattr(event, "_daily_life_bili_route", "") == "observe":
+            self.runtime._suppress_default_llm(event)
+            self._runtime_hook_call("complete_continuous_turn", event)
+            return
         if self._runtime_hook_call("schedule_bili_summary_from_event", event):
             self._runtime_hook_call("complete_continuous_turn", event)
             self._log_response_gate_outcome(
@@ -2902,6 +2910,38 @@ class DailyLifePlugin(Star):
         self._runtime_hook_call("_continuous_turn_restart_for_image", event)
         self._log_response_gate_outcome(event, decision)
         self._log_message_entry_timing(event, started_at)
+        if getattr(event, "_daily_life_bili_natural", False) and (decision or {}).get("action") == "reply":
+            setattr(event, "_daily_life_bili_reply_pending", True)
+
+    @filter.event_message_type(
+        EventMessageType.GROUP_MESSAGE | EventMessageType.PRIVATE_MESSAGE,
+        priority=-91,
+    )
+    @_runtime_guard
+    async def on_bili_conversation_reply(self, event: AstrMessageEvent):
+        # 媒体解析的发送不是聊天回复；通过 SDK 显式进入正常 Agent 流程。
+        if (not getattr(event, "_daily_life_bili_reply_pending", False)
+                or getattr(event, "call_llm", False)
+                or event.is_stopped()
+                or self.runtime.event_was_recalled(event)):
+            return
+        setattr(event, "_daily_life_bili_reply_pending", False)
+        manager = self.context.conversation_manager
+        scope = event.unified_msg_origin
+        cid = await manager.get_curr_conversation_id(scope)
+        if not cid:
+            cid = await manager.new_conversation(scope, event.get_platform_id())
+        conversation = await manager.get_conversation(scope, cid)
+        if conversation is None:
+            logger.warning("[日常生活] 视频分享回复未启动：当前对话不存在")
+            return
+        if event.is_stopped() or self.runtime.event_was_recalled(event):
+            return
+        self.runtime._suppress_default_llm(event)
+        yield event.request_llm(
+            prompt=str(getattr(event, "message_str", "") or "<attachment>"),
+            conversation=conversation,
+        )
 
     @filter.event_message_type(
         getattr(

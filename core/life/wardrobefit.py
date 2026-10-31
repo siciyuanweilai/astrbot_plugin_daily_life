@@ -101,17 +101,17 @@ def wardrobe_targets(conditions: dict, upcoming: list[dict]) -> list[dict]:
         targets.append({
             "id": digest([identity, plan.get("activity", "") if scene == "public" else ""]),
             "current": current, "scene_category": scene, "plan": plan,
+            "resolve_usage": kind == "personal_care",
         })
     request = conditions.get("outfit_request") or {}
     if request.get("id") and request.get("instruction"):
-        current = next((target for target in targets if target["current"]), None)
-        if current:
-            targets.insert(0, {
-                **current,
-                "id": digest(["outfit_request", request["id"], current["scene_category"]]),
-                "request": request["instruction"],
-                "plan": {**current["plan"], "outfit_requirement": request["instruction"]},
-            })
+        targets.insert(0, {
+            "id": digest(["outfit_request", request["id"]]),
+            "current": True, "scene_category": "", "resolve_usage": True,
+            "request": request["instruction"],
+            "plan": {"outfit_requirement": request["instruction"],
+                     "dressing_place_kind": (conditions.get("current_activity") or {}).get("place_kind", "")},
+        })
     return targets
 
 
@@ -170,7 +170,13 @@ def validate_scene_choices(
     for value in values:
         if not isinstance(value, dict) or value.get("target_id") not in target_map:
             continue
-        target = target_map[value["target_id"]]
+        target = dict(target_map[value["target_id"]])
+        if target.get("resolve_usage"):
+            usage = value.get("usage_scene")
+            if usage not in {"home", "sleep", "public", "outdoor"}:
+                reject(target, "usage_scene_required")
+                continue
+            target["scene_category"] = usage
         verdict = value.get("verdict")
         reason = str(value.get("reason") or "").strip()[:300]
         try:

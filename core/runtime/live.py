@@ -399,6 +399,14 @@ class DailyLifeRuntime:
         )
         return result
 
+    @cached_property
+    def action_reply(self):
+        from .actionreply import ActionReplyService
+        return ActionReplyService(self)
+
+    async def reconcile_life_action_reply(self, event: Any, response: Any, execute) -> None:
+        await self.action_reply.reconcile(event, response, execute)
+
     async def sync_continuous_kernel_state(
         self,
         day,

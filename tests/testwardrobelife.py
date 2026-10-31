@@ -66,7 +66,7 @@ class Runtime(DailyLifeRuntime):
         self._edit_life_image_with_policy_retry = AsyncMock()
         self._generate_life_image_with_policy_retry = AsyncMock()
         self._learn_style_catalog_image = AsyncMock()
-        self.wardrobe_life._validate_wardrobe_acquisition = AsyncMock(return_value=True)
+        self.wardrobe_life._validate_wardrobe_acquisition = AsyncMock(return_value={"fits": True, "reason": "适合本次目标"})
 
     def _schedule_background_task(self, coro, **kwargs):
         return self.background.schedule(coro, **kwargs)
@@ -129,6 +129,55 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state["items"][str(b.id)]["ownership"], "owned")
         self.assertFalse(state["items"][str(b.id)]["currently_worn"])
         self.assertEqual(b.last_used_at, "")
+
+    async def test_invalid_generated_material_has_one_persisted_correction(self):
+        image = Path(self.tmp.name) / "invalid.png"
+        image.write_bytes(b"image")
+        self.runtime._learn_style_catalog_image.return_value = [await self.item()]
+        self.runtime._generate_life_image_with_policy_retry.return_value = SimpleNamespace(path=str(image))
+        self.runtime.wardrobe_life._validate_wardrobe_acquisition.return_value = {"fits": False, "reason": "只有开衫，缺少目标长裙"}
+        self.runtime.media.image.first_configured_character_reference_image = lambda: ""
+        await self.archive.enqueue_wardrobe_job("correct-once", {
+            "automatic": True, "count": 1, "requirement": "完整外出套装"}, at=str(self.now))
+        await self.runtime.wardrobe_life._run_wardrobe_job("correct-once")
+        first = await self.stored_job("correct-once")
+        self.assertEqual(first["status"], "pending")
+        self.assertEqual(len(first["progress"]["rejected_materials"]), 1)
+        self.assertEqual(first["progress"]["rejected_materials"][0]["reason"], "只有开衫，缺少目标长裙")
+        self.assertEqual(first["progress"]["current"], {})
+        # 重启服务后仍使用同一持久化次数，不恢复成无限重试。
+        self.runtime.__dict__.pop("wardrobe_life", None)
+        self.runtime.now += datetime.timedelta(minutes=3)
+        self.runtime.wardrobe_life._validate_wardrobe_acquisition = AsyncMock(return_value={"fits": False, "reason": "仍未符合目标"})
+        await self.runtime.wardrobe_life._run_wardrobe_job("correct-once")
+        second = await self.stored_job("correct-once")
+        self.assertEqual(second["status"], "failed")
+        self.assertEqual(len(second["progress"]["rejected_materials"]), 2)
+        await self.runtime.wardrobe_life._run_wardrobe_job("correct-once")
+        self.assertEqual(self.runtime._generate_life_image_with_policy_retry.await_count, 2)
+
+    async def test_unavailable_validation_retains_image_without_regeneration(self):
+        image = Path(self.tmp.name) / "unverified.png"
+        image.write_bytes(b"image")
+        self.runtime._learn_style_catalog_image.return_value = [await self.item()]
+        self.runtime._generate_life_image_with_policy_retry.return_value = SimpleNamespace(path=str(image))
+        self.runtime.wardrobe_life._validate_wardrobe_acquisition.return_value = None
+        self.runtime.media.image.first_configured_character_reference_image = lambda: ""
+        await self.archive.enqueue_wardrobe_job("verify-later", {
+            "automatic": True, "count": 1, "requirement": "完整外出套装"}, at=str(self.now))
+        await self.runtime.wardrobe_life._run_wardrobe_job("verify-later")
+        job = await self.stored_job("verify-later")
+        self.assertEqual(job["status"], "pending")
+        self.assertEqual(job["progress"]["current"]["path"], str(image))
+        self.assertNotIn("rejected_materials", job["progress"])
+        self.runtime.now += datetime.timedelta(minutes=3)
+        await self.runtime.wardrobe_life._run_wardrobe_job("verify-later")
+        self.runtime._generate_life_image_with_policy_retry.assert_awaited_once()
+
+    async def stored_job(self, job_id):
+        row = await self.archive._run_db(lambda: dict(self.archive._conn.execute(
+            "SELECT * FROM wardrobe_jobs WHERE job_id=?", (job_id,)).fetchone()))
+        return {**row, "progress": json.loads(row["progress_json"])}
 
     async def test_outfit_and_separate_pieces_share_units(self):
         suit = await self.item()
@@ -691,8 +740,10 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
         self.runtime._edit_life_image_with_policy_retry.return_value = SimpleNamespace(
             path=str(path)
         )
+        self.runtime.media.image.first_configured_character_reference_image = lambda: ""
+        self.runtime._generate_life_image_with_policy_retry.return_value = SimpleNamespace(path=str(path))
         self.runtime._learn_style_catalog_image.return_value = [item]
-        self.runtime.wardrobe_life._validate_wardrobe_acquisition.return_value = False
+        self.runtime.wardrobe_life._validate_wardrobe_acquisition.return_value = {"fits": False, "reason": "与需求不符"}
         await self.archive.enqueue_wardrobe_job(
             "wrong",
             {"automatic": True, "count": 1, "requirement": "暖外套", "reason": "降温"},
@@ -701,7 +752,9 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
         await self.runtime.wardrobe_life._run_wardrobe_job("wrong")
         state = await self.archive.get_wardrobe_snapshot()
         self.assertEqual(state["items"][str(item.id)]["ownership"], "candidate")
-        self.assertEqual(state["jobs"][0]["status"], "failed")
+        self.assertEqual(state["jobs"][0]["status"], "pending")
+        self.runtime.wardrobe_life._validate_wardrobe_acquisition.assert_awaited_once()
+        self.assertEqual(state["jobs"][0]["progress"]["rejected_materials"][0]["reason"], "与需求不符")
 
     async def test_job_id_prevents_duplicate_generation(self):
         a = await self.archive.enqueue_wardrobe_job(
