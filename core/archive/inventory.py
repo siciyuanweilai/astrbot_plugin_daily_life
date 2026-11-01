@@ -83,6 +83,16 @@ class StyleCatalogArchiveComponent:
             return None
 
         def write() -> StyleCatalogItemRecord | None:
+            if item.attributes.get("wardrobe_job"):
+                existing = self.context._conn.execute(
+                    "SELECT * FROM style_catalog_items WHERE source_image_hash=? AND kind=?",
+                    (item.source_image_hash, item.kind),
+                ).fetchone()
+                if existing:
+                    prior = json.loads(existing["attributes_json"] or "{}")
+                    # 同图恢复或另一任务返回旧图，都不能覆盖已核验资料与用户编辑。
+                    if prior.get("wardrobe_job") != item.attributes["wardrobe_job"] or prior.get("design_validation") == "accepted":
+                        return self.context._compose_style_catalog_item(existing)
             self.context._conn.execute(
                 """
                 INSERT INTO style_catalog_items(
@@ -166,6 +176,8 @@ class StyleCatalogArchiveComponent:
             if normalized_status:
                 clauses.append("status = ?")
                 values.append(normalized_status)
+            if normalized_status == "active":
+                clauses.append("COALESCE(json_extract(attributes_json,'$.design_validation'),'') NOT IN ('pending','rejected')")
             if normalized_scope:
                 clauses.append("source_scope = ?")
                 values.append(normalized_scope)
@@ -207,6 +219,8 @@ class StyleCatalogArchiveComponent:
             if normalized_status:
                 clauses = " WHERE status = ?"
                 values = (normalized_status,)
+            if normalized_status == "active":
+                clauses += " AND COALESCE(json_extract(attributes_json,'$.design_validation'),'') NOT IN ('pending','rejected')"
             rows = self.context._conn.execute(
                 f"""
                 SELECT kind, COUNT(*) AS item_count
@@ -425,6 +439,27 @@ class StyleCatalogArchiveComponent:
             return self.context._compose_style_catalog_item(row) if row else None
 
         return await self.context._run_db(write)
+
+    async def set_style_catalog_design_result(self, item_ids: list[int], *, job_id: str, verdict: str, reason: str) -> None:
+        """只更新属于本次生成的核验回执，保留用户编辑和启停状态。"""
+        if verdict not in {"accepted", "rejected"}:
+            raise ValueError("无效设计核验状态")
+        def write():
+            self.context._conn.execute("BEGIN IMMEDIATE")
+            try:
+                for item_id in item_ids:
+                    row = self.context._conn.execute("SELECT attributes_json FROM style_catalog_items WHERE id=?", (item_id,)).fetchone()
+                    attributes = json.loads(row[0]) if row else {}
+                    if attributes.get("wardrobe_job") != job_id:
+                        continue
+                    attributes.update(design_validation=verdict, design_validation_reason=reason[:500])
+                    self.context._conn.execute("UPDATE style_catalog_items SET attributes_json=? WHERE id=?",
+                                               (json.dumps(attributes, ensure_ascii=False), item_id))
+                self.context._conn.commit()
+            except BaseException:
+                self.context._conn.rollback()
+                raise
+        await self.context._run_db(write)
 
     async def set_style_catalog_status(
         self,

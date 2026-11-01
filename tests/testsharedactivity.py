@@ -1,4 +1,5 @@
 import datetime
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -229,6 +230,41 @@ class SharedActivityTest(unittest.IsolatedAsyncioTestCase):
         result = await self.send_now()
         self.assertEqual(result["outcome"], "expired")
         self.assertEqual(self.sent, [])
+
+    async def test_delayed_executable_activity_is_still_available_for_coordination(self):
+        day = await self.archive.get_day(self.day.date)
+        day.timeline[2].execution_state = "planned"
+        day.meta["planned_life_actions"] = json.dumps([{
+            "action_id": "shared-walk", "action_type": "social", "target": "一起看电影",
+            "timeline_index": 2, "duration_minutes": 90,
+            "payload": {"schedule_commitment_id": self.commitment.id,
+                        "depends_on_action_ids": ["unfinished-preparation"]},
+        }])
+        await self.archive.save_day(day)
+        self.now = datetime.datetime(2026, 10, 3, 19, 2)
+        self.decision = {"decision": "send", "activity_index": 2,
+                         "reply_text": "我还差一点收尾，晚一会儿出发可以吗？", "reason": "准备尚未完成"}
+        result = await self.run_contact()
+        self.assertEqual(result["outcome"], "sent")
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual((await self.archive.get_day(self.day.date)).timeline[2].execution_state, "planned")
+        entities = await self.archive.get_living_entities(self.commitment.source_session, kind="shared_activity")
+        self.assertEqual(entities[0]["state"], "planned")
+
+    async def test_delayed_task_is_not_expired_during_recovery(self):
+        day = await self.archive.get_day(self.day.date)
+        day.timeline[2].execution_state = "planned"
+        day.meta["planned_life_actions"] = json.dumps([{
+            "action_id": "shared-walk", "action_type": "social", "timeline_index": 2,
+            "payload": {"schedule_commitment_id": self.commitment.id},
+        }])
+        await self.archive.save_day(day)
+        result = await self.run_contact()
+        await self.archive.update_durable_task_progress(self.task.id, owner=self.task.lease_owner, progress=result["progress"])
+        self.now = datetime.datetime(2026, 10, 3, 19, 2)
+        await self.runtime.reconcile_scheduled_invite_contacts(now=self.now)
+        saved = await self.archive.get_durable_task(self.task.task_key)
+        self.assertEqual(saved.status, "pending")
 
     async def test_send_uses_actual_clock_without_requiring_model_timestamp(self):
         for model_time in (None, "", "2026-10-03 17:59:00", "2026-10-03 19:00:00"):

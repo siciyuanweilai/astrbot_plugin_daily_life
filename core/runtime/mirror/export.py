@@ -4,6 +4,7 @@ import asyncio
 import datetime
 import json
 from typing import Any
+from .sharefacts import project as project_share_facts
 
 from astrbot.api import logger
 
@@ -86,11 +87,15 @@ class SnapshotExportComponent:
                     "observed_at": str(run.get("observed_at") or ""),
                 }
         body = object_value("continuous_body")
+        projection = project_share_facts(data)
+        if current:
+            current["episode_id"] = projection["action_episodes"].get(current["action_id"], current["action_id"])
         return {
             "version": 1,
             "valid": True,
             "date": data.date,
             "current_action": current,
+            **{key: projection[key] for key in ("appearance_version", "action_progress_version", "action_progress")},
             "body": {
                 key: body[key]
                 for key in (
@@ -773,7 +778,7 @@ class SnapshotExportComponent:
             "schedule": schedule,
             "meta": meta,
             "is_extended_night": is_extended_night,
-            "timeline": [item.as_dict() for item in data.timeline],
+            "timeline": project_share_facts(data)["timeline"],
             "memo": memo,
             "state": state_dict,
             "subject": self.context._life_context_subject(state_dict, interrupt),

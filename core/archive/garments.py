@@ -377,6 +377,7 @@ class GarmentArchiveComponent:
         )
 
     async def get_wardrobe_snapshot(self) -> dict:
+        from ..life.stylememory import PERSONAL_STYLE_KINDS
         def read():
             ids = [
                 row[0]
@@ -390,18 +391,52 @@ class GarmentArchiveComponent:
             events = self.context._conn.execute(
                 "SELECT * FROM wardrobe_events ORDER BY occurred_at DESC,event_id DESC LIMIT 80"
             ).fetchall()
+            wear_history = self.context._conn.execute(
+                "SELECT event_id,kind,occurred_at,payload_json FROM wardrobe_events "
+                "WHERE kind='wear' ORDER BY occurred_at DESC,event_id DESC LIMIT 160"
+            ).fetchall()
+            feedback_history = self.context._conn.execute(
+                "SELECT event_id,kind,occurred_at,payload_json FROM wardrobe_events "
+                "WHERE kind='feedback' ORDER BY occurred_at DESC,event_id DESC LIMIT 80"
+            ).fetchall()
+            catalog_feedback = self.context._conn.execute(
+                "SELECT f.*,i.description,i.kind AS category FROM style_catalog_feedback f "
+                "JOIN style_catalog_items i ON i.id=f.item_id ORDER BY f.id DESC LIMIT 80"
+            ).fetchall()
             jobs = self.context._conn.execute(
                 "SELECT * FROM wardrobe_jobs WHERE status NOT IN ('completed','cancelled') ORDER BY CASE WHEN status IN ('failed','uncertain') THEN 1 ELSE 0 END,updated_at DESC LIMIT 50"
             ).fetchall()
             recent = self.context._conn.execute(
                 "SELECT job_id,status,updated_at,payload_json,error FROM wardrobe_jobs ORDER BY updated_at DESC LIMIT 16"
             ).fetchall()
+            style_history = [row for kind in PERSONAL_STYLE_KINDS for row in self.context._conn.execute(
+                "SELECT event_id,kind,occurred_at,payload_json FROM wardrobe_events "
+                "WHERE kind='style_use' AND json_extract(payload_json,'$.category')=? "
+                "ORDER BY occurred_at DESC,event_id DESC LIMIT 60", (kind,)).fetchall()]
+            style_history.sort(key=lambda row: (row["occurred_at"], row["event_id"]), reverse=True)
             return {
+                "style_history": [{"event_id": r["event_id"], "kind": r["kind"],
+                                   "occurred_at": r["occurred_at"], "payload": unpack(r["payload_json"])}
+                                  for r in style_history],
                 "items": {str(i): self.context._wardrobe_item_state_unlocked(i) for i in ids},
                 "profile": unpack(profile["payload_json"]) if profile else {},
                 "profile_revision": profile["revision"] if profile else 0,
                 "events": [
                     {**dict(r), "payload": unpack(r["payload_json"])} for r in events
+                ],
+                "wear_history": [
+                    {"event_id": r["event_id"], "kind": r["kind"], "occurred_at": r["occurred_at"],
+                     "payload": unpack(r["payload_json"])} for r in wear_history
+                ],
+                "feedback_history": [
+                    {"event_id": r["event_id"], "kind": r["kind"], "occurred_at": r["occurred_at"],
+                     "payload": unpack(r["payload_json"])} for r in feedback_history
+                ] + [
+                    {"event_id": "catalog-feedback:" + str(r["id"]), "kind": "feedback",
+                     "occurred_at": r["created_at"] + "+00:00",
+                     "payload": {"item_ids": [r["item_id"]], "text": r["feedback"],
+                                 "outfit": r["description"], "origin": "user_feedback",
+                                 "categories": [r["category"]], "sentiment": r["sentiment"]}} for r in catalog_feedback
                 ],
                 "jobs": [
                     {
@@ -479,14 +514,49 @@ class GarmentArchiveComponent:
 
         return await self.context._run_db(write)
 
+    def _record_style_use_unlocked(self, day, source: str) -> bool:
+        from ..life.stylememory import PERSONAL_STYLE_KINDS, STYLE_USAGE_KEY, style_values, usage_context
+        latest = dict(self.context._conn.execute("SELECT key,value FROM day_meta WHERE date=?", (day.date,)))
+        fields = [STYLE_USAGE_KEY, "outfit_fact_confirmed_at",
+                  *(field for kind in PERSONAL_STYLE_KINDS for field in (kind, kind + "_style"))]
+        if any(str(latest.get(key) or "") != str(day.meta.get(key) or "") for key in fields):
+            return False
+        context, changed = usage_context(day.meta), False
+        for kind, value in style_values(day.meta).items():
+            confirmed = context.get(kind) or {}
+            if any(confirmed.get(key, "") != text for key, text in value.items()):
+                confirmed = {}
+            at = confirmed.get("changed_at") or day.meta.get("outfit_fact_confirmed_at")
+            if not instant(at):
+                continue
+            row = self.context._conn.execute(
+                "SELECT occurred_at,payload_json FROM wardrobe_events WHERE kind='style_use' "
+                "AND json_extract(payload_json,'$.category')=? ORDER BY occurred_at DESC LIMIT 1", (kind,)
+            ).fetchone()
+            previous = unpack(row["payload_json"]) if row else {}
+            if row and (instant(at) <= instant(row["occurred_at"]) or
+                        all(previous.get(key, "") == text for key, text in value.items())):
+                continue
+            if not row and not any(value.values()) and not confirmed:
+                continue
+            payload = {**value, "category": kind, "day": day.date,
+                       "changed_at": confirmed.get("changed_at", ""),
+                       "choice_reason": confirmed.get("reason", ""),
+                       "choice_origin": confirmed.get("origin", "observed"),
+                       "transition": confirmed.get("transition", "observed")}
+            receipt_id = "style-use:" + hashlib.sha256(encode([kind, at, value]).encode()).hexdigest()[:24]
+            changed |= self.context._wardrobe_event_unlocked(receipt_id, "style_use", str(at), source, payload)
+        return changed
+
     def _record_wardrobe_wear_unlocked(
         self, day, *, event_id: str = "archive", source: str = "outfit_receipt"
     ) -> bool:
+        style_changed = self._record_style_use_unlocked(day, source) if event_id else False
         raw = str(day.meta.get("style_catalog_reference_ids") or "")
         ids = [int(v) for v in raw.split(",") if v.strip().isdigit()]
         at = str(day.meta.get("outfit_fact_confirmed_at") or "")
         if not at or not event_id or (not ids and not day.outfit.strip()):
-            return False
+            return style_changed
         # 同一穿着回执可能来自换装结算、外观更新和定时核对，只计一次经历。
         receipt_id = (
             "wear:"
@@ -506,7 +576,7 @@ class GarmentArchiveComponent:
             latest.get("style_catalog_reference_ids", "") != raw
             or latest.get("outfit_fact_confirmed_at") != at
         ):
-            return False
+            return style_changed
         units = {
             r[0]
             for i in ids
@@ -515,7 +585,7 @@ class GarmentArchiveComponent:
             )
         }
         if ids and not units:
-            return False
+            return style_changed
         prior = self.context._conn.execute(
             "SELECT payload_json FROM wardrobe_events WHERE kind='wear' ORDER BY occurred_at DESC LIMIT 1"
         ).fetchone()
@@ -531,15 +601,19 @@ class GarmentArchiveComponent:
             }
             if (previous.get("day") == day.date and units == previous_units
                     and (units or previous.get("outfit") == day.outfit)):
-                return False
+                return style_changed
         if not self.context._wardrobe_event_unlocked(
             receipt_id,
             "wear",
             at,
             source,
-            {"item_ids": ids, "outfit": day.outfit, "day": day.date},
+            {"item_ids": ids, "outfit": day.outfit, "day": day.date,
+             "choice_reason": str(day.meta.get("outfit_reason") or "")[:500],
+             "scene_category": str(day.meta.get("outfit_scene_category") or ""),
+             "choice_context": {"fact_source": str(day.meta.get("outfit_fact_source") or ""),
+                                "decision": str(day.meta.get("outfit_decision") or "")}},
         ):
-            return False
+            return style_changed
         newest = self.context._conn.execute(
             "SELECT MAX(occurred_at) FROM wardrobe_events WHERE kind='wear'"
         ).fetchone()[0]

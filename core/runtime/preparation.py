@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Awaitable, Callable
+from contextlib import nullcontext
 from typing import Any
 
 from astrbot.api import logger
 
 from .markers import LOG_PREFIX
+from .replyhistory import suppress_reply_draft
 
 
 class ReplyPreparationService:
@@ -20,12 +22,16 @@ class ReplyPreparationService:
         delivered: Callable[[Any], Awaitable[None]],
         is_current: Callable[[Any], bool],
         complete: Callable[[Any], None],
+        transaction: Callable[..., Any] = nullcontext,
+        commit: Callable[[Any], Awaitable[None]] | None = None,
     ) -> None:
         self._schedule = schedule
         self._prepare = prepare
         self._delivered = delivered
         self._is_current = is_current
         self._complete = complete
+        self._transaction = transaction
+        self._commit = commit
 
     def defer(self, event: Any) -> bool:
         if getattr(event, "_daily_life_reply_deferred", False):
@@ -42,13 +48,26 @@ class ReplyPreparationService:
             if name.endswith("extras") and isinstance(value, dict):
                 setattr(snapshot, name, dict(value))
         snapshot._daily_life_reply_is_current = lambda: self._is_current(snapshot)
+        snapshot._daily_life_reply_sent_count = 0
+        send = snapshot.send
+
+        async def send_with_receipt(result, *args, **kwargs):
+            returned = await send(result, *args, **kwargs)
+            snapshot._daily_life_reply_sent_count += 1
+            receipt = getattr(snapshot, "_daily_life_reply_history", None)
+            if receipt is not None:
+                receipt.record(snapshot, result)
+            return returned
+
+        snapshot.send = send_with_receipt
         finished = False
 
         def finish() -> None:
             nonlocal finished
             if not finished:
                 finished = True
-                self._complete(snapshot)
+                if snapshot._daily_life_reply_sent_count:
+                    self._complete(snapshot)
 
         scope = str(getattr(event, "unified_msg_origin", "") or "")
         job = self._run(snapshot, finish)
@@ -58,12 +77,20 @@ class ReplyPreparationService:
         ):
             return False
         event._daily_life_reply_deferred = True
+        suppress_reply_draft(event)
         event.clear_result()
         return True
 
     async def _run(self, event: Any, finish: Callable[[], None]) -> None:
+        try:
+            async with self._transaction():
+                await self._run_locked(event)
+        finally:
+            event.clear_result()
+            finish()
+
+    async def _run_locked(self, event: Any) -> None:
         stage = "表达加工"
-        sent = False
         try:
             if not self._is_current(event):
                 return
@@ -74,15 +101,21 @@ class ReplyPreparationService:
             if result is not None and getattr(result, "chain", None):
                 stage = "消息发送"
                 await event.send(result)
-                sent = True
-                stage = "投递记录"
-                await self._delivered(event)
         except Exception as exc:
-            status = "回复已发送，投递记录更新失败" if sent else "回复投递未完成"
+            status = "回复部分已发送" if event._daily_life_reply_sent_count else "回复投递未完成"
             logger.warning(
                 f"{LOG_PREFIX} {status}（阶段：{stage}）：{type(exc).__name__}: {exc}",
                 exc_info=True,
             )
         finally:
-            event.clear_result()
-            finish()
+            # 分段发送会清空 result，也可能只成功发送前几段；按实际回执结算。
+            if event._daily_life_reply_sent_count:
+                try:
+                    if self._commit is not None:
+                        await self._commit(event)
+                    await self._delivered(event)
+                except Exception as exc:
+                    logger.warning(
+                        f"{LOG_PREFIX} 回复已发送，投递记录更新失败：{type(exc).__name__}: {exc}",
+                        exc_info=True,
+                    )

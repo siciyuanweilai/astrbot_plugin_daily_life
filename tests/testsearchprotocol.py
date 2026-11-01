@@ -30,11 +30,14 @@ class GrokProtocolTest(unittest.IsolatedAsyncioTestCase):
         answer = await client.search("public query")
         return answer, client
 
-    async def test_search_auto_choice_still_rejects_unexecuted_text(self):
+    async def test_required_search_still_rejects_unexecuted_text(self):
         answer, client = await self.parse(response(text="invoke x_search with query is public query"))
         client._request_json.assert_awaited_once()
         payload = client._request_json.call_args.args[1]
-        self.assertEqual(payload["tool_choice"], "auto")
+        self.assertEqual(payload["tool_choice"], "required")
+        self.assertNotIn("include", payload)
+        self.assertFalse(payload["stream"])
+        self.assertFalse(payload["store"])
         self.assertEqual(payload["tools"], [{"type": "x_search"}])
         self.assertFalse(answer.searched)
 
@@ -116,6 +119,7 @@ class GrokProtocolTest(unittest.IsolatedAsyncioTestCase):
             with self.subTest(scope=scope):
                 settings = LifeSettings.from_dict({"search_config": {
                     "enabled": True, "provider": "grok-provider", "cache_ttl_seconds": 0,
+                    "web_provider": "tavily",
                 }}).search
                 service = SearchService(FakeContext(), settings)
                 service._session = FakeSession(responses_without_search=True, search_payload={"results": []})

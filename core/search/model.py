@@ -14,11 +14,9 @@ def normalize_providers(values: Any) -> list[str]:
     result = []
     for value in items:
         provider = str(value or "").strip().lower()
-        if provider == "grok-web":
-            continue
         if provider and provider not in result:
             result.append(provider)
-    order = {"grok-x": 0, "tavily": 1}
+    order = {"grok-x": 0, "grok-web": 1, "tavily": 2}
     return sorted(result, key=lambda item: (order.get(item, 99), item))
 
 
@@ -31,7 +29,7 @@ def provider_mode(values: Any) -> str:
         return "mixed"
     if families == {"tavily"}:
         return "tavily"
-    return "grok-x" if providers == ["grok-x"] else "grok"
+    return providers[0] if providers in (["grok-x"], ["grok-web"]) else "grok"
 
 
 def provider_label(values: Any) -> str:
@@ -43,8 +41,10 @@ def provider_label(values: Any) -> str:
         return "Tavily"
     if mode == "grok-x":
         return "Grok X"
+    if mode == "grok-web":
+        return "Grok 网页"
     if mode == "grok":
-        return "Grok X"
+        return "Grok 网页+X"
     return "无"
 
 

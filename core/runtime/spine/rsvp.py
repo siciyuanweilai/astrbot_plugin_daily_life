@@ -10,10 +10,12 @@ from astrbot.api import logger
 
 from ...archive import DayRevisionConflict
 from ...clock import now as life_now
-from ...life.itinerary import apply_edited_timeline
+from ...life.itinerary import apply_edited_timeline, outfit_managed_by_schedule
 from ...models import CommitmentRecord, DayRecord, EventRecord, PlaceRecord
 from ..locks import operation_lock
 from ..markers import LOG_PREFIX
+from ..actionreply import action_event_stale
+from .invitereceipt import invite_receipt
 
 from typing import Protocol
 
@@ -295,7 +297,7 @@ class SpineInviteComponent:
             outfit_effective_time = str(
                 decision.get("outfit_effective_time") or ""
             ).strip()
-            if outfit_instruction:
+            if outfit_instruction and not outfit_managed_by_schedule(decision):
                 data.meta["pending_commitment_outfit"] = json.dumps(
                     {
                         "commitment_id": item.id,
@@ -331,6 +333,8 @@ class SpineInviteComponent:
                 ],
             )
             await self.context.mark_page_status_changed("commitment_schedule_update")
+            if outfit_managed_by_schedule(decision):
+                return True
             if not outfit_instruction:
                 self.context.schedule_invite_outfit_sync(today_str, now)
             elif self.context._outfit_instruction_is_due(today_str, outfit_effective_time, now):
@@ -389,6 +393,8 @@ class SpineInviteComponent:
                 source_message=raw_message,
             )
         )
+        if accepted_commitment.status not in {"active", "scheduled"}:
+            return invite_receipt(accepted_commitment, data)
         apply_edited_timeline(
             data, new_timeline, decision, commitment_id=accepted_commitment.id
         )
@@ -409,22 +415,16 @@ class SpineInviteComponent:
             data.meta["location_audit_city"] = str(
                 location_audit.get("home_city") or ""
             )
-        if self.context.config.state.enabled:
-            data = await self.context.refresh_state_for_day(
-                today_str,
-                data,
-                now,
-                source="invite",
-                detail=f"已接受【{sender_name}】的邀约：{invite_details}",
-                force=True,
-            )
+        # 状态服务会重新加载持久日记录；不能在未提交的日程上调用，
+        # 否则连续生活模式会用旧时间轴覆盖此次编辑。当前状态已在裁定前刷新。
+        # 先登记已确认的邀请证据，再提交日程。这样聊天记忆后台即使同时
+        # 提炼同一条消息，也会看到权威的 invite 记录，不会把地点改回旧候选。
+        data = await self._save_invite_day(data, today_str)
         if accepted_commitment.id:
             await self.context.archive.link_commitments_to_day(
                 today_str, [accepted_commitment.id]
             )
-        # 先登记已确认的邀请证据，再提交日程。这样聊天记忆后台即使同时
-        # 提炼同一条消息，也会看到权威的 invite 记录，不会把地点改回旧候选。
-        await self._save_invite_day(data, today_str)
+            accepted_commitment = await self.context.archive.get_commitment(accepted_commitment.id)
         schedule_contact = getattr(self.context, "schedule_invite_contact", None)
         if accepted_commitment.id and callable(schedule_contact):
             await schedule_contact(
@@ -444,7 +444,8 @@ class SpineInviteComponent:
                 )
             ],
         )
-        self.context.schedule_invite_outfit_sync(today_str, now)
+        if not outfit_managed_by_schedule(decision):
+            self.context.schedule_invite_outfit_sync(today_str, now)
         self.context.schedule_memos_selected_items(
             context_meta,
             [
@@ -455,19 +456,7 @@ class SpineInviteComponent:
             user_message=raw_message or invite_details,
             marker=f"invite:accepted:{today_str}:{sender_name}:{invite_details}",
         )
-        return json.dumps(
-            {
-                "decision": "accept",
-                "person": sender_name,
-                "activity": invite_details,
-                "reason": reason,
-                "response_stance": str(decision.get("response_stance") or "自然答应"),
-                "response_tone": str(
-                    decision.get("response_tone") or "符合双方关系和当前语境"
-                ),
-            },
-            ensure_ascii=False,
-        )
+        return invite_receipt(accepted_commitment, data, decision=decision, reason=reason)
 
     async def _decline_invite_timeline_update(
         self,
@@ -559,6 +548,8 @@ class SpineInviteComponent:
         now = life_now()
         today_str = now.strftime("%Y-%m-%d")
         async with operation_lock(self.context, f"invite:{today_str}"):
+            if action_event_stale(self.context, event):
+                return json.dumps({"decision": "undetermined", "reason": "对话已更新，未调整日程"}, ensure_ascii=False)
             data = await self.context.archive.get_day(today_str)
             if not data or not data.timeline:
                 return json.dumps(
@@ -572,6 +563,16 @@ class SpineInviteComponent:
 
             sender_name = await self.context.contact_resolver.resolve_event_sender(event)
             context_meta = await self.context._event_context_meta(event, sender_name, now)
+            scope, message_id = context_meta.get("session_id"), context_meta.get("message_id")
+            if scope and message_id:
+                existing = await self.context.archive.get_commitments(
+                    status="", limit=0, source_session=scope, source_message_id=message_id,
+                )
+                confirmed = next((item for item in existing if item.source == "invite"
+                                  and item.source_session == scope), None)
+                if confirmed is not None:
+                    saved_day = await self.context.archive.get_day(confirmed.trigger_date)
+                    return invite_receipt(confirmed, saved_day, reason="同一邀约已处理，返回当前记录")
             await self.context.remember_interaction(
                 event,
                 sender_name,
@@ -584,7 +585,7 @@ class SpineInviteComponent:
                 (data.meta or {}).get("pending_invite_alternative") or ""
             ).strip()
             invite_text = (
-                f"用户的邀约意图：{invite_details} (用户刚才的原话：{raw_message})"
+                f"待核对的邀约及条件：{invite_details} (本轮用户原话：{raw_message})"
             )
             if pending_alternative:
                 invite_text += f"；最近尚待对方确认的改约方案：{pending_alternative}"
@@ -596,6 +597,7 @@ class SpineInviteComponent:
                     source="invite",
                     detail=f"收到【{sender_name}】的邀约：{invite_details}",
                     force=True,
+                    source_event=event,
                 )
             reason, new_timeline, decision = await self.context.composer.handle_invite(
                 today_str,
@@ -606,6 +608,8 @@ class SpineInviteComponent:
                 current_state=data.state,
                 current_places=data.places,
             )
+            if action_event_stale(self.context, event):
+                return json.dumps({"decision": "undetermined", "reason": "判断期间对话已更新，未调整日程"}, ensure_ascii=False)
             await self.context.composer.learn_preferences_from_payload(
                 decision,
                 date_str=today_str,

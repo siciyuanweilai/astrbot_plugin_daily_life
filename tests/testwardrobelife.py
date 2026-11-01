@@ -15,7 +15,6 @@ from core.life.dressing import (
     digest,
     reviewed_candidates,
     suitability_key,
-    validate_aesthetics,
     wardrobe_conditions,
 )
 from core.life.wardrobe import synchronize_outfit_components_for_scene
@@ -66,6 +65,9 @@ class Runtime(DailyLifeRuntime):
         self._edit_life_image_with_policy_retry = AsyncMock()
         self._generate_life_image_with_policy_retry = AsyncMock()
         self._learn_style_catalog_image = AsyncMock()
+        self.wardrobe_life._review_aesthetics = AsyncMock(return_value={})
+        self.wardrobe_life._design_wardrobe = AsyncMock(return_value={
+            "visual_brief": "一套新的舒适完整造型", "reason": "适合当下需要", "difference": "不同结构", "aesthetic_ids": []})
         self.wardrobe_life._validate_wardrobe_acquisition = AsyncMock(return_value={"fits": True, "reason": "适合本次目标"})
 
     def _schedule_background_task(self, coro, **kwargs):
@@ -148,6 +150,8 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
         # 重启服务后仍使用同一持久化次数，不恢复成无限重试。
         self.runtime.__dict__.pop("wardrobe_life", None)
         self.runtime.now += datetime.timedelta(minutes=3)
+        self.runtime.wardrobe_life._design_wardrobe = AsyncMock(return_value={
+            "visual_brief": "纠正后的完整设计", "reason": "调整设计", "difference": "主体区别", "aesthetic_ids": []})
         self.runtime.wardrobe_life._validate_wardrobe_acquisition = AsyncMock(return_value={"fits": False, "reason": "仍未符合目标"})
         await self.runtime.wardrobe_life._run_wardrobe_job("correct-once")
         second = await self.stored_job("correct-once")
@@ -572,7 +576,8 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
         )
         self.runtime._edit_life_image_with_policy_retry.assert_not_called()
         generated = self.runtime._generate_life_image_with_policy_retry.call_args.args[1]
-        self.assertIn("秋季衣物", generated)
+        self.assertIn("一套新的舒适完整造型", generated)
+        self.assertIn("秋季衣物", self.runtime.wardrobe_life._design_wardrobe.call_args.args[0]["requirement"])
 
     async def test_missing_edit_channel_falls_back_to_text_generation(self):
         item = await self.item()
@@ -781,40 +786,6 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-    def test_aesthetic_learning_requires_real_sources_and_repeated_own_evidence(self):
-        sources = {
-            "p": {"kind": "persona", "text": "人设原文"},
-            "w1": {"kind": "wear", "date": "2026-10-07"},
-            "w2": {"kind": "wear", "date": "2026-10-08"},
-            "w3": {"kind": "wear", "date": "2026-10-08"},
-            "u": {"kind": "feedback", "text": "反馈原文"},
-        }
-        points = [
-            {"preference": "无证据", "evidence_ids": ["invented"]},
-            {"preference": "一次选择", "evidence_ids": ["w1"]},
-            {
-                "preference": "自身偏好",
-                "evidence_ids": ["w1", "w2", "w3"],
-                "confidence": 1,
-            },
-            {
-                "preference": "人设审美",
-                "quote": "人设原文",
-                "evidence_ids": ["p"],
-                "confidence": 1,
-            },
-            {
-                "preference": "对方建议",
-                "quote": "反馈原文",
-                "evidence_ids": ["u"],
-                "confidence": 1,
-            },
-        ]
-        result = validate_aesthetics(points, sources, [])
-        self.assertEqual(len(result), 3)
-        self.assertEqual(result[0]["origin"], "own_experience")
-        self.assertLessEqual(result[0]["confidence"], 0.65)
-        self.assertEqual(result[-1]["origin"], "user_feedback")
 
     def test_clothing_ranking_uses_weather_and_preserves_favorite_rewear(self):
         warm = SimpleNamespace(
@@ -1069,43 +1040,7 @@ class WardrobeLifeTest(unittest.IsolatedAsyncioTestCase):
         )
         self.runtime.wardrobe_life._run_wardrobe_job.assert_awaited_once_with("manual")
 
-    def test_feedback_cannot_replace_own_aesthetic(self):
-        previous = [
-            {
-                "preference": "喜欢米白色",
-                "origin": "persona",
-                "confidence": 0.8,
-                "preference_id": "own",
-            }
-        ]
-        result = validate_aesthetics(
-            [
-                {
-                    "preference": "尝试亮红色",
-                    "quote": "想看红色",
-                    "evidence_ids": ["u"],
-                    "replaces": ["own"],
-                }
-            ],
-            {"u": {"kind": "feedback", "text": "我想看红色衣服"}},
-            previous,
-        )
-        self.assertTrue(any(point["preference_id"] == "own" for point in result))
-        self.assertEqual(result[-1]["origin"], "user_feedback")
 
-    def test_invented_persona_quote_cannot_establish_aesthetic(self):
-        result = validate_aesthetics(
-            [
-                {
-                    "preference": "喜欢亮红色",
-                    "quote": "喜欢亮红色",
-                    "evidence_ids": ["p"],
-                }
-            ],
-            {"p": {"kind": "persona", "text": "喜欢米白色"}},
-            [],
-        )
-        self.assertEqual(result, [])
 
     def test_residence_change_does_not_reuse_previous_weather(self):
         day = DayRecord(date="2026-10-08", weather_info=WeatherInfo(temp=28))

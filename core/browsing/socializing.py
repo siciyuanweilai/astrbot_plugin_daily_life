@@ -12,6 +12,8 @@ from astrbot.api import logger
 
 from ..clock import local_timestamp
 from ..runtime.contact import contact_rhythm
+from ..runtime.sharepacing import coordinate as coordinate_autonomy
+from ..runtime.mirror.sharefacts import digest as share_digest
 from .feed import BiliReadError, clean
 from .platform import BiliPlatform, BiliWriteUncertain, positive
 from .correspondence import BiliSocialStore
@@ -405,14 +407,16 @@ class BiliSocialService:
         elif action == "danmaku":
             generation = hashlib.sha256(text.encode()).hexdigest()
 
+        autonomy_claimed = False
+
         async def before_write():
             if target.get("proactive"):
-                rhythm = await contact_rhythm(self.runtime, scope, self.browsing.now())
+                rhythm = await contact_rhythm(self.runtime, scope, self.browsing.now(), shared=not autonomy_claimed)
                 if rhythm.get("ready") is False:
                     raise BiliInteractionDeferred("联系节奏已变化，本次分享暂缓")
                 gate = getattr(self.runtime, "share_contact_gate", None)
                 if gate is not None:
-                    permit = await gate.coordinate(scope, owner=target["_contact_owner"], action="check", expected=target["_contact_snapshot"])
+                    permit = await gate.coordinate(scope, owner=target["_contact_owner"], action="check", expected=target["_contact_snapshot"], shared=not autonomy_claimed)
                     if not permit.get("allowed"):
                         raise BiliInteractionDeferred(permit.get("reason") or "主动联系暂缓")
             # 联系检查也会异步读库；身份与运行开关必须在这些等待之后复核。
@@ -458,6 +462,15 @@ class BiliSocialService:
                 await store.finish(message, status="responding")
         try:
             await before_write()
+            if action == "dynamic" or action in {"mention", "dm"} and target.get("proactive"):
+                target_scope = "bilibili_broadcast" if action == "dynamic" else scope
+                gate = await coordinate_autonomy(self.runtime, target_scope,
+                                                 owner="bili:" + journal["id"], action="submit",
+                                                 selected=[share_digest(["bilibili", [record["bvid"], record.get("page")]])]
+                                                 if record.get("bvid") else [])
+                if not gate["ready"]:
+                    raise BiliInteractionDeferred("跨渠道主动联系暂缓，保留原任务")
+                autonomy_claimed = True
             if action in {"favorite", "unfavorite"}:
                 result = await platform.favorite(record, remove=action == "unfavorite")
             elif action in {"comment", "mention", "reply"}:

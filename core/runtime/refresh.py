@@ -217,6 +217,15 @@ class RefreshComponent:
             return "", None
         if not isinstance(payload, dict):
             return "", None
+        from ..life.actionchain import actions
+        from ..life.itinerary import outfit_managed_by_schedule
+
+        commitment_id = payload.get("commitment_id")
+        if commitment_id and outfit_managed_by_schedule({"_planned_life_actions": [
+            action.as_dict() for action in actions(data)
+            if action.payload.get("schedule_commitment_id") == commitment_id
+        ]}):
+            return "", None
         instruction = str(payload.get("instruction") or "").strip()
         if not instruction or str(payload.get("date") or data.date) != data.date:
             return "", None

@@ -510,7 +510,7 @@ const CONFIG_GROUP_LABELS = new Map([
   }],
   ["search_config", {
     description: "联网搜索",
-    hint: "配置 Grok 搜索、AstrBot Tavily 来源与网页能力，以及日程联网灵感。",
+    hint: "配置 Grok 网页与 X 搜索、网页引擎、插件独立 Tavily 密钥和日程联网灵感。",
   }],
   ["lifecycle_config", {
     description: "生活演化",
@@ -1222,7 +1222,7 @@ export function createConfigPanel({
   function renderConfigList(spec, path, value) {
     const input = document.createElement("textarea");
     input.id = path.join("__");
-    input.rows = 5;
+    input.rows = 2;
     input.value = Array.isArray(value) ? value.join("\n") : text(value);
     input.addEventListener("input", () => setConfigPathValue(path, parseList(input.value), { deferSave: true }));
     input.addEventListener("change", commitConfigTextAutosave);
@@ -1268,7 +1268,7 @@ export function createConfigPanel({
     const input = document.createElement(multiline ? "textarea" : "input");
     input.id = path.join("__");
     if (input.tagName === "INPUT") input.type = "text";
-    if (input.tagName === "TEXTAREA") input.rows = promptText ? 8 : 5;
+    if (input.tagName === "TEXTAREA") input.rows = 2;
     input.value = body;
     input.addEventListener("input", () => setConfigPathValue(path, input.value, { deferSave: true }));
     input.addEventListener("change", commitConfigTextAutosave);
@@ -1338,7 +1338,7 @@ export function createConfigPanel({
     if (fieldSpec.type === "list") {
       const input = document.createElement("textarea");
       input.id = inputId;
-      input.rows = 4;
+      input.rows = 2;
       input.value = Array.isArray(value) ? value.join("\n") : text(value);
       input.addEventListener("input", () => onChange(parseList(input.value), { deferSave: true, render: false }));
       input.addEventListener("change", commitConfigTextAutosave);
@@ -1359,7 +1359,7 @@ export function createConfigPanel({
     const input = document.createElement(multiline ? "textarea" : "input");
     input.id = inputId;
     if (input.tagName === "INPUT") input.type = "text";
-    if (input.tagName === "TEXTAREA") input.rows = fieldSpec.type === "text" ? 6 : 4;
+    if (input.tagName === "TEXTAREA") input.rows = 2;
     input.value = body;
     input.addEventListener("input", () => onChange(input.value, { deferSave: true, render: false }));
     input.addEventListener("change", commitConfigTextAutosave);

@@ -107,11 +107,6 @@
   background: var(--diary-card);
 }
 
-.config-field.text-field textarea,
-.config-field.prompt-field textarea {
-  min-height: 202px;
-}
-
 .template-list-item,
 .reference-gallery-thumb {
   border-radius: var(--diary-radius-md);

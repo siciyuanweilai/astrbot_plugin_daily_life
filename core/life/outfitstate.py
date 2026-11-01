@@ -58,18 +58,9 @@ def review_outfit_decision(
     partial = decision == "keep" and any((
         clothing_adjusted and bool(generated["outfit"])
         and generated["outfit"] != stored["outfit"],
-        states.get("hair") == "adjust"
-        and bool(generated["hair_style"] or generated["hair"])
-        and (generated["hair_style"], generated["hair"])
-        != (stored["hair_style"], stored["hair"]),
-        states.get("makeup") == "adjust"
-        and bool(generated["makeup_style"] or generated["makeup"])
-        and (generated["makeup_style"], generated["makeup"])
-        != (stored["makeup_style"], stored["makeup"]),
-        states.get("nails") == "adjust"
-        and bool(generated["nails_style"] or generated["nails"])
-        and (generated["nails_style"], generated["nails"])
-        != (stored["nails_style"], stored["nails"]),
+        any(states.get(kind) in {"adjust", "not_present"}
+            and ((generated[kind + "_style"], generated[kind]) if states[kind] == "adjust" else ("", ""))
+            != (stored[kind + "_style"], stored[kind]) for kind in ("hair", "makeup", "nails")),
         has_instruction and appearance_differs,
     ))
     if partial:
@@ -166,10 +157,12 @@ def normalize_outfit_appearance(values: dict) -> dict[str, str]:
 
 
 def select_outfit_appearance(
-    decision: str, stored: dict[str, str], generated: dict[str, str]
+    decision: str, stored: dict[str, str], generated: dict[str, str], *, component_review: dict | None = None,
 ) -> dict[str, str]:
     """按已验证的决定合并外观；换衣不自动清除妆容、美甲。"""
     if decision == "keep":
+        if component_review:
+            return dict(stored)
         same_outfit = not generated["outfit"] or generated["outfit"] == stored["outfit"]
         return {
             key: value or (generated[key] if same_outfit and key != "outfit" else "")
@@ -184,6 +177,12 @@ def select_outfit_appearance(
         style = key + "_style"
         final[key] = generated[key] or stored[key]
         final[style] = generated[style] or ("" if generated[key] else stored[style])
+    if component_review is not None:
+        for kind in ("hair", "makeup", "nails"):
+            state = component_review.get(kind)
+            for key in (kind, kind + "_style"):
+                final[key] = (generated[key] if state == "adjust" else "" if state == "not_present"
+                              else stored[key])
     return final
 
 

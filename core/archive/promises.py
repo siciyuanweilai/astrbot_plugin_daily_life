@@ -254,7 +254,8 @@ class CommitmentArchiveComponent:
         return await self.context._run_db(dbwork)
 
     async def get_commitments(
-        self, status: str = "active", limit: int = 20, *, source_session: str | None = None
+        self, status: str = "active", limit: int = 20, *, source_session: str | None = None,
+        source_message_id: str | None = None,
     ) -> list[CommitmentRecord]:
         def dbwork():
             reconcile_scheduled_commitments(self.context._conn)
@@ -267,6 +268,9 @@ class CommitmentArchiveComponent:
             if source_session is not None:
                 conditions.append("(source_session = ? OR source_session = '')")
                 params.append(source_session)
+            if source_message_id is not None:
+                conditions.append("source_message_id = ?")
+                params.append(source_message_id)
             if conditions:
                 sql += " WHERE " + " AND ".join(conditions)
             sql += " ORDER BY COALESCE(NULLIF(trigger_date, ''), '9999-12-31'), id DESC"

@@ -2882,6 +2882,16 @@ class DailyLifeRuntime:
         "complete_continuous_turn",
     )
 
+    continuous_turn_reply_is_current = ComponentCall(
+        "_part_continuous_turn_component", ContinuousTurnComponent,
+        "continuous_turn_reply_is_current",
+    )
+
+    note_continuous_turn_response = ComponentCall(
+        "_part_continuous_turn_component", ContinuousTurnComponent,
+        "note_continuous_turn_response",
+    )
+
     _RESPONSE_GATE_CONTINUATION_SECONDS = (
         ResponseGateStateComponent._RESPONSE_GATE_CONTINUATION_SECONDS
     )

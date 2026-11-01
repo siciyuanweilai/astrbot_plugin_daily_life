@@ -396,6 +396,7 @@ class LifeArchive:
     get_recent_style_catalog_items = ComponentCall("_part_style_catalog_archive_component", StyleCatalogArchiveComponent, "get_recent_style_catalog_items")
 
     add_style_catalog_feedback = ComponentCall("_part_style_catalog_archive_component", StyleCatalogArchiveComponent, "add_style_catalog_feedback")
+    set_style_catalog_design_result = ComponentCall("_part_style_catalog_archive_component", StyleCatalogArchiveComponent, "set_style_catalog_design_result")
 
     mark_style_catalog_used = ComponentCall("_part_style_catalog_archive_component", StyleCatalogArchiveComponent, "mark_style_catalog_used")
 

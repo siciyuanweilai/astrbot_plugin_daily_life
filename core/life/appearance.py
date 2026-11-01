@@ -526,7 +526,8 @@ def _unique_preferences(
 def _format_preference_line(item: PreferenceRecord) -> str:
     evidence = _clean_text(item.evidence or item.source, 80)
     suffix = f"，证据：{evidence}" if evidence else ""
-    return f"- [{_clean_text(item.category, 40)}] {_clean_text(item.content)} (权重 {float(item.weight or 0.0):.1f}{suffix})"
+    attribution = "对方造型建议；" if item.source == "style_catalog_feedback" else ""
+    return f"- [{attribution}{_clean_text(item.category, 40)}] {_clean_text(item.content)} (权重 {float(item.weight or 0.0):.1f}{suffix})"
 
 
 def format_life_preference_context(
@@ -544,7 +545,7 @@ def format_life_preference_context(
     learned = _unique_preferences(learned)[: max(0, limit)]
     parts = [f"- {APPEARANCE_PRIORITY_RULE}"]
     if learned:
-        parts.append("已学习长期偏好：")
+        parts.append("有来源的偏好与建议（对方建议不代表角色自身喜好）：")
         parts.extend(_format_preference_line(item) for item in learned)
         parts.append(
             "- 同义偏好即使存在多条也只能视为一次证据，不得叠加权重或据此复刻同一具体方案。"

@@ -448,6 +448,7 @@ class InviteComponent:
   "response_tone": "符合关系和当下状态的简短语气描述，不写最终台词",
   "alternative_time": "可选改约时间或空字符串",
   "impact": "这次邀约对今日状态、社交意愿或后续日程的影响",
+  "wait_for_action_ids": [],
   "planned_actions": [{{"edit_index": 0, "action_type": "动作类型", "target": "具体目标", "duration_minutes": 5, "preconditions": [], "effects": [], "payload": {{}}, "evidence": "当前依据"}}],
   "timeline_edits": [{{"operation": "replace | remove | insert", "target_time": "被替换/删除节点的 HH:MM，insert 时为空", "item": {{"time": "HH:MM", "activity": "...", "activity_kind": "rest | sleep | personal_care | meal | cooking | work | study | exercise | chore | social | outdoor | travel | photo | video | other，依据主要行为判断", "status": "...", "place": "地点或空字符串", "place_kind": "home | poi | generic | transit | online | none", "place_scope": "local | travel", "place_city": "跨城目标城市或空字符串", "place_hint": "同名地点消歧信息或空字符串", "travel_mode": "walking | cycling | driving | transit 或空字符串"}}}}],
   "preference_points": [{{"category": "{LIFE_PREFERENCE_CATEGORY_ENUM}", "content": "可复用偏好", "weight": 0.1-1.0, "evidence": "依据"}}],
@@ -654,6 +655,7 @@ JSON 输出要求：
 {{
   "should_apply": true/false,
   "shared_activity": true/false,
+  "wait_for_action_ids": [],
   "reason": "是否进入当天生活的依据",
   "planned_actions": [{{"edit_index": 0, "action_type": "动作类型", "target": "具体目标", "duration_minutes": 5, "preconditions": [], "effects": [], "payload": {{}}, "evidence": "当前依据"}}],
   "timeline_edits": [{{"operation": "replace | remove | insert", "target_time": "被替换/删除节点的 HH:MM，insert 时为空", "item": {{"time": "HH:MM", "activity": "...", "activity_kind": "rest | sleep | personal_care | meal | cooking | work | study | exercise | chore | social | outdoor | travel | photo | video | other，依据主要行为判断", "status": "...", "place": "地点或空字符串", "place_kind": "home | poi | generic | transit | online | none", "place_scope": "local | travel", "place_city": "跨城目标城市或空字符串", "place_hint": "消歧信息或空字符串", "travel_mode": "walking | cycling | driving | transit 或空字符串"}}}}],

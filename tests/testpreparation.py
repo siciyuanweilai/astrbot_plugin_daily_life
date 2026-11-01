@@ -77,7 +77,7 @@ class ReplyPreparationTest(unittest.IsolatedAsyncioTestCase):
         await self.scheduler.cancel_all()
         self.assertFalse(first.sent_messages)
 
-    async def test_cancellation_after_start_completes_once_without_receipt(self):
+    async def test_cancellation_without_receipt_does_not_complete_the_turn(self):
         entered = asyncio.Event()
 
         async def prepare(event):
@@ -89,7 +89,7 @@ class ReplyPreparationTest(unittest.IsolatedAsyncioTestCase):
         service.defer(event)
         await asyncio.wait_for(entered.wait(), 0.2)
         await self.scheduler.cancel_all()
-        self.assertEqual(len(self.completed), 1)
+        self.assertEqual(len(self.completed), 0)
         self.assertFalse(event.sent_messages)
         self.delivered.assert_not_awaited()
 

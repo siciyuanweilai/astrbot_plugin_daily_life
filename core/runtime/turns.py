@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -35,6 +36,8 @@ class ContinuousTurnBatch:
     generation_event: Any = None
     video_reference_source: Any = None
     wait_seconds: float = 0.0
+    events: dict[str, Any] = field(default_factory=dict)
+    input_checkpoints: list[tuple[tuple[str, ...], str]] = field(default_factory=list)
 
 
 class ContinuousTurnComponentContext(Protocol):
@@ -263,6 +266,7 @@ class ContinuousTurnComponent:
                 value = ""
         else:
             value = getattr(event, "message_id", "")
+        value = value or getattr(getattr(event, "message_obj", None), "message_id", "")
         return str(value or f"event:{id(event)}").strip()
 
     def _continuous_turn_revision(self, scope: str, participant: str) -> int:
@@ -396,7 +400,7 @@ class ContinuousTurnComponent:
         learned_cadence = max(0.0, float(cadence_bucket.get(participant, 0.0) or 0.0))
         active = bool(
             isinstance(previous, ContinuousTurnBatch)
-            and previous.phase in {"collecting", "ready", "generating", "waiting"}
+            and previous.phase in {"collecting", "ready", "generating", "waiting", "preparing"}
             and now - previous.last_at <= self.context._CONTINUOUS_TURN_ACTIVE_SECONDS
         )
         image_items = self._continuous_turn_image_items(event)
@@ -412,7 +416,9 @@ class ContinuousTurnComponent:
         messages = list(previous.messages) if active else []
         message_ids = list(previous.message_ids) if active else []
         images = dict(previous.images) if active else {}
+        events = dict(previous.events) if active else {}
         message_id = self.context._continuous_turn_message_id(event)
+        events[message_id] = event
         text = str(getattr(event, "message_str", "") or "").strip()
         if message_id not in message_ids:
             messages.append(text or "[图片]")
@@ -461,6 +467,8 @@ class ContinuousTurnComponent:
             images={key: images[key] for key in message_ids if key in images},
             generation_event=previous.generation_event if active else None,
             video_reference_source=previous.video_reference_source if active else None,
+            events={key: events[key] for key in message_ids if key in events},
+            input_checkpoints=list(previous.input_checkpoints) if active else [],
         )
         batch_bucket[participant] = batch
         if batch.received_at:
@@ -664,19 +672,62 @@ class ContinuousTurnComponent:
         self.context._continuous_turn_metrics["semantic_wait"] += 1
         return "reply"
 
+    @staticmethod
+    def _continuous_turn_pending_inputs(batch: ContinuousTurnBatch, request: Any) -> list[tuple[str, str]]:
+        """仅凭框架的持久检查点与续话回执排除已入历史的输入。"""
+        covered = set()
+        contexts = getattr(request, "contexts", ()) or ()
+        checkpoints = {
+            item["content"].get("id") for item in contexts
+            if isinstance(item, dict) and item.get("role") == "_checkpoint"
+            and isinstance(item.get("content"), dict)
+        }
+        for ids, checkpoint in batch.input_checkpoints:
+            if checkpoint in checkpoints:
+                covered.update(ids)
+        # 被框架消费的续话已在真实工具结果中，保留工具结果，不重放动作。
+        for key, source in batch.events.items():
+            capture = getattr(source, "get_extra", lambda *_: None)("_follow_up_captured")
+            owner = batch.events.get(str(capture.get("target_run_id"))) if isinstance(capture, dict) else None
+            checkpoint = getattr(owner, "get_extra", lambda *_: None)("llm_checkpoint_id")
+            if checkpoint and checkpoint in checkpoints:
+                covered.add(key)
+        return [(key, text) for key, text in zip(batch.message_ids, batch.messages)
+                   if key not in covered]
+
     def prepare_continuous_turn_llm_request(self, event: Any, request: Any) -> bool:
         if self.context.stop_stale_continuous_turn_event(event):
             return False
         identity = self.context._continuous_turn_event_identity(event)
+        messages = self.context.continuous_turn_messages(event)
+        event._daily_life_turn_request = request
         if identity is not None:
             batch = self.context._continuous_turn_batch(identity[0], identity[1])
             if batch is not None and batch.revision == identity[2]:
+                message_id = self.context._continuous_turn_message_id(event)
+                # 原生续话未被工具结果消费时会排队重入。只由最新事件接管，
+                # 中间事件不再生成一份注定被丢弃的回复。
+                if (self.context.continuous_turn_event_is_inflight_follow_up(event)
+                        and batch.generation_event is not event
+                        and batch.message_ids[-1:] != [message_id]):
+                    self.context._continuous_turn_stop_event(event)
+                    logger.debug(f"{LOG_PREFIX} 连续续话已交给最新消息统一承接。")
+                    return False
+                pending = self._continuous_turn_pending_inputs(batch, request)
+                if pending:
+                    messages = tuple(text for _, text in pending)
+                    setattr(event, self.context._CONTINUOUS_TURN_MESSAGES_ATTR, messages)
+                # 使用框架原有的历史检查点识别已保存输入，避免按聊天正文去重。
+                if not event.get_extra("llm_checkpoint_id"):
+                    event.set_extra("llm_checkpoint_id", f"daily-life:{uuid.uuid4().hex}")
+                event._daily_life_turn_input_ids = tuple(key for key, _ in pending)
+                event._daily_life_turn_covered_ids = tuple(batch.message_ids)
                 batch.phase = "generating"
                 batch.generation_event = event
-        messages = self.context.continuous_turn_messages(event)
+        if messages and (len(messages) > 1 or not getattr(request, "prompt", "")):
+            request.prompt = "\n".join(messages)
         if len(messages) < 2:
             return True
-        request.prompt = "\n".join(messages)
         context = (
             "[HiddenContinuousTurn]\n"
             "当前用户输入由同一人在短时间内连续发送，属于同一个话轮。"
@@ -695,6 +746,41 @@ class ContinuousTurnComponent:
             request.system_prompt = str(getattr(request, "system_prompt", "") or "") + "\n\n" + context
         return True
 
+    def continuous_turn_reply_is_current(self, event: Any) -> bool:
+        """比较回复真正包含的输入，不能把仅入队的续话当作已经读过。"""
+        if not self.context.continuous_turn_event_is_current(event):
+            return False
+        identity = self.context._continuous_turn_event_identity(event)
+        if identity is None:
+            return self.context.media_request_is_current_turn(event)
+        batch = self.context._continuous_turn_batch(identity[0], identity[1])
+        if batch is None or batch.phase == "completed":
+            return self.context.media_request_is_current_turn(event)
+        latest = getattr(self.context, "_media_chat_tokens", {}).get(identity[:2])
+        if latest is not None and latest not in batch.message_ids:
+            return False
+        covered = set(getattr(event, "_daily_life_turn_covered_ids", ()))
+        run_id = self.context._continuous_turn_message_id(event)
+        for key, source in batch.events.items():
+            capture = getattr(source, "get_extra", lambda *_: None)("_follow_up_captured")
+            if isinstance(capture, dict) and str(capture.get("target_run_id")) == run_id:
+                covered.add(key)
+        return all(key in covered for key in batch.message_ids)
+
+    def note_continuous_turn_response(self, event: Any) -> None:
+        identity = self.context._continuous_turn_event_identity(event)
+        if identity is None or not self.context.continuous_turn_event_is_current(event):
+            return
+        batch = self.context._continuous_turn_batch(identity[0], identity[1])
+        if batch is None:
+            return
+        ids = tuple(getattr(event, "_daily_life_turn_input_ids", ()))
+        checkpoint = event.get_extra("llm_checkpoint_id")
+        if ids and checkpoint:
+            batch.input_checkpoints.append((ids, checkpoint))
+            batch.input_checkpoints[:] = batch.input_checkpoints[-self.context._CONTINUOUS_TURN_MAX_MESSAGES:]
+        batch.phase = "preparing"
+
     def complete_continuous_turn(self, event: Any) -> bool:
         identity = self.context._continuous_turn_event_identity(event)
         if identity is None or not self.context.continuous_turn_event_is_current(event):
@@ -707,6 +793,8 @@ class ContinuousTurnComponent:
         batch.messages.clear()
         batch.message_ids.clear()
         batch.images.clear()
+        batch.events.clear()
+        batch.input_checkpoints.clear()
         batch.generation_event = None
         batch.video_reference_source = None
         batch.last_at = time.monotonic()

@@ -614,7 +614,7 @@ class RuntimeStyleCatalogComponent:
                 ),
             }
             similar = None
-            if perceptual_hash:
+            if perceptual_hash and not (source_attributes or {}).get("wardrobe_job"):
                 similar = await self.context.archive.find_similar_style_catalog_item(
                     item_kind,
                     perceptual_hash,
@@ -642,10 +642,14 @@ class RuntimeStyleCatalogComponent:
         persona: str = "",
         sequence: int = 1,
         total: int = 1,
+        framing: str = "full_body",
     ) -> str:
+        from ...life.stylememory import DESIGN_FRAMES
+        framing = framing if framing in DESIGN_FRAMES else "full_body"
         identity_rule = (
             "参考图用于保持同一角色的身份与未要求改变的外观；"
-            "忽略参考图已有的服装，按以下需求重新搭配。"
+            + ("忽略参考图已有的服装，按以下需求重新搭配。" if framing == "full_body"
+               else "只改变本次目标类别，背景外观不作为新增设计。")
             if generation_mode == "image_to_image"
             else "人物不绑定任何现有角色或身份，不使用任何角色形象参考图。"
         )
@@ -661,19 +665,19 @@ class RuntimeStyleCatalogComponent:
             or "请自由构思一套自然、真实、适合日常生活的完整造型。"
         )
         variation = (
-            f"这是本批次第 {sequence}/{total} 张，在不改变用户需求和完整造型要求的前提下，"
+            f"这是本批次第 {sequence}/{total} 张，在不改变用户需求和目标类别的前提下，"
             "自行探索一组不同但合理的细节。"
             if total > 1
             else ""
         )
         return (
-            "生成一张真实、自然、生活化的单人完整造型照片。"
-            "竖幅 2:3，全身从头到鞋完整入镜，脸部、发型、实际穿戴的鞋袜和配饰清晰可辨；"
-            "人物穿着一套可在真实日常中使用的完整搭配，不使用拼贴、分屏、商品陈列、文字、品牌标识或水印。"
+            "生成一张真实、自然、生活化的造型照片。"
+            f"{DESIGN_FRAMES[framing]}"
+            "不使用拼贴、分屏、文字、品牌标识或水印。"
             f"{identity_rule}"
             f"{persona_context}"
             f"用户本次生成需求（最高优先级）：{request_text}。"
-            "服装应搭配完整，其余造型细节依据角色设定与本次要求选用。"
+            "目标类别的细节完整可辨，其余可见背景依据角色设定与本次要求保留。"
             "所有细节必须与生活场景一致，居家场景不要加入仅适合外出的携带物品。"
             f"{variation}"
         )
@@ -1271,7 +1275,7 @@ class RuntimeStyleCatalogComponent:
         if changed_ids:
             parts.append(f"已更新候选 {changed_ids}")
         if preferences:
-            parts.append(f"已沉淀 {len(preferences)} 条长期造型偏好")
+            parts.append(f"已记录 {len(preferences)} 条对方造型建议")
         return ToolResultText(
             "；".join(parts) + "。",
             status="ok",

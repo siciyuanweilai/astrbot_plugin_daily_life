@@ -1560,17 +1560,14 @@ h2::before {
   border-color: rgba(200, 70, 102, 0.42);
 }
 
-.config-field.text-field textarea,
-.config-field.prompt-field textarea {
-  min-height: 202px;
+.config-field textarea {
+  min-height: 4rem;
+  align-self: start;
+  overflow: auto;
 }
 
 .config-grid > .config-field {
   grid-column: auto;
-}
-
-.config-field.list-field textarea {
-  min-height: 202px;
 }
 
 .config-field.template-list-field {

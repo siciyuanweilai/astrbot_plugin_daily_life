@@ -34,6 +34,7 @@ from .dressing import wardrobe_conditions
 from .fashion import outfit_style_contamination_reason
 from .future import future_outfit_timing_issue
 from .lookback import record_appearance_snapshot
+from .stylememory import record_style_transition, PERSONAL_STYLE_KINDS, style_values
 from .outfitstate import (
     OutfitCommit,
     normalize_outfit_appearance,
@@ -796,6 +797,19 @@ class OutfitComponent:
 
 
 
+    async def _merge_actual_style_references(self, previous_ids, selected_ids, previous_meta, final_meta, components, *, partial):
+        lookup_ids = list(dict.fromkeys(previous_ids + selected_ids))
+        items = await self.context.archive.get_style_catalog_items(status="", ids=lookup_ids, limit=len(lookup_ids)) if lookup_ids else []
+        kinds = {item.id: item.kind for item in items}
+        old, current = style_values(previous_meta), style_values(final_meta)
+        unchanged = {kind for kind in PERSONAL_STYLE_KINDS if old[kind] == current[kind]}
+        previous_ids = [i for i in previous_ids if kinds.get(i) not in PERSONAL_STYLE_KINDS or kinds[i] in unchanged]
+        selected_ids = [i for i in selected_ids if kinds.get(i) not in PERSONAL_STYLE_KINDS or any(current[kinds[i]].values())]
+        # 衣物全换时，仍沿用的仪容引用也要保留；局部仪容改变不能丢掉当前服装引用。
+        if not partial:
+            selected_ids = [*selected_ids, *(i for i in previous_ids if kinds.get(i) in unchanged)]
+        return merge_outfit_catalog_references(previous_ids, selected_ids, kinds, components, partial=partial)
+
     async def _persist_outfit_commit(
         self, day, commit: OutfitCommit, *,
         current_time: datetime.datetime, target_period: str,
@@ -813,21 +827,18 @@ class OutfitComponent:
         pending.outfit = commit.outfit
         pending.time_period = target_period
         reference_ids = list(commit.reference_ids)
-        lookup_ids = list(dict.fromkeys(commit.previous_reference_ids + reference_ids))
-        items = await self.context.archive.get_style_catalog_items(
-            ids=lookup_ids, limit=len(lookup_ids)
-        ) if lookup_ids else []
-        reference_ids = merge_outfit_catalog_references(
-            commit.previous_reference_ids, reference_ids,
-            {item.id: item.kind for item in items},
-            normalize_outfit_components(pending.meta.get("outfit_components")),
-            partial=commit.partial_catalog,
+        reference_ids = await self._merge_actual_style_references(
+            commit.previous_reference_ids, reference_ids, day.meta, pending.meta,
+            normalize_outfit_components(pending.meta.get("outfit_components")), partial=commit.partial_catalog,
         )
         if reference_ids:
             pending.meta["style_catalog_reference_ids"] = ",".join(map(str, reference_ids))
         else:
             pending.meta.pop("style_catalog_reference_ids", None)
         if commit.appearance_changed:
+            record_style_transition(pending, day.meta, at=current_time.strftime("%Y-%m-%d %H:%M:%S"),
+                                    reason=pending.meta.get("outfit_reason", ""),
+                                    origin=pending.meta.get("outfit_fact_source", ""))
             record_appearance_snapshot(pending, current_time)
         if commit.require_wearable:
             await self.context.archive.save_day(pending, require_wearable=True)
@@ -940,6 +951,11 @@ class OutfitComponent:
         if selection is None:
             return None
         reference_ids, catalog_appearance = selection
+        if reference_ids:
+            referenced = await self.context.archive.get_style_catalog_items(status="", ids=reference_ids, limit=len(reference_ids))
+            retained = {item.id for item in referenced if item.kind not in PERSONAL_STYLE_KINDS
+                        or component_review.get(item.kind) == "adjust"}
+            reference_ids = [item_id for item_id in reference_ids if item_id in retained]
         full_change = decision in {"change", "sleepwear", "outdoor"}
         projection = prepare_outfit_components(
             old_meta.get("outfit_components"),
@@ -974,7 +990,7 @@ class OutfitComponent:
                 "[穿搭更新] 已采用视觉衣橱候选："
                 + ",".join(str(item) for item in reference_ids)
             )
-        final = select_outfit_appearance(decision, stored, generated)
+        final = select_outfit_appearance(decision, stored, generated, component_review=component_review)
         if projection.visible_outfit:
             final["outfit"] = projection.visible_outfit
         expanded_group_appearance = bool(
@@ -1015,6 +1031,7 @@ class OutfitComponent:
                 "hair_style", "hair", "makeup_style", "makeup", "nails_style", "nails"
             ):
                 final[key] = corrected.get(key, final[key])
+            final = select_outfit_appearance(decision, stored, final, component_review=component_review)
         final["outfit"] = strip_hair_from_outfit(
             final["outfit"],
             final["hair_style"],
@@ -1120,6 +1137,8 @@ class OutfitComponent:
         if should_abort and should_abort():
             return None
         if action_intent:
+            reference_ids = await self._merge_actual_style_references(
+                current_reference_ids, reference_ids, old_meta, final, effective_components, partial=not full_change)
             action_id = "outfit_update:" + uuid.uuid4().hex
             action = LifeActionIntent(
                 action_id=action_id,
@@ -1135,6 +1154,8 @@ class OutfitComponent:
                     "time_period": target_period,
                     "outing_outfit_reserve": str(catalog_appearance.get("outing_reserve") or "").strip(),
                     "catalog_reference_ids": reference_ids,
+                    "component_review": component_review,
+                    "choice_origin": "user_instruction" if user_instruction else "autonomous",
                 },
                 evidence=self.context._localize_outfit_reason(result.get("reason")),
                 source="outfit_update",

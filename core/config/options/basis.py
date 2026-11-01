@@ -514,6 +514,7 @@ def _normalize_audio_transcript_mode(value: Any) -> str:
 class SearchSettings:
     enabled: bool = False
     provider: str = ""
+    web_provider: str = "auto"
     tavily_api_keys: list[str] = field(default_factory=list)
     max_results: int = 8
     max_sources: int = 8
@@ -543,6 +544,7 @@ class SearchSettings:
         return SearchSettings(
             enabled=as_bool(data.get("enabled", False), False),
             provider=as_str(data.get("provider", "")).strip(),
+            web_provider=(data.get("web_provider") if data.get("web_provider") in ("auto", "grok", "tavily") else "auto"),
             tavily_api_keys=as_str_list(data.get("tavily_api_keys", [])),
             max_results=as_int(data.get("max_results", 8), 8, 1, 20),
             max_sources=as_int(data.get("max_sources", 8), 8, 1, 20),

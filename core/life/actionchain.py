@@ -44,6 +44,7 @@ def execution_evidence(day) -> dict:
     current = {}
     if isinstance(run, dict) and isinstance(run.get("action"), dict):
         current = {
+            "action_id": run["action"].get("action_id"),
             "action_type": run["action"].get("action_type"),
             "target": run["action"].get("target"),
             "status": run.get("status"),
@@ -57,6 +58,7 @@ def execution_evidence(day) -> dict:
         if isinstance(outcome, dict) and outcome.get("status") == "committed":
             recent.append(
                 {
+                    "action_id": action.action_id,
                     "action_type": action.action_type,
                     "target": action.target,
                     "committed_at": outcome.get("committed_at", ""),
@@ -81,11 +83,21 @@ def preceding_actions(day, action: LifeActionIntent) -> list[LifeActionIntent]:
     return result
 
 
-def ready(day, action: LifeActionIntent) -> bool:
+def dependency_issue(day, action: LifeActionIntent) -> str:
+    """依赖只认稳定动作编号的成功回执，取消、到点和文案都不能放行。"""
+    ids = action.payload.get("depends_on_action_ids", [])
+    if not isinstance(ids, list) or any(not isinstance(key, str) or not key for key in ids):
+        return "动作依赖格式无效"
     completed = committed_ids(day)
-    return action.action_id not in completed and all(
-        item.action_id in completed for item in preceding_actions(day, action)
-    )
+    if any(key not in completed for key in ids):
+        return "等待所依赖动作的完成回执"
+    if any(item.action_id not in completed for item in preceding_actions(day, action)):
+        return "同一活动的前序步骤尚未完成"
+    return ""
+
+
+def ready(day, action: LifeActionIntent) -> bool:
+    return action.action_id not in committed_ids(day) and not dependency_issue(day, action)
 
 
 def timeline_complete(day, action: LifeActionIntent) -> bool:

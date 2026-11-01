@@ -42,6 +42,7 @@ from .core.runtime import PLUGIN_ID, DailyLifeRuntime
 from .core.runtime.external import generate_text, model_route
 from .core.runtime.markers import LOG_PREFIX
 from .core.runtime.preparation import ReplyPreparationService
+from .core.runtime.replyhistory import capture_reply_history, suppress_reply_draft
 from .core.runtime.sender import install_expressive_send_message_tool
 from .core.runtime.tooling import (
     ArgumentCheckedTool,
@@ -750,8 +751,8 @@ class DailyLifePlugin(Star):
         )
         if denial:
             return denial
-        return await self.runtime.accept_user_invite(
-            event, str(invite_details or "").strip()
+        return await self.commands.adjust_life(
+            event, "respond_invite", detail=str(invite_details or "").strip()
         )
 
     @filter.llm_tool(name="add_memo_for_tomorrow")
@@ -1281,7 +1282,7 @@ class DailyLifePlugin(Star):
         """
         需要查询当前或外部网络事实、新闻、资料、官方文档和实时信息时调用。
         普通闲聊、角色记忆和日常状态不需要调用。quick 适合单个问题，deep 适合需要多来源核验的问题。
-        网页搜索由 Tavily 提供；source_scope=x 时使用 Grok X 搜索，both 会并发获取网页与 X 来源。
+        网页按配置使用 Grok 或 Tavily；source_scope=x 时使用 Grok X 搜索，both 并发获取网页与 X 来源。
         优先只提交一个自包含问题；deep 会在证据不足时自行规划补充查询，不要在首次调用时同时批量提交多个近似问题。
         若工具结果 quality=strong 且 missing_aspects 为空，
         说明本轮证据已经充分，应停止搜索，不要重复查询同一问题；
@@ -2411,6 +2412,10 @@ class DailyLifePlugin(Star):
             )
         if self._runtime_hook_bool("stop_stale_continuous_turn_event", event):
             return
+        reply_current = self._runtime_hook("continuous_turn_reply_is_current")
+        if reply_current and not reply_current(event):
+            # 草稿尚未覆盖续话：跳过表达补执行，但保留 Agent 的真实工具历史。
+            return
         if response_failed:
             setattr(event, self._AGENT_ERROR_SEEN_ATTR, True)
         else:
@@ -2439,6 +2444,9 @@ class DailyLifePlugin(Star):
         from .core.runtime.actionreply import sync_action_reply_history
         sync_action_reply_history(event, run_context)
         agent_error = self._response_is_agent_error(response)
+        if not agent_error:
+            capture_reply_history(event, run_context)
+        self._runtime_hook_call("note_continuous_turn_response", event)
         if agent_error:
             setattr(event, self._AGENT_ERROR_SEEN_ATTR, True)
             suppress_media_error = getattr(
@@ -2771,9 +2779,17 @@ class DailyLifePlugin(Star):
             return (
                 not snapshot.is_stopped()
                 and not runtime.event_was_recalled(snapshot)
-                and runtime.continuous_turn_event_is_current(snapshot)
-                and runtime.media_request_is_current_turn(snapshot)
+                and runtime.continuous_turn_reply_is_current(snapshot)
             )
+
+        # 独立后台任务在原模型释放会话锁后再加工、发送与提交历史；
+        # 下一轮生成不能越过实际投递读到一份尚未送达的草稿。
+        from astrbot.core.utils.session_lock import session_lock_manager
+
+        async def commit(snapshot):
+            receipt = getattr(snapshot, "_daily_life_reply_history", None)
+            if receipt is not None:
+                await receipt.commit(self.context.conversation_manager, snapshot.unified_msg_origin)
 
         ReplyPreparationService(
             schedule=schedule,
@@ -2781,6 +2797,8 @@ class DailyLifePlugin(Star):
             delivered=self._record_reply_delivery,
             is_current=current,
             complete=runtime.complete_continuous_turn,
+            transaction=lambda: session_lock_manager.acquire_lock(event.unified_msg_origin),
+            commit=commit,
         ).defer(event)
         # 队列满时保留原文字交给框架发送，不在前台等待模型或 TTS。
         return True
@@ -2788,6 +2806,13 @@ class DailyLifePlugin(Star):
     @filter.on_decorating_result(priority=-900)
     @_runtime_guard
     async def on_decorating_result(self, event: AstrMessageEvent):
+        reply_current = self._runtime_hook("continuous_turn_reply_is_current")
+        if (getattr(event, "_daily_life_reply_history", None) is not None
+                and reply_current and not reply_current(event)):
+            suppress_reply_draft(event)
+            event.clear_result()
+            logger.debug(f"{LOG_PREFIX} 回复草稿未覆盖全部续话，保留用户与工具历史，交给最新消息承接。")
+            return
         if self._runtime_hook_bool("stop_stale_continuous_turn_event", event):
             return
         if self._send_pipeline_should_stop(event):

@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .feed import BiliReadError, clean
 from .platform import BiliPlatform, BiliWriteUncertain
+from ..runtime.sharepacing import coordinate as coordinate_autonomy
 
 
 def prepare_picture(path: str) -> dict:
@@ -108,6 +109,11 @@ class DynamicPublisher:
         except Exception as exc:
             return await store.finish(journal, status="rejected", phase="preparing",
                                       retry_after=time.time() + 300, reason="图片准备未完成，动态未提交：" + type(exc).__name__)
+        if draft.get("autonomous"):
+            gate = await coordinate_autonomy(self.social.runtime, "bilibili_broadcast",
+                                             owner=intent, action="submit", selected=draft.get("pacing_episodes") or [])
+            if not gate["ready"]:
+                return await store.finish(journal, phase="preparing", reason="等待跨渠道主动分享时机")
         journal = await store.finish(journal, phase="submitting", at=self.social.browsing.now().isoformat(timespec="seconds"))
         try:
             result = await platform.dynamic(text, pictures=uploads)

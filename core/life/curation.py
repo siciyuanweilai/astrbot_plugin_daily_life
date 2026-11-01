@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .dressing import digest
 from .tools import timeline_item_datetime
+from .stylememory import design_categories
 
 
 CHOICE_LABELS = {
@@ -60,11 +61,15 @@ def validate_wardrobe_choice(raw: object, sources: dict, items: dict) -> dict:
         else [],
         "status": "decided",
         "constraint": "",
+        "categories": design_categories(value.get("categories"), default=("outfit",)),
     }
     refs = choice["evidence_ids"]
     ids = choice["item_ids"]
     issue = ""
-    if choice["decision"] not in CHOICE_LABELS or not choice["reason"]:
+    if not choice["categories"]:
+        issue = "造型目标类别无效"
+        choice["categories"] = []
+    elif choice["decision"] not in CHOICE_LABELS or not choice["reason"]:
         issue = "模型没有给出明确的衣橱选择及理由"
     elif any(not isinstance(ref, str) or ref not in sources for ref in refs):
         issue = "想法引用了未提供的生活依据"
@@ -79,6 +84,7 @@ def validate_wardrobe_choice(raw: object, sources: dict, items: dict) -> dict:
             "need": {"conditions", "wear", "activity", "care_receipt"},
             "interest": {"persona", "own_aesthetic", "own_interest"},
             "occasion": {"upcoming_plan"},
+            "rotation": {"rotation"},
         }.get(choice["motive"], set())
         if not required_kinds or not any(
             sources[ref].get("kind") in required_kinds for ref in refs
@@ -86,6 +92,19 @@ def validate_wardrobe_choice(raw: object, sources: dict, items: dict) -> dict:
             issue = "新造型动机缺少对应的自身需求、兴趣或活动依据"
         elif not all(choice[k] for k in ("key", "requirement", "difference")):
             issue = "尚未说明具体想法及与已有衣物的区别"
+        elif choice["motive"] == "rotation":
+            if not set(choice["categories"]) & {"outfit", "top", "bottom"}:
+                choice.update(status="unverified", constraint="衣物轮换依据不能充当仪容改变的理由")
+                return choice
+            evidence = [sources[ref] for ref in refs
+                        if sources[ref].get("kind") == "rotation" and sources[ref].get("rotation_pressure")]
+            if not evidence:
+                issue = "近期穿着与可用库存尚未证明轮换需求"
+            else:
+                # 同一库存不因模型改写想法反复生成。
+                choice["key"] = "rotation:" + digest(sorted(
+                    (source["scene_category"], tuple(source["owned_unit_ids"])) for source in evidence
+                ))
     if issue:
         choice.update(status="unverified", constraint=issue)
     return choice

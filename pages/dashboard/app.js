@@ -315,6 +315,7 @@ const state = {
   closetLoading: false,
   closetDetailId: 0,
   closetManageMode: false,
+  closetGenerating: false,
   closetSelectedIds: new Set(),
   closetPreviewCache: new Map(),
   memoryTab: "world",
@@ -3045,6 +3046,7 @@ const CLOSET_KIND_ORDER = [
 ];
 const CLOSET_STATUS_LABELS = {
   active: "已启用",
+  pending: "待核验",
   disabled: "已停用",
   rejected: "不采用",
 };
@@ -3254,6 +3256,8 @@ function closetBadges(item = {}) {
 }
 
 export function closetStatus(item = {}) {
+  if (item.attributes?.design_validation === "rejected") return "rejected";
+  if (item.attributes?.design_validation === "pending") return "pending";
   const status = text(item.status, "disabled").trim().toLowerCase();
   return Object.hasOwn(CLOSET_STATUS_LABELS, status) ? status : "disabled";
 }
@@ -3396,15 +3400,24 @@ function renderClosetManagement() {
   }
   el.closetList.replaceChildren(...(pageInfo.items.length ? pageInfo.items.map(closetRecord) : [empty("暂无符合条件的衣橱素材")]));
   if (el.closetSummary && state.closetWardrobe) {
-    const taste = (state.closetWardrobe.aesthetics || [])
-      .filter((entry) => entry.origin !== "user_feedback")
+    const tastes = state.closetWardrobe.aesthetics || [];
+    const taste = tastes
+      .filter((entry) => entry.origin !== "user_feedback" && entry.status === "supported")
+      .slice(0, 3)
       .map((entry) => clean(entry.preference, ""))
-      .find(Boolean);
+      .filter(Boolean).join("；");
     if (taste) {
       const characters = Array.from(taste);
       const preview = characters.length > 36 ? `${characters.slice(0, 36).join("")}…` : taste;
       el.closetSummary.textContent += ` · 审美：${preview}`;
     }
+    const exploring = tastes.filter((entry) => entry.status === "tentative").length;
+    if (exploring) el.closetSummary.textContent += ` · ${exploring} 条倾向仍在了解`;
+    el.closetSummary.title = tastes.map((entry) => {
+      const label = entry.origin === "user_feedback" ? "对方建议" : entry.status === "tentative" ? "仍在了解" : "自身偏好";
+      const categories = (entry.categories || []).map((kind) => CLOSET_KIND_LABELS[kind] || "整体风格").join("、");
+      return `${label}${categories ? ` · ${categories}` : ""}：${clean(entry.preference, "")}（${clean(entry.scope, "")}）`;
+    }).join("\n");
   }
   renderClosetDetail();
 }
@@ -3705,6 +3718,14 @@ async function importClosetFiles(files) {
 }
 
 async function generateCloset() {
+  if (state.closetGenerating) return;
+  state.closetGenerating = true;
+  const controls = new Set();
+  collectFormControls(el.closetGenerateDialog, controls);
+  const disabledBefore = new Map([...controls].map((item) => [item, item.disabled]));
+  controls.forEach((item) => { item.disabled = true; });
+  const submitLabel = el.closetGenerateSubmit?.textContent;
+  if (el.closetGenerateSubmit) el.closetGenerateSubmit.textContent = "正在提交…";
   setBusy(true);
   try {
     const generationMode = el.closetGenerateMode?.value || "";
@@ -3734,6 +3755,9 @@ async function generateCloset() {
     );
   } finally {
     setBusy(false);
+    disabledBefore.forEach((disabled, item) => { item.disabled = disabled; });
+    if (el.closetGenerateSubmit) el.closetGenerateSubmit.textContent = submitLabel;
+    state.closetGenerating = false;
   }
 }
 

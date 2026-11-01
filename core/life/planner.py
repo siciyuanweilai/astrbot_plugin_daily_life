@@ -622,9 +622,6 @@ class LifeBackgroundComposer:
 
     _repeat_similarity = classmethod(DailyContractComponent._repeat_similarity.__func__)
 
-    _repeat_sequence_similarity = classmethod(
-        DailyContractComponent._repeat_sequence_similarity.__func__
-    )
 
     _day_repeat_profile = classmethod(
         DailyContractComponent._day_repeat_profile.__func__

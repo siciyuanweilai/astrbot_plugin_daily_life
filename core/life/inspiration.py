@@ -514,10 +514,16 @@ class StyleCatalogComponent:
         from .dressing import reviewed_candidates, suitability_key, wardrobe_fact_text
         snapshot_getter = getattr(self.context.archive, "get_wardrobe_snapshot", None)
         snapshot = await snapshot_getter() if callable(snapshot_getter) else {}
+        from .rotation import wardrobe_rotation
+        rotation = wardrobe_rotation(
+            candidates, snapshot,
+            (conditions or snapshot.get("profile", {}).get("conditions") or {}).get("date", ""),
+        )
         for item in candidates:
             state = snapshot.get("items", {}).get(str(item.id))
             if state:
                 item.attributes["wardrobe"] = state
+            item.attributes["wear_history"] = rotation["items"].get(str(item.id), {})
         # 全天规划保留各场景可穿衣物，当前换装才应用本轮适配裁定。
         current_conditions = conditions if scene_category else None
         candidates = reviewed_candidates(
@@ -583,7 +589,7 @@ class StyleCatalogComponent:
             "保持当前穿搭时不采用候选；自主换装优先从本轮可穿衣物中选择完整套装或上、下装组合，长期偏好只用于排序。",
             "新穿搭可以采用一条完整套装，也可以同时组合上装与下装，再按需选择鞋袜和配饰；不要只选半套，也不要同时选取语义重复的整套与单品。catalog_reference_ids 填正整数数组，例如 [1, 102]；# 仅用于展示编号。",
             "完整候选中的可拆卸组成按结构化场景角色进入当前或延后状态；当前场景只写已经穿着或携带的组成，不把待用组成混入可见穿搭。",
-            "先保留适配的当前穿搭，已有单品优先叠穿；干净、舒适且适合天气的衣物可自然复穿。场景、活动、身体和天气不合适时换用其他可穿衣物；衣橱无适配完整搭配时交由后台评估补充。",
+            "结合实物穿着历史、场景、天气和身体选择；同样适配时优先考虑近期少穿的完整组合。干净适配的衣物可自然复穿，但已换下后再穿同一套应结合轮换需要决定；改写描述、换鞋饰不等于换了新衣。后台可为轮换设计新造型，生成中仍穿真实已有衣物。",
             "发型、妆容和美甲按需独立选择，无需每类都选；不能把候选图片中的人物身份、体貌、姿势、场景或品牌当作角色事实。",
             "候选中的“视觉提示词”是该类别的详细外观事实；实际采用后应忠实保留，不得自行简化款式、层次、颜色或装饰细节。",
             "只有实际采用对应类别时才改变该外观组成；局部换衣不能自动改掉发型、妆容或美甲。",
@@ -593,6 +599,10 @@ class StyleCatalogComponent:
                 f"另有 {unavailable_clothing_count} 条服装资料当前不具备直接穿用条件，本轮不提供其编号。"
             )
         lines.append(wardrobe_fact_text(snapshot))
+        usage = {str(item.id): rotation["items"][str(item.id)] for item in items
+                 if str(item.id) in rotation["items"]}
+        if usage:
+            lines.append("候选实物的近七日穿着记录（不含计划和生成待办）：" + json.dumps(usage, ensure_ascii=False))
         profile = snapshot.get("profile") or {}
         if conditions and profile.get("context_key") == suitability_key(conditions):
             choices = [

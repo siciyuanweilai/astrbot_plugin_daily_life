@@ -2588,6 +2588,57 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
 
 
 class DailyLifeDashboardStaticTest(unittest.TestCase):
+    def test_closet_generation_locks_dialog_and_prevents_duplicate_requests(self):
+        root = Path(__file__).resolve().parents[1]
+        script = """
+import fs from "node:fs";
+import vm from "node:vm";
+import assert from "node:assert/strict";
+const app = fs.readFileSync("pages/dashboard/app.js", "utf8");
+const code = app.slice(app.indexOf("async function generateCloset("), app.indexOf("async function setClosetStatus("));
+const submit = { disabled: false, textContent: "生成并入橱" };
+const note = { disabled: false, value: "独立局部造型" };
+const locked = { disabled: true };
+const fields = [submit, note, locked];
+let calls = 0, finish, closed = 0;
+const context = {
+  state: { closetGenerating: false, closetGenerationTimeoutSeconds: {} },
+  el: { closetGenerateSubmit: submit, closetGenerateNote: note, closetGenerateDialog: {} },
+  collectFormControls(_scope, controls) { fields.forEach((item) => controls.add(item)); },
+  setBusy(value) { context.state.busy = value; },
+  clean: (value) => value,
+  apiPost() { calls += 1; return new Promise((resolve, reject) => { finish = { resolve, reject }; }); },
+  applyClosetPayload() {}, closeClosetGenerate() { closed += 1; }, setNotice() {},
+  userErrorMessage: (_error, fallback) => fallback,
+};
+vm.createContext(context);
+vm.runInContext(code, context);
+const first = context.generateCloset();
+assert.equal(submit.textContent, "正在提交…");
+assert.ok(fields.every((field) => field.disabled));
+await context.generateCloset();
+assert.equal(calls, 1, "等待服务端接收期间重复点击不能发起第二个请求");
+finish.resolve({ generation_status: "submitted" });
+await first;
+assert.equal(closed, 1);
+assert.equal(submit.disabled, false);
+assert.equal(locked.disabled, true);
+assert.equal(submit.textContent, "生成并入橱");
+const retry = context.generateCloset();
+finish.reject(new Error("service unavailable"));
+await retry;
+assert.equal(closed, 1, "失败时保留对话框和原输入");
+assert.equal(note.value, "独立局部造型");
+assert.equal(note.disabled, false);
+assert.equal(context.state.closetGenerating, false);
+assert.equal(context.state.busy, false);
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module"], cwd=root, input=script,
+            text=True, encoding="utf-8", capture_output=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+
     def test_current_activity_preserves_last_confirmation_without_false_pause(self):
         root = Path(__file__).resolve().parents[1]
         script = """
@@ -4945,19 +4996,12 @@ if (state.configTextPending || timerCalls !== 1) {
         self.assertIn('classes.push("text-field")', config)
         self.assertIn("isPromptTextField", config)
         self.assertIn('classes.push("prompt-field")', config)
-        self.assertIn("promptText ? 8 : 5", config)
         self.assertIn(
             "grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));", style
         )
         self.assertIn("grid-template-columns: repeat(2, minmax(0, 1fr));", style)
         self.assertNotIn("repeat(auto-fit, minmax(min(100%, 380px), 1fr))", style)
         self.assertIn(".config-field.template-list-field", style)
-        self.assertIn(".config-field.text-field textarea", style)
-        self.assertIn(".config-field.prompt-field textarea", style)
-        self.assertIn(
-            ".config-field.list-field textarea {\n  min-height: 202px;\n}",
-            style,
-        )
         self.assertNotIn('classes.push("wide")', config)
         self.assertNotIn('classes.push("extra-wide")', config)
         self.assertNotIn(".config-field.extra-wide", style)

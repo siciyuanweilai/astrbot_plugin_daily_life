@@ -4,7 +4,6 @@ import datetime
 import math
 from collections import Counter
 from dataclasses import dataclass
-from difflib import SequenceMatcher
 from statistics import median
 from typing import Any, Protocol
 
@@ -46,7 +45,6 @@ class DailyContractComponentContext(Protocol):
     _last_validation_issue_code: Any
     _minutes_text: Any
     _repair_strategy_text: Any
-    _repeat_sequence_similarity: Any
     _repeat_similarity: Any
     _set_validation_issue: Any
     _timeline_item_duration: Any
@@ -275,19 +273,6 @@ class DailyContractComponent:
         return len(left_set & right_set) / len(left_set | right_set)
 
     @classmethod
-    def _repeat_sequence_similarity(cls, left: object, right: object) -> float:
-        left_text = cls._repeat_text(left, 280)
-        right_text = cls._repeat_text(right, 280)
-        if not left_text or not right_text:
-            return 0.0
-        return SequenceMatcher(
-            None,
-            left_text,
-            right_text,
-            autojunk=False,
-        ).ratio()
-
-    @classmethod
     def _day_repeat_profile(cls, day) -> dict[str, str]:
         meta = getattr(day, "meta", {}) or {}
         timeline = getattr(day, "timeline", []) or []
@@ -332,20 +317,10 @@ class DailyContractComponent:
         current = self.context._day_repeat_profile(day)
         if not (current["schedule_type"] or current["outfit"] or current["timeline"]):
             return ""
-        if replaced_day is not None:
-            replaced = self.context._day_repeat_profile(replaced_day)
-            outfit_similarity = self.context._repeat_similarity(
-                current["outfit"], replaced["outfit"]
-            )
-            if outfit_similarity >= 0.86:
-                self.context._set_validation_issue("outfit_repeat")
-                return (
-                    "手动重生成仍沿用了待替换日程的穿搭；"
-                    "请重新决定服装类别、主色、版型或层次组合，不能继续使用 keep"
-                )
+        # 穿衣轮换由共享衣橱的实物历史与场景决策负责；改写日程不等于必须换衣。
+        # 此处只检查整日安排的机械复刻，不根据衣物描述单独判定换装。
         if str(manual_extra or "").strip():
             return ""
-        similar_sleepwear_dates: list[str] = []
         for offset in range(1, 4):
             previous_date = (date - datetime.timedelta(days=offset)).strftime(
                 "%Y-%m-%d"
@@ -371,26 +346,6 @@ class DailyContractComponent:
             outfit_similarity = self.context._repeat_similarity(
                 current["outfit"], previous["outfit"]
             )
-            both_sleepwear = (
-                current["outfit_style_pool"] == "sleep_styles"
-                and previous["outfit_style_pool"] == "sleep_styles"
-            )
-            if (
-                both_sleepwear
-                and self.context._repeat_sequence_similarity(
-                    current["outfit"], previous["outfit"]
-                )
-                >= 0.46
-            ):
-                similar_sleepwear_dates.append(previous_date)
-                if len(similar_sleepwear_dates) >= 2:
-                    self.context._set_validation_issue("outfit_repeat")
-                    return (
-                        "生成的睡衣造型与近期多日记录高度相似（"
-                        + "、".join(similar_sleepwear_dates)
-                        + "）；保留睡眠场景和舒适需求，但需要更换具体服装类别、"
-                        "主色、材质或版型组合"
-                    )
             timeline_similarity = self.context._repeat_similarity(
                 current["timeline"], previous["timeline"]
             )
@@ -399,12 +354,6 @@ class DailyContractComponent:
                 " ".join(previous.values()),
             )
             has_clear_novelty = len(novelty) >= 8
-            if outfit_similarity >= 0.86 and not both_sleepwear:
-                self.context._set_validation_issue("outfit_repeat")
-                return (
-                    f"生成穿搭与 {previous_date} 过于相似；"
-                    "保留天气和场景适配，但需要改变服装类别、主色、版型或层次组合"
-                )
             if (
                 same_schedule
                 and outfit_similarity >= 0.92

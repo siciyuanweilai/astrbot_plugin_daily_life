@@ -229,6 +229,11 @@ class DailyLifeCommandCenter:
         change_scope: str = "clothing",
     ) -> str:
         action_key = str(action or "").strip().lower()
+        if action_key == "respond_invite":
+            denial = self.permission_denial(event, "invite:respond", LifeActionScope.PRIVATE)
+            if denial:
+                return denial
+            return await self.runtime.accept_user_invite(event, str(detail or "").strip())
         action_scope = (
             LifeActionScope.ADMIN
             if action_key

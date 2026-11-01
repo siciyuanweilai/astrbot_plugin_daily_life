@@ -668,6 +668,7 @@ class SearchService:
         raw = json.dumps(
             {
                 "provider": str(self.settings.provider or "").strip(),
+                "web_provider": self.settings.web_provider,
                 "query": _query_key(query),
                 "depth": str(depth or "").strip().casefold(),
                 "source_scope": str(source_scope or "").strip().casefold(),
@@ -798,16 +799,12 @@ class SearchService:
         image_understanding: bool,
         step_label: str = "",
     ) -> SearchAnswer:
-        operation = f"Grok X {step_label}" if step_label else "Grok X 搜索"
+        engine = "Grok 网页" if source_scope == "web" else "Grok X"
+        operation = f"{engine} {step_label}" if step_label else f"{engine} 搜索"
         result_operation = operation
         started = time.monotonic()
         query_log = f"：查询={query[:80]}" if step_label else ""
         separator = " " if step_label else ""
-        if str(source_scope or "").strip().lower() != "x":
-            return SearchAnswer(
-                source_scope="x",
-                invalid_reason="Grok 仅支持 X 平台原生搜索",
-            )
         logger.debug(f"{LOG_PREFIX} {operation}{separator}开始{query_log}")
         try:
             answer = await grok.search(
@@ -926,6 +923,45 @@ class SearchService:
                 close()
         raise asyncio.TimeoutError
 
+    async def _web_search(
+        self, grok: GrokClient | None, query: str, *, platform: str, umo: str,
+        deadline: float | None, options: dict[str, Any],
+    ) -> SearchAnswer:
+        """网页引擎选择与有界回退；不将 Tavily 专有能力静默降级。"""
+        engine = self.settings.web_provider
+        specialized = [name for name in (
+            "include_raw_content", "include_images", "include_image_descriptions",
+            "include_domains", "exclude_domains", "country", "auto_parameters", "exact_match",
+        ) if options.get(name)]
+        if options.get("topic", "general") != "general":
+            specialized.append("topic")
+        if specialized and engine == "grok":
+            return SearchAnswer(source_scope="web", invalid_reason=(
+                "这些结构化搜索选项需要 Tavily，请将网页搜索引擎设为 auto 或 tavily："
+                + ", ".join(specialized)))
+        if engine == "tavily" or specialized:
+            return await self._within_search_budget(
+                self._tavily_fallback(query, umo, source_scope="web", **options), deadline)
+        web = SearchAnswer(source_scope="web", invalid_reason="Grok 搜索模型未配置或初始化失败")
+        if grok is not None:
+            web = await self._within_search_budget(self._grok_once(
+                grok, query, source_scope="web", platform=platform,
+                start_date=options["start_date"], end_date=options["end_date"],
+                image_search=False, image_understanding=False, step_label=options["step_label"],
+            ), deadline)
+        if engine == "grok" or _has_search_evidence(web):
+            return web
+        if not self.tavily_available(umo) or (deadline is not None and time.monotonic() >= deadline):
+            return web
+        logger.debug(f"{LOG_PREFIX} 网页搜索转用 Tavily：{web.invalid_reason or 'Grok 未返回来源链接'}")
+        try:
+            fallback = await self._within_search_budget(
+                self._tavily_fallback(query, umo, source_scope="web", **options), deadline)
+        except asyncio.TimeoutError:
+            fallback = SearchAnswer(source_scope="web", invalid_reason="Tavily 回退已达到总时间限制")
+        return self._merge_provider_answers(
+            ("Grok 网页搜索", web), ("Tavily 搜索", fallback), source_scope="web")
+
     async def _single_search(
         self,
         grok: GrokClient | None,
@@ -952,72 +988,43 @@ class SearchService:
         exact_match: bool = False,
         tavily_depth: str = "fast",
     ) -> SearchAnswer:
-        tavily_operation = None
-        if source_scope in {"web", "both"}:
-            tavily_operation = self._tavily_fallback(
-                query,
-                umo,
-                source_scope="web",
-                start_date=start_date,
-                end_date=end_date,
-                step_label=step_label,
-                search_depth=tavily_depth,
-                topic=topic,
-                time_range=time_range,
-                include_raw_content=include_raw_content,
-                include_images=include_images,
-                include_image_descriptions=include_image_descriptions,
-                include_domains=include_domains,
-                exclude_domains=exclude_domains,
-                country=country,
-                auto_parameters=auto_parameters,
-                exact_match=exact_match,
-            )
-        if source_scope == "web":
-            assert tavily_operation is not None
-            return await self._within_search_budget(tavily_operation, deadline)
-        if source_scope == "x":
-            if grok is None:
-                return SearchAnswer(source_scope="x", invalid_reason="搜索模型初始化失败，请检查模型配置及前序日志")
-            return await self._within_search_budget(
-                self._grok_once(
-                    grok,
-                    query,
-                    source_scope="x",
-                    platform=platform,
-                    start_date=start_date,
-                    end_date=end_date,
-                    image_search=False,
-                    image_understanding=image_understanding,
-                    step_label=step_label,
-                ),
-                deadline,
-            )
-        if grok is None:
-            assert tavily_operation is not None
-            return await self._within_search_budget(tavily_operation, deadline)
-        assert tavily_operation is not None
-        web, x = await self._within_search_budget(
-            asyncio.gather(
-                tavily_operation,
-                self._grok_once(
-                    grok,
-                    query,
-                    source_scope="x",
-                    platform=platform,
-                    start_date=start_date,
-                    end_date=end_date,
-                    image_search=False,
-                    image_understanding=image_understanding,
-                    step_label=(f"{step_label}（X）" if step_label else ""),
-                ),
-            ),
-            deadline,
+        options = dict(
+            start_date=start_date, end_date=end_date, step_label=step_label,
+            search_depth=tavily_depth, topic=topic, time_range=time_range,
+            include_raw_content=include_raw_content, include_images=include_images,
+            include_image_descriptions=include_image_descriptions,
+            include_domains=include_domains, exclude_domains=exclude_domains,
+            country=country, auto_parameters=auto_parameters, exact_match=exact_match,
         )
+
+        async def web_search():
+            return await self._web_search(
+                grok, query, platform=platform, umo=umo, deadline=deadline, options=options)
+
+        async def x_search():
+            if grok is None:
+                return SearchAnswer(source_scope="x", invalid_reason="Grok X 搜索模型未配置或初始化失败")
+            return await self._within_search_budget(self._grok_once(
+                grok, query, source_scope="x", platform=platform,
+                start_date=start_date, end_date=end_date, image_search=False,
+                image_understanding=image_understanding,
+                step_label=(f"{step_label}（X）" if step_label and source_scope == "both" else step_label),
+            ), deadline)
+
+        async def bounded(scope, operation):
+            try:
+                return await operation
+            except asyncio.TimeoutError:
+                return SearchAnswer(source_scope=scope, invalid_reason="搜索已达到总时间限制")
+
+        if source_scope == "web":
+            return await bounded("web", web_search())
+        if source_scope == "x":
+            return await bounded("x", x_search())
+        web, x = await asyncio.gather(bounded("web", web_search()), bounded("x", x_search()))
         return self._merge_provider_answers(
-            ("Tavily 搜索结果", web),
-            ("Grok X 搜索结果", x),
-            source_scope="both",
+            (f"{provider_label(web.effective_providers())} 网页搜索结果", web),
+            ("Grok X 搜索结果", x), source_scope="both",
         )
 
     def _normalize_search_request(self, raw: SearchInput) -> SearchRequest:
@@ -1072,10 +1079,12 @@ class SearchService:
         )
 
     async def _search_grok_client(self) -> GrokClient | None:
+        if not self.settings.provider:
+            return None
         try:
             return await self._grok()
         except Exception as exc:
-            logger.warning(f"{LOG_PREFIX} Grok X 搜索初始化失败：{exc}")
+            logger.warning(f"{LOG_PREFIX} Grok 搜索初始化失败：{exc}")
             return None
 
     async def _search_once_request(
@@ -1488,7 +1497,8 @@ class SearchService:
             sections.extend(extra)
         content = "\n\n".join(item for item in sections if item).strip()
         if not content:
-            provider = {"web": "Tavily", "x": "Grok X", "both": "Tavily 与 Grok X"}[request.source_scope]
+            web_label = {"grok": "Grok 网页", "tavily": "Tavily", "auto": "Grok 网页 / Tavily"}[self.settings.web_provider]
+            provider = {"web": web_label, "x": "Grok X", "both": f"{web_label} 与 Grok X"}[request.source_scope]
             detail = f"：{first.invalid_reason}" if first.invalid_reason else ""
             raise RuntimeError(f"{provider} 未返回可用搜索结果{detail}")
         if request.include_images:
@@ -1554,7 +1564,8 @@ class SearchService:
         if remaining <= 0:
             raise asyncio.TimeoutError
         grok = None
-        if request.source_scope in {"x", "both"} or request.depth == "deep":
+        if (request.source_scope in {"x", "both"} or request.depth == "deep"
+                or self.settings.web_provider != "tavily"):
             grok = await asyncio.wait_for(
                 self._search_grok_client(),
                 timeout=remaining,

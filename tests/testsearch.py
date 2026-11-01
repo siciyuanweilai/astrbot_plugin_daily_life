@@ -423,6 +423,7 @@ class SearchServiceTest(unittest.IsolatedAsyncioTestCase):
         data = {
             "enabled": True,
             "provider": "grok-provider",
+            "web_provider": "tavily",
             "tavily_api_keys": ["tvly-key"],
             "cache_ttl_seconds": 300,
             "deep_max_followups": 2,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import math
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -25,6 +26,7 @@ from ...clock import now as life_now
 from ...models import ExpressionIntentRecord, ExpressionReviewRecord
 from ...sources.dispatch import ScopeDeliveryError
 from ..contact import contact_rhythm
+from ..sharepacing import coordinate as coordinate_autonomy
 from ..delivery import BackgroundTextMode
 from ..markers import LOG_PREFIX
 
@@ -132,6 +134,12 @@ class ProactiveSendComponent:
             return False
         source_event = self.context._snapshot_proactive_send_event(target_scope, source_event)
         source_event._daily_life_quiet_guard = True
+        if not self.context._proactive_send_is_current(source_event):
+            return False
+        owner = getattr(source_event, "_daily_life_contact_owner", "") or "life:" + uuid.uuid4().hex
+        gate = await coordinate_autonomy(self.context, target_scope, owner=owner, action="submit")
+        if not gate["ready"]:
+            return False
         for part in parts:
             if not self.context._proactive_send_is_current(source_event):
                 return False
@@ -231,6 +239,12 @@ class ProactiveSendComponent:
                 rhythm = await contact_rhythm(self.context, target_scope, life_now())
                 if rhythm.get("ready") is False:
                     receipt("deferred", "contact_rhythm", "当前收发节奏暂不适合主动联系")
+                    return False
+            if (send_payload or {}).get("source") in {"private_revisit", "proactive_reply", "proactive_voice_call"}:
+                owner = getattr(source_event, "_daily_life_contact_owner", "") or "life:" + uuid.uuid4().hex
+                gate = await coordinate_autonomy(self.context, target_scope, owner=owner, action="submit")
+                if not gate["ready"]:
+                    receipt("deferred", "contact_rhythm", "其他主动联系刚发生，稍后重新考虑")
                     return False
             if await self._send_proactive_voice_if_enabled(
                 target_scope,

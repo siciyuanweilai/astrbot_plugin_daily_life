@@ -560,10 +560,9 @@ class WardrobeFitTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(provider.prompts), 1)
         await self.drain()
         self.runtime._generate_life_image_with_policy_retry.assert_awaited_once()
-        prompt = self.runtime._generate_life_image_with_policy_retry.await_args.args[1]
-        context = json.loads(prompt.split("生活条件与审美（只作背景，不将参考图旧衣当成新衣）：", 1)[1])
-        self.assertEqual(context["target"]["scene_category"], "public")
-        self.assertEqual(context["target"]["plan"]["activity"], "去书店看书")
+        context = self.runtime.wardrobe_life._design_wardrobe.await_args.args[0]
+        self.assertEqual(context["verified_need"]["scene_category"], "public")
+        self.assertEqual(context["verified_need"]["plan"]["activity"], "去书店看书")
         snapshot = await self.archive.get_wardrobe_snapshot()
         self.assertEqual(snapshot["items"][str(generated.id)]["ownership"], "owned")
         self.assertEqual(snapshot["recent_jobs"][0]["status"], "completed")

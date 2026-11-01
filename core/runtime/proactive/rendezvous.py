@@ -20,6 +20,7 @@ from ...prompts import (
 from ...sources.dispatch import PermanentScopeDeliveryError
 from ..capture.jsonclean import call_pure_json
 from ..continuous import planned_actions
+from ...life.actionchain import settlements
 from ..markers import LOG_PREFIX
 
 
@@ -31,8 +32,15 @@ def preparation_facts(day: Any) -> dict:
         "outfit_confirmed_at": day.meta.get("outfit_fact_confirmed_at", ""),
         "current_place": day.meta.get("current_place", ""),
         "planned_actions": [item.as_dict() for item in planned_actions(day).values()],
+        "action_receipts": settlements(day),
         "timeline": [item.as_dict() for item in day.timeline],
     }
+
+
+def awaiting_execution(day: Any, index: int) -> bool:
+    """有执行器负责的节点以执行状态为准；纯日历安排仍沿用联系时段。"""
+    return (day.timeline[index].execution_state in {"planned", "deferred", "pending"}
+            and any(action.timeline_index == index for action in planned_actions(day).values()))
 
 
 def bound_activity_has_started(
@@ -41,11 +49,12 @@ def bound_activity_has_started(
     """只核对原先绑定的活动，不把后续无关节点当作新的联系目标。"""
     if not isinstance(activity, dict) or not activity.get("starts_at"):
         return False
-    for item in day.timeline:
+    for index, item in enumerate(day.timeline):
         point = timeline_item_datetime(item, day.date, meta=day.meta)
         if (
             point is not None
             and point <= now
+            and not awaiting_execution(day, index)
             and point.isoformat(timespec="seconds") == activity["starts_at"]
             and all(
                 getattr(item, field) == activity.get("item", {}).get(field)
@@ -228,7 +237,7 @@ class SharedActivityContactComponent:
             point = timeline_item_datetime(item, day.date, meta=day.meta)
             if (
                 point is None
-                or point <= now
+                or (point <= now and not awaiting_execution(day, index))
                 or item.execution_state
                 in {"active", "elapsed", "completed", "cancelled", "expired", "skipped"}
             ):
@@ -272,9 +281,9 @@ class SharedActivityContactComponent:
 
 裁定要求：
 1. 约定原文、最近真实交流是共同参与和确认程度的依据。单方计划、随口提议、媒体交付不得变成共同活动；日程文案不能证明对方同意。
-2. 从候选中选择与约定对应的真正活动，activity_index 必须使用候选 index；准备、换装、交通、返回不能误当作共同活动的开始。已取消、改期到无对应节点、已经开始或准备联系已失去意义时 skip。
+2. 从候选中选择与约定对应的真正活动，activity_index 必须使用候选 index；准备、换装、交通、返回不能误当作共同活动的开始。计划时间不是开始证据；仍待执行的安排即使已延迟，也可依据未完成准备和最近交流协调。已取消、改期到无对应节点、已经开始或准备联系已失去意义时 skip。
 3. 结合活动所需准备、已确认路程、双方状态、互动方式和最近聊天，决定 contact_at。看电影前可以商量吃喝或准备播放；出门前可以确认会合、带什么或是否准备好。这些只是语义示例，不是固定活动清单或必须提及的事项。不要统一提前固定分钟。
-4. 需要稍后联系就 wait，contact_at 填写晚于当前时间且早于选定活动开始的完整日期时间；现在自然合适则 send，contact_at 留空，由程序记录实际联系时间，即使刚确认、距离开始很近也可以。上次安排的联系时间已经到达且仍有必要时，优先履行，不要仅因时间过去而反复推迟。
+4. 需要稍后联系就 wait，contact_at 填写晚于当前时间、早于计划开始的完整日期时间；计划已延迟且尚待执行时可在当日稍后复核。现在自然合适则 send，contact_at 留空，由程序记录实际联系时间。上次联系时间已到且仍有必要时优先履行，不因时间过去反复推迟；条件尚未完成时如实协调，不声称已经准备好。
 5. 已经商量清楚准备、已经催过、对方明确不需要提醒，或此时正在交流同一准备事项且再单独联系会重复，就 skip。普通聊天或对方刚出现不等于准备事项已完成。改期可重新选择活动和时机。
 6. send 只说一条顺着近期对话、人设和关系的简短闲聊，可以半句接话或一个具体问题；不要求凑字数，不复述整段日程，不写客服通知。不要为了显得贴心硬加清单、解释和甜腻称呼。
 7. 不补造现有零食、库存、已经准备好、已经出门、到达、对方反应或共同活动已完成；可以提议或询问。只协商准备，不能重新许下未经确认的拍照、视频和其他交付。
@@ -473,7 +482,10 @@ skip 时 activity_index 可以为 null，contact_at 和 reply_text 留空。
                     return {"outcome": "expired", "reason": "对应共同活动已经开始，不再补发行前联系"}
             await reject("共同活动必须绑定候选中的尚未开始节点")
         starts_at = datetime.datetime.fromisoformat(selected["starts_at"])
-        if finished_at >= starts_at:
+        delayed = awaiting_execution(latest_day, index)
+        deadline = (datetime.datetime.combine(date + datetime.timedelta(days=1), datetime.time())
+                    if delayed and finished_at >= starts_at else starts_at)
+        if finished_at >= deadline:
             return {
                 "outcome": "expired",
                 "reason": "判断期间活动开始，不再补发行前联系",
@@ -484,7 +496,7 @@ skip 时 activity_index 可以为 null，contact_at 和 reply_text 留空。
             contact_at = local_datetime(decision.get("contact_at"))
             if contact_at is None:
                 await reject("稍后联系必须填写有效的完整日期时间")
-            if not now < contact_at < starts_at:
+            if not now < contact_at < deadline:
                 await reject("稍后联系时间必须晚于判断时刻且早于活动开始")
         progress = {
             "activity": selected,
@@ -504,7 +516,7 @@ skip 时 activity_index 可以为 null，contact_at 和 reply_text 留空。
         if not reply_text:
             await reject("共同活动联系正文为空")
         if source_event is not None:
-            source_event._daily_life_proactive_expires_at = starts_at
+            source_event._daily_life_proactive_expires_at = deadline
         try:
             sent = await self.context._send_proactive_message(
                 scope,
@@ -523,7 +535,7 @@ skip 时 activity_index 可以为 null，contact_at 和 reply_text 留空。
         except PermanentScopeDeliveryError as exc:
             return {"outcome": "undeliverable", "reason": str(exc), "code": exc.code}
         if not sent:
-            if life_now() >= starts_at:
+            if life_now() >= deadline:
                 return {
                     "outcome": "expired",
                     "reason": "消息生成期间活动开始，停止投递",

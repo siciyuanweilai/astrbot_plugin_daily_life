@@ -52,6 +52,7 @@ _CURRENT_APPEARANCE_META_KEYS = (
     "nails_style",
     "nails",
     "outfit_reason",
+    "style_usage_context",
 )
 
 _PLANNED_APPEARANCE_META_KEYS = {
@@ -430,11 +431,10 @@ class DailyEngineComponent:
         old_style = str(meta.get("style") or "").strip()
         return (
             "## ♻️ 同日重生成边界\n"
-            "本次是在原子替换同一天的旧日程草稿，不是继续旧草稿。旧日程、旧生活决策和旧穿搭"
-            "只用于识别重复，不能作为 keep 的当前事实；请根据天气、活动和角色审美重新决定穿搭，"
-            "并主动改变服装类别、主色、版型或层次组合。\n"
-            f"- 待替换穿搭：{old_outfit or '未记录'}\n"
-            f"- 待替换风格：{old_style or '未记录'}"
+            "本次替换同一天尚未执行的日程草稿，已发生的活动和当前穿着仍以真实回执为准。"
+            "结合本次要求重排计划，是否换衣由天气、活动、可用衣物与实际穿着记录共同决定。\n"
+            f"- 旧记录穿搭（是否已穿以回执为准）：{old_outfit or '未记录'}\n"
+            f"- 旧记录风格：{old_style or '未记录'}"
         )
 
     async def _daily_generation_memo_text(
@@ -744,6 +744,20 @@ class DailyEngineComponent:
             if (item_time := timeline_item_datetime(item, day.date)) is not None
         )
         confirmed_at = check_time.strftime("%Y-%m-%d %H:%M:%S")
+        previous_date = (check_time.date() - datetime.timedelta(days=1)).isoformat()
+        previous_day = await self.context.archive.get_day(previous_date)
+        if previous_day is not None:
+            # 新日程中的仪容是计划；跨日延续实际使用，直到仪容动作结算。
+            for kind in ("hair", "makeup", "nails"):
+                for key in (kind, kind + "_style"):
+                    if day.meta.get(key):
+                        day.meta["plan_" + key] = day.meta[key]
+                    if previous_day.meta.get(key):
+                        day.meta[key] = previous_day.meta[key]
+                    else:
+                        day.meta.pop(key, None)
+            if previous_day.meta.get("style_usage_context"):
+                day.meta["style_usage_context"] = previous_day.meta["style_usage_context"]
         keep_previous = day.meta.get("plan_outfit_decision") == "keep"
         if has_occurred_timeline and not keep_previous:
             day.meta["outfit_fact_source"] = "daily_generation"
@@ -751,8 +765,6 @@ class DailyEngineComponent:
             day.meta["outfit_fact_evidence"] = "当日日程已覆盖当前时刻"
             return day
 
-        previous_date = (check_time.date() - datetime.timedelta(days=1)).isoformat()
-        previous_day = await self.context.archive.get_day(previous_date)
         previous_outfit = current_appearance_values(previous_day)["outfit"]
         previous_outfit_period = "最终"
         if not previous_outfit:
@@ -766,7 +778,7 @@ class DailyEngineComponent:
         for current_key, plan_key in _PLANNED_APPEARANCE_META_KEYS.items():
             planned_value = str(day.meta.get(current_key) or "").strip()
             if planned_value:
-                day.meta[plan_key] = planned_value
+                day.meta.setdefault(plan_key, planned_value)
         for key in _CURRENT_APPEARANCE_META_KEYS:
             value = str(previous_meta.get(key) or "").strip()
             if value:

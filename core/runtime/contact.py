@@ -5,20 +5,21 @@ from __future__ import annotations
 import math
 
 from ..clock import local_timestamp
+from .sharepacing import merge
 
 
-async def contact_rhythm(runtime, scope, now):
+async def contact_rhythm(runtime, scope, now, *, shared=True):
     proactive = getattr(getattr(runtime, "config", None), "proactive", None)
     willingness = getattr(proactive, "talk_frequency", 0.35) if ":GroupMessage:" in scope else getattr(proactive, "private_talk_frequency", 0.55)
     if not isinstance(willingness, (int, float)) or not math.isfinite(willingness):
         willingness = 0.55
     result = {"willingness": round(max(0.0, min(1.0, willingness)), 2)}
     # 公开分享只传递角色的主动意愿，不暴露任何私聊的等待状态。
-    if scope in {"global", "qzone_broadcast"} or ":GroupMessage:" in scope:
-        return result
+    if scope in {"global", "qzone_broadcast", "bilibili_broadcast"} or ":GroupMessage:" in scope:
+        return await merge(runtime, scope, result) if shared and scope != "global" else result
     reader = getattr(getattr(runtime, "archive", None), "get_conversation_contact_state", None)
     if not callable(reader):
-        return result
+        return await merge(runtime, scope, result) if shared else result
     state = await reader(scope, local_timestamp(now))
     receipts = state["receipts"]
     rounds = 0
@@ -39,4 +40,4 @@ async def contact_rhythm(runtime, scope, now):
         last_received_at=state["last_received_at"],
         last_sent_at=sent_at,
     )
-    return result
+    return await merge(runtime, scope, result) if shared else result

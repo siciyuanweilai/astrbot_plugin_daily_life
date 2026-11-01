@@ -6,6 +6,7 @@ import hashlib
 import json
 
 from ..contextbudget import compact_json
+from ..life.actionchain import settlements
 
 
 def decision_prompt_context(context: dict) -> str:
@@ -31,6 +32,8 @@ def decision_observation(day, world: dict) -> dict:
             for item in day.timeline
         ],
         "plan": day.meta.get("planned_life_actions", ""),
+        "action_results": {key: value.get("status") for key, value in settlements(day).items()
+                           if isinstance(value, dict)},
         "deferred": {key: day.meta.get(key, "") for key in (
             "rest_delay_date", "rest_delay_targets", "rest_delay_until",
         )},

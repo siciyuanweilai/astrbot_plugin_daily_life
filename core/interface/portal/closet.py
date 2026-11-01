@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 
 from ...clock import local_datetime
 from ...life.curation import current_wardrobe_choice, wardrobe_choice_text
+from ...life.aesthetics import aesthetic_context
 from ...models import (
     STYLE_CATALOG_KIND_SET,
     StyleCatalogItemRecord,
@@ -309,7 +310,8 @@ class PortalClosetComponent:
             default_generation_mode = "text_to_image"
         return {
             "items": payload,
-            "wardrobe": {"aesthetics": wardrobe.get("profile", {}).get("aesthetics", []),
+            "wardrobe": {"aesthetics": aesthetic_context(wardrobe.get("profile", {})),
+                         "aesthetic_review_pending": wardrobe.get("profile", {}).get("aesthetic_review_pending", False),
                          "choice": current_wardrobe_choice(wardrobe),
                          "choice_text": wardrobe_choice_text(current_wardrobe_choice(wardrobe)),
                          "jobs": [{"status": job["status"], "requirement": job["payload"].get("requirement", ""), "error": job["error"]} for job in wardrobe.get("jobs", [])]},

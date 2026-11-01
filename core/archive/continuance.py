@@ -356,7 +356,7 @@ class ContinuityArchiveComponent:
                     ),
                 )
                 revision = self.context._set_day_unlocked(day)
-                if day.meta.get('outfit_fact_source') == 'life_action':
+                if day.meta.get('outfit_fact_source') == 'life_action' or day.meta.get('style_usage_context'):
                     self.context._record_wardrobe_wear_unlocked(day, source='life_action_atomic_receipt')
                 self.context._conn.commit()
                 self.context.living_revision = getattr(self.context, "living_revision", 0) + 1

@@ -1806,7 +1806,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved.meta["outfit_fact_source"], "carried_previous_day")
         self.assertEqual(saved.meta["plan_outfit_style"], "柔软居家层次")
 
-    async def test_manual_regeneration_rejects_replaced_day_outfit(self):
+    async def test_manual_regeneration_does_not_force_clothes_change_for_plan_edit(self):
         repeated = (
             '{"generation_contract":{"contract_version":"daily_life_generation","expected_coverage":"full_day",'
             '"closed_loop_required":true},'
@@ -1821,16 +1821,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
             '{"time":"22:20","activity":"回家洗漱后准备休息","status":"放松"}],'
             '"places":[],"new_events":[]}'
         )
-        changed = (
-            repeated.replace('"decision":"keep"', '"decision":"change"', 1)
-            .replace('"style":"清爽甜美风"', '"style":"轻盈休闲风"', 1)
-            .replace(
-                '"outfit":"米白色短袖衬衫搭浅蓝色高腰短裙，脚穿白色帆布鞋"',
-                '"outfit":"淡绿色棉麻短袖上衣搭白色直筒九分裤，脚穿灰色慢跑鞋"',
-                1,
-            )
-        )
-        composer, provider, _, archive = make_composer([repeated, changed])
+        composer, provider, _, archive = make_composer([repeated])
         await archive.save_day(
             DayRecord(
                 date="2026-06-12",
@@ -1851,11 +1842,10 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertIsNotNone(day)
-        self.assertIn("淡绿色棉麻短袖上衣", day.outfit)
-        self.assertEqual(len(provider.prompts), 2)
+        self.assertIn("米白色短袖衬衫", day.outfit)
+        self.assertEqual(len(provider.prompts), 1)
         self.assertIn("同日重生成边界", provider.prompts[0])
-        self.assertIn("待替换穿搭", provider.prompts[0])
-        self.assertIn("不能继续使用 keep", provider.prompts[1])
+        self.assertIn("旧记录穿搭", provider.prompts[0])
 
     async def test_manual_regeneration_excludes_replaced_daily_episode(self):
         composer, _, _, archive = make_composer()
@@ -1992,7 +1982,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("旧城闲逛日", contexts)
         self.assertNotIn("旧城市公园", week_progress)
 
-    async def test_recent_outfit_repeat_is_rejected_independently(self):
+    async def test_same_clothes_do_not_invalidate_a_different_day_plan(self):
         composer, _, _, archive = make_composer([])
         repeated_outfit = "淡鹅黄色宽松短袖配米白直筒九分裤和浅灰慢跑鞋"
         await archive.save_day(
@@ -2028,10 +2018,9 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
             {"decision_summary": {"novelty": "改为学习一道全新的菜"}},
         )
 
-        self.assertIn("生成穿搭与 2026-06-11 过于相似", reason)
-        self.assertEqual(composer._last_validation_issue_code, "outfit_repeat")
+        self.assertEqual(reason, "")
 
-    async def test_repeated_sleepwear_is_rejected_after_two_recent_days(self):
+    async def test_similar_sleepwear_text_is_not_a_separate_rotation_policy(self):
         composer, _, _, archive = make_composer([])
         for date_str, outfit in (
             (
@@ -2066,8 +2055,29 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
             {"decision_summary": {"novelty": "今晚改看一部新的轻松动画"}},
         )
 
-        self.assertIn("睡衣造型与近期多日记录高度相似", reason)
-        self.assertEqual(composer._last_validation_issue_code, "outfit_repeat")
+        self.assertEqual(reason, "")
+
+    async def test_manual_day_regeneration_can_keep_actual_clothes(self):
+        composer, _, _, _ = make_composer([])
+        existing = DayRecord(date="2026-06-12", outfit="实际穿着的居家套装")
+        candidate = DayRecord(date=existing.date, outfit=existing.outfit,
+                              timeline=[TimelineItem(time="15:00", activity="在家整理照片")])
+        reason = await composer._repeat_generation_issue(
+            candidate, datetime.datetime(2026, 6, 12, 9), {},
+            manual_extra="重新安排下午活动", replaced_day=existing)
+        self.assertEqual(reason, "")
+
+    async def test_mechanical_whole_day_copy_is_still_detected(self):
+        composer, _, _, archive = make_composer([])
+        def day(date):
+            return DayRecord(date=date, outfit="可继续穿的日常套装",
+                             timeline=[TimelineItem(time="15:00", activity="在家整理照片", status="平静")],
+                             meta={"schedule_type": "整理日", "schedule_intent": "home"})
+        await archive.save_day(day("2026-06-11"))
+        reason = await composer._repeat_generation_issue(
+            day("2026-06-12"), datetime.datetime(2026, 6, 12, 9), {})
+        self.assertTrue(reason)
+        self.assertEqual(composer._last_validation_issue_code, "daily_repeat")
 
     async def test_preference_consistency_uses_model_semantic_groups(self):
         composer, provider, _, archive = make_composer(
@@ -3406,6 +3416,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
             [
                 '{"outfit_decision":"partial_change","scene_category":"home","style_pool":"mixed",'
                 '"outfit":"浅蓝连衣裙，脱下短外套并换成室内拖鞋",'
+                '"component_review":{"hair":"adjust"},'
                 '"style":"清爽日常风","hair_style":"松散低马尾",'
                 '"hair":"黑色长发在脑后松松扎成低马尾，额前留有几缕碎发",'
                 '"reason":"回家后只脱下外套并换鞋，主体衣物继续穿着"}'
@@ -3637,7 +3648,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
                 '"scene_category":"home","style_pool":"outfit_styles",'
                 '"component_review":{"main_clothing":"keep","footwear":"keep",'
                 '"outer_layer":"not_present","carried_accessories":"keep",'
-                '"hair":"keep","makeup":"keep","nails":"keep"},'
+                '"hair":"keep","makeup":"adjust","nails":"keep"},'
                 '"outfit":"米白色细吊带褶皱短连衣裙","style":"清爽甜美",'
                 '"hair_style":"低扎发","hair":"黑色长发低扎在脑后",'
                 '"makeup":"夏日橘粉水光妆","nails":"浅蓝色短圆甲",'
@@ -3684,6 +3695,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
             [
                 '{"outfit_decision":"change","scene_category":"home","style_pool":"sleep_styles",'
                 '"outfit":"宽松米白色棉质睡裙","style":"","hair_style":"",'
+                '"component_review":{"hair":"not_present"},'
                 '"hair":"","reason":""}'
             ]
         )
@@ -3886,7 +3898,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
     async def test_update_outfit_uses_dedicated_outfit_provider(self):
         outfit_provider = Provider(
             [
-                '{"outfit_decision":"change","outfit":"浅蓝外出裙，低马尾","style":"清爽外出风","hair":"低马尾","reason":"下午要出门"}'
+                '{"outfit_decision":"change","component_review":{"hair":"adjust"},"outfit":"浅蓝外出裙，低马尾","style":"清爽外出风","hair":"低马尾","reason":"下午要出门"}'
             ],
             provider_id="outfit-model",
         )
@@ -3918,7 +3930,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
         composer, default_provider, generation_provider, archive = make_composer(
             provider_id="selected",
             responses=[
-                '{"outfit_decision":"partial_change","outfit":"白色T恤外搭薄衬衫，低马尾","style":"轻便出门风","hair":"低马尾","reason":"临时出门"}'
+                '{"outfit_decision":"partial_change","component_review":{"hair":"adjust"},"outfit":"白色T恤外搭薄衬衫，低马尾","style":"轻便出门风","hair":"低马尾","reason":"临时出门"}'
             ],
         )
         await archive.save_day(

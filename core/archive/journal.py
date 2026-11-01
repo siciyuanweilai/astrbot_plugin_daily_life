@@ -392,7 +392,7 @@ class DayArchiveComponent:
                 if issue:
                     raise ValueError(issue)
             revision = self.context._set_day_unlocked(target)
-            if require_wearable:
+            if require_wearable or target.meta.get("style_usage_context") != (current.meta.get("style_usage_context") if current else None):
                 self.context._record_wardrobe_wear_unlocked(target, source='outfit_atomic_receipt')
             self.context._conn.commit()
         except Exception:

@@ -315,6 +315,7 @@ class LifeCommandsTest(unittest.IsolatedAsyncioTestCase):
                 current_time=None,
                 instruction="",
                 instruction_source="",
+                should_abort=None,
             ):
                 self.calls.append(
                     ("update_outfit", date_str, period, current_time, instruction, instruction_source)

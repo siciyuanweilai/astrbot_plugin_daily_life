@@ -2466,13 +2466,13 @@
   "search_config": {
     "description": "联网搜索",
     "type": "object",
-    "hint": "Tavily 负责网页搜索、正文提取、站点映射、站点抓取和研究任务；Grok 仅负责 X 平台搜索。",
+    "hint": "Grok 支持网页与 X 搜索；Tavily 提供网页搜索、正文提取、站点映射、站点抓取和研究任务。",
     "items": {
       "enabled": {
         "description": "启用联网搜索",
         "type": "bool",
         "default": false,
-        "hint": "开启后，聊天模型使用日常生活搜索工具。网页使用 Tavily，X 平台使用 Grok（需配置对应模型）。"
+        "hint": "开启后，聊天模型使用日常生活搜索工具。网页按所选引擎搜索，X 平台使用 Grok。"
       },
       "inspiration_enabled": {
         "description": "日程使用联网灵感",
@@ -2490,11 +2490,19 @@
         "hint": "独立使用的 Tavily 密钥，可填写多个，调用时按轮换顺序使用。"
       },
       "provider": {
-        "description": "X 平台搜索",
+        "description": "Grok 搜索模型",
         "type": "string",
         "_special": "select_provider",
         "default": "",
-        "hint": "仅用于 X 平台搜索和深度搜索的补充查询规划。"
+        "hint": "用于网页、X 平台搜索和深度搜索的证据评估。所选通道须支持 Responses 原生 web_search 或 x_search。"
+      },
+      "web_provider": {
+        "description": "网页搜索引擎",
+        "type": "string",
+        "default": "auto",
+        "options": ["auto", "grok", "tavily"],
+        "option_labels": {"auto": "自动（Grok 优先）", "grok": "Grok 网页搜索", "tavily": "Tavily 网页搜索"},
+        "hint": "自动模式优先 Grok，缺少可用来源时在剩余时间内转用 Tavily；也可固定使用其中一个引擎。正文、图片、域名过滤等结构化选项在自动模式下使用 Tavily。"
       },
       "max_results": {
         "description": "单次搜索结果数",
@@ -2527,7 +2535,7 @@
           "max": 120,
           "step": 5
         },
-        "hint": "Tavily Search 或 Grok X 单次请求的最长等待时间。"
+        "hint": "Tavily Search 或 Grok 网页 / X 单次请求的最长等待时间。Grok 一次请求可能执行多次检索，建议 60–120 秒；实际仍受搜索总超时限制。"
       },
       "total_timeout_seconds": {
         "description": "搜索总超时(秒)",

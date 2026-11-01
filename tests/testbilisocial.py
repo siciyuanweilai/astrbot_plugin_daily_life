@@ -930,7 +930,7 @@ class SocialTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_unbinding_during_final_contact_check_prevents_network_write(self):
         await self.store.update({'bindings': {'private:a': {'uid':'5678'}}})
-        async def rhythm(*args):
+        async def rhythm(*args, **kwargs):
             await self.social.binding('private:a', remove=True)
             return {'ready':True}
         with patch('core.browsing.socializing.contact_rhythm', side_effect=rhythm):

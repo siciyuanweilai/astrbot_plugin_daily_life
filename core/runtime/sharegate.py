@@ -11,6 +11,7 @@ from ..clock import TIMEZONE, now as life_now
 from ..browsing.bookmarks import BrowseArchive
 from ..browsing.receipts import BrowseReceiptStore
 from .contact import contact_rhythm
+from .mirror.sharefacts import project as project_share_facts
 
 
 class ShareContactGate:
@@ -67,6 +68,15 @@ class ShareContactGate:
             "observation": run.get("observation_state"),
             "chat": chat,
         }
+        reader = getattr(self.runtime.archive, "get_day", None)
+        if callable(reader):
+            resolver = getattr(self.runtime, "resolve_injection_target", None)
+            date = (await resolver(life_now()))[0] if callable(resolver) else now.date().isoformat()
+            day = await reader(date)
+            if day is not None:
+                projected = project_share_facts(day)
+                payload["appearance_version"] = projected["appearance_version"]
+                payload["action_progress_version"] = projected["action_progress_version"]
         if callable(getattr(self.runtime.archive, "_run_db", None)):
             records = await BrowseArchive(self.runtime.archive).list(
                 scope=scope, limit=200
@@ -84,7 +94,7 @@ class ShareContactGate:
             json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()
         ).hexdigest(), previous
 
-    async def coordinate(self, scope, *, owner, action="reserve", expected=None):
+    async def coordinate(self, scope, *, owner, action="reserve", expected=None, shared=True):
         scope, owner = str(scope or ""), str(owner or "")
         if not scope or not owner:
             return {"allowed": False, "reason": "缺少发送目标或预约标识"}
@@ -117,10 +127,10 @@ class ShareContactGate:
             return {
                 "allowed": False,
                 "stale": True,
-                "reason": "新消息或生活事实已变化，保留成品并停止补发",
+                "reason": "新消息或生活事实已变化，保留成品并重新判断发送时机",
             }
         try:
-            rhythm = await contact_rhythm(self.runtime, scope, life_now())
+            rhythm = await contact_rhythm(self.runtime, scope, life_now(), shared=shared)
         except BaseException:
             if self.leases.get(scope, (None,))[0] == owner:
                 self.leases.pop(scope, None)

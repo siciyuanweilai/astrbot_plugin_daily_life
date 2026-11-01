@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 
 from ..life.appearance import format_image_appearance_context
+from ..runtime.mirror.sharefacts import digest
 from .dynamic import DynamicPublisher
 
 
@@ -28,6 +29,8 @@ class BiliDynamicSharing:
 
     async def opportunity(self, store, day, records, persona, recent):
         materials = [self.social.public_card(row) for row in records[:6]]
+        for material, record in zip(materials, records[:6]):
+            material["pacing_episode"] = digest(["bilibili", [record.get("bvid"), record.get("page")]]) if record.get("bvid") else record["id"]
         originals = {row["id"]: row for row in records[:6]}
         assets = {}
         appearance = format_image_appearance_context(day)
@@ -51,6 +54,7 @@ class BiliDynamicSharing:
                           for i in range(min(9, len(paths)))]
                 assets.update({image["id"]: paths[i] for i, image in enumerate(images)})
                 row = {"id": item["id"], "kind": "public_image", "scope": "global", "title": item.get("title", "公开作品"),
+                       "pacing_episode": digest(["objects", item["id"]]),
                        "evidence": [{"quote": item.get("provenance", "已归档的公开图片")}], "images": images,
                        "impression": "", "asset_revision": item.get("revision")}
                 materials.append({k: v for k, v in row.items() if k != "asset_revision"})
@@ -112,6 +116,6 @@ class BiliDynamicSharing:
                 raise ValueError("发送前生活状态已变化")
 
         async with self.social._write_lock:
-            result = await DynamicPublisher(self.social).publish(store, draft, guard)
+            result = await DynamicPublisher(self.social).publish(store, {**draft, "autonomous": True}, guard)
         await delegate.record_bili_dynamic_receipt(store.account, intent, result)
         return result.get("status") in {"accepted", "confirmed"}

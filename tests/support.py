@@ -52,6 +52,8 @@ def _install_stubs():
             "astrbot.api.message_components"
         ),
         "astrbot.core": types.ModuleType("astrbot.core"),
+        "astrbot.core.utils": types.ModuleType("astrbot.core.utils"),
+        "astrbot.core.utils.session_lock": types.ModuleType("astrbot.core.utils.session_lock"),
         "astrbot.core.agent": types.ModuleType("astrbot.core.agent"),
         "astrbot.core.agent.message": types.ModuleType("astrbot.core.agent.message"),
         "astrbot.core.agent.tool": types.ModuleType("astrbot.core.agent.tool"),
@@ -66,6 +68,12 @@ def _install_stubs():
         ),
     }
     modules["astrbot.api"].__path__ = []
+    session_locks = {}
+    modules["astrbot.core.utils.session_lock"].session_lock_manager = types.SimpleNamespace(
+        acquire_lock=lambda scope: session_locks.setdefault(
+            (asyncio.get_running_loop(), scope), asyncio.Lock()
+        )
+    )
     modules["astrbot.core.star"].__path__ = []
     modules["astrbot.api"].logger = _Logger()
     modules["aiohttp"].ClientSession = object
@@ -928,8 +936,12 @@ class DataManager:
         self.commitments[item.id] = item
         return item
 
-    async def get_commitments(self, status="active", limit=20):
+    async def get_commitments(self, status="active", limit=20, *, source_session=None, source_message_id=None):
         values = list(self.commitments.values())
+        if source_session is not None:
+            values = [item for item in values if item.source_session in {"", source_session}]
+        if source_message_id is not None:
+            values = [item for item in values if item.source_message_id == source_message_id]
         if status:
             values = [item for item in values if item.status == status]
         values.sort(key=lambda item: (item.trigger_date or "9999-12-31", -item.id))

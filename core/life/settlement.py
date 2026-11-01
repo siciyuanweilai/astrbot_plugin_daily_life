@@ -25,8 +25,9 @@ from ..models import (
     timeline_item_minutes,
 )
 from .lookback import record_appearance_snapshot
+from .stylememory import record_style_transition
 from .outfitstate import normalize_outfit_appearance
-from .actionchain import preceding_actions, committed_ids, timeline_complete
+from .actionchain import dependency_issue, timeline_complete
 from .body import ContinuousBody, project_body
 from .presence import record_action_outcome
 from .locationfacts import action_place, commit_place, place_issue
@@ -506,6 +507,7 @@ class LifeActionComponent:
             elif full_change or "catalog_reference_ids" in action.payload:
                 day.meta.pop("style_catalog_reference_ids", None)
         if action.action_type in {"change_outfit", "groom"} and not preserve_outfit_fact:
+            previous_style_meta = dict(day.meta)
             # 仅提交本次明确发生的仪容变化，成对字段同步，避免新发型配旧描述。
             appearance_changed = action.action_type == "change_outfit"
             for fields in (
@@ -515,14 +517,20 @@ class LifeActionComponent:
             ):
                 if not any(field in action.payload for field in fields):
                     continue
+                review = action.payload.get("component_review")
+                if isinstance(review, dict) and review.get(fields[1]) not in {"adjust", "not_present"}:
+                    continue
                 for field in fields:
-                    value = appearance[field]
+                    value = "" if isinstance(review, dict) and review.get(fields[1]) == "not_present" else appearance[field]
                     if value:
                         day.meta[field] = value
                     else:
                         day.meta.pop(field, None)
                 appearance_changed = True
             if appearance_changed:
+                record_style_transition(day, previous_style_meta, at=committed_at,
+                                        reason=action.evidence,
+                                        origin="user_instruction" if action.payload.get("choice_origin") == "user_instruction" else "life_action")
                 record_appearance_snapshot(
                     day, datetime.datetime.fromisoformat(committed_at)
                 )
@@ -589,16 +597,14 @@ class LifeActionComponent:
             replayed.replayed = True
             return replayed
 
-        completed = committed_ids(day)
-        if any(
-            item.action_id not in completed for item in preceding_actions(day, action)
-        ):
+        waiting = dependency_issue(day, action)
+        if waiting:
             # 前序尚未完成只是等待条件，不固化成该动作永久的幂等拒绝结果。
             return LifeActionOutcome(
                 action_id=action.action_id,
                 action_type=action.action_type,
                 status="rejected",
-                reason="同一活动的前序步骤尚未完成",
+                reason=waiting,
                 committed_at=committed_at,
                 timeline_index=action.timeline_index,
                 evidence=action.evidence,
@@ -883,7 +889,7 @@ class LifeActionComponent:
             receipt_status=status,
         )
         if outcome.status == "committed":
-            if action.action_type == "change_outfit":
+            if action.action_type in {"change_outfit", "groom"}:
                 wear_recorder = getattr(
                     self.context.archive, "record_wardrobe_wear", None
                 )

@@ -81,6 +81,7 @@ class PluginLifecycleTest(unittest.IsolatedAsyncioTestCase):
                     event_was_recalled=lambda event: False,
                     continuous_turn_event_is_current=lambda event: state["continuous"],
                     media_request_is_current_turn=lambda event: state["media"],
+                    continuous_turn_reply_is_current=lambda event: all(state.values()),
                     complete_continuous_turn=lambda event: None,
                 )
                 plugin._record_reply_delivery = AsyncMock()
@@ -2241,6 +2242,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNone(event.get_extra("enable_streaming"))
 
     async def test_invite_tool_uses_invite_details(self):
+        from support import DailyLifeCommandCenter
         calls = []
 
         async def accept_user_invite(event, text):
@@ -2249,6 +2251,7 @@ class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
 
         plugin = DailyLifePlugin.__new__(DailyLifePlugin)
         plugin.runtime = types.SimpleNamespace(accept_user_invite=accept_user_invite)
+        plugin.commands = DailyLifeCommandCenter(plugin.runtime)
         event = Event()
 
         result = await plugin.tool_accept_user_invite(
