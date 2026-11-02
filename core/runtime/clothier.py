@@ -208,6 +208,15 @@ class WardrobeLifeService:
                 ),
             )
         snapshot = await self._archive().get_wardrobe_snapshot()
+        from ..life.outfitflow import wearability_key
+
+        wearability = wearability_key(snapshot)
+        if day.meta.get("outfit_wearability", "") != wearability:
+            refreshed = await self._archive().mutate_day(
+                date, lambda latest: latest.meta.update(outfit_wearability=wearability)
+            )
+            if refreshed is not None:
+                day = refreshed
         conditions = self._wardrobe_conditions(day, now)
         inventory_key = digest(
             {

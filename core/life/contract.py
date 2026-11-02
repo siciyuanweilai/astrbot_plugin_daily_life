@@ -569,11 +569,6 @@ class DailyContractComponent:
             "span": unwrapped[-1] - unwrapped[0],
         }
 
-    def _timeline_bounds(self, timeline: object) -> tuple[int | None, int | None]:
-        coverage = self._timeline_coverage(timeline)
-        if not coverage:
-            return None, None
-        return coverage["first"], coverage["last"]
 
     @staticmethod
     def _full_day_coverage_profile(payload: dict) -> str:

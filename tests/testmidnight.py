@@ -1,6 +1,7 @@
 import datetime
 import json
 import sqlite3
+from contextlib import closing
 from core.archive.migrations import SCHEMA_VERSION
 import tempfile
 import unittest
@@ -133,7 +134,7 @@ class MidnightArchiveTest(unittest.IsolatedAsyncioTestCase):
             archive = LifeArchive(path)
             await archive.save_day(DayRecord(date="2026-10-03", meta={"life_window_start": "07:30", "planned_life_actions": json.dumps([{"action_id": "go-out", "timeline_index": 3}])}))
             archive.close()
-            with sqlite3.connect(path) as connection:
+            with closing(sqlite3.connect(path)) as connection, connection:
                 connection.execute("ALTER TABLE timelines DROP COLUMN day_offset")
                 connection.execute("UPDATE meta SET value = '18' WHERE key = 'schema_version'")
                 for index, (time, activity) in enumerate([("07:30", "醒来"), ("08:30", "准备出门"), ("00:12", "准备休息"), ("09:10", "出门"), ("23:17", "翻照片")]):

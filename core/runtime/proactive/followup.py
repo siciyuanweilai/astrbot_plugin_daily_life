@@ -924,6 +924,7 @@ observations：{json.dumps(observations, ensure_ascii=False)}"""
             }
         send_payload = {
             "source": "proactive_commitment",
+            "_executing_task_key": task.task_key,
             "expression_intent": decision.get("expression_intent") or {},
         }
         try:
@@ -937,6 +938,18 @@ observations：{json.dumps(observations, ensure_ascii=False)}"""
                 source_message_id=str(payload.get("source_message_id") or ""),
                 raise_delivery_errors=True,
             )
+        except asyncio.CancelledError:
+            status = (send_payload.get("_delivery") or {}).get("status")
+            if status in {"partial", "unknown"} or (status == "confirmed" and settle_commitment):
+                try:
+                    async with asyncio.timeout(2):
+                        await self.context.archive.set_commitment_status(
+                            commitment.id, "done" if status == "confirmed" else "delivery_failed",
+                            now.isoformat(timespec="seconds"),
+                        )
+                except Exception as exc:
+                    logger.warning(f"{LOG_PREFIX} 取消后的承诺回执未保存：{type(exc).__name__}")
+            raise
         except PermanentScopeDeliveryError as exc:
             await self.context.archive.set_commitment_status(
                 commitment.id, "delivery_failed", now.isoformat(timespec="seconds")
@@ -946,6 +959,11 @@ observations：{json.dumps(observations, ensure_ascii=False)}"""
             )
             return {"outcome": "undeliverable", "reason": str(exc), "code": exc.code}
         except ScopeDeliveryError as exc:
+            if (send_payload.get("_delivery") or {}).get("status") == "unknown":
+                await self.context.archive.set_commitment_status(
+                    commitment.id, "delivery_failed", now.isoformat(timespec="seconds")
+                )
+                return {"outcome": "unknown", "reason": "平台回执未确认，停止自动重发", "code": exc.code}
             if int(getattr(task, "attempts", 0) or 0) >= int(
                 getattr(task, "max_attempts", 0) or 0
             ):
@@ -958,6 +976,14 @@ observations：{json.dumps(observations, ensure_ascii=False)}"""
                     "code": exc.code,
                 }
             raise
+        delivery = send_payload.get("_delivery") or {}
+        if delivery.get("status") in {"partial", "unknown"}:
+            # 停止自动重发，但保留未完成事实；不能把部分送达当作履约成功。
+            await self.context.archive.set_commitment_status(
+                commitment.id, "delivery_failed", now.isoformat(timespec="seconds")
+            )
+            return {"outcome": delivery["status"], "reason": delivery.get("reason", ""),
+                    "sent_text": delivery.get("sent_text", "")}
         if not sent:
             raise RuntimeError("主动承诺消息未成功投递")
         if settle_commitment:

@@ -3,7 +3,8 @@ from __future__ import annotations
 import base64
 from io import BytesIO
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+
+from .filepath import local_media_path
 
 
 IMAGE_SOURCE_LIMIT = 16 * 1024 * 1024
@@ -111,19 +112,8 @@ def _renderable_image_data(data: bytes) -> tuple[bytes, str]:
 
 def _local_image_path(target: str) -> Path | None:
     value = _strip_markdown_target(target)
-    if not value:
-        return None
-    parsed = urlparse(value)
-    if parsed.scheme in {"http", "https", "data"}:
-        return None
-    if parsed.scheme == "file":
-        value = unquote(parsed.path)
-        if parsed.netloc and value:
-            value = f"//{parsed.netloc}{value}"
-    elif parsed.scheme and not _looks_like_windows_path(value):
-        return None
-    path = Path(value)
-    return path if path.is_file() else None
+    path = local_media_path(value)
+    return path if path is not None and path.is_file() else None
 
 
 def _strip_markdown_target(target: str) -> str:
@@ -131,15 +121,6 @@ def _strip_markdown_target(target: str) -> str:
     if value.startswith("<") and value.endswith(">"):
         value = value[1:-1].strip()
     return value.replace(r"\)", ")").replace(r"\(", "(")
-
-
-def _looks_like_windows_path(value: str) -> bool:
-    return (
-        len(value) >= 3
-        and value[1] == ":"
-        and value[2] in {"/", "\\"}
-        and value[0].isalpha()
-    )
 
 
 def _image_mime(data: bytes) -> str:

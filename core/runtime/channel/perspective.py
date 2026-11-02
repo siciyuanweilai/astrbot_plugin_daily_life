@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ...addresses import habitual_address
+
 import copy
 import json
 from typing import Any
@@ -145,13 +147,15 @@ async def bind_media_reply_context(
         if route == "group" and str(value).strip()
     ):
         name = names.get(profile_id, "")
+        subjective_name = ""
         is_addressee = bool(sender_id and profile_id == sender_id)
         if callable(get_relationship):
             try:
                 record = await get_relationship(profile_id)
                 if record is not None:
+                    subjective_name = habitual_address(record)
                     name = str(
-                        record.subjective_name or record.alias or record.name or name
+                        name or record.name or record.alias or profile_id
                     )
                     if str(record.platform or "") not in {"", platform}:
                         is_addressee = False
@@ -168,6 +172,7 @@ async def bind_media_reply_context(
                 "画面身份": "人物 B（合影好友）",
                 "档案 ID": profile_id,
                 "姓名或称呼": name,
+                "习惯称呼": subjective_name,
                 "对话身份": "当前聊天对象（你）"
                 if is_addressee
                 else "其他人物（未确认为当前聊天对象）",

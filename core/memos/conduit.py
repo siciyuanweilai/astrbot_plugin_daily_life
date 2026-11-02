@@ -11,6 +11,7 @@ from typing import Any
 from astrbot.api import logger
 
 from .hosted import HostedMemOSService
+from ..addresses import habitual_address
 
 from typing import Protocol
 
@@ -34,7 +35,6 @@ class MemosComponentContext(Protocol):
     sync_memos_correction: Any
     sync_memos_memo: Any
     sync_memos_selected_items: Any
-    sync_memos_selected_memory: Any
 
 
 class MemosComponent:
@@ -193,89 +193,7 @@ class MemosComponent:
         while len(cache) > self.context._MEMOS_CONTEXT_CACHE_LIMIT:
             cache.pop(next(iter(cache)))
 
-    async def sync_memos_selected_memory(
-        self,
-        payload: dict[str, Any],
-        meta: dict[str, str],
-        *,
-        user_message: str = "",
-        summary: Any = None,
-    ) -> None:
-        service = self.context._memos_service()
-        if not service or not service.enabled:
-            return
-        summary_text = ""
-        if summary is not None:
-            summary_text = str(
-                getattr(summary, "brief", "")
-                or getattr(summary, "long_summary", "")
-                or ""
-            ).strip()
-        summary_text = (
-            summary_text
-            or str(payload.get("brief") or payload.get("long_summary") or "").strip()
-        )
-        points = (
-            [
-                str(item or "").strip()
-                for item in payload.get("relationship_points", [])
-                if str(item or "").strip()
-            ]
-            if isinstance(payload.get("relationship_points"), list)
-            else []
-        )
-        preferences = []
-        if isinstance(payload.get("preference_points"), list):
-            for item in payload["preference_points"]:
-                if isinstance(item, dict):
-                    text = str(item.get("content") or "").strip()
-                else:
-                    text = str(item or "").strip()
-                if text:
-                    preferences.append(text)
-        await service.sync_selected_memory(
-            meta=meta,
-            user_message=user_message,
-            summary=summary_text,
-            points=points,
-            preferences=preferences,
-        )
 
-    def schedule_memos_selected_memory(
-        self,
-        payload: dict[str, Any],
-        meta: dict[str, str],
-        *,
-        user_message: str = "",
-        summary: Any = None,
-    ) -> bool:
-        service = self.context._memos_service()
-        if (
-            not service
-            or not service.enabled
-            or not bool(getattr(service.settings, "sync_selected_memory", False))
-        ):
-            return False
-        marker = str(
-            getattr(summary, "id", "")
-            or payload.get("brief")
-            or payload.get("long_summary")
-            or user_message
-        )
-        key = HostedMemOSService.stable_hash(
-            f"{meta.get('session_id', '')}:{marker}", prefix="memos_memory"
-        )
-        scheduler = getattr(self.context, "_schedule_background_task", None)
-        coro = self.context.sync_memos_selected_memory(
-            payload,
-            meta,
-            user_message=user_message,
-            summary=summary,
-        )
-        if callable(scheduler):
-            return bool(scheduler(coro, label="MemOS 记忆同步", key=key))
-        coro.close()
-        return False
 
     def _memos_text(self, value: Any, limit: int = 240) -> str:
         return " ".join(str(value or "").split())[:limit].strip()
@@ -319,7 +237,7 @@ class MemosComponent:
                     self._memos_record_text(
                         "关系画像",
                         item.get("name"),
-                        item.get("subjective_name"),
+                        "习惯称呼：" + habitual_address(item) if habitual_address(item) else "",
                         "、".join(
                             str(tag) for tag in item.get("subjective_tags", [])[:6]
                         )
@@ -348,8 +266,7 @@ class MemosComponent:
             if not isinstance(target, dict):
                 continue
             name = (
-                target.get("subjective_name")
-                or target.get("name")
+                target.get("name")
                 or target.get("alias")
                 or target.get("profile_id")
             )
@@ -362,6 +279,7 @@ class MemosComponent:
                 self._memos_record_text(
                     "关系画像",
                     name,
+                    "习惯称呼：" + habitual_address(target) if habitual_address(target) else "",
                     target.get("relationship_story"),
                     target.get("note"),
                     "、".join(str(item) for item in tags[:6]),

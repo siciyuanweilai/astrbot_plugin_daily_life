@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import AsyncMock, patch
 
 from core.runtime.reply import SegmentPart, SemanticSegmentPlan
 from runtimehelpers import (
@@ -40,6 +41,7 @@ from runtimehelpers import (
 
 from astrbot.core.agent.message import TextPart
 from core.sources.dispatch import PermanentScopeDeliveryError
+from proactivegroundingfixture import GroundingStub
 
 
 class RuntimeProactiveTest(ResponseGateRuntimeHelpers, unittest.TestCase):
@@ -951,6 +953,7 @@ class RuntimeProactiveAsyncTest(
 
     async def test_proactive_voice_sends_voice_without_duplicate_text(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.proactive_grounding = GroundingStub()
         runtime.context = Context(Provider([]))
         runtime.config = LifeSettings.from_dict(
             {
@@ -1024,6 +1027,7 @@ class RuntimeProactiveAsyncTest(
         runtime.media = types.SimpleNamespace(
             voice=types.SimpleNamespace(synthesize=fail_voice)
         )
+        runtime.proactive_grounding = GroundingStub()
         runtime.archive = DataManager()
         runtime._apply_proactive_send_timing = lambda payload: async_return(None)
         runtime._send_proactive_emoji_if_needed = lambda scope, payload: async_return(
@@ -1050,6 +1054,7 @@ class RuntimeProactiveAsyncTest(
 
     async def test_proactive_voice_without_intent_keeps_text(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.proactive_grounding = GroundingStub()
         runtime.context = Context(Provider([]))
         runtime.config = LifeSettings.from_dict(
             {
@@ -1151,6 +1156,7 @@ class RuntimeProactiveAsyncTest(
         )
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.context = Context(provider, providers={"proactive-model": provider})
+        runtime.proactive_grounding = GroundingStub()
         runtime.config = LifeSettings.from_dict(
             {
                 "rhythm_config": {"llm_provider": "default-model"},
@@ -2578,7 +2584,15 @@ class RuntimeProactiveAsyncTest(
             event, now, reasons
         )
 
-        self.assertEqual(familiar_delta, 0.18)
+        self.assertEqual(familiar_delta, 0.0)
+        self.assertFalse(reasons)
+        runtime.archive.relationships["10001"].relationship_state = {
+            "observed_dimensions": ["familiarity", "trust", "affinity"],
+            "familiarity": .02, "trust": .54, "affinity": .53,
+        }
+        familiar_delta = await runtime._response_gate_relationship_delta(event, now, reasons)
+        self.assertGreater(familiar_delta, 0)
+        self.assertLess(familiar_delta, .02)
         self.assertTrue(reasons)
 
         unknown = Event(
@@ -2701,7 +2715,7 @@ class RuntimeProactiveAsyncTest(
             ]
         )
         runtime.resolve_interaction_context = lambda **kwargs: async_return(
-            types.SimpleNamespace(mode="co_present", mode_label="同处现场")
+            types.SimpleNamespace(mode="co_present", mode_label="同处现场", has_authoritative_mode=True)
         )
 
         decision = await runtime._part_proactive_revisit_component._evaluate_private_revisit_payload(
@@ -2713,6 +2727,40 @@ class RuntimeProactiveAsyncTest(
         self.assertFalse(decision["should_reply"])
         self.assertFalse(decision["revisit_evidence"]["can_revisit"])
         self.assertEqual(provider.prompts, [])
+
+    async def test_related_memory_needs_current_life_before_revisit_decision(self):
+        for life_available, recalled in ((True, "[memory:1] 一起聊过的展览"), (False, "[memory:1] 一起聊过的展览"), (True, "")):
+            with self.subTest(life_available=life_available, recalled=bool(recalled)):
+                runtime, provider = self._make_proactive_runtime(['{"should_reply":false,"decision":"observe"}'])
+                runtime.resolve_interaction_context = AsyncMock(return_value=types.SimpleNamespace(mode="remote", mode_label="线上"))
+                component = runtime._part_proactive_revisit_component
+                component._private_revisit_life_context = AsyncMock(return_value=("现在正在看展", life_available))
+                with patch("core.runtime.proactive.revisit.contextual_relationship_memories", AsyncMock(return_value=recalled)):
+                    result = await component._evaluate_private_revisit_payload("aiocqhttp:FriendMessage:10001",
+                        relationship=types.SimpleNamespace(id="10001", user_id="10001"), now=datetime.datetime(2026,8,13,12))
+                expected = life_available and bool(recalled)
+                self.assertEqual(result["revisit_evidence"]["can_revisit"], expected)
+                self.assertEqual(bool(provider.prompts), expected)
+                if expected:
+                    self.assertIn("一起聊过的展览", provider.prompts[0])
+
+    async def test_revisit_recall_failure_does_not_invent_evidence_or_swallow_cancel(self):
+        for error in (TimeoutError(), asyncio.CancelledError()):
+            with self.subTest(error=type(error).__name__):
+                runtime, provider = self._make_proactive_runtime([])
+                runtime.resolve_interaction_context = AsyncMock(return_value=types.SimpleNamespace(mode="remote", mode_label="线上"))
+                component = runtime._part_proactive_revisit_component
+                component._private_revisit_life_context = AsyncMock(return_value=("正在看展", True))
+                with patch("core.runtime.proactive.revisit.contextual_relationship_memories", AsyncMock(side_effect=error)):
+                    call = component._evaluate_private_revisit_payload("aiocqhttp:FriendMessage:10001",
+                        relationship=types.SimpleNamespace(id="10001", user_id="10001"), now=datetime.datetime(2026,8,13,12))
+                    if isinstance(error, asyncio.CancelledError):
+                        with self.assertRaises(asyncio.CancelledError):
+                            await call
+                    else:
+                        result = await call
+                        self.assertFalse(result["revisit_evidence"]["can_revisit"])
+                self.assertEqual(provider.prompts, [])
 
     async def test_stale_reply_effect_settlement_invokes_archive_expirer(self):
         runtime, _ = self._make_proactive_runtime([])

@@ -22,7 +22,7 @@ class LifeMemoryServiceTest(unittest.IsolatedAsyncioTestCase):
         event = Event(group_id="42", unified_msg_origin="platform:GroupMessage:42")
         hits = [LongTermMemoryRecord(content="一起看过电影")]
         runtime.archive.search_long_term_memories.return_value = hits
-        self.assertIs(await runtime.search_life_memory(
+        self.assertIs(await runtime.life_memory.search(
             "  电影  ", event=event, category="生活，约定", limit=100,
         ), hits)
         runtime.archive.search_long_term_memories.assert_awaited_once_with(
@@ -32,11 +32,11 @@ class LifeMemoryServiceTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_empty_query_requires_explicit_recent_mode(self):
         runtime = self.make_runtime()
-        self.assertEqual(await runtime.search_life_memory(""), [])
+        self.assertEqual(await runtime.life_memory.search(""), [])
         runtime.archive.search_long_term_memories.assert_not_awaited()
         runtime.archive.list_recent_long_term_memories.assert_not_awaited()
         event = Event(unified_msg_origin="platform:FriendMessage:42")
-        await runtime.search_life_memory("", event=event, mode="recent")
+        await runtime.life_memory.search("", event=event, mode="recent")
         runtime.archive.list_recent_long_term_memories.assert_awaited_once_with(
             scopes=[event.unified_msg_origin], categories=[], limit=5,
         )
@@ -66,7 +66,7 @@ class LifeMemoryServiceTest(unittest.IsolatedAsyncioTestCase):
         )
         other = self.make_runtime()
         self.assertIn("新记忆", await runtime.life_memory_search(Event(), "电影"))
-        self.assertEqual(await other.search_life_memory("电影"), [])
+        self.assertEqual(await other.life_memory.search("电影"), [])
         self.assertIs(runtime.life_memory, service)
         first.search_long_term_memories.assert_not_awaited()
         self.assertEqual(runtime.archive.search_long_term_memories.await_count, 1)

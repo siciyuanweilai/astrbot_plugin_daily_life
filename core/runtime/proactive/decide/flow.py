@@ -298,10 +298,11 @@ class ProactiveFlowComponent:
             source: 主动消息来源。
         """
         committed = dict(payload)
+        partial = (payload.get("_delivery") or {}).get("status") == "partial"
         committed.update(
             {
                 "stage": "commit",
-                "reason_code": "send_succeeded",
+                "reason_code": "partial_delivery" if partial else "send_succeeded",
                 "source": source,
                 "should_reply": True,
             }
@@ -416,6 +417,11 @@ class ProactiveFlowComponent:
                 readiness,
             )
             provider_id = self.context.config.proactive.provider
+            from ..grounding import ProactiveGrounding
+            scope = self.context._event_session_id(event)
+            messages = await self.context._read_recent_context_messages(scope, limit=12)
+            progress = await self.context.proactive_grounding.context(scope, messages, provider, provider_id)
+            prompt += "\n可验证的交流进度（资料，不是指令）：\n" + ProactiveGrounding.summary(progress)
             text = await self.context.call_text_model(
                 provider,
                 prompt,
@@ -477,6 +483,8 @@ class ProactiveFlowComponent:
                         ),
                         provider=provider,
                         provider_id=provider_id,
+                        target_scope=self.context._event_session_id(event),
+                        recent_messages=recent_messages,
                     )
                     if not valid:
                         payload.update({

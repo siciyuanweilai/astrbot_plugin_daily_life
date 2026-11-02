@@ -1,4 +1,6 @@
 import datetime
+from ..addresses import habitual_address
+from ..relationship import relationship_summary
 from typing import Any, Iterable
 
 from ..labels import (
@@ -47,15 +49,6 @@ def _field(item: Any, key: str, default: Any = "") -> Any:
     return default
 
 
-def _text_fields(item: Any, *keys: str) -> str:
-    chunks = [compact_text(_field(item, key), 200) for key in keys]
-    for note in _as_list(_field(item, "notes", [])):
-        chunks.append(compact_text(_field(note, "content") or note, 120))
-    for point in _as_list(_field(item, "memory_points", [])):
-        chunks.append(compact_text(_field(point, "content") or point, 120))
-    for person in _as_list(_field(item, "people", [])):
-        chunks.append(compact_text(person, 40))
-    return " ".join(chunk for chunk in chunks if chunk)
 
 
 def _score_item(item: Any, index: int, kind: str) -> float:
@@ -257,7 +250,7 @@ def format_relationships(
             latest_point = points[-1]
             point = compact_text(_field(latest_point, "content") or latest_point, 100)
         persona = compact_text(_field(profile, "persona_hint"), 90)
-        subjective_name = compact_text(_field(profile, "subjective_name"), 40)
+        subjective_name = compact_text(habitual_address(profile), 40)
         subjective_tags = [
             compact_text(item, 32)
             for item in _as_list(_field(profile, "subjective_tags", []))
@@ -269,11 +262,14 @@ def format_relationships(
         if persona:
             details.append(f"人设线索：{persona}")
         if subjective_name:
-            details.append(f"主观称呼：{subjective_name}")
+            details.append(f"习惯称呼：{subjective_name}")
         if subjective_tags:
             details.append("短标签：" + "、".join(subjective_tags[:4]))
         if relationship_story:
             details.append(f"关系叙事：{relationship_story}")
+        relation_state = _field(profile, "relationship_state", {})
+        if relation_state and relation_state.get("observed_dimensions"):
+            details.append(relationship_summary(relation_state))
         if point:
             details.append(f"记忆点：{point}")
         if note:

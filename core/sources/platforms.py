@@ -36,14 +36,6 @@ def get_platform_client(instance: Any) -> Any:
     return getattr(instance, "bot", None)
 
 
-def first_onebot_client(context: Any) -> Any:
-    for instance in iter_platform_instances(context):
-        if not is_onebot_platform(get_platform_type(instance)):
-            continue
-        client = get_platform_client(instance)
-        if client:
-            return client
-    return None
 
 
 def first_weixin_oc_adapter_id(context: Any) -> str:

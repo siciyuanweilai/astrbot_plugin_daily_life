@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from ..addresses import habitual_address
+
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -228,6 +230,7 @@ class RelationshipRecord:
     subjective_name: str = ""
     subjective_tags: list[str] = field(default_factory=list)
     relationship_story: str = ""
+    relationship_state: dict[str, Any] = field(default_factory=dict)
     source: str = "chat"
     notes: list[RelationshipNote] = field(default_factory=list)
     memory_points: list[RelationshipPoint] = field(default_factory=list)
@@ -256,7 +259,7 @@ class RelationshipRecord:
             user_id=str(raw.get("user_id") or "").strip(),
             alias=str(raw.get("alias") or "").strip(),
             persona_hint=str(raw.get("persona_hint") or "").strip(),
-            subjective_name=str(raw.get("subjective_name") or "").strip(),
+            subjective_name=habitual_address(raw),
             subjective_tags=[
                 str(item).strip()
                 for item in (
@@ -267,6 +270,7 @@ class RelationshipRecord:
                 if str(item).strip()
             ],
             relationship_story=str(raw.get("relationship_story") or "").strip(),
+            relationship_state=dict(raw.get("relationship_state")) if isinstance(raw.get("relationship_state"), dict) else {},
             source=str(raw.get("source") or "chat").strip(),
             notes=[RelationshipNote.from_value(note) for note in notes],
             memory_points=[RelationshipPoint.from_value(point) for point in points],
@@ -290,9 +294,10 @@ class RelationshipRecord:
             "user_id": self.user_id,
             "alias": self.alias,
             "persona_hint": self.persona_hint,
-            "subjective_name": self.subjective_name,
+            "subjective_name": habitual_address(self),
             "subjective_tags": list(self.subjective_tags),
             "relationship_story": self.relationship_story,
+            "relationship_state": dict(self.relationship_state),
             "source": self.source,
             "notes": [note.as_dict() for note in self.notes],
             "memory_points": [point.as_dict() for point in self.memory_points],

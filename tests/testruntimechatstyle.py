@@ -314,47 +314,47 @@ class RuntimeChatStyleTest(unittest.TestCase):
 
         self.assertEqual(text, raw_text)
 
-    def test_normalize_proactive_reply_text_keeps_complete_sentence_sequence(self):
+    def test_proactive_reply_text_keeps_complete_sentence_sequence(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.config = LifeSettings.from_dict(
             {"chat_style_config": {"proactive_max_chars": 20}}
         )
 
         raw_text = "我也觉得这个方向挺顺的。后面那段先不用展开很多啦"
-        text = runtime._part_proactive_send_component._normalize_proactive_reply_text(raw_text)
+        text = runtime._proactive_reply_text(raw_text)
 
         self.assertEqual(text, raw_text)
 
-    def test_normalize_proactive_reply_text_does_not_cut_at_first_sentence(self):
+    def test_proactive_reply_text_does_not_cut_at_first_sentence(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.config = LifeSettings.from_dict(
             {"chat_style_config": {"proactive_max_chars": 15}}
         )
 
         raw_text = "先不卖。后面那段先不用展开很多啦"
-        text = runtime._part_proactive_send_component._normalize_proactive_reply_text(raw_text)
+        text = runtime._proactive_reply_text(raw_text)
 
         self.assertEqual(text, raw_text)
 
-    def test_normalize_proactive_reply_text_keeps_long_sentence_complete(self):
+    def test_proactive_reply_text_keeps_long_sentence_complete(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.config = LifeSettings.from_dict(
             {"chat_style_config": {"proactive_max_chars": 20}}
         )
 
         raw_text = "这个点我也有一点点同感但是先不长篇展开后面再说"
-        text = runtime._part_proactive_send_component._normalize_proactive_reply_text(raw_text)
+        text = runtime._proactive_reply_text(raw_text)
 
         self.assertEqual(text, raw_text)
 
-    def test_normalize_proactive_reply_text_does_not_add_ellipsis(self):
+    def test_proactive_reply_text_does_not_add_ellipsis(self):
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
         runtime.config = LifeSettings.from_dict(
             {"chat_style_config": {"proactive_max_chars": 15}}
         )
 
         raw_text = "这个点我也有一点点同感但是先不长篇展开后面再说"
-        text = runtime._part_proactive_send_component._normalize_proactive_reply_text(raw_text)
+        text = runtime._proactive_reply_text(raw_text)
 
         self.assertEqual(text, raw_text)
 

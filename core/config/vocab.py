@@ -9,15 +9,6 @@ WEEKDAY_NAMES = [
 ]
 WEEKDAY_CN = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 
-TEMPLATE_CN_MAP = {
-    "常规": "regular",
-    "冲刺": "sprint",
-    "放松": "relax",
-    "社交": "social",
-    "恢复": "recovery",
-    "假期": "holiday",
-    "随机": "random",
-}
 
 TIME_PERIOD_CN = {
     "dawn": "凌晨",

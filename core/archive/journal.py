@@ -17,7 +17,7 @@ from ..models import (
     timeline_item_minutes,
 )
 from .revision import merge_day_records
-from .timeline import rebind_planned_actions
+from .timeline import project_committed_timeline, rebind_planned_actions
 
 from typing import Protocol
 
@@ -296,6 +296,7 @@ class DayArchiveComponent:
         day.timeline = deduplicate_timeline_items(day.timeline)
         day.timeline.sort(key=lambda item: timeline_item_minutes(item) or 0)
         rebind_planned_actions(day.meta, previous_timeline, day.timeline)
+        project_committed_timeline(day)
         weather_info = day.weather_info
         meta = day.meta
         self.context._conn.execute(

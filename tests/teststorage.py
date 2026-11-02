@@ -1,3 +1,4 @@
+from legacy_support import seed_legacy_record
 # ruff: noqa: I001
 import asyncio
 import datetime
@@ -1875,7 +1876,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("updated_at", third)
             archive.close()
 
-    async def test_expression_patterns_and_mid_summary_persist(self):
+    async def test_expression_and_legacy_patterns_survive_reopen(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = f"{tmpdir}/daily_life.db"
             archive = LifeArchive(db_path)
@@ -1891,7 +1892,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                     confidence=0.82,
                 )
             )
-            await archive.upsert_behavior_pattern(
+            await seed_legacy_record(archive,
                 BehaviorPatternRecord(
                     scope="group:10001",
                     scene="熟人轻吐槽",
@@ -1904,7 +1905,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                     last_seen="2026-05-24",
                 )
             )
-            await archive.upsert_session_mid_summary(
+            await seed_legacy_record(archive,
                 SessionMidSummaryRecord(
                     session_id="aiocqhttp:GroupMessage:10001",
                     scope_label="看展群",
@@ -2344,7 +2345,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                     last_seen="2026-05-24",
                 )
             )
-            await archive.upsert_focus_target(
+            await seed_legacy_record(archive,
                 FocusTargetRecord(
                     target_type="topic",
                     target_id="看展",
@@ -2366,7 +2367,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                     evidence="群里有人等 Bob 回复",
                 )
             )
-            await archive.upsert_temporary_expression_state(
+            await seed_legacy_record(archive,
                 TemporaryExpressionStateRecord(
                     scope="group:20001",
                     label="只想轻轻围观",
@@ -2376,10 +2377,13 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                     expires_at="2026-05-25",
                 )
             )
-            await archive.upsert_focus_slot(
+            await seed_legacy_record(archive,
                 FocusSlotRecord(
                     scope="group:20001",
                     focus_key="bob_followup",
+                    progress=100,
+                    status="completed",
+                    last_evidence="event:42",
                     label="Bob 的后续",
                     priority=76,
                     reason="刚才话题还没落稳",
@@ -2391,13 +2395,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                     scope="group:20001", active_only=False
                 )
             )[0]
-            progressed = await archive.update_focus_slot_progress(
-                focus.id,
-                progress_delta=40,
-                status="completed",
-                evidence="event:42",
-                date="2026-05-24",
-            )
+            progressed = focus
             self.assertEqual(progressed.progress, 100)
             self.assertEqual(progressed.status, "completed")
             self.assertEqual(progressed.last_evidence, "event:42")
@@ -2540,7 +2538,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(relationships[0].platform, "aiocqhttp")
             self.assertEqual(relationships[0].user_id, "10001")
             self.assertEqual(relationships[0].persona_hint, "男生，死党")
-            self.assertEqual(relationships[0].subjective_name, "会让我多看一眼的人")
+            self.assertEqual(relationships[0].subjective_name, "")
             self.assertEqual(relationships[0].subjective_tags, ["偶尔嘴硬", "可靠"])
             self.assertIn("互相吐槽", relationships[0].relationship_story)
             self.assertEqual(relationships[0].notes[0].content, "聊到周末看展")
@@ -2630,7 +2628,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             reopened = LifeArchive(db_path)
             relationship = await reopened.get_relationship("u1")
 
-            self.assertEqual(relationship.subjective_name, "男死党阿林")
+            self.assertEqual(relationship.subjective_name, "")
             self.assertEqual(relationship.subjective_tags, ["可靠", "爽朗"])
             self.assertEqual(
                 relationship.relationship_story,
@@ -2741,7 +2739,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             archive = LifeArchive(f"{tmpdir}/daily_life.db")
             today = life_today()
-            await archive.upsert_focus_target(
+            await seed_legacy_record(archive,
                 FocusTargetRecord(
                     target_type="topic",
                     target_id="过期话题",
@@ -2750,7 +2748,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                     expires_at=(today - datetime.timedelta(days=1)).isoformat(),
                 )
             )
-            await archive.upsert_focus_target(
+            await seed_legacy_record(archive,
                 FocusTargetRecord(
                     target_type="topic",
                     target_id="当前话题",
@@ -2763,7 +2761,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
             active = await archive.get_focus_targets(10)
             all_items = await archive.get_focus_targets(10, include_expired=True)
 
-            await archive.upsert_focus_target(
+            await seed_legacy_record(archive,
                 FocusTargetRecord(
                     target_type="topic",
                     target_id="甲会话话题",
@@ -2772,7 +2770,7 @@ class LifeArchiveSqliteTest(unittest.IsolatedAsyncioTestCase):
                     scope="session-a",
                 )
             )
-            await archive.upsert_focus_target(
+            await seed_legacy_record(archive,
                 FocusTargetRecord(
                     target_type="topic",
                     target_id="乙会话话题",

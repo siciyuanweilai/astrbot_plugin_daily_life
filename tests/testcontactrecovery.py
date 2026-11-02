@@ -1,4 +1,5 @@
 import datetime
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -95,6 +96,32 @@ class ContactRecoveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.runtime.reconcile_commitment_contact_tasks(now=self.now), 0)
         task = await self.archive.get_durable_task(f"proactive_commitment:{record.id}")
         self.assertEqual(task.status, "completed")
+
+    async def test_partial_or_unknown_delivery_does_not_complete_commitment(self):
+        for status in ("partial", "unknown"):
+            record = await self.promise(content=f"测试{status}回执", trigger_time="13:35")
+            await self.schedule(record, execute_at="2026-10-24T13:35:00+08:00")
+            task = await self.prepare_delivery(record)
+            async def send(*args, **kwargs):
+                kwargs["send_payload"]["_delivery"] = {"status": status, "sent_text": "第一段" if status == "partial" else ""}
+                return status == "partial"
+            self.runtime._send_proactive_message = send
+            result = await self.runtime.run_proactive_commitment_task(task)
+            self.assertEqual(result["outcome"], status)
+            self.assertEqual((await self.archive.get_commitment(record.id)).status, "delivery_failed")
+
+    async def test_cancelled_delivery_keeps_receipt_and_never_retries_unknown_send(self):
+        record = await self.promise(trigger_time="13:35")
+        await self.schedule(record, execute_at="2026-10-24T13:35:00+08:00")
+        task = await self.prepare_delivery(record)
+        async def send(*args, **kwargs):
+            kwargs["send_payload"]["_delivery"] = {"status":"unknown"}
+            raise asyncio.CancelledError()
+        self.runtime._send_proactive_message = send
+        with self.assertRaises(asyncio.CancelledError):
+            await self.runtime.run_proactive_commitment_task(task)
+        self.assertEqual((await self.archive.get_commitment(record.id)).status, "delivery_failed")
+        self.assertEqual((await self.runtime.run_proactive_commitment_task(task))["outcome"], "delivery_failed")
 
     async def test_no_backfill_for_overdue_or_unowned_group_media_promises(self):
         for changes in (

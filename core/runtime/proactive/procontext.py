@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import datetime
+import asyncio
+import json
 import math
 import uuid
 from typing import Any
@@ -140,10 +142,7 @@ class ProactiveContextComponent:
         return str(value or "").strip().lower() in {"1", "true", "yes", "是", "应该"}
 
     def _proactive_reply_text(self, value: Any) -> str:
-        text = str(value or "").strip()
-        lines = [" ".join(line.strip().split()) for line in text.splitlines()]
-        text = "\n".join(line for line in lines if line)
-        return text
+        return str(value or "").strip()
 
     def _proactive_expression_limit_for_scope(self, target_scope: str) -> int:
         getter = getattr(self.context, "_chat_style_limit_for_scope", None)
@@ -322,8 +321,18 @@ class ProactiveContextComponent:
         life_context: str | None = None,
         provider: Any,
         provider_id: str,
+        target_scope: str = "",
+        recent_messages: list[dict] | None = None,
     ) -> tuple[bool, str]:
         """复核话题、情绪、收尾意图；回访同时核对生活事实。"""
+        payload.pop("_delivery_approval", None)
+        progress = None
+        if target_scope:
+            try:
+                messages = recent_messages if recent_messages is not None else await self.context._read_recent_context_messages(target_scope, limit=12)
+                progress = await self.context.proactive_grounding.context(target_scope, messages, provider, provider_id)
+            except Exception as exc:
+                return False, f"交流进度暂不可核对：{type(exc).__name__}"
         fact_rules = (
             ""
             if life_context is None
@@ -364,7 +373,9 @@ JSON 输出要求：
 当前结构化生活事实：
 {life_context or "本轮仅复核对话承接。"}"""
         prompt = cache_friendly_prompt(
-            fixed, dynamic, dynamic_title="主动消息连续性审计资料"
+            fixed + (self._progress_audit_contract() if progress is not None else ""),
+            dynamic + ("\n可验证的交流、事项及执行快照：\n" + json.dumps(progress, ensure_ascii=False) if progress is not None else ""),
+            dynamic_title="主动消息连续性审计资料"
         )
         session_id = f"daily_life_proactive_continuity_{uuid.uuid4().hex[:8]}"
         try:
@@ -391,11 +402,37 @@ JSON 输出要求：
             )
             if not isinstance(audit, dict) or not isinstance(audit.get("valid"), bool):
                 return False, "连续性审计未返回有效结果"
+            if progress is not None:
+                approval, reason = self.context.proactive_grounding.approve(
+                    audit, progress, str(payload.get("reply_text") or "").strip(),
+                    executing_task_key=str(payload.get("_executing_task_key") or ""),
+                )
+                if approval is None:
+                    return False, reason
+                payload["_delivery_approval"] = approval
             return bool(audit["valid"]), str(audit.get("reason") or "").strip()[:240]
         except Exception as exc:
             return False, f"连续性审计失败：{str(exc)[:180]}"
         finally:
-            await self.context.close_text_session(session_id)
+            try:
+                async with asyncio.timeout(1):
+                    await self.context.close_text_session(session_id)
+            except TimeoutError:
+                pass
+            except Exception as exc:
+                logger.debug(f"{LOG_PREFIX} 连续性审计会话清理失败：{type(exc).__name__}")
+
+    @staticmethod
+    def _progress_audit_contract() -> str:
+        return '''
+交付审计同时返回 response_plan：
+{"mode":"social|deliver|clarify|task_status","request_ref":"相关真实请求ref或空","needs_execution":false,"delivers_complete_result":false,"execution_task_keys":[],"claims_completed_task_keys":[],"requires_original_media":false}。
+按候选整段语义识别它让接收者合理预期会发生什么，而非按词语判定。
+social 是交流本身；deliver 必须在本条消息中包含请求所需的完整结果；clarify 是必要的输入澄清；task_status 必须对应真实执行记录。
+需要系统在本条之后实际处理请求、调用工具或交付结果才能兑现的表示属于 needs_execution。交流本身与符合生活事实的角色表达不构成待执行委托。完整结果在本条内才 delivers_complete_result；口头承诺、道歉、计划和声称已经做好都不是结果。
+未来执行必须绑定本会话已登记且目标吻合的 execution_task_keys；请求相关承诺必须同时填 request_ref，任务需绑定该请求。已完成的外部动作必须有 claims_completed_task_keys 对应的成功回执。没有依据不得替候选补造任务，也不能用无关任务充当依据。
+已有交付但没有新的用户修订请求时，不重新承诺执行同一事项，也不把沉默当作催办；可以有新的生活分享、自然承接和有事实依据的新进展，不强制追问反馈。
+依据文字和媒体描述不能声称已重新查看、逐项核对原图或文件；需要这种访问才能成立的候选 requires_original_media=true。'''
 
     @staticmethod
     def _format_context_message_label(message: dict[str, str]) -> str:

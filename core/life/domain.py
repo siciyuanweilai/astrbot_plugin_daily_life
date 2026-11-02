@@ -561,12 +561,6 @@ class LifeDomainService:
                 }
             )
 
-    @staticmethod
-    def _timeline_datetime(date_str: str, time_text: str) -> str:
-        text = str(time_text or "").strip()
-        if not text:
-            return ""
-        return f"{date_str} {text}:00" if len(text) == 5 else f"{date_str} {text}"
 
     async def validate_action(
         self, action: LifeActionIntent, *, day: DayRecord

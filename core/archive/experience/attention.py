@@ -47,61 +47,6 @@ class FocusArchiveComponent:
             updated_at=row["updated_at"],
         )
 
-    async def upsert_focus_slot(self, slot: FocusSlotRecord) -> FocusSlotRecord | None:
-        item = FocusSlotRecord.from_value(
-            slot.as_dict() if isinstance(slot, FocusSlotRecord) else slot
-        )
-        if not item:
-            return None
-        scope = self.context._text(item.scope)
-        focus_key = self.context._text(item.focus_key) or self.context._text(item.label)
-
-        def dbwork():
-            self.context._conn.execute(
-                """
-                INSERT INTO focus_slots(
-                    scope, focus_key, label, priority, progress, status, reason,
-                    last_evidence, last_active_at, last_progress_at, expires_at,
-                    created_at, updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                ON CONFLICT(scope, focus_key) DO UPDATE SET
-                    label = COALESCE(NULLIF(excluded.label, ''), focus_slots.label),
-                    priority = excluded.priority,
-                    progress = MAX(focus_slots.progress, excluded.progress),
-                    status = CASE
-                        WHEN focus_slots.status <> 'active' THEN focus_slots.status
-                        ELSE excluded.status
-                    END,
-                    reason = COALESCE(NULLIF(excluded.reason, ''), focus_slots.reason),
-                    last_evidence = COALESCE(NULLIF(excluded.last_evidence, ''), focus_slots.last_evidence),
-                    last_active_at = COALESCE(NULLIF(excluded.last_active_at, ''), focus_slots.last_active_at),
-                    last_progress_at = COALESCE(NULLIF(excluded.last_progress_at, ''), focus_slots.last_progress_at),
-                    expires_at = COALESCE(NULLIF(excluded.expires_at, ''), focus_slots.expires_at),
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                (
-                    scope,
-                    focus_key,
-                    self.context._text(item.label) or focus_key,
-                    max(0, min(int(item.priority or 0), 100)),
-                    max(0, min(int(item.progress or 0), 100)),
-                    self.context._text(item.status) or "active",
-                    self.context._text(item.reason),
-                    self.context._text(item.last_evidence),
-                    self.context._text(item.last_active_at),
-                    self.context._text(item.last_progress_at),
-                    self.context._text(item.expires_at),
-                ),
-            )
-            self.context._conn.commit()
-            row = self.context._conn.execute(
-                "SELECT * FROM focus_slots WHERE scope = ? AND focus_key = ?",
-                (scope, focus_key),
-            ).fetchone()
-            return self.context._compose_focus_slot(row) if row else None
-
-        return await self.context._run_db(dbwork)
 
     async def get_focus_slots(
         self,
@@ -132,66 +77,6 @@ class FocusArchiveComponent:
 
         return await self.context._run_db(dbwork)
 
-    async def update_focus_slot_progress(
-        self,
-        focus_id: int,
-        *,
-        progress_delta: int = 0,
-        status: str = "active",
-        evidence: str = "",
-        date: str = "",
-    ) -> FocusSlotRecord | None:
-        """用可追溯证据更新短期目标，不从普通决策文本猜测进度。"""
-
-        allowed_statuses = {"active", "completed", "blocked", "abandoned"}
-        target_status = self.context._text(status).lower()
-        if target_status not in allowed_statuses:
-            return None
-        try:
-            target_id = int(focus_id)
-            delta = max(0, min(int(progress_delta), 100))
-        except (TypeError, ValueError):
-            return None
-        evidence_text = self.context._text(evidence)[:240]
-        if target_id <= 0 or not evidence_text:
-            return None
-
-        def dbwork():
-            row = self.context._conn.execute(
-                "SELECT * FROM focus_slots WHERE id = ?", (target_id,)
-            ).fetchone()
-            if row is None or self.context._text(row["status"]) != "active":
-                return None
-            current_progress = max(0, min(int(row["progress"] or 0), 100))
-            next_progress = min(100, current_progress + delta)
-            if target_status == "completed":
-                next_progress = 100
-            next_priority = int(row["priority"] or 50)
-            if target_status != "active":
-                next_priority = 0
-            self.context._conn.execute(
-                """
-                UPDATE focus_slots
-                SET progress = ?, status = ?, priority = ?, last_evidence = ?,
-                    last_progress_at = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-                """,
-                (
-                    next_progress,
-                    target_status,
-                    max(0, min(next_priority, 100)),
-                    evidence_text,
-                    self.context._text(date),
-                    target_id,
-                ),
-            )
-            self.context._conn.commit()
-            updated = self.context._conn.execute(
-                "SELECT * FROM focus_slots WHERE id = ?", (target_id,)
-            ).fetchone()
-            return self.context._compose_focus_slot(updated) if updated else None
-
-        return await self.context._run_db(dbwork)
 
     def _compose_focus_target(self, row: sqlite3.Row) -> FocusTargetRecord:
         return FocusTargetRecord(
@@ -208,58 +93,6 @@ class FocusArchiveComponent:
             updated_at=row["updated_at"],
         )
 
-    async def upsert_focus_target(
-        self, target: FocusTargetRecord
-    ) -> FocusTargetRecord | None:
-        item = FocusTargetRecord.from_value(
-            target.as_dict() if isinstance(target, FocusTargetRecord) else target
-        )
-        if not item:
-            return None
-
-        def dbwork():
-            self.context._conn.execute(
-                """
-                INSERT INTO focus_targets(
-                    target_type, target_id, label, priority, reason, scope,
-                    enabled, expires_at, created_at, updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                ON CONFLICT(target_type, target_id, scope) DO UPDATE SET
-                    label = excluded.label,
-                    priority = excluded.priority,
-                    reason = excluded.reason,
-                    enabled = excluded.enabled,
-                    expires_at = excluded.expires_at,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                (
-                    self.context._text(item.target_type) or "topic",
-                    self.context._text(item.target_id) or self.context._text(item.label),
-                    self.context._text(item.label) or self.context._text(item.target_id),
-                    max(0, min(int(item.priority or 0), 100)),
-                    self.context._text(item.reason),
-                    self.context._text(item.scope),
-                    self.context._flag(item.enabled),
-                    self.context._text(item.expires_at),
-                ),
-            )
-            self.context._conn.commit()
-            row = self.context._conn.execute(
-                """
-                SELECT *
-                FROM focus_targets
-                WHERE target_type = ? AND target_id = ? AND scope = ?
-                """,
-                (
-                    self.context._text(item.target_type) or "topic",
-                    self.context._text(item.target_id) or self.context._text(item.label),
-                    self.context._text(item.scope),
-                ),
-            ).fetchone()
-            return self.context._compose_focus_target(row) if row else None
-
-        return await self.context._run_db(dbwork)
 
     async def get_focus_targets(
         self,
@@ -292,13 +125,3 @@ class FocusArchiveComponent:
 
         return await self.context._run_db(dbwork)
 
-    async def set_focus_target_enabled(self, target_id: int, enabled: bool) -> bool:
-        def dbwork():
-            cursor = self.context._conn.execute(
-                "UPDATE focus_targets SET enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (self.context._flag(enabled), int(target_id)),
-            )
-            self.context._conn.commit()
-            return cursor.rowcount > 0
-
-        return await self.context._run_db(dbwork)

@@ -3000,7 +3000,7 @@ class LifePlannerTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(json.loads(updated.meta["outfit_components"]), components)
             self.assertEqual(updated.meta["outfit_decision"], "keep")
             self.assertEqual(updated.meta["outfit_fact_confirmed_at"], "2026-10-13 21:55:00")
-        self.assertEqual(len(provider.prompts), 2)
+        self.assertEqual(len(provider.prompts), 1)
 
     async def test_new_outfit_keeps_model_component_split_and_removed_status(self):
         composer, provider, _, archive = make_composer([])

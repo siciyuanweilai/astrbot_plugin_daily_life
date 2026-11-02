@@ -21,6 +21,7 @@ from .auth import browser_headers
 from .bili import fetch_bili_metadata, resolve_bili_target, target_from_text
 from .cookie import BiliCookieJar
 from .ffmpeg import ffmpeg_executable, ffprobe_executable
+from .filepath import local_media_path
 from .probe import VIDEO_SUFFIXES, clean_source
 
 MAX_REMOTE_VIDEO_BYTES = 500 * 1024 * 1024
@@ -64,11 +65,8 @@ def source_fingerprint(source: str) -> str:
 
 
 def local_video_path(source: str) -> Path | None:
-    text = clean_source(source)
-    if not text or text.startswith(("http://", "https://", "data:")):
-        return None
-    path = Path(text).expanduser()
-    return path if path.is_file() else None
+    path = local_media_path(clean_source(source))
+    return path if path is not None and path.is_file() else None
 
 
 def _suffix_for_remote(source: str) -> str:
@@ -118,22 +116,6 @@ def _log_video_prepare_failed(kind: str, reason: str) -> None:
     logger.debug(f"{LOG_PREFIX} 视频文件准备失败：{kind}，{detail}")
 
 
-async def download_remote_video(
-    source: str,
-    cache_dir: Path,
-    *,
-    headers: dict[str, str] | None = None,
-    max_bytes: int = MAX_REMOTE_VIDEO_BYTES,
-    timeout_seconds: int = 240,
-) -> Path | None:
-    path, _reason = await _download_remote_video_with_reason(
-        source,
-        cache_dir,
-        headers=headers,
-        max_bytes=max_bytes,
-        timeout_seconds=timeout_seconds,
-    )
-    return path
 
 
 async def _download_remote_video_with_reason(

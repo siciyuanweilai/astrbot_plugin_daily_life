@@ -1,6 +1,14 @@
 from __future__ import annotations
 
+from ...relationship import ASSESSMENT_SCHEMA, RELATIONSHIP_RULES
+from ...addresses import ADDRESS_UPDATE_SCHEMA, ADDRESS_UPDATE_CONTRACT, settle_batch_addresses
+from ..bonding import (
+    batch_relationship_context, settle_batch_relationships,
+    relationship_only_batch, relationship_batch_prompt,
+)
+
 import asyncio
+import copy
 import datetime
 import hashlib
 import json
@@ -108,6 +116,7 @@ class ChatMemoryBatchComponent:
             "commitments",
             "temporal_facts",
             "memory_targets",
+            "relationship_updates",
             "experiences",
             "execution_updates",
             "expression_profiles",
@@ -373,6 +382,8 @@ class ChatMemoryBatchComponent:
             idle_min_messages = self.context.config.memory.idle_flush_min_messages
             pending_user_count = int(state.get("pending_user_count") or 0)
             pending_assistant_count = int(state.get("pending_assistant_count") or 0)
+            if relationship_only_batch(state):
+                idle_min_messages = 1
             if pending_user_count > 0 and pending_assistant_count > 0:
                 # 一轮完整问答已经具备双向语义。即使消息数量低于普通
                 # 沉淀门槛，也应在会话安静后收束，避免遗漏我主动许下的承诺。
@@ -451,6 +462,7 @@ class ChatMemoryBatchComponent:
                 "group_name": str(last.get("group_name") or ""),
             },
             # 较稳定的已知资料先于本批新消息，延长同会话可复用的输入前缀。
+            "current_relationships": batch.get("current_relationships", []),
             "current_expression_profiles": batch.get("current_expression_profiles", []),
             "expression_persona": batch.get("expression_persona", ""),
             "current_temporal_facts": batch.get("current_temporal_facts", []),
@@ -463,6 +475,8 @@ class ChatMemoryBatchComponent:
             "messages": messages,
         }
         schema = {
+            "relationship_updates": [ASSESSMENT_SCHEMA],
+            "address_updates": [ADDRESS_UPDATE_SCHEMA],
             "episode_link": {"memory_id": 0, "previous_quote": "已有经历原文",
                              "source_message_id": "本次用户消息编号", "evidence": "用户整条原话"},
             "memory_corrections": [{"memory_id": 0, "correction": "纠正后的完整事实",
@@ -484,10 +498,8 @@ class ChatMemoryBatchComponent:
             "memory_targets": [
                 {
                     "profile_id": "",
-                    "name": "",
                     "note": "",
                     "points": [],
-                    "subjective_name": "",
                     "subjective_tags": [],
                     "relationship_story": "",
                 }
@@ -627,7 +639,7 @@ class ChatMemoryBatchComponent:
         if source["scope"]["type"] != "group":
             schema.pop("group_environment")
         return (
-            memory_batch_rules(source) + "\n"
+            memory_batch_rules(source) + "\n" + RELATIONSHIP_RULES + "\n" + ADDRESS_UPDATE_CONTRACT + "\n"
             f"输出结构：{json.dumps(schema, ensure_ascii=False, separators=(',', ':'))}\n"
             f"输入批次：{json.dumps(source, ensure_ascii=False, separators=(',', ':'))}"
         )
@@ -1175,7 +1187,7 @@ class ChatMemoryBatchComponent:
             role = str(row.get("role") or "user").strip().lower()
             if profile_id and role == "assistant":
                 assistant_profiles.add(profile_id)
-            elif profile_id and role == "user":
+            elif profile_id and role == "user" and not row.get("is_quoted"):
                 rows_by_profile[profile_id] = row
         for profile_id in assistant_profiles:
             rows_by_profile.pop(profile_id, None)
@@ -1198,7 +1210,7 @@ class ChatMemoryBatchComponent:
                     "user_id": str(row.get("user_id") or ""),
                     "sender_profile_id": profile_id,
                     "sender_name": str(
-                        row.get("sender_name") or target.get("name") or profile_id
+                        row.get("sender_name") or profile_id
                     ),
                 }
             )
@@ -1334,12 +1346,14 @@ class ChatMemoryBatchComponent:
         ):
             payload = dict(payload)
             payload["_interaction_audited"] = False
+        address_updates = copy.deepcopy(payload.get("address_updates", []))
         payload = await self.context._calibrate_chat_memory_payload(
             payload,
             meta,
             persona_hint,
         )
         payload = self._normalize_chat_memory_batch_payload(payload, batch)
+        payload["address_updates"] = address_updates
         commitments = await self._save_batch_commitments(payload, batch)
         await self.context._save_batch_execution_updates(payload, batch)
         temporal_facts = await self._save_batch_temporal_facts(payload, batch)
@@ -1357,6 +1371,8 @@ class ChatMemoryBatchComponent:
         if user_rows:
             await self.context._append_memory_decision_log(payload, meta, observed_at)
         await self.context._save_batch_expression_learning(payload, batch, meta)
+        await settle_batch_relationships(self.context.archive, payload, batch)
+        await settle_batch_addresses(self.context.archive, payload, batch)
         if not payload.get("worth_saving"):
             return None
         user_names = {
@@ -1434,6 +1450,18 @@ class ChatMemoryBatchComponent:
             f"{LOG_PREFIX} 开始聊天记忆批处理：会话={batch['session_id']}，消息={len(batch['messages'])}"
         )
         try:
+            if relationship_only_batch(batch):
+                if any(row.get("role") == "user" for row in batch["messages"]):
+                    batch["current_relationships"] = await batch_relationship_context(self.context.archive, batch)
+                    payload = await call_pure_json(
+                        self.context, provider, relationship_batch_prompt(batch), llm_session,
+                        primary_provider_id=self.context.config.memory.provider, strict=True,
+                        validator=self.context._validate_chat_memory_payload,
+                        fallback={"relationship_updates": []},
+                    )
+                    await settle_batch_relationships(self.context.archive, payload, batch)
+                await self.context.archive.complete_chat_memory_batch(batch["id"], 0)
+                return True
             fact_getter = getattr(self.context.archive, "get_temporal_facts", None)
             if callable(fact_getter):
                 current_facts = await fact_getter(
@@ -1474,6 +1502,7 @@ class ChatMemoryBatchComponent:
                     }
             batch = {**batch, **await self.context._chat_execution_context(batch)}
             batch = {**batch, **await self.context._batch_expression_context(batch)}
+            batch["current_relationships"] = await batch_relationship_context(self.context.archive, batch)
             memory_reader = getattr(self.context.archive, "list_recent_long_term_memories", None)
             if callable(memory_reader):
                 scope = episode_scope(batch)
@@ -1513,7 +1542,7 @@ class ChatMemoryBatchComponent:
             return True
         except asyncio.CancelledError:
             await self.context.archive.fail_chat_memory_batch(
-                batch["id"], "任务被取消", permanent=True
+                batch["id"], "任务被取消，等待恢复", retry_after_seconds=0
             )
             raise
         except NonRetryableProviderError as exc:

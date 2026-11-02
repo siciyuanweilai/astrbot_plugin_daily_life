@@ -23,6 +23,11 @@ from ..models import LifeActionIntent, normalize_timeline_day_offsets
 from ..models.coerce import compact_explanation_text
 from ..prompts import cache_friendly_prompt
 from .actionchain import execution_evidence
+from .outfitflow import (
+    active_appearance_action, appearance_action_issue, appearance_key,
+    has_settled_current_outfit, observation_contract, pending_dressing_action,
+)
+from .outfitrequest import active_outfit_request, make_outfit_request
 from .appearance import (
     APPEARANCE_PREFERENCE_CATEGORIES,
     CURRENT_APPEARANCE_GENERATION_RULES,
@@ -545,7 +550,9 @@ class OutfitComponent:
             pending_request = wardrobe_weather.get("outfit_request") or {}
             instruction_text = str(pending_request.get("instruction") or "").strip()
             if instruction_text:
-                instruction_source = "autonomous"
+                instruction_source = pending_request.get("instruction_source") or "autonomous"
+                if source_instruction is None:
+                    source_instruction = pending_request.get("source_instruction")
         normalized_instruction_source = (
             str(
                 instruction_source
@@ -605,6 +612,7 @@ class OutfitComponent:
             ),
             "style_catalog_context": style_catalog_context,
             "wardrobe_conditions": wardrobe_weather,
+            "appearance_observation": observation_contract(old_data, current_time),
         }
 
     async def _outfit_appearance_context(self, *, catalog_backed: bool = False) -> str:
@@ -1147,6 +1155,11 @@ class OutfitComponent:
                 requested_at=current_time.strftime("%Y-%m-%d %H:%M:%S"),
                 payload={
                     **final,
+                    "appearance_observation": context["appearance_observation"],
+                    "depends_on_action_ids": (
+                        [context["appearance_observation"]["event"]["action_id"]]
+                        if context["appearance_observation"]["event"] else []
+                    ),
                     "outfit_components": serialize_outfit_components(effective_components),
                     "scene_category": scene_category,
                     "outfit_decision": decision,
@@ -1290,6 +1303,33 @@ class OutfitComponent:
             if not old_data:
                 return None
 
+            owner = active_appearance_action(old_data)
+            pending_action = pending_dressing_action(old_data, current_time) if not instruction else ""
+            if owner or pending_action:
+                action_id = owner.get("action_id") or pending_action
+                if instruction:
+                    request = make_outfit_request(old_data, instruction, current_time)
+                    request.update(instruction_source=instruction_source or "user",
+                                   source_instruction=source_instruction)
+                    old_data.meta["outfit_request"] = json.dumps(request, ensure_ascii=False)
+                    old_data.meta["outfit_waiting_for_action"] = action_id
+                    await self.context.archive.save_day(old_data)
+                logger.debug(f"[穿搭更新] 等待生活动作回执，保持当前外观：{action_id}")
+                return old_data
+            if (not instruction and not active_outfit_request(old_data, current_time)
+                    and not old_data.meta.get("outfit_evaluation")
+                    and not old_data.meta.get("outfit_selection_pending")
+                    and has_settled_current_outfit(old_data)):
+                old_data.meta["outfit_evaluation"] = appearance_key(old_data, current_time)
+                await self.context.archive.save_day(old_data)
+                logger.debug("[穿搭更新] 已接续既有换装回执，保持当前外观")
+                return old_data
+            if (not instruction and not active_outfit_request(old_data, current_time)
+                    and not old_data.meta.get("outfit_selection_pending")
+                    and old_data.meta.get("outfit_evaluation") == appearance_key(old_data, current_time)):
+                logger.debug("[穿搭更新] 同一生活条件已完成外观判断，继续沿用当前穿着")
+                return old_data
+
             context = await self._outfit_update_context(
                 old_data=old_data,
                 date_str=date_str,
@@ -1331,6 +1371,19 @@ class OutfitComponent:
                     result = extract_json_from_text(completion_text)
                     if not result:
                         return None
+                    latest = await self.context.archive.get_day(date_str)
+                    if latest is None:
+                        return None
+                    stale = appearance_action_issue(latest, LifeActionIntent(
+                        action_id="outfit-review", action_type="change_outfit",
+                        payload={"appearance_observation": context["appearance_observation"]},
+                    ))
+                    if stale:
+                        logger.debug(f"[穿搭更新] 保留最新外观，本轮选择未提交：{stale}")
+                        return None
+                    # 模型思考期间的普通体力变化不丢失；外观及执行依据已复核。
+                    context["old_data"] = latest
+                    context["old_meta"] = latest.meta
                     context.pop("catalog_selection_issue", None)
                     context.pop("outfit_decision_issue", None)
                     updated = await self._apply_outfit_update_result(
@@ -1344,6 +1397,10 @@ class OutfitComponent:
                         should_abort=should_abort,
                     )
                     if updated is not None:
+                        updated.meta["outfit_evaluation"] = appearance_key(updated, current_time)
+                        updated.meta.pop("outfit_selection_pending", None)
+                        updated.meta.pop("outfit_waiting_for_action", None)
+                        await self.context.archive.save_day(updated)
                         logger.debug(
                             f"[穿搭更新] 完成：日期={date_str}；日程保持不变；"
                             f"耗时={time.monotonic() - started_at:.2f} 秒"
@@ -1361,6 +1418,10 @@ class OutfitComponent:
                         logger.warning(f"[穿搭更新] 换装未执行，保持当前穿着：{decision_issue}")
                         return None
                     issue = context.get("catalog_selection_issue")
+                    if updated is None and issue:
+                        def await_selection(day):
+                            day.meta["outfit_selection_pending"] = context["appearance_observation"]["key"]
+                        await self.context.archive.mutate_day(date_str, await_selection)
                     if updated is None and issue and not _has_user_outfit_instruction(context):
                         callback = getattr(self.context, "wardrobe_shortage_callback", None)
                         scene = context.get("catalog_selection_scene") or context.get(

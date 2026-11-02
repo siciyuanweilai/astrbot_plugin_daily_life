@@ -190,20 +190,24 @@ class DynamicTest(unittest.IsolatedAsyncioTestCase):
         owner = self.install_delegate({'status':'wait'})
         owner.bili_interaction_enabled = lambda:True
         owner.decide_bili_interaction = AsyncMock(return_value={'action':'contact','id':'contact'})
-        context = {'allowed_actions':['wait','favorite','dm','contact','comment']}
-        self.browse._model.return_value = {'action':'interact'}
-        result, chosen_owner = await self.social._social_decision(context, {'kind':'dm_in'})
-        local = self.browse._model.await_args.args[1]['allowed_actions']
-        self.assertEqual(local, ['wait','favorite','dm','interact'])
+        context = {'allowed_actions':['wait','contact','comment'], 'decision_channel':'interaction'}
+        result, chosen_owner = await self.social._social_decision(context, None)
+        self.browse._model.assert_not_awaited()
         self.assertEqual(owner.decide_bili_interaction.await_args.args[0]['allowed_actions'], ['wait','contact','comment'])
         self.assertEqual(result['action'],'contact')
         self.assertIs(chosen_owner,owner)
         owner.decide_bili_interaction.reset_mock()
         self.browse._model.return_value = {'action':'dm','id':'incoming','text':'回复站内来信'}
+        context = {'allowed_actions':['wait','dm','dismiss'], 'decision_channel':'interaction'}
         result, chosen_owner = await self.social._social_decision(context, {'kind':'dm_in'})
         self.assertEqual(result['action'],'dm')
         owner.decide_bili_interaction.assert_not_awaited()
         self.assertIsNone(chosen_owner)
+        self.browse._model.return_value = {'action':'favorite','id':'video'}
+        result, chosen_owner = await self.social._social_decision(
+            {'allowed_actions':['wait','favorite'], 'decision_channel':'activity'}, None)
+        self.assertEqual(result['action'], 'favorite')
+        owner.decide_bili_interaction.assert_not_awaited()
 
     async def test_life_model_cannot_bypass_shared_decision_owner(self):
         owner = self.install_delegate({'status':'wait'})
@@ -212,7 +216,8 @@ class DynamicTest(unittest.IsolatedAsyncioTestCase):
         self.browse._model.return_value = {'action':'comment','id':'video','text':'越权草稿'}
         result, _ = await self.social._social_decision({'allowed_actions':['wait','comment']},None)
         self.assertEqual(result,{'action':'wait'})
-        owner.decide_bili_interaction.assert_not_awaited()
+        owner.decide_bili_interaction.assert_awaited_once()
+        self.browse._model.assert_not_awaited()
 
     async def test_shared_mention_uses_validated_binding_and_public_expression(self):
         record = await self.video()

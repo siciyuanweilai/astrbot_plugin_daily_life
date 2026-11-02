@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import time
 from typing import Any
@@ -32,6 +33,7 @@ class SnapshotPackComponentContext(Protocol):
 class SnapshotPackComponent:
     def __init__(self, context: SnapshotPackComponentContext) -> None:
         self.context = context
+        self.cache_stats = {"hits": 0, "misses": 0, "shared_reads": 0, "reads": 0}
 
     _INJECTION_SNAPSHOT_CACHE_TTL_SECONDS = 8.0
     _INJECTION_SNAPSHOT_CACHE_LIMIT = 128
@@ -68,6 +70,9 @@ class SnapshotPackComponent:
         ):
             cache.pop(cache_key, None)
             return None
+        # 最近使用的条目保留得更久，但访问不延长事实的 TTL。
+        cache.pop(cache_key)
+        cache[cache_key] = cached
         return dict(cached.get("data") or {})
 
     async def _read_life_context_snapshot(
@@ -89,6 +94,7 @@ class SnapshotPackComponent:
 
         started = time.perf_counter()
         snapshot_version = int(getattr(self.context, "_page_status_version", 0) or 0)
+        self.cache_stats["reads"] += 1
         repository = getattr(self.context, "context_snapshot", None)
         if repository is None:
             from ..context import ContextSnapshotRepository
@@ -138,20 +144,34 @@ class SnapshotPackComponent:
              int(getattr(getattr(self.context, "archive", None), "living_revision", 0))], ensure_ascii=False
         )
         async def for_sender(value):
+            # 归档记录沿用只读快照；调用者替换顶层字段时不改变共享快照。
             result = dict(value)
             if event is not None:
                 sender = str(event.get_sender_id() or "")
-                result["expression_profiles"] = await self.context.archive.get_expression_context(
-                    scope=experience_scope, profile_id=sender, limit=16
+                async def read_expression():
+                    return await self.context.archive.get_expression_context(
+                        scope=experience_scope, profile_id=sender, limit=16
+                    )
+
+                profiles, _ = await self._injection_snapshot_flight().run(
+                    json.dumps([cache_key, id(cache),
+                                int(getattr(self.context, "_page_status_version", 0) or 0),
+                                "expression", sender]),
+                    read_expression,
                 )
+                result["expression_profiles"] = copy.deepcopy(profiles)
             return result
 
         if use_cache:
             cached = self.context._cached_injection_snapshot(cache, cache_key)
             if cached is not None:
+                self.cache_stats["hits"] += 1
                 return await for_sender(cached)
+            self.cache_stats["misses"] += 1
             snapshot, shared = await self._injection_snapshot_flight().run(
-                cache_key,
+                # 状态失效/配置更换后，不能继续合并到旧一代在途读取。
+                json.dumps([cache_key, id(cache),
+                            int(getattr(self.context, "_page_status_version", 0) or 0)]),
                 lambda: self._read_life_context_snapshot(
                     cache=cache,
                     cache_key=cache_key,
@@ -162,6 +182,7 @@ class SnapshotPackComponent:
                 ),
             )
             if shared:
+                self.cache_stats["shared_reads"] += 1
                 logger.debug(f"{LOG_PREFIX} 上下文快照合并了同键并发读取")
             return await for_sender(snapshot)
 

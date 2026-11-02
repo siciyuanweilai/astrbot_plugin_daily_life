@@ -174,7 +174,6 @@ class SpineBootComponentContext(Protocol):
     _service_condition: Any
     _service_lease_depth: Any
     _service_lease_owner: Any
-    _service_swap_pending: Any
     _service_task_bindings: Any
     _service_users: Any
     _service_version_users: Any
@@ -278,7 +277,6 @@ class SpineBootComponent:
         )
         self.context._service_condition = asyncio.Condition()
         self.context._service_users = 0
-        self.context._service_swap_pending = False
         self.context._service_lease_depth = ContextVar(
             f"daily_life_service_lease_{id(self.context)}", default=0
         )
@@ -877,7 +875,6 @@ class SpineBootComponent:
         condition = asyncio.Condition()
         self.context._service_condition = condition
         self.context._service_users = 0
-        self.context._service_swap_pending = False
         return condition
 
     def _runtime_service_lease_depth(self) -> ContextVar[int]:
@@ -980,16 +977,7 @@ class SpineBootComponent:
             if retired_services is not None:
                 await self.context._close_runtime_services(retired_services)
 
-    async def _begin_runtime_service_swap(self) -> None:
-        condition = self.context._runtime_service_condition()
-        async with condition:
-            self.context._service_swap_pending = True
 
-    async def _end_runtime_service_swap(self) -> None:
-        condition = self.context._runtime_service_condition()
-        async with condition:
-            self.context._service_swap_pending = False
-            condition.notify_all()
 
     @staticmethod
     async def _close_runtime_services(services: RuntimeServices) -> None:

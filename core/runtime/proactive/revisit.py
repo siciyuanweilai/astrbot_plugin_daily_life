@@ -1,4 +1,8 @@
 from __future__ import annotations
+import asyncio
+
+from ...relationship import relationship_summary
+from ..bonding import contextual_relationship_memories
 
 import datetime
 import uuid
@@ -21,6 +25,7 @@ from ..capture.jsonclean import call_pure_json
 from ..markers import LOG_PREFIX
 from ..expressionlearning import select_profiles
 from ..contact import contact_rhythm
+from .grounding import ProactiveGrounding
 
 
 class ProactiveRevisitComponentContext(Protocol):
@@ -178,6 +183,7 @@ class ProactiveRevisitComponent:
                 getattr(relationship, "relationship_story", "") or ""
             ).strip(),
             "note": note,
+            "long_term_state": relationship_summary(getattr(relationship, "relationship_state", {})),
         }
 
     async def _private_revisit_memory_context(
@@ -188,7 +194,7 @@ class ProactiveRevisitComponent:
         now: datetime.datetime,
     ) -> dict[str, Any]:
         recent_messages = await self.context._read_recent_context_messages(
-            target_scope, limit=8
+            target_scope, limit=12
         )
         recent_context = self.context._format_recent_context_messages(recent_messages, now=now)
         last_message_timestamp = 0.0
@@ -425,10 +431,11 @@ JSON 输出要求：
 
 此刻时间：{now.strftime("%Y-%m-%d %H:%M")}
 目标对象：{relationship_snapshot["target_name"]}
-主观称呼：{relationship_snapshot["subjective_name"] or "无"}
+习惯称呼：{relationship_snapshot["subjective_name"] or "无"}
 人设线索：{relationship_snapshot["persona_hint"] or "无"}
 称谓依据：{relation_basis}
 关系叙事：{relationship_snapshot["relationship_story"] or "无"}
+长期关系：{relationship_snapshot.get("long_term_state", "尚无变化记录")}
 最近印象：{relationship_snapshot["note"] or "无"}
 
 回访依据：
@@ -438,6 +445,9 @@ JSON 输出要求：
 
 近期私聊片段：
 {memory_context["recent_context"] or "无"}
+
+已核对的交流进度与执行能力：
+{ProactiveGrounding.summary(memory_context.get("progress_context", {}))}
 
 当前生活事实：
 {life_context}
@@ -569,12 +579,31 @@ JSON 输出要求：
             relationship_snapshot["target_name"],
             now,
         )
+        life_context, life_evidence_available, recalled = "", False, ""
+        if not memory_context["too_recent"]:
+            (
+                life_context,
+                life_evidence_available,
+            ) = await self._private_revisit_life_context(target_scope, now)
+            try:
+                recalled = await contextual_relationship_memories(
+                    self.context, scope=target_scope,
+                    query=life_context + "\n" + memory_context.get("recent_context", ""),
+                )
+            except Exception as exc:
+                logger.debug(f"{LOG_PREFIX} 回访情境回忆暂不可用：{type(exc).__name__}")
+                recalled = ""
+            if recalled:
+                memory_context["memos_context"] = "\n".join(filter(None, [memory_context.get("memos_context", ""), recalled]))
         revisit_evidence = self.context._private_revisit_evidence_scope(
             recent_messages=memory_context["recent_messages"],
             note=relationship_snapshot["note"],
             relationship_story=relationship_snapshot["relationship_story"],
             memos_context=memory_context["memos_context"],
         )
+        if recalled and life_evidence_available:
+            revisit_evidence.update(can_revisit=True, anchor="当下生活关联的共同经历",
+                                    memos_context="与当前生活相关", reason="真实生活唤起了同一会话的相关经历，可判断是否值得分享。")
         if not revisit_evidence["can_revisit"]:
             return {
                 "should_reply": False,
@@ -598,10 +627,14 @@ JSON 输出要求：
                 "retry_after": max(1, minimum_seconds - silence_seconds),
                 "revisit_evidence": revisit_evidence,
             }
-        (
-            life_context,
-            life_evidence_available,
-        ) = await self._private_revisit_life_context(target_scope, now)
+        try:
+            memory_context["progress_context"] = await self.context.proactive_grounding.context(
+                target_scope, memory_context["recent_messages"], provider, self.context.config.proactive.provider,
+            )
+        except Exception as exc:
+            logger.debug(f"{LOG_PREFIX} 回访交流进度暂不可核对：{type(exc).__name__}")
+            return {"should_reply": False, "decision": "observe", "reply_text": "",
+                    "reason_code": "progress_unavailable", "reason": "交流进度暂不可核对，稍后重新考虑"}
         expression_context = await self._private_revisit_expression_context(
             target_scope, relationship, now
         )
@@ -658,8 +691,44 @@ JSON 输出要求：
             normalized["_expression_profiles"] = [item.as_dict() for item in expression_context["expression_profiles"]]
             if not normalized.get("should_reply"):
                 return normalized
+            builder = getattr(
+                getattr(self.context, "composer", None), "_build_person_fact_context", None
+            )
+            auditor = getattr(
+                getattr(self.context, "composer", None), "_audit_person_payload", None
+            )
+            if callable(builder) and callable(auditor):
+                person_facts = await builder(
+                    persona=persona,
+                    explicit_instruction=memory_context["recent_context"],
+                    relationships=[relationship] if relationship is not None else [],
+                )
+                audit = await auditor(
+                    normalized,
+                    context=person_facts,
+                    patterns=PROACTIVE_PERSON_TEXT_PATHS,
+                    provider=provider,
+                    provider_id=provider_id,
+                    subject="私聊回访",
+                )
+                if audit.unresolved:
+                    normalized.update(
+                        {
+                            "should_reply": False,
+                            "decision": "observe",
+                            "reason": "人物事实尚未核对清楚",
+                            "reply_text": "",
+                            "reason_code": "person_audit_failed",
+                        }
+                    )
+                    return normalized
+                normalized = self._private_revisit_normalize_payload(
+                    audit.payload, target_scope=target_scope, revisit_evidence=revisit_evidence,
+                )
+                if not normalized.get("should_reply"):
+                    return normalized
             latest_messages = await self.context._read_recent_context_messages(
-                target_scope, limit=8
+                target_scope, limit=12
             )
             latest_marker = (
                 {
@@ -703,6 +772,8 @@ JSON 输出要求：
                     life_context=latest_life_context,
                     provider=provider,
                     provider_id=provider_id,
+                    target_scope=target_scope,
+                    recent_messages=latest_messages,
                 )
                 if not continuity_valid:
                     normalized.update(
@@ -719,43 +790,7 @@ JSON 输出要求：
             normalized["_revisit_context_marker"] = latest_marker
             if latest_life_evidence:
                 normalized["_revisit_life_context"] = latest_life_context
-            builder = getattr(
-                getattr(self.context, "composer", None), "_build_person_fact_context", None
-            )
-            auditor = getattr(
-                getattr(self.context, "composer", None), "_audit_person_payload", None
-            )
-            if not callable(builder) or not callable(auditor):
-                return normalized
-            person_facts = await builder(
-                persona=persona,
-                explicit_instruction=memory_context["recent_context"],
-                relationships=[relationship] if relationship is not None else [],
-            )
-            audit = await auditor(
-                normalized,
-                context=person_facts,
-                patterns=PROACTIVE_PERSON_TEXT_PATHS,
-                provider=provider,
-                provider_id=provider_id,
-                subject="私聊回访",
-            )
-            if audit.unresolved:
-                normalized.update(
-                    {
-                        "should_reply": False,
-                        "decision": "observe",
-                        "reason": "人物事实尚未核对清楚",
-                        "reply_text": "",
-                        "reason_code": "person_audit_failed",
-                    }
-                )
-                return normalized
-            return self._private_revisit_normalize_payload(
-                audit.payload,
-                target_scope=target_scope,
-                revisit_evidence=revisit_evidence,
-            )
+            return normalized
         except Exception as exc:
             logger.warning(f"{LOG_PREFIX} 私聊回访裁定失败：{exc}")
             return {
@@ -764,7 +799,11 @@ JSON 输出要求：
                 "reason": f"私聊回访裁定失败：{exc}",
             }
         finally:
-            await self.context.close_text_session(session_id)
+            try:
+                async with asyncio.timeout(1):
+                    await self.context.close_text_session(session_id)
+            except TimeoutError:
+                pass
 
     async def evaluate_private_revisit_candidates(self) -> None:
         if not self.context.config.proactive.private_revisit_enabled:
@@ -882,7 +921,7 @@ JSON 输出要求：
             context_marker = payload.pop("_revisit_context_marker", None)
             life_context = str(payload.pop("_revisit_life_context", "") or "")
             current_messages = await self.context._read_recent_context_messages(
-                target_scope, limit=8
+                target_scope, limit=12
             )
             current_marker = (
                 {

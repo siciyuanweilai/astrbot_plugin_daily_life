@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .config.vocab import TIME_PERIOD_CN, WEEKDAY_CN, WEEKDAY_NAMES
+from .config.vocab import WEEKDAY_CN, WEEKDAY_NAMES
 
 WEEKDAY_LABELS = dict(zip(WEEKDAY_NAMES, WEEKDAY_CN))
 
@@ -109,14 +109,6 @@ SCHEDULE_INTENT_LABELS = {
     "normal": "常规",
 }
 
-BIAS_LABELS = {
-    "rest": "休息",
-    "normal": "正常",
-    "active": "活跃",
-    "avoid": "回避",
-    "light": "轻量",
-    "social": "社交",
-}
 
 SOURCE_LABELS = {
     "daily": "每日生成",
@@ -392,20 +384,12 @@ def display_label(value: object, labels: dict[str, str], default: str = "") -> s
     return labels.get(text) or labels.get(text.lower()) or text
 
 
-def weekday_label(value: object) -> str:
-    return display_label(value, WEEKDAY_LABELS)
 
 
-def template_label(value: object) -> str:
-    return display_label(value, TEMPLATE_LABELS)
 
 
-def time_period_label(value: object) -> str:
-    return display_label(value, TIME_PERIOD_CN)
 
 
-def life_mode_label(value: object) -> str:
-    return display_label(value, LIFE_MODE_LABELS)
 
 
 def schedule_tone_label(value: object) -> str:

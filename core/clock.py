@@ -22,8 +22,6 @@ def timestamp() -> int:
     return int(datetime.datetime.now(TIMEZONE).timestamp())
 
 
-def format_now(fmt: str = "%Y-%m-%d %H:%M") -> str:
-    return now().strftime(fmt)
 
 
 def local_datetime(

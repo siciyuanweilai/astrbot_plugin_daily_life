@@ -524,11 +524,3 @@ class ReferenceComponent:
                     return cleaned
         return ""
 
-    async def _get_persona_user_name(self) -> str:
-        resolver = self.context.contact_resolver
-        if resolver and hasattr(resolver, "get_persona_user_name"):
-            try:
-                return str(await resolver.get_persona_user_name() or "").strip()
-            except Exception as e:
-                logger.debug(f"[日常生活] 读取人格用户称呼失败：{e}")
-        return ""

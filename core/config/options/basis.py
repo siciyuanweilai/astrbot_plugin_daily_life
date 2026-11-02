@@ -158,8 +158,6 @@ class ProactiveReplySettings:
             ),
         )
 
-    def idle_enabled(self) -> bool:
-        return self.group_enabled or self.private_enabled
 
 
 @dataclass(slots=True)

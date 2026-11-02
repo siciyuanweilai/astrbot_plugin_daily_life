@@ -8,6 +8,7 @@ import json
 
 from ..models import INTERNAL_SIMULATED_ACTION_TYPES, TIMELINE_TERMINAL_STATES, LifeActionIntent, TimelineItem
 from .actionchain import actions, committed_ids
+from .locationfacts import action_place
 from .tools import parse_life_datetime, timeline_deferred_until, timeline_item_datetime
 
 
@@ -112,7 +113,11 @@ def synchronize_run(day, world, now):
                 activity=action.target,
                 activity_kind="rest" if action.action_type == "rest" else "other",
                 duration_minutes=action.duration_minutes,
-                place=str(day.meta.get("current_place") or ""),
+                place=action_place(day, action) or str(day.meta.get("current_place") or ""),
+                travel_origin=str(action.payload.get("origin") or "")
+                if action.action_type in {"move", "travel"} else "",
+                travel_mode=str(action.payload.get("travel_mode") or "")
+                if action.action_type in {"move", "travel"} else "",
                 execution_state="active",
                 execution_reason="自主行动已实际开始",
                 execution_evidence=str(run.get("reason") or ""),

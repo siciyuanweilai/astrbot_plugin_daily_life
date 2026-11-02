@@ -128,7 +128,7 @@ from core.runtime.reply import SemanticSegmentRuntimeComponent as _implementatio
 from core.interface.preferences import SettingsCommandComponent as _implementation_136
 from core.runtime.proactive.rendezvous import SharedActivityContactComponent as _implementation_137
 from core.sight.prune import SightCleanupComponent as _implementation_138
-from core.sight.identity import SightIdentityComponent as _implementation_139
+from core.sight.provenance import SightIdentityComponent as _implementation_139
 from core.sight.bridge import SightComponent as _implementation_140
 from core.runtime.voice.preface import SilentToolPrefaceComponent as _implementation_141
 from core.runtime.mirror.chat import SnapshotChatComponent as _implementation_142

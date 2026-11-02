@@ -47,6 +47,7 @@ class BrowsingTest(unittest.IsolatedAsyncioTestCase):
             event_was_recalled=lambda event: False)
         self.service = BiliBrowseService(self.runtime)
         self.service.reader.require_login = AsyncMock(return_value="1234")
+        self.service.reader.candidates = AsyncMock(return_value=[])
         self.service.social.tick = AsyncMock(return_value=False)
         self.store = self.service.archive
         self.review = {"evidence_indexes": [0], "impression": "变量控制让我有点疑问", "question": "有没有对照组？", "want_continue": True, "remember": True, "share_worthy": True, "interest": "实验", "interest_delta": 0.8}
@@ -216,9 +217,10 @@ class BrowsingTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_wait_not_mandatory_browse(self):
         self.service._model.return_value = {"action": "wait", "reason": "更想读书", "review_minutes": 47}
-        self.service.reader.candidates = AsyncMock()
+        self.service.reader.candidates = AsyncMock(return_value=[self.metadata()])
         await self.service.tick()
-        self.service.reader.candidates.assert_not_awaited()
+        self.service.reader.candidates.assert_awaited_once()
+        self.assertEqual(await self.store.list(), [])
         self.assertEqual((await self.store.state())["next_at"], stamp(self.now + dt.timedelta(minutes=47)))
 
     async def test_selection_rejects_hallucinated_identity(self):

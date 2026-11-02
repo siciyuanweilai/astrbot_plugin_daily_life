@@ -90,14 +90,14 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         )
         runtime._sight_completed_keys = {}
 
-        with patch("core.sight.identity.time.monotonic", return_value=100.0):
+        with patch("core.sight.provenance.time.monotonic", return_value=100.0):
             for index in range(12):
                 runtime._mark_sight_completed_key(f"video-{index}", f"result-{index}")
             self.assertLessEqual(len(runtime._sight_completed_keys), 8)
             self.assertEqual(runtime._sight_completed_result_key("video-11"), "result-11")
             self.assertEqual(runtime._sight_completed_result_key("video-0"), "")
 
-        with patch("core.sight.identity.time.monotonic", return_value=4001.0):
+        with patch("core.sight.provenance.time.monotonic", return_value=4001.0):
             self.assertEqual(runtime._sight_completed_result_key("video-11"), "")
             self.assertEqual(runtime._sight_completed_keys, {})
 
@@ -3946,14 +3946,14 @@ class RuntimeVideoAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         )
         runtime.archive = DataManager()
         runtime._sight_vault = SightVault(runtime.archive)
-        runtime._sight_total_timeout_seconds = lambda: 0.01
+        runtime._sight_total_timeout_seconds = lambda: 0.2
         clip = SightClip(source="D:/tmp/video.mp4")
         event = Event()
         calls: list[str] = []
 
         async def prepare(event_arg, clip_arg):
             calls.append("prepare:start")
-            await asyncio.sleep(0.02)
+            await asyncio.sleep(0.25)
             calls.append("prepare:end")
             return {
                 "source_note": "source note",

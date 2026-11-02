@@ -34,7 +34,6 @@ class TargetComponent:
         self.context = context
 
     _MEMORY_TARGET_CALIBRATION_KEYS = {
-        "subjective_name",
         "subjective_tags",
         "tags",
         "relationship_story",
@@ -70,7 +69,6 @@ JSON 输出要求：
   "needs_revision": true/false,
   "reason": "如果需要修正，简短说明冲突点；不需要则写空字符串",
   "revised": {{
-    "subjective_name": "可选，修正后的主观称呼",
     "subjective_tags": ["可选，修正后的主观标签完整列表"],
     "relationship_story": "可选，修正后的关系叙事",
     "points": ["可选，修正后的关系点完整列表"],
@@ -114,7 +112,7 @@ JSON 输出要求：
         for key, value in revised.items():
             if key not in self.context._MEMORY_TARGET_CALIBRATION_KEYS:
                 continue
-            if key in {"subjective_name", "relationship_story", "note"}:
+            if key in {"relationship_story", "note"}:
                 text = self.context._str_payload(value)
                 if text:
                     merged[key] = text

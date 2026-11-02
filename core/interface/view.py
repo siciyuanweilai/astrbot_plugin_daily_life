@@ -140,9 +140,8 @@ class PageViewComponent:
                 continue
             display_name = str(
                 item.get("display_name")
-                or item.get("subjective_name")
-                or item.get("alias")
                 or item.get("name")
+                or item.get("alias")
                 or profile_id
             ).strip()
             result.append(
@@ -218,7 +217,7 @@ class PageViewComponent:
                 )
         return items
 
-    async def _build_page_status(self) -> dict:
+    async def _build_page_status(self, *, diagnostics: bool = False) -> dict:
         now = life_now()
         target_date, extended_night = await self.context.runtime.resolve_injection_target(now)
         data = await self.context.runtime.archive.get_day(target_date)
@@ -228,6 +227,7 @@ class PageViewComponent:
             target_date,
             relationship_records=world_context["relationship_records"],
             summaries=world_context["summaries"],
+            diagnostics=diagnostics,
         )
         runtime_status = await self.context._page_runtime_snapshot(target_date, data, now)
         rhythm = getattr(self.context.runtime, "rhythm", None)
@@ -242,7 +242,7 @@ class PageViewComponent:
             "config": {
                 "schedule_time": self.context.runtime.config.schedule_time,
                 "state_enabled": self.context.runtime.config.state.enabled,
-                "diagnostics_enabled": False,
+                "diagnostics_enabled": diagnostics,
                 "scheduler_running": bool(getattr(rhythm, "healthy", False)),
                 "scheduler_error": str(getattr(rhythm, "last_error", "") or ""),
             },
@@ -332,8 +332,14 @@ class PageViewComponent:
         *,
         relationship_records: list,
         summaries: list,
+        diagnostics: bool = False,
     ) -> dict:
-        """读取面板中的生命周期、记忆与行为体验。"""
+        """读取生活体验；只有显式诊断请求才查询内部追踪和旧版记录。"""
+
+        async def diagnostic_records(method: str, **kwargs) -> list:
+            if not diagnostics:
+                return []
+            return await self.context._page_archive_records(method, **kwargs)
 
         reviews = self.context._page_records_for_date(
             await self.context.runtime.archive.get_recent_daily_reviews(7),
@@ -352,12 +358,12 @@ class PageViewComponent:
             "date",
         )
         emotion_arcs = self.context._page_records_for_date(
-            await self.context.runtime.archive.get_emotion_arcs(limit=20),
+            await diagnostic_records("get_emotion_arcs", limit=20),
             target_date,
             "date",
         )
         physiological_rhythm_logs = self.context._page_records_for_date(
-            await self.context.runtime.archive.get_physiological_rhythm_logs(limit=20),
+            await diagnostic_records("get_physiological_rhythm_logs", limit=20),
             target_date,
             "date",
         )
@@ -385,18 +391,18 @@ class PageViewComponent:
         expression_profiles = await self.context.runtime.archive.get_expression_profiles(
             limit=20
         )
-        life_terms = await self.context.runtime.archive.get_life_terms(limit=20)
+        life_terms = await diagnostic_records("get_life_terms", limit=20)
         memory_boundaries = await self.context.runtime.archive.get_memory_boundaries(
             limit=20, enabled_only=False
         )
         long_term_memories = await self.context.runtime.archive.list_recent_long_term_memories(
             limit=12
         )
-        memory_clusters = await self.context.runtime.archive.get_memory_episode_clusters(
-            limit=8
+        memory_clusters = await diagnostic_records(
+            "get_memory_episode_clusters", limit=8
         )
-        memory_entities = await self.context.runtime.archive.get_memory_entities(limit=12)
-        memory_conflicts = await self.context.runtime.archive.get_memory_conflicts(limit=8)
+        memory_entities = await diagnostic_records("get_memory_entities", limit=12)
+        memory_conflicts = await diagnostic_records("get_memory_conflicts", limit=8)
         temporal_facts = await self.context._page_archive_records(
             "get_temporal_facts", limit=40
         )
@@ -407,22 +413,22 @@ class PageViewComponent:
             != "interaction_mode"
         ]
         reflections = self.context._page_records_for_date(
-            await self.context._page_archive_records("get_reflections", limit=20),
+            await diagnostic_records("get_reflections", limit=20),
             target_date,
             "created_at",
             "updated_at",
         )
-        persona_assertions = await self.context._page_archive_records(
+        persona_assertions = await diagnostic_records(
             "get_persona_assertions", limit=20
         )
         decision_traces = self.context._page_records_for_date(
-            await self.context._page_archive_records("get_decision_traces", limit=30),
+            await diagnostic_records("get_decision_traces", limit=30),
             target_date,
             "created_at",
             "updated_at",
         )
         action_outcomes = self.context._page_records_for_date(
-            await self.context._page_archive_records("get_life_action_outcomes", limit=30),
+            await diagnostic_records("get_life_action_outcomes", limit=30),
             target_date,
             "date",
             "started_at",
@@ -445,11 +451,11 @@ class PageViewComponent:
             "updated_at",
         )
         grounded_diary = self.context._page_records_for_date(
-            await self.context._page_archive_records("get_grounded_diary_entries", limit=20),
+            await diagnostic_records("get_grounded_diary_entries", limit=20),
             target_date,
             "date",
         )
-        durable_tasks = await self.context._page_archive_records("get_durable_tasks", limit=20)
+        durable_tasks = await diagnostic_records("get_durable_tasks", limit=20)
         health = await self.context.runtime.archive.get_life_health_report(
             self.context.runtime.config.storage
         )
@@ -494,6 +500,20 @@ class PageViewComponent:
             "memory_conflicts": [item.as_dict() for item in memory_conflicts],
             "health": health,
         }
+        if diagnostics:
+            # 历史兼容数据只读展示，不重新参与当前生活和关系决策。
+            legacy_queries = {
+                "behavior_patterns": ("get_behavior_patterns", {}),
+                "session_mid_summaries": ("get_session_mid_summaries", {}),
+                "temporary_expression_states": ("get_temporary_expression_states", {"active_only": False}),
+                "focus_slots": ("get_focus_slots", {"active_only": False}),
+                "focus_targets": ("get_focus_targets", {"enabled_only": False, "include_expired": True}),
+            }
+            legacy = {"read_only": True, "participates_in_decisions": False}
+            for key, (method, kwargs) in legacy_queries.items():
+                records = await diagnostic_records(method, limit=20, **kwargs)
+                legacy[key] = [item.as_dict() for item in records]
+            experience["legacy_records"] = legacy
         return {
             "lifecycle": lifecycle,
             "experience": experience,
@@ -1000,6 +1020,9 @@ class PageViewComponent:
         result = []
         for item in relationships:
             data = item.as_dict()
+            changes = getattr(self.context.runtime.archive, "get_relationship_changes", None)
+            if callable(changes):
+                data["relationship_changes"] = await changes(item.id, limit=5)
             display_name = await self.context._resolve_relationship_display_name(data, resolver)
             if display_name:
                 data["display_name"] = display_name
@@ -1008,14 +1031,6 @@ class PageViewComponent:
 
     async def _resolve_relationship_display_name(self, data: dict, resolver) -> str:
         current_name = str(data.get("name") or "").strip()
-        current_alias = str(data.get("alias") or "").strip()
-        if current_alias and not self.context._is_generic_page_name(current_alias):
-            return current_alias
-        if current_name and not self.context._is_generic_page_name(current_name):
-            return current_name
-        if not resolver:
-            return ""
-
         candidates = []
         for key in ("user_id", "id"):
             value = str(data.get(key) or "").strip()
@@ -1036,12 +1051,15 @@ class PageViewComponent:
                 alias = str(get_alias(candidate) or "").strip()
             if alias and not self.context._is_generic_page_name(alias):
                 return alias
+        if current_name and current_name not in candidates and not self.context._is_generic_page_name(current_name):
+            return current_name
+        for candidate in dict.fromkeys(candidates):
             get_nickname = getattr(resolver, "get_onebot_nickname", None)
             if callable(get_nickname):
                 nickname = await get_nickname(candidate)
                 if nickname and not self.context._is_generic_page_name(nickname):
                     return nickname
-        return ""
+        return current_name or str(data.get("user_id") or data.get("id") or "")
 
     @staticmethod
     def _is_generic_page_name(name: str) -> bool:
@@ -1130,10 +1148,18 @@ class PageViewComponent:
                 meta.get("outfit_reason"), 360
             )
 
+        from ..life.executiontime import timeline_execution_times
+        execution_times = timeline_execution_times(data)
+        indexes = {id(item): index for index, item in enumerate(data.timeline)}
+
         def display_item(item):
             if item is None:
                 return None
             record = item.as_dict()
+            record.update(execution_times.get(indexes.get(id(item)), {}))
+            if record.get("actual_started_at"):
+                started = datetime.datetime.fromisoformat(record["actual_started_at"])
+                record["actual_display_time"] = started.strftime("%m-%d %H:%M") if started.date().isoformat() != data.date else started.strftime("%H:%M")
             effective = timeline_item_datetime(item, data.date, meta=data.meta)
             if effective:
                 record["scheduled_at"] = effective.isoformat(sep=" ", timespec="minutes")

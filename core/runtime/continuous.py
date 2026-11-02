@@ -416,6 +416,10 @@ class ContinuousLifeService:
             if outcome.status != "committed":
                 current.update(status="failed", reason=outcome.reason)
                 return
+            from ..life.executiontime import record_execution_time
+            record_execution_time(latest, rebound.action_id,
+                                  started_at=current["started_at"],
+                                  active_seconds=current["active_seconds"])
             settle_resources(self._archive(), rebound, commit=True)
             if self._config().domains.pantry_enabled:
                 self._archive().consume_continuous_ingredients_unlocked(
@@ -953,6 +957,8 @@ class ContinuousLifeService:
                     item.execution_evidence = reason
                     item.execution_updated_at = now.isoformat(sep=" ")
                 action.requested_at = now.isoformat(sep=" ")
+                from ..life.executiontime import record_execution_time
+                record_execution_time(latest, action.action_id, started_at=action.requested_at)
                 action.evidence = reason
                 action.source = "continuous_executor"
                 if action.timeline_index is None:

@@ -44,12 +44,14 @@ DAILY_CLEAR_ORDER = (
 )
 
 RELATIONSHIP_TABLES = (
+    "relationship_states", "relationship_changes", "relationship_evidence_claims",
     "relationships",
     "relationship_notes",
     "relationship_points",
     "relationship_contacts",
 )
 RELATIONSHIP_CLEAR_ORDER = (
+    "relationship_evidence_claims", "relationship_states", "relationship_changes",
     "relationship_points",
     "relationship_notes",
     "relationship_contacts",

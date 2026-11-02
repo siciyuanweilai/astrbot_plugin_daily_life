@@ -7,11 +7,13 @@ from unittest.mock import AsyncMock, patch
 import support  # noqa: F401
 from core.runtime.proactive.send import ProactiveSendComponent
 from core.sources.dispatch import PermanentScopeDeliveryError
+from proactivegroundingfixture import GroundingStub
 
 
 class ProactiveDeliveryTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.context = types.SimpleNamespace(
+            proactive_grounding=GroundingStub(),
             _snapshot_proactive_send_event=lambda *args, **kwargs: types.SimpleNamespace(),
             _proactive_send_is_current=lambda event: True,
             can_send_for_source=lambda *args, **kwargs: True,

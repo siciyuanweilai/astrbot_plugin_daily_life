@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import asyncio
 import math
 import uuid
 from pathlib import Path
@@ -168,9 +169,6 @@ class ProactiveSendComponent:
             "proactive_voice_call": "主动语音邀请",
         }.get(source, "闲时回复")
 
-    def _normalize_proactive_reply_text(self, reply_text: str) -> str:
-        lines = [" ".join(line.split()) for line in str(reply_text or "").splitlines()]
-        return "\n".join(line for line in lines if line)
 
     async def _send_proactive_message(
         self,
@@ -186,10 +184,12 @@ class ProactiveSendComponent:
         raise_delivery_errors: bool = False,
     ) -> bool:
         target_scope = str(target_scope or "").strip()
-        reply_text = self._normalize_proactive_reply_text(reply_text)
+        reply_text = str(reply_text or "").strip()
         payload = send_payload if isinstance(send_payload, dict) else {}
         sent_parts: list[str] = []
         delivered = False
+        approval = None
+        delivery_started = False
 
         def receipt(status: str, code: str, reason: str) -> None:
             payload["_delivery"] = {
@@ -224,6 +224,16 @@ class ProactiveSendComponent:
             ):
                 receipt("interrupted", "source_unavailable", "本次消息来源已不可发送")
                 return False
+            try:
+                approval, reason = await self.context.proactive_grounding.prepare_send(target_scope, reply_text, payload)
+            except Exception as exc:
+                receipt("deferred", "delivery_audit_unavailable", f"发送前核验暂不可用：{type(exc).__name__}")
+                logger.debug(f"{LOG_PREFIX} 主动消息发送前核验暂不可用：{type(exc).__name__}")
+                return False
+            if approval is None:
+                receipt("deferred", "delivery_plan_unavailable", reason)
+                logger.debug(f"{LOG_PREFIX} 主动消息暂缓：{reason}")
+                return False
             await self.context._apply_proactive_send_timing(send_payload)
             if not self.context._proactive_send_is_current(source_event):
                 receipt("interrupted", "conversation_changed", "新消息或撤回已改变本次发送依据")
@@ -246,6 +256,36 @@ class ProactiveSendComponent:
                 if not gate["ready"]:
                     receipt("deferred", "contact_rhythm", "其他主动联系刚发生，稍后重新考虑")
                     return False
+            if not await self.context.proactive_grounding.current(approval, target_scope, reply_text):
+                receipt("interrupted", "delivery_evidence_changed", "发送前交流或任务依据已变化")
+                return False
+            if not await self.context.proactive_grounding.begin_delivery(approval):
+                receipt("deferred", "delivery_already_attempted", "该请求已有交付或待核实回执，不重复发送")
+                return False
+            delivery_started = True
+            if approval.mode == "deliver":
+                # 文本成果作为一个完整交付，保留段落、缩进和代码，不转成语音或改写分段。
+                def record_complete(text: str) -> None:
+                    nonlocal delivered
+                    delivered = True
+                    record_sent(text)
+                    receipt("confirmed", "deliverable_sent", "完整文字成果已送达")
+
+                complete = await self.context.send_background_text(
+                    target_scope, reply_text, mode=BackgroundTextMode.DIRECT,
+                    source_event=source_event, source_message_id=source_message_id, source="proactive_deliverable",
+                    raise_delivery_errors=True, on_sent=record_complete,
+                )
+                if not complete and not delivered:
+                    receipt("interrupted", "source_unavailable", "完整成果未送达")
+                    return False
+                delivered = True
+                if not sent_parts:
+                    record_sent(reply_text)
+                receipt("confirmed", "deliverable_sent", "完整文字成果已送达")
+                self.context.note_structured_bot_message(target_scope, reply_text)
+                await self.context._append_proactive_send_history(target_scope, reply_text)
+                return True
             if await self._send_proactive_voice_if_enabled(
                 target_scope,
                 reply_text,
@@ -295,6 +335,10 @@ class ProactiveSendComponent:
                     receipt("confirmed" if delivered else "partial", "sent_with_followup_error", "消息已送达，后续记录或附加消息未完成")
                 logger.debug(f"{LOG_PREFIX} 主动消息已送达，后续处理暂未完成：{exc}")
                 return True
+            if not delivery_started:
+                receipt("deferred", "delivery_preparation_failed", f"投递准备暂未完成：{type(exc).__name__}")
+                logger.debug(f"{LOG_PREFIX} 主动消息投递准备暂未完成：{type(exc).__name__}")
+                return False
             unknown = not isinstance(exc, ScopeDeliveryError) or exc.code == "delivery_unknown"
             receipt("unknown" if unknown else "failed", "delivery_unknown" if unknown else exc.code,
                     "发送结果未确认，停止本次自动重发" if unknown else str(exc))
@@ -308,6 +352,17 @@ class ProactiveSendComponent:
             if raise_delivery_errors and isinstance(exc, ScopeDeliveryError):
                 raise
             return False
+        except asyncio.CancelledError:
+            if delivery_started:
+                receipt("confirmed" if delivered else "partial" if sent_parts else "unknown", "delivery_cancelled", "发送被取消，保留已知回执，不自动补发")
+            raise
+        finally:
+            if delivery_started and approval is not None:
+                try:
+                    async with asyncio.timeout(2):
+                        await self.context.proactive_grounding.record_delivery(approval, (payload.get("_delivery") or {}).get("status", "unknown"))
+                except Exception as exc:
+                    logger.warning(f"{LOG_PREFIX} 主动交付回执保存未完成：{type(exc).__name__}")
 
     async def _mark_failed_proactive_contact(
         self,

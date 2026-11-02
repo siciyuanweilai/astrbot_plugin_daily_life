@@ -3,6 +3,7 @@ import datetime
 import json
 import tempfile
 import unittest
+from unittest.mock import AsyncMock, patch
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -108,6 +109,52 @@ class ChatMemoryArchiveTest(unittest.IsolatedAsyncioTestCase):
 
 
 class ChatMemoryBatchTriggerTest(unittest.IsolatedAsyncioTestCase):
+    async def test_full_chat_worker_learns_address_without_summary(self):
+        from core.runtime.capture.batch import ChatMemoryBatchComponent
+        scope = "qq:FriendMessage:user-1"
+        await self.runtime.archive.touch_relationship("user-1",name="Alice",platform="qq",user_id="user-1")
+        row = ChatMemoryArchiveTest.snapshot(session_id=scope,message_id="m1",text="你以后叫我阿梨就好。")
+        row["platform"] = "qq"
+        await self.runtime.archive.enqueue_chat_memory_message(row)
+        batch = await self.runtime.archive.begin_chat_memory_batch(scope,max_messages=10,max_chars=2000)
+        self.runtime._get_memory_provider=AsyncMock(return_value=object())
+        self.runtime._chat_execution_context=AsyncMock(return_value={})
+        self.runtime._batch_expression_context=AsyncMock(return_value={})
+        self.runtime.close_text_session=AsyncMock()
+        payload={"worth_saving":False,"address_updates":[{"profile_id":"user-1","operation":"set","name":"阿梨",
+            "basis":"user_request","source_message_id":"m1","address_source_message_id":"m1","evidence":row["message_text"]}]}
+        with patch("core.runtime.capture.batch.call_pure_json",AsyncMock(return_value=payload)) as model:
+            self.assertTrue(await ChatMemoryBatchComponent(self.runtime)._process_chat_memory_batch(batch))
+            self.assertIn('"address_updates"',model.call_args.args[2])
+        self.assertEqual((await self.runtime.archive.get_relationship("user-1")).subjective_name,"阿梨")
+        self.assertEqual(await self.runtime.archive.list_chat_memory_sessions(),[])
+
+    async def test_full_chat_worker_learns_relationship_without_summary(self):
+        from core.runtime.capture.batch import ChatMemoryBatchComponent
+        from core.runtime.contact import contact_rhythm
+
+        scope = "qq:FriendMessage:user-1"
+        await self.runtime.archive.touch_relationship("user-1", name="Alice", date_str="2026-07-10",
+            platform="qq", user_id="user-1", contact_type="friend", target_scope=scope)
+        user = ChatMemoryArchiveTest.snapshot(session_id=scope, message_id="m1", text="我们可以慢慢聊，你不想说的我不会追问。")
+        assistant = {**ChatMemoryArchiveTest.snapshot(session_id=scope, message_id="m2", text="这样我会自在一些。"),
+                     "role": "assistant", "sender_profile_id": "bot"}
+        for row in (user, assistant):
+            await self.runtime.archive.enqueue_chat_memory_message(row)
+        batch = await self.runtime.archive.begin_chat_memory_batch(scope, max_messages=10, max_chars=2000)
+        self.runtime._get_memory_provider = AsyncMock(return_value=object())
+        self.runtime._chat_execution_context = AsyncMock(return_value={})
+        self.runtime._batch_expression_context = AsyncMock(return_value={})
+        self.runtime.close_text_session = AsyncMock()
+        payload = {"worth_saving": False, "relationship_updates": [{"profile_id": "user-1",
+            "source_message_ids": ["m1"], "confidence": .9, "trust_delta": .04, "reason": "对方尊重我暂时不想细说的边界"}]}
+        with patch("core.runtime.capture.batch.call_pure_json", AsyncMock(return_value=payload)) as model:
+            self.assertTrue(await ChatMemoryBatchComponent(self.runtime)._process_chat_memory_batch(batch))
+            self.assertIn('"current_relationships"', model.call_args.args[2])
+        rhythm = await contact_rhythm(self.runtime, scope, datetime.datetime(2026,7,10,13), shared=False)
+        self.assertAlmostEqual(rhythm["relationship_context"][0]["state"]["trust"], .54)
+        self.assertEqual(await self.runtime.archive.list_chat_memory_sessions(), [])
+
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)

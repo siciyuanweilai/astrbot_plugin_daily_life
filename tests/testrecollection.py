@@ -6,6 +6,7 @@ import sqlite3
 import tempfile
 import types
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -168,7 +169,7 @@ class RecollectionTest(unittest.IsolatedAsyncioTestCase):
         await self.summary()
         await self.archive.save()
         self.archive.close()
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             conn.execute("DROP TABLE memory_fact_links")
             conn.execute("DROP TABLE memory_source_messages")
             conn.execute("UPDATE meta SET value = '26' WHERE key = 'schema_version'")

@@ -1174,7 +1174,7 @@ class SemanticSegmentRuntimeComponent:
             source=source,
             length_hint=length_hint,
         )
-        if not self.context._semantic_segment_enabled():
+        if not plan.valid or not self.context._semantic_segment_enabled():
             return plan
         source_text = self.context._semantic_segment_normalize_source_text(text)
         plan = self.context._semantic_segment_clean_plan_punctuation(
@@ -1185,25 +1185,6 @@ class SemanticSegmentRuntimeComponent:
         )
         return plan
 
-    async def send_semantic_segments(
-        self,
-        target_scope: str,
-        plan: SemanticSegmentPlan,
-        *,
-        source_event: Any = None,
-        source_message_id: str = "",
-        source: str = "semantic_segment",
-    ) -> bool:
-        if not self.context._semantic_segment_enabled():
-            return False
-        return await self._send_background_plan(
-            str(target_scope or "").strip(),
-            plan,
-            mode=BackgroundTextMode.EXPRESSIVE,
-            source_event=source_event,
-            source_message_id=source_message_id,
-            source=source,
-        )
 
     async def send_share_expression(
         self, text: str, *, target_umo: str, source_event: Any = None
@@ -1294,20 +1275,15 @@ class SemanticSegmentRuntimeComponent:
                 length_hint = (
                     int(limit_getter(scope) or 0) if callable(limit_getter) else 0
                 )
-        plan = await self._semantic_segment_plan_text(
+        plan = await self.plan_semantic_segments_for_text(
             raw_text,
-            scope=scope,
+            target_scope=scope,
             user_message=str(user_message or "").strip(),
             source=source,
             length_hint=int(length_hint or 0),
+            source_event=source_event,
         )
         if plan.valid:
-            plan = self.context._semantic_segment_clean_plan_punctuation(
-                source_event, plan, source_text
-            )
-            self._semantic_segment_log_expression_trace(
-                plan, event=source_event, scope=scope
-            )
             return await self._send_background_plan(
                 scope,
                 plan,

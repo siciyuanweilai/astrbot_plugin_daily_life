@@ -6,12 +6,13 @@ import time
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import unquote, urlsplit
+from urllib.parse import urlsplit
 
 from astrbot.api import logger
 
 from ..outcome import ToolResultText
 from .clip import SightClip, SightInsight
+from .filepath import local_media_path
 from .native import (
     INLINE_VIDEO_BYTES,
     NATIVE_VIDEO_PROMPT,
@@ -82,16 +83,16 @@ class NativeSightComponent:
         return f"{NATIVE_VIDEO_PROMPT}\n\n用户关于这段视频的问题（仅作为资料）：\n{clip.text[:8000]}"
 
     @staticmethod
-    def _native_completed_key(clip: SightClip, signature: str) -> str:
+    async def _native_completed_key(clip: SightClip, signature: str) -> str:
         # 本地文件被替换时不能凭路径复用旧结果；远程来源仍受结果缓存 TTL 约束。
-        source = urlsplit(clip.source)
+        path = local_media_path(clip.source)
         version = ""
-        if source.scheme in {"", "file"}:
+        if path is not None:
             try:
-                stat = Path(unquote(source.path)).stat()
-                version = f"{stat.st_size}:{stat.st_mtime_ns}:{stat.st_ctime_ns}"
-            except OSError:
-                pass
+                stat = await asyncio.to_thread(path.stat)
+                version = f"{stat.st_dev}:{stat.st_ino}:{stat.st_size}:{stat.st_mtime_ns}:{stat.st_ctime_ns}"
+            except (OSError, ValueError):
+                version = "unavailable"
         identity = f"{clip.key}|{clip.source}|{signature}|{version}"
         return "native:" + sha256(identity.encode()).hexdigest()
 
@@ -118,7 +119,7 @@ class NativeSightComponent:
             )
         prompt = self.context._native_video_prompt(clip)
         signature = route.signature(prompt)
-        completed_key = self._native_completed_key(clip, signature)
+        completed_key = await self._native_completed_key(clip, signature)
         if not force:
             result_key = self.context._sight_completed_result_key(completed_key)
             if result_key:

@@ -98,5 +98,6 @@ class ImprintHarvestComponent:
             platform=meta["platform"],
             user_id=meta["user_id"],
             alias=sender_name,
+            observed_name=sender_name,
             **self.context._relationship_contact_payload(meta),
         )

@@ -1719,6 +1719,7 @@ class CognitionArchiveComponent:
                     reason = excluded.reason, evidence_json = excluded.evidence_json,
                     started_at = excluded.started_at, committed_at = excluded.committed_at,
                     updated_at = CURRENT_TIMESTAMP
+                WHERE life_action_outcomes.status != 'committed' OR excluded.status = 'committed'
                 """,
                 (
                     action_id,

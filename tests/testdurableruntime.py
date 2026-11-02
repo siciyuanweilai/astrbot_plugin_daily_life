@@ -1372,6 +1372,7 @@ class ProactiveCommitmentScheduleTest(unittest.IsolatedAsyncioTestCase):
         self.runtime._part_proactive_followup_component._evaluate_proactive_commitment = evaluate
         self.runtime._send_proactive_message = send
         task = SimpleNamespace(
+            task_key=f"proactive_commitment:{commitment.id}",
             payload={
                 "scope": commitment.source_session,
                 "commitment_id": commitment.id,

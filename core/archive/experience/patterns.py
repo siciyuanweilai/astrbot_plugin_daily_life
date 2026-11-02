@@ -45,57 +45,6 @@ class BehaviorArchiveComponent:
             updated_at=row["updated_at"],
         )
 
-    async def upsert_behavior_pattern(
-        self, pattern: BehaviorPatternRecord
-    ) -> BehaviorPatternRecord | None:
-        item = BehaviorPatternRecord.from_value(
-            pattern.as_dict() if isinstance(pattern, BehaviorPatternRecord) else pattern
-        )
-        if not item:
-            return None
-        scope = self.context._text(item.scope)
-        scene = self.context._text(item.scene)
-        pattern_text = self.context._text(item.pattern)
-
-        def dbwork():
-            self.context._conn.execute(
-                """
-                INSERT INTO behavior_patterns(
-                    scope, scene, pattern, suggested_action, confidence, support_count,
-                    score, evidence, source, last_seen, created_at, updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                ON CONFLICT(scope, scene, pattern) DO UPDATE SET
-                    suggested_action = COALESCE(NULLIF(excluded.suggested_action, ''), behavior_patterns.suggested_action),
-                    confidence = MAX(behavior_patterns.confidence, excluded.confidence),
-                    support_count = behavior_patterns.support_count + excluded.support_count,
-                    score = MAX(-5.0, MIN(5.0, behavior_patterns.score + excluded.score)),
-                    evidence = COALESCE(NULLIF(excluded.evidence, ''), behavior_patterns.evidence),
-                    source = excluded.source,
-                    last_seen = excluded.last_seen,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                (
-                    scope,
-                    scene,
-                    pattern_text,
-                    self.context._text(item.suggested_action),
-                    max(0.0, min(float(item.confidence or 0.0), 1.0)),
-                    max(1, int(item.support_count or 1)),
-                    max(-5.0, min(float(item.score or 0.0), 5.0)),
-                    self.context._text(item.evidence),
-                    self.context._text(item.source) or "chat_memory",
-                    self.context._text(item.last_seen),
-                ),
-            )
-            self.context._conn.commit()
-            row = self.context._conn.execute(
-                "SELECT * FROM behavior_patterns WHERE scope = ? AND scene = ? AND pattern = ?",
-                (scope, scene, pattern_text),
-            ).fetchone()
-            return self.context._compose_behavior_pattern(row) if row else None
-
-        return await self.context._run_db(dbwork)
 
     async def get_behavior_patterns(
         self,
@@ -234,65 +183,6 @@ class BehaviorArchiveComponent:
             updated_at=row["updated_at"],
         )
 
-    async def upsert_session_mid_summary(
-        self, summary: SessionMidSummaryRecord
-    ) -> SessionMidSummaryRecord | None:
-        item = SessionMidSummaryRecord.from_value(
-            summary.as_dict()
-            if isinstance(summary, SessionMidSummaryRecord)
-            else summary
-        )
-        if not item:
-            return None
-        session_id = self.context._text(item.session_id)
-
-        def dbwork():
-            existing = self.context._conn.execute(
-                "SELECT message_count FROM session_mid_summaries WHERE session_id = ?",
-                (session_id,),
-            ).fetchone()
-            message_count = max(
-                int(item.message_count or 0),
-                int(existing["message_count"] or 0) + 1 if existing else 1,
-            )
-            self.context._conn.execute(
-                """
-                INSERT INTO session_mid_summaries(
-                    session_id, scope_label, summary, topic, mood, participants,
-                    message_count, last_message_id, source, created_at, updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                ON CONFLICT(session_id) DO UPDATE SET
-                    scope_label = COALESCE(NULLIF(excluded.scope_label, ''), session_mid_summaries.scope_label),
-                    summary = COALESCE(NULLIF(excluded.summary, ''), session_mid_summaries.summary),
-                    topic = COALESCE(NULLIF(excluded.topic, ''), session_mid_summaries.topic),
-                    mood = COALESCE(NULLIF(excluded.mood, ''), session_mid_summaries.mood),
-                    participants = COALESCE(NULLIF(excluded.participants, ''), session_mid_summaries.participants),
-                    message_count = excluded.message_count,
-                    last_message_id = COALESCE(NULLIF(excluded.last_message_id, ''), session_mid_summaries.last_message_id),
-                    source = excluded.source,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                (
-                    session_id,
-                    self.context._text(item.scope_label),
-                    self.context._text(item.summary),
-                    self.context._text(item.topic),
-                    self.context._text(item.mood),
-                    _pack_lines(item.participants),
-                    message_count,
-                    self.context._text(item.last_message_id),
-                    self.context._text(item.source) or "chat_memory",
-                ),
-            )
-            self.context._conn.commit()
-            row = self.context._conn.execute(
-                "SELECT * FROM session_mid_summaries WHERE session_id = ?",
-                (session_id,),
-            ).fetchone()
-            return self.context._compose_session_mid_summary(row) if row else None
-
-        return await self.context._run_db(dbwork)
 
     async def get_session_mid_summaries(
         self,

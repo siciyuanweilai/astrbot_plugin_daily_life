@@ -191,39 +191,6 @@ class HostedMemOSService:
             return ""
         return "\n".join(lines)
 
-    async def sync_selected_memory(
-        self,
-        *,
-        meta: dict[str, str],
-        user_message: str,
-        summary: str,
-        points: list[str] | None = None,
-        preferences: list[str] | None = None,
-    ) -> bool:
-        if not self.enabled or not bool(
-            getattr(self.settings, "sync_selected_memory", False)
-        ):
-            return False
-        details = [summary, *(points or [])[:4], *(preferences or [])[:4]]
-        details_text = "\n".join(
-            f"- {_compact_text(item, 180)}"
-            for item in details
-            if _compact_text(item, 180)
-        )
-        if not details_text:
-            return False
-        payload = {
-            **self._base_payload(meta),
-            "messages": [
-                {"role": "user", "content": _compact_text(user_message, 500)},
-                {"role": "assistant", "content": f"长期记忆精选摘要：\n{details_text}"},
-            ],
-            "async_mode": False,
-        }
-        result = await self.client.add_message(payload)
-        if not result.success:
-            logger.debug(f"{LOG_PREFIX} MemOS 外部记忆精选同步失败：{result.error}")
-        return result.success
 
     async def sync_selected_items(
         self,

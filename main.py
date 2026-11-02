@@ -3261,11 +3261,6 @@ class DailyLifePlugin(Star):
         "_page_gallery_dir",
     )
 
-    _page_reference_dir = ComponentCall(
-        "_part_portal_reference_component",
-        PortalReferenceComponent,
-        "_page_reference_dir",
-    )
 
     _page_safe_gallery_path = ComponentCall(
         "_part_portal_reference_component",
@@ -3273,11 +3268,6 @@ class DailyLifePlugin(Star):
         "_page_safe_gallery_path",
     )
 
-    _page_safe_reference_path = ComponentCall(
-        "_part_portal_reference_component",
-        PortalReferenceComponent,
-        "_page_safe_reference_path",
-    )
 
     _page_reference_mime = staticmethod(PortalReferenceComponent._page_reference_mime)
 
@@ -3509,9 +3499,6 @@ class DailyLifePlugin(Star):
         "_part_portal_emoji_component", PortalEmojiComponent, "_page_delete_emoji_files"
     )
 
-    _page_build_emoji_backup = ComponentCall(
-        "_part_portal_emoji_component", PortalEmojiComponent, "_page_build_emoji_backup"
-    )
 
     _page_build_emoji_backup_file = ComponentCall(
         "_part_portal_emoji_component",

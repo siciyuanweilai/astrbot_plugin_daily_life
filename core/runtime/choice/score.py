@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from ...relationship import response_bias
+
 import datetime
 from typing import Any
 
@@ -258,43 +260,10 @@ class ResponseGateScoreComponent:
         if relationship is None:
             return 0.0
 
-        delta = 0.0
-        interactions = self.context._response_gate_int(
-            getattr(relationship, "interactions", None), 0
-        )
-        if interactions >= 8:
-            delta += 0.1
-            reasons.append("关系互动很熟")
-        elif interactions >= 3:
-            delta += 0.06
-            reasons.append("关系互动较熟")
-        elif interactions > 0:
-            delta += 0.03
-            reasons.append("已有关系互动")
-
-        signal_count = self.context._response_gate_relationship_signal_count(relationship)
-        if signal_count >= 3:
-            delta += 0.06
-            reasons.append("关系印象较清楚")
-        elif signal_count > 0:
-            delta += 0.03
-            reasons.append("有关系印象")
-
-        days_since = self.context._response_gate_days_since(
-            getattr(relationship, "last_seen", ""), now
-        )
-        if days_since is not None:
-            if days_since <= 7:
-                delta += 0.05
-                reasons.append("最近刚互动过")
-            elif days_since <= 30:
-                delta += 0.03
-                reasons.append("近期有互动")
-
-        if not self.context._event_is_group_message(event):
-            delta += 0.03
-            reasons.append("私聊熟人语境")
-        return min(delta, 0.18)
+        delta = response_bias(getattr(relationship, "relationship_state", {}))
+        if delta:
+            reasons.append("有证据的长期关系状态")
+        return delta
 
     def _response_gate_profile_ids(self, event: Any) -> list[str]:
         ids: list[str] = []

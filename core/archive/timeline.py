@@ -5,6 +5,37 @@ import json
 from ..models import TimelineItem
 
 
+def project_committed_timeline(day) -> None:
+    """整组动作的成功结算决定完成态，部分完成与未执行计划保持原状。"""
+    from ..life.actionchain import actions, settlements
+
+    outcomes = settlements(day)
+    grouped = {}
+    for action in actions(day):
+        index = action.timeline_index
+        if index is not None and 0 <= index < len(day.timeline):
+            grouped.setdefault(index, []).append(outcomes.get(action.action_id))
+    for index, records in grouped.items():
+        if not all(isinstance(r, dict) and r.get("status") == "committed" for r in records):
+            continue
+        item = day.timeline[index]
+        if item.execution_state == "completed":
+            continue
+        last = max(records, key=lambda r: str(r.get("committed_at") or ""))
+        item.execution_state = "completed"
+        item.execution_reason = str(last.get("reason") or "生活动作已结算")
+        item.execution_evidence = str(last.get("evidence") or "")
+        item.execution_updated_at = str(last.get("committed_at") or "")
+    try:
+        pending = json.loads(day.meta.get("schedule_replan_pending") or "{}")
+    except (TypeError, ValueError):
+        pending = {}
+    if isinstance(pending, dict):
+        settled = outcomes.get(pending.get("action_id"))
+        if isinstance(settled, dict) and settled.get("status") == "committed":
+            day.meta.pop("schedule_replan_pending", None)
+
+
 def rebind_planned_actions(
     meta: dict[str, str], previous: list[TimelineItem], current: list[TimelineItem]
 ) -> None:

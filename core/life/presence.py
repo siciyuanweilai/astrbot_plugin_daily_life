@@ -421,6 +421,8 @@ def record_action_outcome(
     except (TypeError, ValueError):
         planned_minutes = 0.0
     if status == "committed":
+        from .locationfacts import completed_action_description
+        target = completed_action_description(action_data)[:240]
         result = (
             "完成一段学习过程，是否掌握尚未验证"
             if action_type == "study"

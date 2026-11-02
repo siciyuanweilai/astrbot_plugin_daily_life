@@ -95,6 +95,8 @@ class BiliDynamicSharing:
                     not self.social.config.dynamics_enabled or self.delegate() is not delegate or
                     not delegate.config.get("enable_auto_share", False) or not source):
                 raise ValueError("生活状态、分享设置或公开素材已变化，暂不发布")
+            if not await browsing.available(epoch):
+                raise ValueError("当前生活或聊天状态已变化，暂不发布动态")
             if source.get("kind") == "public_image":
                 item = await self.social.runtime.archive.get_living_entity(source["id"], "qzone_broadcast")
                 if not item or item.get("visibility") != "public" or item.get("state") != "available" or item.get("revision") != source["asset_revision"]:

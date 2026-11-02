@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 
 import datetime
 import json
@@ -17,7 +18,7 @@ from ...prompts import (
     CORE_PROACTIVE_VOICE_RULES,
     cache_friendly_prompt,
 )
-from ...sources.dispatch import PermanentScopeDeliveryError
+from ...sources.dispatch import PermanentScopeDeliveryError, ScopeDeliveryError
 from ..capture.jsonclean import call_pure_json
 from ..continuous import planned_actions
 from ...life.actionchain import settlements
@@ -517,6 +518,11 @@ skip 时 activity_index 可以为 null，contact_at 和 reply_text 留空。
             await reject("共同活动联系正文为空")
         if source_event is not None:
             source_event._daily_life_proactive_expires_at = deadline
+        send_payload = {
+            "source": "shared_activity_contact",
+            "_executing_task_key": task.task_key,
+            "expression_intent": decision.get("expression_intent") or {},
+        }
         try:
             sent = await self.context._send_proactive_message(
                 scope,
@@ -524,16 +530,33 @@ skip 时 activity_index 可以为 null，contact_at 和 reply_text 留空。
                 "共同活动联系发送失败",
                 relationship=relationship,
                 contact_type="friend" if ":FriendMessage:" in scope else "",
-                send_payload={
-                    "source": "shared_activity_contact",
-                    "expression_intent": decision.get("expression_intent") or {},
-                },
+                send_payload=send_payload,
                 source_event=source_event,
                 source_message_id=commitment.source_message_id,
                 raise_delivery_errors=True,
             )
+        except asyncio.CancelledError:
+            delivery = send_payload.get("_delivery") or {}
+            if delivery.get("status") in {"confirmed", "partial", "unknown"}:
+                try:
+                    async with asyncio.timeout(2):
+                        await self.context.archive.finalize_durable_task(
+                            task.id, {"outcome": "sent" if delivery["status"] == "confirmed" else delivery["status"],
+                                      "sent_text": delivery.get("sent_text", "")}, owner=task.lease_owner,
+                        )
+                except Exception as exc:
+                    logger.warning(f"{LOG_PREFIX} 取消后的共同活动联系回执未保存：{type(exc).__name__}")
+            raise
         except PermanentScopeDeliveryError as exc:
             return {"outcome": "undeliverable", "reason": str(exc), "code": exc.code}
+        except ScopeDeliveryError as exc:
+            if (send_payload.get("_delivery") or {}).get("status") == "unknown":
+                return {"outcome": "unknown", "reason": "平台回执未确认，停止自动重发", "code": exc.code}
+            raise
+        delivery = send_payload.get("_delivery") or {}
+        if delivery.get("status") in {"partial", "unknown"}:
+            return {"outcome": delivery["status"], "reason": delivery.get("reason", ""),
+                    "sent_text": delivery.get("sent_text", "")}
         if not sent:
             if life_now() >= deadline:
                 return {

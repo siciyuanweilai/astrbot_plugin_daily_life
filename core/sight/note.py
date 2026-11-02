@@ -49,11 +49,6 @@ PROFESSIONAL_ROLE_SCHEMA: tuple[tuple[str, str, str], ...] = (
 PROFESSIONAL_ROLE_TITLES = {
     role: title for role, title, _ in PROFESSIONAL_ROLE_SCHEMA if role != "other"
 }
-PROFESSIONAL_ROLE_ENUM = "/".join(role for role, _, _ in PROFESSIONAL_ROLE_SCHEMA)
-PROFESSIONAL_ROLE_SCHEMA_TEXT = "\n".join(
-    f"  - {role}：{title}；{description}"
-    for role, title, description in PROFESSIONAL_ROLE_SCHEMA
-)
 
 
 BASE_NOTE_PROMPT = """\

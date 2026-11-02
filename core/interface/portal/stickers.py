@@ -363,12 +363,6 @@ class PortalEmojiComponent:
             deleted += 1
         return deleted
 
-    def _page_build_emoji_backup(
-        self, assets: list[EmojiAssetRecord]
-    ) -> tuple[bytes, dict]:
-        buffer = BytesIO()
-        meta = self.context._page_write_emoji_backup(assets, buffer)
-        return buffer.getvalue(), meta
 
     def _page_build_emoji_backup_file(
         self,

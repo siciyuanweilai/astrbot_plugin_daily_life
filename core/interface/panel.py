@@ -211,7 +211,7 @@ class DailyLifeDashboardComponent:
                 "page/experience/focus",
                 self.context.page_experience_focus,
                 ["POST"],
-                "保存关注目标",
+                "旧关注接口已退役（只读历史见诊断状态）",
             ),
             (
                 "page/experience/boundary",

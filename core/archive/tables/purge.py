@@ -1,5 +1,8 @@
 DROP_SCHEMA_SQL = """
 PRAGMA foreign_keys = OFF;
+        DROP TABLE IF EXISTS relationship_evidence_claims;
+        DROP TABLE IF EXISTS relationship_states;
+        DROP TABLE IF EXISTS relationship_changes;
         DROP TABLE IF EXISTS expression_learning_events;
         DROP TABLE IF EXISTS memory_fact_links;
         DROP TABLE IF EXISTS knowledge_readings;

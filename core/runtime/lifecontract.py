@@ -16,7 +16,8 @@ def build_life_decision_contract(context: dict[str, Any]) -> str:
         "rest_kind": "break|sleep",
         "new_actions": [{"owner": "self", "action_type": "内部动作类型",
                          "target": "本步骤的生活过程", "timeline_index": None,
-                         "duration_minutes": 10, "payload": {}}],
+                         "duration_minutes": 10,
+                         "payload": {"place": "本步地点；移动时改填 origin、destination、travel_mode"}}],
     }
     rules = [
         "为当前角色选择接下来实际要执行的一项内部数字生活行动，只输出 JSON。"
@@ -29,7 +30,8 @@ def build_life_decision_contract(context: dict[str, Any]) -> str:
         "无节点时 timeline_index=null，后续步骤开始前重新判断。delay_minutes 不证明做过，按当前必要性取舍延误安排。",
         "内部类型：rest, drink, meal, cook, order_food, purchase, move, travel, work, study, chore, exercise, groom, change_outfit。"
         "睡眠须明确 rest_kind=sleep，普通休息为 break，尊重 rest_delay_until。"
-        "move/travel 的 payload 填 origin、destination、travel_mode；地点变化由移动完成回执确认。",
+        "实体活动的 payload.place 填本步执行地点；move/travel 改填 origin、destination、travel_mode，"
+        "每步描述与结构化地点一致，后一步起点衔接前一步终点；地点变化由移动完成回执确认。",
         "payload 保留领域参数：purchase.pantry_items=[{name,quantity,unit}]，cook.ingredients=[{name,quantity,unit}]；"
         "缺少食材可先规划移动、采购、返回、做饭、进食，各步 place 必须与执行地点一致，库存须在做饭开始时已入库；"
         "drink 可填 volume_ml；exercise.intensity 为1–5；"

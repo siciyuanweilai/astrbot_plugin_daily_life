@@ -63,10 +63,13 @@ class SingleFlight(Generic[T]):
 
     def __init__(self) -> None:
         self._tasks: dict[str, asyncio.Task[T]] = {}
+        self._closed = False
 
     async def run(
         self, key: str, factory: Callable[[], Awaitable[T]]
     ) -> tuple[T, bool]:
+        if self._closed:
+            raise RuntimeError("共享请求服务已关闭")
         task_key = str(key or "").strip()
         if not task_key:
             return await factory(), False
@@ -79,6 +82,7 @@ class SingleFlight(Generic[T]):
         return await asyncio.shield(task), shared
 
     async def close(self) -> None:
+        self._closed = True
         tasks = list(self._tasks.values())
         self._tasks.clear()
         for task in tasks:

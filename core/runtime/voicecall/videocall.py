@@ -19,6 +19,7 @@ import aiohttp
 
 from astrbot.api import logger
 
+from ...identity import relationship_for_contact
 from ...clock import TIMEZONE_NAME, now as life_now
 from ...config.options.generate import DEFAULT_RTC_MODEL_NAME as DEFAULT_RTC_MODEL
 from ...life.calendar import format_calendar_context, format_season_context
@@ -2106,33 +2107,7 @@ class RtcVoiceCallManager:
         user_name: str,
         scope: str,
     ) -> dict[str, Any]:
-        if not isinstance(relationships, list):
-            return {}
-        targets = {
-            str(value or "").strip()
-            for value in (user_id, user_name, scope)
-            if str(value or "").strip()
-        }
-        if not targets:
-            return {}
-        for relationship in relationships:
-            if not isinstance(relationship, dict):
-                continue
-            candidates = {
-                str(relationship.get(key) or "").strip()
-                for key in ("id", "user_id", "name", "alias", "subjective_name")
-                if str(relationship.get(key) or "").strip()
-            }
-            for contact in relationship.get("contacts") or []:
-                if isinstance(contact, dict):
-                    candidates.update(
-                        str(contact.get(key) or "").strip()
-                        for key in ("user_id", "target_scope", "profile_id")
-                        if str(contact.get(key) or "").strip()
-                    )
-            if candidates.intersection(targets):
-                return relationship
-        return {}
+        return relationship_for_contact(relationships, user_id=user_id, scope=scope)
 
     @classmethod
     def _event_group_identity(cls, event: Any) -> tuple[str, str]:

@@ -153,6 +153,8 @@ class LifeEvolutionService:
             return 0
         saved_count = 0
         for signal in self.affect.signals_from_payload(payload):
+            if signal.layer == "relationship":
+                continue  # 长期关系只由人物账本结算，不能借情绪入口重复写入。
             signal.evidence_ids = [
                 item for item in signal.evidence_ids if item in allowed_evidence_ids
             ]
@@ -193,115 +195,6 @@ class LifeEvolutionService:
                 after={"layer": settled.layer, "label": settled.label, "intensity": settled.intensity, "valence": settled.valence},
                 summary=f"已结算有证据的情绪变化：{settled.label}",
                 evidence_ids=signal.evidence_ids,
-                now=now,
-            )
-            saved_count += 1
-        return saved_count
-
-    async def _settle_relationship_updates(
-        self,
-        payload: dict[str, Any],
-        *,
-        allowed_evidence_ids: set[str],
-        date: str,
-        now: datetime.datetime,
-    ) -> int:
-        relationship_getter = getattr(self.archive, "get_relationship", None)
-        state_getter = getattr(self.archive, "get_affective_states", None)
-        state_saver = getattr(self.archive, "save_affective_state", None)
-        point_adder = getattr(self.archive, "add_relationship_point", None)
-        if not all(
-            callable(method)
-            for method in (relationship_getter, state_getter, state_saver)
-        ):
-            return 0
-        saved_count = 0
-        for update in self.affect.relationship_updates_from_payload(payload):
-            update.evidence_ids = [
-                item for item in update.evidence_ids if item in allowed_evidence_ids
-            ]
-            if not update.evidence_ids:
-                continue
-            relationship = await relationship_getter(update.profile_id)
-            if relationship is None:
-                continue
-            scope = f"relationship:{update.profile_id}"
-            states = await state_getter(scope=scope, layer="relationship", limit=20)
-            current = next(
-                (item for item in states if str(item.label) == "关系亲近度"), None
-            )
-            delta = (
-                update.familiarity_delta + update.trust_delta + update.affinity_delta
-            ) / 3.0
-            signal = {
-                "layer": "relationship",
-                "label": "关系亲近度",
-                "valence": 1.0 if delta >= 0 else -1.0,
-                "arousal": min(1.0, 0.5 + abs(delta) * 3.0),
-                "intensity": min(1.0, abs(delta) * 8.0),
-                "evidence_ids": update.evidence_ids,
-                "source": "daily_review",
-            }
-            normalized = self.affect.signals_from_payload({"affect_updates": [signal]})[
-                0
-            ]
-            settled = self.affect.apply(
-                self._snapshot(current) if current else None,
-                normalized,
-                scope=scope,
-                now=now,
-            )
-            await state_saver(
-                AffectiveStateRecord(
-                    scope=scope,
-                    layer="relationship",
-                    label="关系亲近度",
-                    valence=settled.valence,
-                    arousal=settled.arousal,
-                    intensity=settled.intensity,
-                    baseline=settled.baseline,
-                    decay_half_life_minutes=settled.decay_half_life_minutes,
-                    evidence=list(settled.evidence_ids),
-                    valid_from=now.strftime("%Y-%m-%d %H:%M:%S"),
-                    source="daily_review",
-                )
-            )
-            if callable(point_adder) and update.reason:
-                await point_adder(
-                    update.profile_id,
-                    update.reason,
-                    date_str=date,
-                    source="日常复盘",
-                    weight=max(0.1, min(1.0 + delta, 2.0)),
-                )
-            fact_writer = getattr(self.archive, "upsert_current_temporal_fact", None)
-            if callable(fact_writer):
-                await fact_writer(
-                    scope="global",
-                    subject=f"relationship:{update.profile_id}",
-                    predicate="latest_change",
-                    object_value={
-                        "familiarity_delta": update.familiarity_delta,
-                        "trust_delta": update.trust_delta,
-                        "affinity_delta": update.affinity_delta,
-                        "reason": update.reason,
-                    },
-                    observed_at=now.strftime("%Y-%m-%d %H:%M:%S"),
-                    source="daily_review",
-                    source_type="relationship_update",
-                    source_id=f"relationship:{update.profile_id}:{date}",
-                    provenance={"evidence_ids": update.evidence_ids, "date": date},
-                    evidence_summary=update.reason,
-                )
-            await self._record_continuous_change(
-                date=date,
-                kind="relationship_change",
-                source_id=f"relationship:{update.profile_id}:{date}",
-                scope=scope,
-                before={"intensity": getattr(current, "intensity", None)},
-                after={"familiarity_delta": update.familiarity_delta, "trust_delta": update.trust_delta, "affinity_delta": update.affinity_delta, "reason": update.reason},
-                summary=update.reason,
-                evidence_ids=update.evidence_ids,
                 now=now,
             )
             saved_count += 1
@@ -435,12 +328,7 @@ class LifeEvolutionService:
             now=now,
             date=date,
         )
-        relationship_count = await self._settle_relationship_updates(
-            payload,
-            allowed_evidence_ids=allowed,
-            date=date,
-            now=now,
-        )
+        relationship_count = 0  # 关系由真实互动批次结算，夜间复盘不重复计分。
         reflected, importance, reason_code = await self._settle_reflection(
             payload,
             allowed_evidence_ids=allowed,

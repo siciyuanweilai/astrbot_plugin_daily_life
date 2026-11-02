@@ -15,11 +15,14 @@ from ..life.tools import extract_json_from_text
 from ..prompts import CORE_JSON_OUTPUT_RULES, cache_friendly_prompt
 from ..search.cache import SingleFlight, TimedCache
 from .markers import LOG_PREFIX
-from .recallrank import fuse_memory_routes, memory_identity
+from .recallrank import fuse_memory_routes, memory_identity, memory_vector_text
 
 
 class MeaningService:
     _SEMANTIC_RANK_TIMEOUT_SECONDS = 4.0
+    _SEMANTIC_SESSION_CLOSE_TIMEOUT_SECONDS = 1.0
+    # 共享查询允许迟到结果进入缓存，但不能在调用方离开后无限挂起。
+    _MEANING_QUERY_REQUEST_TIMEOUT_SECONDS = 3 * _SEMANTIC_RANK_TIMEOUT_SECONDS
     _MEMORY_INDEX_BATCH_SIZE = 8
     # 历史索引允许适配器完成较慢的请求；聊天召回使用独立的短预算。
     _MEMORY_INDEX_TIMEOUT_SECONDS = 60.0
@@ -114,7 +117,8 @@ class MeaningService:
             recent = await cache.get(key)
             if recent is not None:
                 return list(recent)
-            raw = await provider.get_embedding(query)
+            async with asyncio.timeout(self._MEANING_QUERY_REQUEST_TIMEOUT_SECONDS):
+                raw = await provider.get_embedding(query)
             vector = [float(value) for value in list(raw or [])]
             if not vector or not any(vector) or not all(math.isfinite(value) for value in vector):
                 raise ValueError("查询 Embedding 返回了无效向量")
@@ -178,7 +182,7 @@ class MeaningService:
 
     @staticmethod
     def _memory_vector_text(item: Any) -> str:
-        return " ".join(filter(None, (str(item.title or ""), str(item.content or ""))))
+        return memory_vector_text(item)
 
     @staticmethod
     def _memory_source_key(item: Any) -> tuple:
@@ -541,7 +545,11 @@ JSON 输出要求：
                 result[kind] = valid
             return result
         finally:
-            await self._close_text_session(session_id)
+            try:
+                async with asyncio.timeout(self._SEMANTIC_SESSION_CLOSE_TIMEOUT_SECONDS):
+                    await self._close_text_session(session_id)
+            except Exception as exc:
+                logger.debug(f"{LOG_PREFIX} 记忆排序会话清理未完成：{type(exc).__name__}")
 
     async def rank_semantic_groups(
         self,
@@ -550,6 +558,7 @@ JSON 输出要求：
         limits: dict[str, int],
         *,
         optional_groups: set[str] | None = None,
+        cached_only: bool = False,
     ) -> dict[str, list[Any]]:
         if self._closed:
             raise RuntimeError("语义检索服务已关闭")
@@ -559,12 +568,20 @@ JSON 输出要求：
             for kind, values in groups.items()
         }
         try:
-            embedded = await self._meaning_rank_with_embeddings(
-                query, groups, limits,
-                minimum_similarity={kind: 0.62 for kind in optional_groups},
-            )
+            # 阶段预算覆盖读取索引、查询向量和评分，而不只限制网络请求。
+            async with asyncio.timeout(self._SEMANTIC_RANK_TIMEOUT_SECONDS):
+                embedded = await self._meaning_rank_with_embeddings(
+                    query, groups, limits,
+                    minimum_similarity={kind: 0.62 for kind in optional_groups},
+                    cached_only=cached_only,
+                )
             if embedded is not None:
                 return embedded
+        except TimeoutError:
+            logger.debug(
+                f"{LOG_PREFIX} 向量记忆排序超时（预算 {self._SEMANTIC_RANK_TIMEOUT_SECONDS:g}s），"
+                "本轮继续降级；共享查询仅缓存迟到结果"
+            )
         except Exception as exc:
             logger.debug(f"{LOG_PREFIX} 向量记忆排序跳过：{type(exc).__name__}: {exc}")
         if not bool(
@@ -576,8 +593,15 @@ JSON 输出要求：
         ):
             return fallback
         try:
-            modeled = await self._meaning_rank_with_model(query, groups, limits)
+            async with asyncio.timeout(self._SEMANTIC_RANK_TIMEOUT_SECONDS):
+                modeled = await self._meaning_rank_with_model(query, groups, limits)
             return modeled if modeled is not None else fallback
+        except TimeoutError:
+            logger.debug(
+                f"{LOG_PREFIX} 模型记忆排序超时（预算 {self._SEMANTIC_RANK_TIMEOUT_SECONDS:g}s），"
+                "本轮使用已有上下文"
+            )
+            return fallback
         except Exception as exc:
             logger.debug(f"{LOG_PREFIX} 模型记忆排序跳过：{type(exc).__name__}: {exc}")
             return fallback

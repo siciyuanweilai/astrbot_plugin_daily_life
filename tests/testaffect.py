@@ -91,23 +91,6 @@ def test_reflection_gate_allows_material_life_change():
     assert gate.importance >= 50
 
 
-def test_relationship_updates_are_bounded_and_require_evidence():
-    updates = AffectEngine.relationship_updates_from_payload(
-        {
-            "relationship_updates": [
-                {
-                    "profile_id": "u1",
-                    "familiarity_delta": 0.7,
-                    "trust_delta": -0.3,
-                    "evidence_ids": ["effect:3"],
-                },
-                {"profile_id": "u2", "affinity_delta": 0.5},
-            ]
-        }
-    )
-    assert len(updates) == 1
-    assert updates[0].familiarity_delta == 0.08
-    assert updates[0].trust_delta == -0.08
 
 
 def test_grounded_diary_rejects_unknown_evidence():

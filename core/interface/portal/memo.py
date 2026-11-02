@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ...clock import now as life_now
-from ...models import BehaviorFeedbackRecord, FocusTargetRecord, MemoryBoundaryRecord
+from ...models import BehaviorFeedbackRecord, MemoryBoundaryRecord
 
 from typing import Any, Protocol
 
@@ -13,6 +13,7 @@ class PortalMemoryComponentContext(Protocol):
     _page_bool: Any
     _page_json: Any
     _page_json_body: Any
+    _page_response: Any
     runtime: Any
 
 
@@ -52,18 +53,18 @@ class PortalMemoryComponent:
         return await self.context._page_json(handler)
 
     async def page_experience_focus(self):
-        async def handler():
-            body = await self.context._page_json_body()
-            target = FocusTargetRecord.from_value(body.get("focus") or body)
-            if not target:
-                raise ValueError("关注目标不能为空")
-            saved = await self.context.runtime.archive.upsert_focus_target(target)
-            return {
-                "focus": saved.as_dict() if saved else None,
-                "status": await self.context._build_page_status(),
-            }
-
-        return await self.context._page_json(handler)
+        """明确拒绝已退役写入，避免将未接入决策的记录报告为生效。"""
+        return await self.context._page_response(
+            {
+                "ok": False,
+                "error": {
+                    "code": "feature_retired",
+                    "message": "旧关注目标接口已退役；持续安排请使用现有承诺、共同活动和回访流程。历史记录可通过诊断状态只读查询。",
+                    "public": True,
+                },
+            },
+            410,
+        )
 
     async def page_experience_boundary(self):
         async def handler():

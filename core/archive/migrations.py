@@ -12,7 +12,7 @@ from .tables.mind import COGNITION_INDEX_SQL, COGNITION_SQL
 
 SCHEMA_VERSION_KEY = "schema_version"
 BASELINE_SCHEMA_VERSION = 1
-SCHEMA_VERSION = 32
+SCHEMA_VERSION = 35
 LEGACY_BASELINE_SCHEMA_FINGERPRINT = (
     "9e6243276bf6bd509f6019502e30192310da4197838bd0f7d478f0100f8750a5"
 )
@@ -128,7 +128,7 @@ ON style_catalog_feedback(item_id, id DESC);
 # 因此相同指纹选择最早的安全版本，再执行后续幂等迁移完成校准。
 PREVIOUS_V30_SCHEMA_FINGERPRINT = "1fe1e4051077cf590c5f041544ea9f660c58bad83ff46759b90083d35eb9cbed"
 PREVIOUS_V31_SCHEMA_FINGERPRINT = "c2f8770ba6987c5c89a0da4944a9a2fdbea69ea1be02334b24b844d16ec5b486"
-CURRENT_SCHEMA_FINGERPRINT = "7518fd42746c412efc726df5fb035090127c5ed2e19ae1715650d0b88dfeee8a"
+CURRENT_SCHEMA_FINGERPRINT = "c7ecc836ed5e587092bfc951f3d04606d78287512cc1b746dcbbaa4bc8e5c5e4"
 
 KNOWN_SCHEMA_VERSIONS: dict[str, int] = {
     LEGACY_BASELINE_SCHEMA_FINGERPRINT: 1,
@@ -159,7 +159,9 @@ KNOWN_SCHEMA_VERSIONS: dict[str, int] = {
     PREVIOUS_V29_SCHEMA_FINGERPRINT: 29,
     PREVIOUS_V30_SCHEMA_FINGERPRINT: 30,
     PREVIOUS_V31_SCHEMA_FINGERPRINT: 31,
-    CURRENT_SCHEMA_FINGERPRINT: 32,
+    "7518fd42746c412efc726df5fb035090127c5ed2e19ae1715650d0b88dfeee8a": 32,
+    "62f9619220b03dce00950fa61bb25b2c8faa9041a941f2948d7639cf994b9984": 33,
+    CURRENT_SCHEMA_FINGERPRINT: 34,
 }
 
 
@@ -1023,7 +1025,30 @@ def _migrate_memory_life(conn: sqlite3.Connection) -> None:
     conn.execute("INSERT OR IGNORE INTO conversation_originals SELECT session_id,event_key,role,sender_name,occurred_at,message_text FROM chat_memory_messages WHERE role IN ('user','assistant') AND message_text<>''")
 
 
+def _migrate_relationship_state(conn: sqlite3.Connection) -> None:
+    from .tables.rapport import RELATIONSHIP_V33_SQL
+    for statement in RELATIONSHIP_V33_SQL.split(";"):
+        if statement.strip():
+            conn.execute(statement)
+    # 旧的混合情绪无法反推出三个长期维度；保留旧记录，不伪造初始分数。
+
+
 # 键是迁移完成后的目标版本；每个步骤只负责从前一版本升级一次。
+def _migrate_relationship_addresses(conn: sqlite3.Connection) -> None:
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(relationships)")}
+    if "address_basis" not in columns:
+        conn.execute("ALTER TABLE relationships ADD COLUMN address_basis TEXT NOT NULL DEFAULT '{}'")
+    for row in conn.execute("SELECT id,subjective_name FROM relationships WHERE subjective_name<>'' AND address_basis='{}'").fetchall():
+        # 旧字段没有对方意愿的来源，保留审计副本，不把它升级成已确认称呼。
+        conn.execute("UPDATE relationships SET subjective_name='',address_basis=? WHERE id=?",
+                     (json.dumps({"legacy_unverified":row[1]},ensure_ascii=False),row[0]))
+
+
+def _migrate_committed_actions(conn: sqlite3.Connection) -> None:
+    from .actionrepair import repair_committed_actions
+    repair_committed_actions(conn)
+
+
 MIGRATIONS: dict[int, MigrationStep] = {
     2: _migrate_timeline_execution_state,
     3: _migrate_cognition_runtime,
@@ -1056,6 +1081,9 @@ MIGRATIONS: dict[int, MigrationStep] = {
     30: _migrate_current_storage_boundaries,
     31: _migrate_expression_evolution,
     32: _migrate_memory_life,
+    33: _migrate_relationship_state,
+    34: _migrate_relationship_addresses,
+    35: _migrate_committed_actions,
 }
 
 

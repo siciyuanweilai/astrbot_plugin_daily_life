@@ -4,9 +4,10 @@ import html
 import re
 from pathlib import Path
 from typing import Any, Iterable
-from urllib.parse import unquote, urlparse
+from urllib.parse import urlparse
 
 from .clip import SightClip
+from .filepath import local_media_path
 
 
 VIDEO_SUFFIXES = {
@@ -26,18 +27,9 @@ def clean_source(value: Any) -> str:
     for prefix in ("range:", "proxy:", "cache:"):
         if text.startswith(prefix):
             text = text[len(prefix) :]
-    if text.lower().startswith("file://"):
-        parsed = urlparse(text)
-        path = unquote(parsed.path or "")
-        if parsed.netloc and path:
-            path = f"//{parsed.netloc}{path}"
-        elif parsed.netloc:
-            path = unquote(parsed.netloc)
-        if re.match(r"^/[A-Za-z]:/", path):
-            path = path[1:]
-        return path
     if text.lower().startswith("file:"):
-        return unquote(text[5:])
+        path = local_media_path(text)
+        return path.as_posix() if path is not None else ""
     return text
 
 

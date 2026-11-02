@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from .continuity import run_status_label
+from .locationfacts import completed_action_description
 
 
 def chat_life_projection(world: dict[str, Any]) -> str:
@@ -23,6 +24,8 @@ def chat_life_projection(world: dict[str, Any]) -> str:
         if not target or item.get("status") not in {"completed", "failed", "cancelled"}:
             continue
         at = str(item.get("finished_at") or "").strip()
+        if item.get("status") == "completed":
+            target = completed_action_description(item.get("action"))
         lines.append(f"{at} {target}（{run_status_label(item)}）")
     return "\n".join(lines)
 

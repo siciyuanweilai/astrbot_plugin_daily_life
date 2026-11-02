@@ -6,6 +6,7 @@ from typing import Any
 from .body import ContinuousBody, body_context, nonnegative, project_body
 from .goals import goals_context
 from .presence import kernel_context, sync_kernel_from_day
+from .locationfacts import completed_action_description
 
 RUN_STATUS_LABELS = {
     "running": "进行中",
@@ -58,7 +59,8 @@ def execution_context(world: dict[str, Any]) -> str:
         sections.append(
             "最近实际行动："
             + "；".join(
-                f"{item.get('finished_at', '')} {item.get('action', {}).get('target', '')} "
+                f"{item.get('finished_at', '')} "
+                f"{completed_action_description(item.get('action')) if item.get('status') == 'completed' else item.get('action', {}).get('target', '')} "
                 f"{RUN_STATUS_LABELS.get(item.get('status'), '待确认')}"
                 for item in history
             )

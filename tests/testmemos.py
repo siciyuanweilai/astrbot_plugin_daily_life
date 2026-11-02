@@ -367,38 +367,6 @@ class MemOSTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["query"], "阿林: 这个展还挺想去的")
         self.assertTrue(payload["conversation_id"].startswith("dl_conv_"))
 
-    async def test_runtime_schedules_memos_sync_in_background(self):
-        settings = LifeSettings.from_dict(
-            {
-                "memos_config": {
-                    "enabled": True,
-                    "api_key": "key",
-                    "sync_selected_memory": True,
-                }
-            }
-        )
-        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
-        runtime.config = settings
-        runtime.memos = HostedMemOSService(settings.memos)
-        scheduled = []
-
-        def schedule(coro, label="", key=""):
-            scheduled.append((coro, label, key))
-            coro.close()
-            return True
-
-        runtime._schedule_background_task = schedule
-        summary = type("Summary", (), {"id": 8, "brief": "阿林周末想一起看展"})()
-        payload = {"brief": "阿林周末想一起看展"}
-        meta = {"session_id": "aiocqhttp:FriendMessage:10001"}
-
-        result = runtime.schedule_memos_selected_memory(
-            payload, meta, user_message="周末去看展吗", summary=summary
-        )
-
-        self.assertTrue(result)
-        self.assertEqual(scheduled[0][1], "MemOS 记忆同步")
-        self.assertTrue(scheduled[0][2].startswith("memos_memory_"))
 
     async def test_runtime_schedules_memos_memo_in_background(self):
         settings = LifeSettings.from_dict(
@@ -428,7 +396,7 @@ class MemOSTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(scheduled[0][1], "MemOS 备忘录同步")
         self.assertTrue(scheduled[0][2].startswith("memos_memo_"))
 
-    async def test_sync_selected_memory_uploads_only_selected_summary(self):
+    async def test_sync_selected_items_preserves_summary_and_payload_contract(self):
         settings = LifeSettings.from_dict(
             {
                 "memos_config": {
@@ -447,18 +415,17 @@ class MemOSTest(unittest.IsolatedAsyncioTestCase):
             "group_id": "",
         }
 
-        saved = await service.sync_selected_memory(
+        saved = await service.sync_selected_items(
             meta=meta,
             user_message="周末去看展吗",
-            summary="阿林周末想一起看展",
-            points=["阿林最近对看展很感兴趣"],
-            preferences=["偏好周末轻松出门"],
+            reason="同步已确认的长期条目。",
+            items=["阿林周末想一起看展", "阿林最近对看展很感兴趣", "偏好周末轻松出门"],
         )
 
         self.assertTrue(saved)
         payload = service.client.add_payloads[0]
         self.assertEqual(payload["messages"][0]["role"], "user")
-        self.assertIn("长期记忆精选摘要", payload["messages"][1]["content"])
+        self.assertIn("同步已确认的长期条目。", payload["messages"][1]["content"])
         self.assertIn("阿林周末想一起看展", payload["messages"][1]["content"])
         self.assertFalse(payload["async_mode"])
         self.assertNotIn("asyncMode", payload)

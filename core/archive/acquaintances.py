@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
+from ..addresses import distinct_address
 from ..models import (
     RelationshipContactRecord,
     RelationshipNote,
@@ -24,6 +25,7 @@ def _unpack_tags(value: str) -> list[str]:
 class AcquaintanceArchiveComponentContext(Protocol):
     """此组件读取或更新的宿主接口。"""
 
+    _relationship_state_unlocked: Any
     _compose_relationship_contact: Any
     _compose_relationship_unlocked: Any
     _conn: Any
@@ -151,11 +153,12 @@ class AcquaintanceArchiveComponent:
             user_id=row["user_id"],
             alias=self.context._text(row["alias"]),
             persona_hint=self.context._text(row["persona_hint"]),
-            subjective_name=self.context._text(row["subjective_name"]),
+            subjective_name=distinct_address(row["subjective_name"],row["name"],row["alias"],row["id"],row["user_id"]),
             subjective_tags=[
                 self.context._text(item) for item in _unpack_tags(row["subjective_tags"])
             ],
             relationship_story=self.context._text(row["relationship_story"]),
+            relationship_state=self.context._relationship_state_unlocked(row["id"]),
         )
 
     async def touch_relationship(
@@ -178,6 +181,7 @@ class AcquaintanceArchiveComponent:
         group_name: str = "",
         is_reachable: bool = True,
         blocked_reason: str = "",
+        observed_name: str = "",
     ):
         key = str(profile_id or name or "").strip()
         if not key:
@@ -187,8 +191,11 @@ class AcquaintanceArchiveComponent:
         platform_text = self.context._text(platform)
         user_id_text = self.context._text(user_id)
         alias_text = self.context._text(alias)
+        if alias_text in {key, user_id_text}:
+            alias_text = ""
         persona_text = self.context._text(persona_hint)
-        subjective_name_text = self.context._text(subjective_name)
+        # 兼容旧调用签名；称呼只能由有消息来源的 apply_relationship_address 修改。
+        subjective_name_text = ""
         subjective_tags_text = _pack_tags(
             [self.context._text(item) for item in subjective_tags or []]
         )
@@ -228,6 +235,10 @@ class AcquaintanceArchiveComponent:
                 or self.context._is_generic_contact_name(current_name)
             ):
                 current_name = display_name
+            if self.context._text(observed_name) not in {"", key, user_id_text}:
+                current_name = self.context._text(observed_name)
+                alias_text = current_name
+            subjective_name_text = distinct_address(subjective_name_text, current_name, alias_text, key, user_id_text)
             self.context._conn.execute(
                 """
                 INSERT INTO relationships(
@@ -511,13 +522,12 @@ class AcquaintanceArchiveComponent:
         if not key:
             return
         story = self.context._text(relationship_story)
-        name = self.context._text(subjective_name)
         tags = [self.context._text(item) for item in subjective_tags or [] if self.context._text(item)]
         note_text = self.context._text(note)
         points = [
             self.context._text(item) for item in relationship_points or [] if self.context._text(item)
         ]
-        if not any([story, name, tags, note_text, points]):
+        if not any([story, tags, note_text, points]):
             return
 
         def write() -> None:
@@ -529,13 +539,12 @@ class AcquaintanceArchiveComponent:
             self.context._conn.execute(
                 """
                 UPDATE relationships
-                SET subjective_name = COALESCE(NULLIF(?, ''), subjective_name),
-                    subjective_tags = COALESCE(NULLIF(?, ''), subjective_tags),
+                SET subjective_tags = COALESCE(NULLIF(?, ''), subjective_tags),
                     relationship_story = COALESCE(NULLIF(?, ''), relationship_story),
                     source = ?
                 WHERE id = ?
                 """,
-                (name, _pack_tags(tags), story, self.context._text(source) or "语义校准", key),
+                (_pack_tags(tags), story, self.context._text(source) or "语义校准", key),
             )
             if note_text:
                 self.context._insert_relationship_note_unlocked(

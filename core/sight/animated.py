@@ -4,10 +4,10 @@ import base64
 import math
 import time
 from io import BytesIO
-from pathlib import Path
-from urllib.parse import unquote, urlparse
 
 from PIL import Image, ImageDraw
+
+from .filepath import local_media_path
 
 
 MAX_SOURCE_BYTES = 20 * 1024 * 1024
@@ -154,11 +154,8 @@ def _gif_data(source: str) -> bytes | None:
         if data.startswith((b"GIF87a", b"GIF89a")) or header.startswith("data:image/gif"):
             return data
         return None
-    parsed = urlparse(source)
-    if parsed.scheme in {"http", "https"}:
-        return None
-    path = Path(unquote(parsed.path) if parsed.scheme == "file" else source)
-    if not path.is_file():
+    path = local_media_path(source)
+    if path is None or not path.is_file():
         return None
     with path.open("rb") as handle:
         header = handle.read(6)

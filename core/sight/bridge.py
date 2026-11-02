@@ -22,7 +22,7 @@ from astrbot.core.agent.message import TextPart
 
 from ..runtime.markers import LOG_PREFIX
 from . import cinematics as _part_native_sight_component
-from . import identity as _part_sight_identity_component
+from . import provenance as _part_sight_identity_component
 from . import prune as _part_sight_cleanup_component
 from .bili import BiliTarget, fetch_bili_metadata, find_bili_target, resolve_bili_target
 from .brief import SightBrief

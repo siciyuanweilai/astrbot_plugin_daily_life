@@ -187,11 +187,6 @@ class HistorySceneComponent:
         parts.extend(image_parts)
         return parts
 
-    def _user_history_item(self, scope: str, event: Any, text: str) -> dict[str, Any]:
-        return {
-            "role": "user",
-            "content": self._conversation_user_content(scope, event, text),
-        }
 
     async def _user_history_item_from_event(
         self,

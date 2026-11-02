@@ -150,14 +150,6 @@ def as_str_map(value: Any) -> dict[str, str]:
     return result
 
 
-def as_float_map(value: Any, default: dict[str, float]) -> dict[str, float]:
-    result = dict(default)
-    for key, raw in as_str_map(value).items():
-        try:
-            result[key] = max(0.25, min(4.0, float(raw)))
-        except (TypeError, ValueError):
-            continue
-    return result
 
 
 def normalize_time(value: Any, default: str) -> str:

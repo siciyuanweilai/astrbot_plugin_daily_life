@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from ..models import LifeActionIntent
+from ..models import LifeActionIntent, LifeActionOutcome
 
 
 def actions(day) -> list[LifeActionIntent]:
@@ -35,8 +35,19 @@ def committed_ids(day) -> set[str]:
     }
 
 
+def committed_result(day, action_id: str) -> LifeActionOutcome | None:
+    """成功结算是动作事实；重放不再使用当前地点、库存或衣橱校验。"""
+    raw = settlements(day).get(action_id)
+    if not isinstance(raw, dict) or raw.get("status") != "committed":
+        return None
+    outcome = LifeActionOutcome.from_value(raw)
+    outcome.replayed = True
+    return outcome
+
+
 def execution_evidence(day) -> dict:
     """为生活判断提供实际动作与回执，不拿到点的日程冒充执行事实。"""
+    from .locationfacts import completed_action_description
     try:
         run = json.loads(day.meta.get("continuous_execution") or "{}")
     except (TypeError, ValueError):
@@ -60,8 +71,11 @@ def execution_evidence(day) -> dict:
                 {
                     "action_id": action.action_id,
                     "action_type": action.action_type,
-                    "target": action.target,
+                    "target": completed_action_description(action),
                     "committed_at": outcome.get("committed_at", ""),
+                    "location": {key: action.payload[key] for key in ("origin", "destination", "place")
+                                 if action.payload.get(key)},
+                    "next_intention": action.payload.get("next_step", ""),
                 }
             )
     recent.sort(key=lambda item: str(item["committed_at"]))
@@ -113,6 +127,10 @@ def timeline_complete(day, action: LifeActionIntent) -> bool:
 async def prepare_new_actions(host, day, steps: list[LifeActionIntent]) -> str:
     """核验自主步骤的结构；库存和地点在每一步实际开始时重新核验。"""
     from .engine import _resolve_planned_outfit_catalog
+    from .locationfacts import action_chain_place_issue
+
+    if issue := action_chain_place_issue(day, steps):
+        return issue
 
     raw = [item.as_dict() for item in steps]
     for item in steps:

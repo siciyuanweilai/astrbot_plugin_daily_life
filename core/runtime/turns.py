@@ -632,14 +632,6 @@ class ContinuousTurnComponent:
     def continuous_turn_event_is_inflight_follow_up(self, event: Any) -> bool:
         return bool(getattr(event, self.context._CONTINUOUS_TURN_FOLLOW_UP_ATTR, False))
 
-    def continuous_turn_semantic_enabled_for_event(self, event: Any) -> bool:
-        style = self._continuous_turn_style()
-        return bool(
-            self.context._continuous_turn_event_identity(event) is not None
-            and self.context.continuous_turn_event_is_current(event)
-            and style
-            and getattr(style, "continuous_turn_semantic_enabled", True)
-        )
 
     async def wait_continuous_turn_after_semantic(self, event: Any) -> str:
         identity = self.context._continuous_turn_event_identity(event)

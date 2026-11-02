@@ -2522,7 +2522,11 @@ class RuntimeMediaAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         self._assert_last_assistant_history(runtime, event.unified_msg_origin, "我困啦")
 
     async def test_proactive_text_intent_keeps_text_despite_emotion(self):
+        from proactivegroundingfixture import GroundingStub
+
         runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        # 此例只检查文字/语音路由；发送依据由独立的 grounding 套件验证。
+        runtime.proactive_grounding = GroundingStub()
         runtime.context = Context(Provider([]))
         runtime.config = LifeSettings.from_dict(
             {

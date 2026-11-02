@@ -418,7 +418,7 @@ class BiliReader:
                     raise
         if discover:
             result = await self._request(
-                API + "/x/web-interface/popular", {"pn": 1, "ps": 20}
+                API + "/x/web-interface/popular", {"pn": 1 + cursor % 5, "ps": 20}
             )
             groups.append((result.get("list") or [], "偶遇"))
         chosen = {}

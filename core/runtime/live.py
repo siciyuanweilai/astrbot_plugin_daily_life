@@ -14,7 +14,7 @@ from ..media.cleanup import MediaFileCleanupComponent
 from ..memos.conduit import MemosComponent
 from ..sight import bridge as _part_sight_component
 from ..sight.cinematics import NativeSightComponent
-from ..sight.identity import SightIdentityComponent
+from ..sight.provenance import SightIdentityComponent
 from ..sight.prune import SightCleanupComponent
 from ..sources.dispatch import send_message_to_scope
 from ..telemetry import ModelCacheMetrics, model_request_identity
@@ -134,6 +134,11 @@ class DailyLifeRuntime:
 
     入口装饰器保留在入口文件；这里负责状态、存储、定时任务、提示词注入和工具动作。
     """
+
+    @cached_property
+    def proactive_grounding(self):
+        from .proactive.grounding import ProactiveGrounding
+        return ProactiveGrounding(self)
 
     def _model_cache_meter(self) -> ModelCacheMetrics:
         meter = getattr(self, "_model_cache_metrics", None)
@@ -688,12 +693,6 @@ class DailyLifeRuntime:
     def event_was_recalled(self, event: Any, *, log_skip: bool = False) -> bool:
         return self.recall.event_was_recalled(event, log_skip=log_skip)
 
-    def source_was_recalled(
-        self, scope: str, *, source_event: Any = None, source_message_id: str = ""
-    ) -> bool:
-        return self.recall.source_was_recalled(
-            scope, source_event=source_event, source_message_id=source_message_id
-        )
 
     def can_send_for_source(
         self, scope: str, *, source_event: Any = None, source_message_id: str = ""
@@ -867,18 +866,6 @@ class DailyLifeRuntime:
             ),
         )
 
-    async def search_life_memory(
-        self,
-        query: str,
-        *,
-        event: Any = None,
-        mode: str = "search",
-        category: str = "",
-        limit: int = 5,
-    ) -> list[Any]:
-        return await self.life_memory.search(
-            query, event=event, mode=mode, category=category, limit=limit
-        )
 
     async def life_memory_search(
         self,
@@ -1013,8 +1000,11 @@ class DailyLifeRuntime:
         limits: dict[str, int],
         *,
         optional_groups: set[str] | None = None,
+        cached_only: bool = False,
     ) -> dict[str, list[Any]]:
-        return await self.meaning.rank_semantic_groups(query, groups, limits, optional_groups=optional_groups)
+        return await self.meaning.rank_semantic_groups(
+            query, groups, limits, optional_groups=optional_groups, cached_only=cached_only,
+        )
 
     async def rank_embedding_groups(
         self,
@@ -1155,7 +1145,12 @@ class DailyLifeRuntime:
             return ""
 
     def model_cache_status(self) -> dict[str, Any]:
-        return self._model_cache_meter().snapshot()
+        status = self._model_cache_meter().snapshot()
+        status["context_snapshot_cache"] = {
+            **self._part_snapshot_pack_component.cache_stats,
+            "entries": len(getattr(self, "_injection_snapshot_cache", {}) or {}),
+        }
+        return status
 
     async def get_text_provider(self, provider_id: str = ""):
         gateway = getattr(self, "model_gateway", None) or ModelGateway(self.composer)
@@ -1290,13 +1285,7 @@ class DailyLifeRuntime:
 
     _memos_context_cache_key = staticmethod(MemosComponent._memos_context_cache_key)
 
-    sync_memos_selected_memory = ComponentCall(
-        "_part_memos_component", MemosComponent, "sync_memos_selected_memory"
-    )
 
-    schedule_memos_selected_memory = ComponentCall(
-        "_part_memos_component", MemosComponent, "schedule_memos_selected_memory"
-    )
 
     _memos_items_from_payload = ComponentCall(
         "_part_memos_component", MemosComponent, "_memos_items_from_payload"
@@ -2858,11 +2847,6 @@ class DailyLifeRuntime:
         "continuous_turn_event_is_inflight_follow_up",
     )
 
-    continuous_turn_semantic_enabled_for_event = ComponentCall(
-        "_part_continuous_turn_component",
-        ContinuousTurnComponent,
-        "continuous_turn_semantic_enabled_for_event",
-    )
 
     wait_continuous_turn_after_semantic = ComponentCall(
         "_part_continuous_turn_component",
@@ -3148,9 +3132,6 @@ class DailyLifeRuntime:
         "_part_refresh_component", RefreshComponent, "check_autonomous_life_update"
     )
 
-    check_period_transition = ComponentCall(
-        "_part_refresh_component", RefreshComponent, "check_period_transition"
-    )
 
     _schedule_context_state_refresh = ComponentCall(
         "_part_refresh_component", RefreshComponent, "_schedule_context_state_refresh"
@@ -3599,11 +3580,6 @@ class DailyLifeRuntime:
         "plan_semantic_segments_for_text",
     )
 
-    send_semantic_segments = ComponentCall(
-        "_part_semantic_segment_runtime_component",
-        SemanticSegmentRuntimeComponent,
-        "send_semantic_segments",
-    )
 
     send_share_expression = ComponentCall(
         "_part_semantic_segment_runtime_component",
@@ -6141,17 +6117,7 @@ class DailyLifeRuntime:
         "runtime_service_lease",
     )
 
-    _begin_runtime_service_swap = ComponentCall(
-        "_part_spine_boot_component",
-        _part_spine_boot_component.SpineBootComponent,
-        "_begin_runtime_service_swap",
-    )
 
-    _end_runtime_service_swap = ComponentCall(
-        "_part_spine_boot_component",
-        _part_spine_boot_component.SpineBootComponent,
-        "_end_runtime_service_swap",
-    )
 
     @staticmethod
     async def _close_runtime_services(

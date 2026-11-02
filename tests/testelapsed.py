@@ -199,6 +199,9 @@ class ConversationTimingTest(unittest.IsolatedAsyncioTestCase):
         await self.runtime.record_conversation_delivery(self.scope, self.sent)
         for versioned in (True, False):
             with self.subTest(versioned=versioned):
+                for table in ("relationship_evidence_claims", "relationship_changes", "relationship_states"):
+                    self.archive._conn.execute(f"DROP TABLE {table}")
+                self.archive._conn.execute("ALTER TABLE relationships DROP COLUMN address_basis")
                 # 真正还原 v27，而不是保留 v31/v32 扩展后伪装成无版本旧库。
                 for table in ("knowledge_readings", "knowledge_passages", "knowledge_sources", "memory_identity_redirects", "memory_associations", "memory_enrichments", "memory_chapters", "conversation_originals", "expression_learning_events"):
                     self.archive._conn.execute(f"DROP TABLE {table}")

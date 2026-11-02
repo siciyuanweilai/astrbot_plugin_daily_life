@@ -19,9 +19,6 @@ class _GroupReplyTarget:
     reason: str = ""
     intervening_count: int = 0
 
-    @property
-    def has_action(self) -> bool:
-        return self.mode != "none" and bool(self.message_id or self.user_id)
 
 
 @dataclass(frozen=True)

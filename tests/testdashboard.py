@@ -756,12 +756,14 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
         }
         feedback = await self.plugin.page_experience_feedback()
 
-        for result in (corrected, protected, focused, bounded, feedback):
+        for result in (corrected, protected, bounded, feedback):
             self.assertTrue(result["ok"])
         saved_episode = (await self.plugin.runtime.archive.get_life_episodes(1))[0]
         self.assertEqual(saved_episode.correction, "修正后的测试片段")
         self.assertFalse(saved_episode.protected)
-        self.assertEqual(focused["data"]["focus"]["target_id"], "test-focus")
+        self.assertFalse(focused["ok"])
+        self.assertEqual(focused["error"]["code"], "feature_retired")
+        self.assertNotIn("test-focus", [item.target_id for item in await self.plugin.runtime.archive.get_focus_targets()])
         self.assertEqual(bounded["data"]["boundary"]["target_scope"], "test:target")
         self.assertEqual(feedback["data"]["feedback"]["target_id"], "test-action")
 
@@ -1652,7 +1654,7 @@ class DailyLifeDashboardTest(unittest.IsolatedAsyncioTestCase):
                 enabled=False,
             )
         )
-        status = await self.plugin._build_page_status()
+        status = await self.plugin._build_page_status(diagnostics=True)
 
         self.assertEqual(status["target_date"], "2026-06-11")
         self.assertEqual(status["day"]["outfit"], "浅蓝外套和白裙子")
@@ -5785,7 +5787,7 @@ if (state.configTextPending || timerCalls !== 1) {
         self.assertIn("const TODAY_FACT_EMPTY_TEXT = {", app)
         self.assertIn("function renderEmptyTodayFacts()", app)
         self.assertIn("percent === null ? METER_EMPTY_TEXT", app)
-        self.assertIn("clean(item.display_time || item.time, TIMELINE_TIME_EMPTY_TEXT)", app)
+        self.assertIn("clean(item.actual_display_time || item.display_time || item.time, TIMELINE_TIME_EMPTY_TEXT)", app)
         self.assertIn(": CURRENT_ACTIVITY_EMPTY_TEXT", app)
         self.assertIn(
             "el.todayWeekPlan.textContent = TODAY_FACT_EMPTY_TEXT.todayWeekPlan", app
@@ -6462,10 +6464,12 @@ const mod = await import("./pages/dashboard/app.js");
 const names = mod.relationshipNameIndex({
   world: {
     relationships: [
+      {id: "nickname-only", name: "真实昵称", subjective_name: "另一种称呼"},
       {
         id: "10000000",
         name: "10000000",
         display_name: "阿林",
+        subjective_name: "不作为身份标题的称呼",
         contacts: [
           {
             profile_id: "10000000",
@@ -6495,6 +6499,7 @@ const names = mod.relationshipNameIndex({
     ],
   },
 });
+if (names.get("nickname-only") !== "真实昵称") throw new Error("习惯称呼不能代替身份名称");
 for (const key of [
   "10000000",
   "profile:10000000",

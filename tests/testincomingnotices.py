@@ -120,6 +120,9 @@ class IncomingNoticeTest(unittest.IsolatedAsyncioTestCase):
                 plugin._send_pipeline_apply = prepare
                 original = incoming("晚上好", "chat", post_type="message")
                 life.note_continuous_turn_incoming(original)
+                self.assertTrue(await life.settle_continuous_turn(original))
+                request = types.SimpleNamespace(prompt=original.message_str, system_prompt="")
+                self.assertTrue(life.prepare_continuous_turn_llm_request(original, request))
                 original.set_result(original.chain_result([types.SimpleNamespace(text="刚忙完，晚上好呀")]))
                 self.assertTrue(plugin._defer_reply_preparation(original))
                 try:

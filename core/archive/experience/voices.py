@@ -243,54 +243,6 @@ class ExpressionArchiveComponent:
             updated_at=row["updated_at"],
         )
 
-    async def upsert_temporary_expression_state(
-        self,
-        state: TemporaryExpressionStateRecord,
-    ) -> TemporaryExpressionStateRecord | None:
-        item = TemporaryExpressionStateRecord.from_value(
-            state.as_dict()
-            if isinstance(state, TemporaryExpressionStateRecord)
-            else state
-        )
-        if not item:
-            return None
-        scope = self.context._text(item.scope)
-        label = self.context._text(item.label) or self.context._text(item.tone) or "临时表达状态"
-
-        def dbwork():
-            self.context._conn.execute(
-                """
-                INSERT INTO temporary_expression_states(
-                    scope, label, tone, reason, intensity, expires_at,
-                    source, created_at, updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                ON CONFLICT(scope, label) DO UPDATE SET
-                    tone = COALESCE(NULLIF(excluded.tone, ''), temporary_expression_states.tone),
-                    reason = COALESCE(NULLIF(excluded.reason, ''), temporary_expression_states.reason),
-                    intensity = excluded.intensity,
-                    expires_at = COALESCE(NULLIF(excluded.expires_at, ''), temporary_expression_states.expires_at),
-                    source = excluded.source,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                (
-                    scope,
-                    label,
-                    self.context._text(item.tone),
-                    self.context._text(item.reason),
-                    max(0, min(int(item.intensity or 0), 100)),
-                    self.context._text(item.expires_at),
-                    self.context._text(item.source) or "chat_memory",
-                ),
-            )
-            self.context._conn.commit()
-            row = self.context._conn.execute(
-                "SELECT * FROM temporary_expression_states WHERE scope = ? AND label = ?",
-                (scope, label),
-            ).fetchone()
-            return self.context._compose_temporary_expression_state(row) if row else None
-
-        return await self.context._run_db(dbwork)
 
     async def get_temporary_expression_states(
         self,

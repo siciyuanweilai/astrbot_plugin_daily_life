@@ -238,7 +238,7 @@ class RuntimeMemoryAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCa
         )
 
         relationship = await runtime.archive.get_relationship("10001")
-        self.assertEqual(relationship.subjective_name, "男死党阿林")
+        self.assertEqual(relationship.subjective_name, "")
         self.assertEqual(
             relationship.relationship_story,
             "我和阿林熟到可以互相吐槽，他也会认真记住邀约。",

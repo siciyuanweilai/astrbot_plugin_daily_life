@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from support import Context, DailyLifeRuntime, DataManager, DayRecord, Event, LifeSettings, LongTermMemoryRecord, Provider
 from core.runtime.background import BackgroundTaskScheduler
 from core.runtime.meaning import MeaningService
+from core.runtime.bonding import contextual_relationship_memories
 from core.runtime.reaction import ToolReactionService
 from core.runtime.status import StateRefreshService, _StateRefreshSpec
 
@@ -259,35 +260,35 @@ class MeaningServiceTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_index_restarts_after_cooldown_without_new_chat(self):
         self.service._MEMORY_INDEX_MAX_PASSES = 1
-        self.service._MEMORY_INDEX_RETRY_SECONDS = 0.01
         self.archive.long_term_memories[1] = LongTermMemoryRecord(id=1, content="旧日经历")
         self.provider.get_embedding.side_effect = RuntimeError("暂时不可用")
-        self.service.start_memory_index()
-        await self.drain()
+        loop = asyncio.get_running_loop()
+        with patch.object(loop, "call_later", wraps=loop.call_later) as timers:
+            self.service.start_memory_index()
+            await self.drain()
         self.assertEqual(self.archive.memory_vectors, {})
         self.assertIsNotNone(self.service._index_retry_handle)
         self.provider.get_embedding.side_effect = None
-
-        async def wait_for_saved():
-            while not self.archive.memory_vectors:
-                await asyncio.sleep(0.001)
-
-        await asyncio.wait_for(wait_for_saved(), 1)
+        # 主动推进冷却回调，避免 Windows 的计时粒度让 10ms 定时器抢先触发。
+        callback = next(call.args[1] for call in timers.call_args_list
+                        if call.args[0] == self.service._MEMORY_INDEX_RETRY_SECONDS)
+        self.service._index_retry_handle.cancel()
+        callback()
         await self.drain()
         self.assertEqual(len(self.archive.memory_vectors), 1)
         self.assertIsNone(self.service._index_retry_handle)
 
     async def test_close_cancels_pending_index_resume(self):
         self.service._MEMORY_INDEX_MAX_PASSES = 1
-        self.service._MEMORY_INDEX_RETRY_SECONDS = 0.01
         self.archive.long_term_memories[1] = LongTermMemoryRecord(id=1, content="旧日经历")
         self.provider.get_embedding.side_effect = RuntimeError("暂时不可用")
         self.service.start_memory_index()
         await self.drain()
         calls_before = self.provider.get_embedding.await_count
         self.assertIsNotNone(self.service._index_retry_handle)
+        pending = self.service._index_retry_handle
         await self.service.close()
-        await asyncio.sleep(0.03)
+        self.assertTrue(pending.cancelled())
         self.assertIsNone(self.service._index_retry_handle)
         self.assertEqual(self.provider.get_embedding.await_count, calls_before)
 
@@ -442,6 +443,172 @@ class MeaningServiceTest(unittest.IsolatedAsyncioTestCase):
         self.call_model.side_effect = RuntimeError("排序失败")
         self.assertEqual(await self.service.rank_semantic_groups("电影", groups, {"memory": 1}), {"memory": ["第一项"]})
         self.assertEqual(self.close_session.await_count, 2)
+
+    async def prepare_revisit(self):
+        self.archive.long_term_memories[1] = LongTermMemoryRecord(
+            id=1, scope="friend:1", title="共同出游", content="一起看过海边的日落",
+        )
+        self.archive.long_term_memories[2] = LongTermMemoryRecord(
+            id=2, scope="friend:2", title="另一位朋友", content="另一会话的私人经历",
+        )
+        self.service.start_memory_index()
+        await self.drain()
+        self.provider.get_embedding.reset_mock()
+        self.provider.get_embeddings.reset_mock()
+        return types.SimpleNamespace(archive=self.archive, rank_semantic_groups=self.service.rank_semantic_groups)
+
+    async def test_revisit_accepts_query_over_two_seconds_and_reuses_titled_index(self):
+        runtime = await self.prepare_revisit()
+
+        async def embed(query):
+            await asyncio.sleep(2.1)
+            return [1.0, 0.0]
+
+        self.provider.get_embedding.side_effect = embed
+        recalled = await contextual_relationship_memories(runtime, scope="friend:1", query="今天又看见落日")
+        self.assertIn("一起看过海边的日落", recalled)
+        self.assertNotIn("另一会话", recalled)
+        self.provider.get_embedding.assert_awaited_once_with("今天又看见落日")
+        self.provider.get_embeddings.assert_not_awaited()
+
+    async def test_revisit_late_query_is_cached_without_replaying_timed_out_call(self):
+        runtime = await self.prepare_revisit()
+        self.service._SEMANTIC_RANK_TIMEOUT_SECONDS = 0.1
+        release = asyncio.Event()
+
+        async def embed(query):
+            await release.wait()
+            return [1.0, 0.0]
+
+        self.provider.get_embedding.side_effect = embed
+        first = await contextual_relationship_memories(runtime, scope="friend:1", query="落日")
+        self.assertEqual(first, "")
+        pending = list(self.service._query_vector_flight._tasks.values())
+        self.assertEqual(len(pending), 1)
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*pending), 1)
+        self.assertEqual(first, "")
+        self.service._SEMANTIC_RANK_TIMEOUT_SECONDS = MeaningService._SEMANTIC_RANK_TIMEOUT_SECONDS
+        second = await contextual_relationship_memories(runtime, scope="friend:1", query="落日")
+        self.assertIn("[memory:1]", second)
+        self.provider.get_embedding.assert_awaited_once()
+        self.provider.get_embeddings.assert_not_awaited()
+
+    async def test_shared_query_has_finite_lifetime_and_can_retry_after_timeout(self):
+        self.service._MEANING_QUERY_REQUEST_TIMEOUT_SECONDS = 0.03
+        cancelled = asyncio.Event()
+
+        async def embed(query):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        self.provider.get_embedding.side_effect = embed
+        with self.assertRaises(TimeoutError):
+            await asyncio.wait_for(self.query(), 1)
+        self.assertTrue(cancelled.is_set())
+        self.assertEqual(self.service._query_vector_flight._tasks, {})
+        self.assertEqual(self.service._query_vector_cache._items, {})
+        self.provider.get_embedding.side_effect = None
+        self.assertEqual(await self.query(), [1.0, 0.0])
+        self.assertEqual(self.provider.get_embedding.await_count, 2)
+
+    async def test_semantic_budget_includes_index_read(self):
+        self.service._SEMANTIC_RANK_TIMEOUT_SECONDS = 0.03
+        cancelled = asyncio.Event()
+
+        async def read(*args):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        self.archive.get_memory_vectors = read
+        result = await asyncio.wait_for(self.service.rank_semantic_groups(
+            "落日", {"long_term_memory": [("1", "经历", "候选")]},
+            {"long_term_memory": 1}, optional_groups={"long_term_memory"}, cached_only=True,
+        ), 1)
+        self.assertEqual(result, {"long_term_memory": []})
+        self.assertTrue(cancelled.is_set())
+        self.provider.get_embedding.assert_not_awaited()
+
+    async def test_model_budget_includes_provider_lookup(self):
+        self.service._SEMANTIC_RANK_TIMEOUT_SECONDS = 0.03
+        self.config.semantic_ranking_model_enabled = True
+        self.service._embedding_providers = lambda: []
+        async def lookup(*args):
+            await asyncio.Event().wait()
+
+        self.text_provider.side_effect = lookup
+        result = await asyncio.wait_for(self.service.rank_semantic_groups(
+            "落日", {"memory": [("1", "经历", "候选")]}, {"memory": 1}, optional_groups={"memory"},
+        ), 1)
+        self.assertEqual(result, {"memory": []})
+        self.call_model.assert_not_awaited()
+
+    async def test_model_timeout_and_session_cleanup_are_bounded(self):
+        self.service._SEMANTIC_RANK_TIMEOUT_SECONDS = 0.03
+        self.service._SEMANTIC_SESSION_CLOSE_TIMEOUT_SECONDS = 0.02
+        self.config.semantic_ranking_model_enabled = True
+        self.service._embedding_providers = lambda: []
+
+        async def hang(*args, **kwargs):
+            await asyncio.Event().wait()
+
+        self.call_model.side_effect = hang
+        self.close_session.side_effect = hang
+        result = await asyncio.wait_for(self.service.rank_semantic_groups(
+            "落日", {"memory": [("1", "经历", "候选")]}, {"memory": 1}, optional_groups={"memory"},
+        ), 1)
+        self.assertEqual(result, {"memory": []})
+        self.close_session.assert_awaited_once()
+
+    async def test_cancelling_semantic_model_does_not_turn_into_fallback(self):
+        self.config.semantic_ranking_model_enabled = True
+        self.service._embedding_providers = lambda: []
+        entered = asyncio.Event()
+
+        async def generate(*args, **kwargs):
+            entered.set()
+            await asyncio.Event().wait()
+
+        self.call_model.side_effect = generate
+        task = asyncio.create_task(self.service.rank_semantic_groups(
+            "落日", {"memory": [("1", "经历", "候选")]}, {"memory": 1}, optional_groups={"memory"},
+        ))
+        await asyncio.wait_for(entered.wait(), 1)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.close_session.assert_awaited_once()
+
+    async def test_cold_revisit_defers_indexing_and_next_recall_uses_index(self):
+        self.archive.long_term_memories[1] = LongTermMemoryRecord(
+            id=1, scope="friend:1", title="共同经历", content="一起看日落",
+        )
+        runtime = types.SimpleNamespace(archive=self.archive, rank_semantic_groups=self.service.rank_semantic_groups)
+        first = await contextual_relationship_memories(runtime, scope="friend:1", query="落日")
+        self.assertEqual(first, "")
+        await self.drain()
+        recalled = await contextual_relationship_memories(runtime, scope="friend:1", query="落日")
+        self.assertIn("一起看日落", recalled)
+        self.provider.get_embeddings.assert_not_awaited()
+        self.assertEqual(self.provider.get_embedding.await_count, 2)
+
+    async def test_unrelated_revisit_memory_does_not_become_evidence(self):
+        runtime = await self.prepare_revisit()
+        self.provider.get_embedding.return_value = [0.0, 1.0]
+        self.assertEqual(await contextual_relationship_memories(runtime, scope="friend:1", query="另一个主题"), "")
+        self.call_model.assert_not_awaited()
+
+    async def test_runtime_forwards_cached_only_to_semantic_service(self):
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.__dict__["meaning"] = types.SimpleNamespace(rank_semantic_groups=AsyncMock(return_value={"memory": []}))
+        await runtime.rank_semantic_groups("落日", {}, {}, optional_groups={"memory"}, cached_only=True)
+        runtime.meaning.rank_semantic_groups.assert_awaited_once_with(
+            "落日", {}, {}, optional_groups={"memory"}, cached_only=True,
+        )
 
 
 class ScopedServiceTest(unittest.IsolatedAsyncioTestCase):

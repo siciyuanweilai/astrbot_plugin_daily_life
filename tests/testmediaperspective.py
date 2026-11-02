@@ -72,6 +72,15 @@ class MediaPerspectiveTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(value["当前聊天对象"]["id"], "10001")
         self.assertNotEqual(value["画面人物对应"][1]["对话身份"], "当前聊天对象（你）")
 
+    async def test_subjective_name_is_kept_separate_from_person_identity(self):
+        self.host.archive = SimpleNamespace(get_relationship=AsyncMock(return_value=SimpleNamespace(
+            name="Sylus", alias="旧称呼", subjective_name="这位群友", user_id="10002", platform="aiocqhttp")))
+        value = await bind_media_reply_context(self.host, self.event(), "group", ["10002"])
+        person = value["画面人物对应"][1]
+        self.assertEqual(person["姓名或称呼"], "Sylus")
+        self.assertEqual(person["习惯称呼"], "这位群友")
+        self.assertNotEqual(person["对话身份"], "当前聊天对象（你）")
+
     async def test_group_chat_uses_sender_instead_of_group_delivery_id(self):
         event = self.event(group=True)
         value = await bind_media_reply_context(self.host, event, "group", ["group-9"])

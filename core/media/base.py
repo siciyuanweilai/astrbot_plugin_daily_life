@@ -234,13 +234,3 @@ def normalize_emotion_category(value: str) -> str:
     return text if text in {"happy", "sad", "angry", "neutral"} else ""
 
 
-def emotion_category_label(value: str) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return "未裁定"
-    return {
-        "neutral": "平静",
-        "happy": "愉快",
-        "sad": "低落",
-        "angry": "烦躁",
-    }.get(text, "未裁定")

@@ -2209,31 +2209,6 @@ class RuntimeStateAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         self.assertEqual(runtime._injection_snapshot_cache, {})
         self.assertEqual(changed_reasons, ["residence_changed"])
 
-    async def test_runtime_service_swap_does_not_wait_for_active_lease(self):
-        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
-        entered = asyncio.Event()
-        release = asyncio.Event()
-
-        async def use_service():
-            async with runtime.runtime_service_lease():
-                entered.set()
-                await release.wait()
-
-        user = asyncio.create_task(use_service())
-        await entered.wait()
-        swap = asyncio.create_task(runtime._begin_runtime_service_swap())
-        await asyncio.sleep(0)
-
-        self.assertTrue(swap.done())
-        async with runtime.runtime_service_lease():
-            self.assertFalse(release.is_set())
-
-        release.set()
-        await user
-        await swap
-        self.assertTrue(runtime._service_swap_pending)
-        await runtime._end_runtime_service_swap()
-        self.assertFalse(runtime._service_swap_pending)
 
     async def test_apply_config_restores_old_runtime_when_commit_fails(self):
         class Config(dict):

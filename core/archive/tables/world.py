@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS relationships (
             subjective_name TEXT NOT NULL DEFAULT '',
             subjective_tags TEXT NOT NULL DEFAULT '',
             relationship_story TEXT NOT NULL DEFAULT '',
-            source TEXT NOT NULL DEFAULT 'chat'
+            source TEXT NOT NULL DEFAULT 'chat',
+            address_basis TEXT NOT NULL DEFAULT '{}'
         );
 CREATE TABLE IF NOT EXISTS relationship_notes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

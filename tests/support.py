@@ -1082,6 +1082,7 @@ class DataManager:
         group_name="",
         is_reachable=True,
         blocked_reason="",
+        observed_name="",
     ):
         key = str(profile_id or name or "").strip()
         if not key:
@@ -1099,9 +1100,12 @@ class DataManager:
             profile.name = name
         profile.platform = platform or profile.platform
         profile.user_id = user_id or profile.user_id
-        profile.alias = alias or profile.alias
+        profile.alias = (alias if alias not in {key, profile.user_id} else "") or profile.alias
+        if observed_name not in {"", key, profile.user_id}:
+            profile.name = observed_name
+            profile.alias = observed_name
         profile.persona_hint = persona_hint or profile.persona_hint
-        profile.subjective_name = self._text(subjective_name) or profile.subjective_name
+        # 习惯称呼由独立的证据写入入口维护。
         if subjective_tags:
             profile.subjective_tags = [
                 self._text(item) for item in subjective_tags if self._text(item)
@@ -1267,8 +1271,6 @@ class DataManager:
         profile = self.relationships.get(key)
         if not profile:
             return
-        if subjective_name:
-            profile.subjective_name = self._text(subjective_name)
         if subjective_tags:
             profile.subjective_tags = [
                 self._text(item) for item in subjective_tags if self._text(item)

@@ -229,8 +229,8 @@ class RuntimeScopeState:
                 continue
             if (
                 isinstance(parameters, list)
-                and len(parameters) == 3
-                and any(scope in aliases for scope in parameters[1:])
+                and len(parameters) >= 3
+                and any(scope in aliases for scope in parameters[1:3])
             ):
                 cache.pop(key, None)
 

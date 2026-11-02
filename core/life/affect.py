@@ -124,64 +124,10 @@ class ReflectionGate:
     components: dict[str, float] = field(default_factory=dict)
 
 
-@dataclass(slots=True)
-class RelationshipUpdate:
-    """描述一次缓慢且可追溯的关系数值变化。"""
-
-    profile_id: str
-    familiarity_delta: float = 0.0
-    trust_delta: float = 0.0
-    affinity_delta: float = 0.0
-    evidence_ids: list[str] = field(default_factory=list)
-    reason: str = ""
-
-    @classmethod
-    def from_value(cls, value: Any) -> RelationshipUpdate | None:
-        """从结构化对象创建关系变化。
-
-        Args:
-            value: 包含对象编号、变化量和证据编号的对象。
-
-        Returns:
-            有证据且至少包含一个变化量的关系变化，否则返回 ``None``。
-        """
-
-        if not isinstance(value, dict):
-            return None
-        profile_id = _text(value.get("profile_id"), 180)
-        evidence = _evidence_ids(value.get("evidence_ids"))
-        if not profile_id or not evidence:
-            return None
-
-        def delta(name: str) -> float:
-            try:
-                number = float(value.get(name) or 0.0)
-            except (TypeError, ValueError):
-                number = 0.0
-            return max(-0.08, min(number, 0.08))
-
-        item = cls(
-            profile_id=profile_id,
-            familiarity_delta=delta("familiarity_delta"),
-            trust_delta=delta("trust_delta"),
-            affinity_delta=delta("affinity_delta"),
-            evidence_ids=evidence,
-            reason=_text(value.get("reason"), 240),
-        )
-        if not any(
-            abs(number) > 0
-            for number in (
-                item.familiarity_delta,
-                item.trust_delta,
-                item.affinity_delta,
-            )
-        ):
-            return None
-        return item
 
 
 class AffectEngine:
-    """结算三层情绪、反思门槛和有证据的关系变化。"""
+    """结算三层情绪、反思门槛和有证据的日记。"""
 
     def decay(
         self,
@@ -333,18 +279,6 @@ class AffectEngine:
             if item is not None
         ]
 
-    @staticmethod
-    def relationship_updates_from_payload(payload: Any) -> list[RelationshipUpdate]:
-        """读取模型返回的显式关系变化数组，不分析自由文本。"""
-
-        raw = payload.get("relationship_updates") if isinstance(payload, dict) else []
-        if not isinstance(raw, list):
-            return []
-        return [
-            item
-            for item in (RelationshipUpdate.from_value(value) for value in raw[:6])
-            if item is not None
-        ]
 
     @staticmethod
     def grounded_diary_from_payload(
@@ -393,5 +327,4 @@ __all__ = [
     "AffectSignal",
     "AffectiveSnapshot",
     "ReflectionGate",
-    "RelationshipUpdate",
 ]

@@ -5,7 +5,9 @@ from __future__ import annotations
 import math
 
 from ..clock import local_timestamp
+from ..relationship import response_bias
 from .sharepacing import merge
+from .bonding import relationship_context
 
 
 async def contact_rhythm(runtime, scope, now, *, shared=True):
@@ -17,6 +19,10 @@ async def contact_rhythm(runtime, scope, now, *, shared=True):
     # 公开分享只传递角色的主动意愿，不暴露任何私聊的等待状态。
     if scope in {"global", "qzone_broadcast", "bilibili_broadcast"} or ":GroupMessage:" in scope:
         return await merge(runtime, scope, result) if shared and scope != "global" else result
+    result["relationship_context"] = await relationship_context(getattr(runtime, "archive", None), scope)
+    if len(result["relationship_context"]) == 1:
+        bias = response_bias(result["relationship_context"][0]["state"])
+        result["willingness"] = round(max(0.0, min(1.0, willingness + bias)), 3)
     reader = getattr(getattr(runtime, "archive", None), "get_conversation_contact_state", None)
     if not callable(reader):
         return await merge(runtime, scope, result) if shared else result

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from ...models import MemoryCorrectionRecord
+from ...addresses import habitual_address
 
 from typing import Protocol
 
@@ -69,24 +70,21 @@ class ImprintPortraitComponent:
                 target_persona_hint = (
                     self.context._str_payload(target.get("persona_hint")) or target_persona_hint
                 )
-            name = self.context._str_payload(target.get("name") or target.get("alias"))
             raw_profile_id = self.context._str_payload(target.get("profile_id"))
-            if not raw_profile_id and name:
-                raw_profile_id = f"name:{name}"
-            if not raw_profile_id:
+            if not raw_profile_id or raw_profile_id != meta.get("sender_profile_id"):
                 continue
             profile_id = raw_profile_id
-            if profile_id == meta["sender_profile_id"]:
-                name = name or meta["sender_name"]
-                platform = meta["platform"]
-                user_id = meta["user_id"]
-                contact_payload = self.context._relationship_contact_payload(meta)
-            else:
-                platform = ""
-                user_id = ""
-                contact_payload = {}
+            # 人物身份取已核实的本批发送者；模型只维护主观关系描述。
+            name = self.context._str_payload(meta.get("sender_name")) or profile_id
+            platform = meta["platform"]
+            user_id = meta["user_id"]
+            existing = await self.context.archive.get_relationship(profile_id)
+            if name in {profile_id, user_id}:
+                if existing is not None:
+                    name = existing.name or profile_id
+            contact_payload = self.context._relationship_contact_payload(meta)
             note = self.context._str_payload(target.get("note"))
-            subjective_name = self.context._str_payload(target.get("subjective_name"))
+            subjective_name = habitual_address(existing)
             relationship_story = self.context._str_payload(target.get("relationship_story"))
             subjective_tags = [
                 self.context._str_payload(item)
@@ -101,7 +99,7 @@ class ImprintPortraitComponent:
                 if self.context._str_payload(item)
             ]
             if not any(
-                [note, points, subjective_name, relationship_story, subjective_tags]
+                [note, points, relationship_story, subjective_tags]
             ):
                 continue
             await self.context.archive.touch_relationship(
@@ -113,9 +111,9 @@ class ImprintPortraitComponent:
                 or "chat_memory_target",
                 platform=platform,
                 user_id=user_id,
-                alias=self.context._str_payload(target.get("alias")) or name,
+                alias=name,
+                observed_name=self.context._str_payload(meta.get("sender_name")),
                 persona_hint=self.context._str_payload(target.get("persona_hint")),
-                subjective_name=subjective_name,
                 subjective_tags=subjective_tags[:8],
                 relationship_story=relationship_story,
                 **contact_payload,
@@ -136,6 +134,8 @@ class ImprintPortraitComponent:
                     **target,
                     "profile_id": profile_id,
                     "name": name or profile_id,
+                    "alias": name,
+                    "subjective_name": subjective_name,
                     "points": points[:6],
                     "subjective_tags": subjective_tags[:8],
                     "relationship_story": relationship_story,

@@ -29,7 +29,6 @@ VOLCENGINE_O20_ENDPOINT = "wss://openspeech.bytedance.com/api/v3/realtime/dialog
 _O20_CONNECTION_EVENTS = frozenset({1, 2, 50, 51, 52})
 _O20_FULL_CLIENT = 0x10
 _O20_AUDIO_CLIENT = 0x20
-_O20_FULL_SERVER = 0x90
 _O20_AUDIO_SERVER = 0xB0
 _O20_ERROR = 0xF0
 _O20_WITH_EVENT = 0x04

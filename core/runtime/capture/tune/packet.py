@@ -44,6 +44,7 @@ class PacketComponent:
         "subjective_impression",
         "relationship_points",
         "memory_targets",
+        "relationship_updates",
         "preference_points",
         "life_episode",
         "life_episodes",

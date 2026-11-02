@@ -131,6 +131,8 @@ class RuntimeAsyncHelpers:
             }
         )
         runtime.archive = DataManager()
+        from proactivegroundingfixture import GroundingStub
+        runtime.proactive_grounding = GroundingStub()
         runtime.contact_resolver = type(
             "Resolver",
             (),

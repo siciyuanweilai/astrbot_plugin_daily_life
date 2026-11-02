@@ -137,9 +137,13 @@ class SavedHistoryReader:
 
             cutoff = self._cutoff_ts(hours)
             messages = []
-            for item in reversed(raw_history):
+            for index in range(len(raw_history) - 1, -1, -1):
+                item = raw_history[index]
                 msg = self._normalize_conversation_item(item)
                 if msg and self._within_cutoff(msg.get("timestamp", ""), cutoff):
+                    # 会话记录未保存平台消息编号时，仍区分不同轮次的同一句请求。
+                    # 独立于 message_id，避免与运行中缓存的平台编号误判为两条消息。
+                    msg["history_ref"] = f"conversation:{conversation_id}:{index}"
                     messages.append(msg)
                     if len(messages) >= max_count:
                         break
@@ -190,7 +194,7 @@ class SavedHistoryReader:
             return None
 
         role = str(item.get("role") or item.get("type") or "user").lower()
-        if role in ("system", "developer", "tool", "function"):
+        if role not in {"user", "assistant", "human", "ai", "bot"}:
             return None
         if role not in ("user", "assistant"):
             role = "assistant" if role in ("ai", "bot") else "user"
@@ -204,6 +208,8 @@ class SavedHistoryReader:
             "content": text,
             "user_id": str(item.get("user_id") or item.get("name") or role),
             "name": str(item.get("name") or ""),
+            **({"message_id": str(item.get("message_id") or item.get("id"))}
+               if item.get("message_id") or item.get("id") else {}),
             "timestamp": self._format_timestamp(
                 item.get("timestamp") or item.get("time") or ""
             ),

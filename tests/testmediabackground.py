@@ -1297,6 +1297,11 @@ class MediaBackgroundTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase)
         self.assertEqual(state["status"], "success")
 
     def prepare_proactive_voice(self, *, fail=False):
+        from proactivegroundingfixture import GroundingStub
+
+        # 本组验证语音生命周期；实际语义审核独立由 testproactivegrounding 覆盖。
+        self.runtime.proactive_grounding = GroundingStub()
+
         async def synthesize(*args, **kwargs):
             self.started.set()
             await self.release.wait()

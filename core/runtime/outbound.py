@@ -98,7 +98,7 @@ class OutboundLogService:
         self._timing = timing
         self._schedule = schedule
         self._delivered = delivered
-        self._bot_names: dict[str, str] = {}
+        self._bot_names: dict[tuple[str, str, int], str] = {}
 
     def clear(self) -> None:
         self._bot_names.clear()
@@ -131,33 +131,40 @@ class OutboundLogService:
         self, *, scope: str = "", source_event: Any = None
     ) -> str:
         """解析并缓存当前平台的机器人昵称/QQ号身份。"""
+        scope = str(scope or getattr(source_event, "unified_msg_origin", "") or "")
+        # 后台决策事件不是平台入站事件，其 platform_name 可能是实例名。
+        # 身份应从实际投递的 UMO 定位，不能将这个字段当成协议类型。
+        identity_event = (
+            None if getattr(source_event, "is_proactive_synthetic", False)
+            else source_event
+        )
         bot_id = ""
-        getter = getattr(source_event, "get_self_id", None)
+        getter = getattr(identity_event, "get_self_id", None)
         if callable(getter):
             try:
                 bot_id = self._outbound_bot_id_value(getter())
             except Exception:
                 bot_id = ""
-        platform_id, _ = parse_unified_origin(str(scope or ""))
-        cache_key = ":".join(item for item in (platform_id, bot_id) if item)
-        cache_key = cache_key or platform_id or "default"
+        bot_id = bot_id or self._outbound_bot_id_value(
+            getattr(getattr(identity_event, "message_obj", None), "self_id", "")
+        )
+        platform_id, _ = parse_unified_origin(scope)
+        bot = get_onebot_client(self._context, target_umo=scope, event=identity_event)
+        # 客户端重建或换账号后重新查询，避免不同机器人串用昵称。
+        client_key = id(bot) if bot is not None else 0
+        cache_key = (platform_id, bot_id, client_key)
         cache = self._bot_names
         if cache.get(cache_key):
             return cache[cache_key]
 
         name = ""
-        getter = getattr(source_event, "get_self_name", None)
+        getter = getattr(identity_event, "get_self_name", None)
         if callable(getter):
             try:
                 name = self._outbound_bot_name_value(getter())
             except Exception:
                 name = ""
 
-        bot = get_onebot_client(
-            self._context,
-            target_umo=str(scope or ""),
-            event=source_event,
-        )
         if not name and bot is not None:
             for attr in ("nickname", "nick", "name"):
                 name = self._outbound_bot_name_value(getattr(bot, attr, ""))
@@ -176,10 +183,11 @@ class OutboundLogService:
                             bot_id = self._outbound_bot_id_value(candidate.get(key))
                             if bot_id:
                                 break
-                    for key in ("nickname", "nick", "name"):
-                        name = self._outbound_bot_name_value(candidate.get(key))
-                        if name:
-                            break
+                    if not name:
+                        for key in ("nickname", "nick", "name"):
+                            name = self._outbound_bot_name_value(candidate.get(key))
+                            if name:
+                                break
                     if name and bot_id:
                         break
             except Exception as exc:
@@ -187,9 +195,11 @@ class OutboundLogService:
                     f"{LOG_PREFIX} 获取机器人昵称/QQ号失败：{type(exc).__name__}: {exc}"
                 )
 
-        name = name or "机器人"
-        identity = f"{name}/{bot_id}" if bot_id else name
-        cache[cache_key] = identity
+        identity = f"{name or '机器人'}/{bot_id}" if bot_id else name or "机器人"
+        # 暂时失败或缺字段不成为永久身份，下次成功查询即可恢复。
+        if name and bot_id:
+            cache[cache_key] = identity
+            cache[(platform_id, bot_id, client_key)] = identity
         return identity
 
     def _outbound_direct_bodies(self, event: Any) -> list[str]:

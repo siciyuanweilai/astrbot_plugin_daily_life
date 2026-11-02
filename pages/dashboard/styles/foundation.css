@@ -906,6 +906,33 @@ h2::before {
   overflow-wrap: anywhere;
 }
 
+.timeline-body {
+  min-width: 0;
+}
+
+.timeline-time-kind {
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.timeline-retired-summary,
+.timeline-reason > summary {
+  cursor: pointer;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.timeline-body > summary:focus-visible,
+.timeline-reason > summary:focus-visible {
+  outline: 2px solid var(--rose-strong);
+  outline-offset: 3px;
+}
+
+.timeline-reason {
+  margin-top: 5px;
+  font-size: 12px;
+}
+
 .timeline-travel {
   margin-top: 5px;
   color: var(--muted);

@@ -39,6 +39,7 @@ class SocialTest(unittest.IsolatedAsyncioTestCase):
         self.runtime = types.SimpleNamespace(
             archive=self.db, config=types.SimpleNamespace(browsing=BiliBrowseSettings()),
             _runtime_now=lambda: self.now, mark_page_status_changed=AsyncMock(),
+            resolve_injection_target=AsyncMock(return_value=(self.now, False)),
             composer=types.SimpleNamespace(_get_persona=AsyncMock(return_value='角色本人')),
             get_persona_text=AsyncMock(return_value='当前关系'),
             _read_recent_context_messages=AsyncMock(return_value=[{'role': 'user', 'content': '私密约定'}]),
@@ -47,6 +48,8 @@ class SocialTest(unittest.IsolatedAsyncioTestCase):
             _prepare_sight_clip_material=AsyncMock(return_value={}),
         )
         self.browse = BiliBrowseService(self.runtime)
+        self.db.get_day = AsyncMock(return_value=self.day)
+        self.db.get_continuous_life = AsyncMock(return_value=self.world)
         self.browse.reader.require_login = AsyncMock(return_value='1234')
         self.browse.reader._mid = '1234'
         self.social = self.browse.social
@@ -55,7 +58,7 @@ class SocialTest(unittest.IsolatedAsyncioTestCase):
             return {"incoming": [{"id": r["id"], "related": True} for r in incoming], "outgoing_related": True}
         self.social._review_dm = AsyncMock(side_effect=related)
         self.platform = types.SimpleNamespace(**{name: AsyncMock(return_value=[]) for name in (
-            'folders', 'favorites', 'comments', 'notifications', 'dm_history', 'dynamics', 'live_rooms', 'live_history')})
+            'folders', 'favorites', 'comments', 'notifications', 'live_rooms', 'live_history')})
         for name in ('favorite', 'comment', 'dm', 'dynamic', 'danmaku'):
             setattr(self.platform, name, AsyncMock(return_value={'accepted': True, 'remote_id': '999', 'folder_id': '7'}))
         self.platform.user_card = AsyncMock(return_value={'mid': '5678', 'name': '绑定朋友'})
@@ -135,6 +138,23 @@ class SocialTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.store.state())['bindings']['private:a']['uid'], '5678')
         await self.social.binding('private:a', remove=True)
         self.assertFalse((await self.store.state())['bindings'])
+
+    async def test_persisted_incoming_recovers_relationship_queue_after_failure(self):
+        await self.incoming()
+        await self.db.touch_relationship('friend', name='绑定朋友', date_str='2026-11-02',
+            platform='qq', user_id='friend', contact_type='friend', target_scope='private:a')
+        await self.store.update({'poll_after': 0})
+        with patch('core.browsing.socializing.capture_bili_relationship', AsyncMock(side_effect=RuntimeError('queue unavailable'))):
+            with self.assertRaises(RuntimeError):
+                await self.social.poll(self.store, await self.store.state())
+        self.assertEqual(await self.db.list_chat_memory_sessions(), [])
+        for _ in range(2):
+            await self.store.update({'poll_after': 0})
+            await self.social.poll(self.store, await self.store.state())
+        sessions = await self.db.list_chat_memory_sessions()
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(sessions[0]['pending_count'], 1)
+        self.assertTrue(sessions[0]['session_id'].startswith('relationship-bilibili:'))
 
     async def test_binding_rejects_group_self_and_duplicate_owner(self):
         for scope, uid in [('global', '5678'), ('private:a', '1234'), ('private:a', 'NaN')]:
@@ -725,9 +745,11 @@ class SocialTest(unittest.IsolatedAsyncioTestCase):
         await self.incoming()
         record = await self.video()
         self.browse._model.side_effect = [
+            {'action':'wait', 'review_minutes':45},
             {'action':'dynamic', 'id':record['id']},
             {'action':'dynamic', 'id':record['id'], 'text':'实际实验挺有意思'},
         ]
+        await self.social.tick(self.day, self.world)
         await self.social.tick(self.day, self.world)
         self.platform.dynamic.assert_awaited_once_with('实际实验挺有意思')
         public = self.browse._model.await_args.args[1]
@@ -752,7 +774,7 @@ class SocialTest(unittest.IsolatedAsyncioTestCase):
         self.platform.dm.assert_awaited_once()
         self.assertTrue((self.platform.dm.await_args.args[1]).startswith('刚才'))
         await self.video()
-        await self.store.update({'review_after':0})
+        await self.store.update({'review_after':0, 'reviews':{}})
         await self.social.tick(self.day, self.world)
         self.assertNotIn('contact', self.browse._model.await_args.args[1]['allowed_actions'])
         self.platform.dm.assert_awaited_once()
@@ -856,7 +878,7 @@ class SocialTest(unittest.IsolatedAsyncioTestCase):
         await self.video()
         await self.store.update({'bindings': {'private:a': {'uid':'5678'}, 'private:b': {'uid':'6789'}}})
         await self.social.tick(self.day, self.world)
-        await self.store.update({'review_after':0})
+        await self.store.update({'review_after':0, 'reviews':{}})
         await self.social.tick(self.day, self.world)
         self.assertEqual(set((await self.store.state())['contact_reviews']), {'private:a','private:b'})
 
@@ -1139,11 +1161,11 @@ class SocialTest(unittest.IsolatedAsyncioTestCase):
         await self.social.tick(self.day, self.world)
         self.assertEqual(self.platform.dm.await_count, 1)
         self.now += dt.timedelta(minutes=10)
-        await self.store.update({'review_after': 0})
+        await self.store.update({'review_after': 0, 'reviews': {}})
         await self.social.tick(self.day, self.world)
         self.assertEqual(self.platform.dm.await_count, 1)
         await self.video(position=30)
-        await self.store.update({'review_after': 0})
+        await self.store.update({'review_after': 0, 'reviews': {}})
         await self.social.tick(self.day, self.world)
         self.assertEqual(self.platform.dm.await_count, 2)
         rhythm = await contact_rhythm(self.runtime, 'private:a', self.now)
@@ -1216,7 +1238,7 @@ class SocialTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(gate.leases, {})
             self.now += dt.timedelta(minutes=20)
             await self.video(position=30)
-            await self.store.update({'review_after': 0})
+            await self.store.update({'review_after': 0, 'reviews': {}})
             self.platform.dm.side_effect = BiliReadError('平台明确拒绝')
             with self.assertRaises(BiliReadError):
                 await self.social.tick(self.day, self.world)

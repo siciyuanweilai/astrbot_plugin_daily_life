@@ -120,6 +120,14 @@ def outfit_update_feedback(before: Any, after: Any) -> str:
     change = outfit_change(before, after)
     if change.clothing_changed:
         return ""
+    if after.meta.get("outfit_waiting_for_action") and not change.changed:
+        return ToolResultText(
+            f"当前穿搭保持：{after.outfit or '未记录'}。换装要求已保留，等待当前生活动作结束后再处理，尚未换上。",
+            status="pending", media="outfit",
+            facts={"clothing_changed": False, "components_changed": False,
+                   "appearance_changed": False, "current_outfit": after.outfit,
+                   "waiting_for_action": True},
+        )
     reason = str(after.meta.get("outfit_reason") or "").strip()
     lines = [
         f"当前穿搭保持：{after.outfit or '未记录'}。",

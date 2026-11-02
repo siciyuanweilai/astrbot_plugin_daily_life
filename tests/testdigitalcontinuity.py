@@ -24,8 +24,15 @@ from core.telemetry import LoopDelayProbe, ModelCacheMetrics
 class DigitalContinuityTest(unittest.IsolatedAsyncioTestCase):
     asyncSetUp = fixtures.ContinuousLifeTest.asyncSetUp
     asyncTearDown = fixtures.ContinuousLifeTest.asyncTearDown
-    start = fixtures.ContinuousLifeTest.start
     tick = fixtures.ContinuousLifeTest.tick
+
+    async def start(self, *args, payload=None, **kwargs):
+        day = await self.archive.get_day(self.runtime.date)
+        return await fixtures.ContinuousLifeTest.start(
+            self, *args,
+            payload={"place": day.meta.get("current_place", ""), **(payload or {})},
+            **kwargs,
+        )
 
     async def object(self, *, amount=2, owner="self", location="书桌", available_at=""):
         await self.archive.mutate_continuous_life(

@@ -3,10 +3,32 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import Awaitable, Callable
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, Protocol
 
 from astrbot.api import logger
+
+
+async def _upload_io(function, *args, **kwargs):
+    """磁盘操作结束后才响应取消，保证关闭/删除不会与尚在写入的线程竞争。"""
+    worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+    cancellation = None
+    while True:
+        try:
+            result = await asyncio.shield(worker)
+            break
+        except asyncio.CancelledError as exc:
+            if worker.cancelled():
+                raise
+            cancellation = cancellation or exc
+        except Exception:
+            if cancellation is not None:
+                raise cancellation
+            raise
+    if cancellation is not None:
+        raise cancellation
+    return result
 
 try:
     from quart import has_app_context as _quart_has_app_context
@@ -28,6 +50,7 @@ class PortalBaseComponentContext(Protocol):
     _PAGE_UPLOAD_CHUNK_SIZE: Any
     _build_page_config: Any
     _build_page_status: Any
+    _page_bool: Any
     _page_copy_upload: Any
     _page_copy_upload_sync: Any
     _page_json: Any
@@ -134,16 +157,16 @@ class PortalBaseComponent:
         read = getattr(upload, "read", None)
         if not callable(read):
             raise ValueError("上传文件不可读")
-        if not inspect.iscoroutinefunction(read):
-            return await asyncio.to_thread(
-                self.context._page_copy_upload_sync,
-                read,
-                target,
-                max_bytes,
-            )
         size = 0
         try:
-            with target.open("wb") as handle:
+            if not inspect.iscoroutinefunction(read):
+                return await _upload_io(
+                    self.context._page_copy_upload_sync, read, target, max_bytes,
+                )
+            stack = ExitStack()
+            try:
+                # 栈持有句柄，即使取消恰好发生在 open 完成时也能安全关闭。
+                handle = await _upload_io(lambda: stack.enter_context(target.open("wb")))
                 while True:
                     chunk = await read(self.context._PAGE_UPLOAD_CHUNK_SIZE)
                     if not chunk:
@@ -151,10 +174,12 @@ class PortalBaseComponent:
                     size += len(chunk)
                     if size > max_bytes:
                         raise ValueError("上传文件超过大小限制")
-                    await asyncio.to_thread(handle.write, chunk)
+                    await _upload_io(handle.write, chunk)
+            finally:
+                await _upload_io(stack.close)
         # 上传取消也要删除未完成文件，随后保留原取消语义。
         except BaseException:
-            await asyncio.to_thread(target.unlink, missing_ok=True)
+            await _upload_io(target.unlink, missing_ok=True)
             raise
         return size
 
@@ -233,11 +258,17 @@ class PortalBaseComponent:
         return dict(args) if args else {}
 
     async def page_status(self):
-        return await self.context._page_json(self.context._build_page_status)
+        diagnostics = self.context._page_bool(
+            self.context._page_query_args().get("diagnostics", False)
+        )
+        return await self.context._page_json(
+            lambda: self.context._build_page_status(diagnostics=diagnostics)
+        )
 
     async def page_status_wait(self):
         async def handler():
             args = self.context._page_query_args()
+            diagnostics = self.context._page_bool(args.get("diagnostics", False))
             try:
                 since = int(str(args.get("since") or "0"))
             except ValueError:
@@ -252,12 +283,12 @@ class PortalBaseComponent:
             # 运行时计数器仅在当前进程有效。插件重载后计数器可能减小，
             # 而已打开的页面仍传入原先较大的版本号，此时返回最新快照。
             if version < since:
-                status = await self.context._build_page_status()
+                status = await self.context._build_page_status(diagnostics=diagnostics)
                 status["changed"] = True
                 return status
             if version <= since:
                 return {"status_version": version, "changed": False}
-            status = await self.context._build_page_status()
+            status = await self.context._build_page_status(diagnostics=diagnostics)
             status["changed"] = True
             return status
 

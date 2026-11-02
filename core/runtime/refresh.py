@@ -245,116 +245,10 @@ class RefreshComponent:
     def _outfit_context_signature(
         self, data: DayRecord, now: datetime.datetime, period: str
     ) -> str:
-        del period  # 普通时段切换本身不是换装事件。
-        current, _ = get_current_timeline_status(data.timeline, now, data.date, meta=data.meta)
-        weather = data.weather_info
+        from ..life.outfitflow import review_signature
 
-        def item_field(item: Any, key: str) -> str:
-            if item is None:
-                return ""
-            if isinstance(item, dict):
-                return str(item.get(key) or "").strip()
-            return str(getattr(item, key, "") or "").strip()
-
-        current_index = -1
-        if current is not None:
-            current_index = next(
-                (index for index, item in enumerate(data.timeline) if item is current),
-                -1,
-            )
-
-        scene_category = self.context._schedule_outfit_scene(data, now)
-        scene = {
-            "home": "home",
-            "sleep": "sleep",
-            "outdoor": "away",
-            "public": "away",
-        }.get(scene_category, "")
-        # online/none 只说明活动没有实体地点，不应让在家网聊之类的活动
-        # 看起来像换了穿衣场景；沿用最近一个明确的实体生活场景。
-        if not scene:
-            for item in data.timeline[: current_index + 1]:
-                place_kind = item_field(item, "place_kind").lower()
-                scene_category = scene_category_for_place_kind(place_kind, default="")
-                if scene_category == "home":
-                    scene = "home"
-                elif scene_category in {"public", "outdoor"}:
-                    scene = "away"
-        if not scene:
-            scene = "unknown"
-
-        component_states = normalize_outfit_components(
-            (data.meta or {}).get("outfit_components")
-        )
-        component_signature = (
-            ";".join(
-                f"{key}:{item.get('state', 'unknown')}"
-                for key, item in component_states.items()
-                if key in {"footwear", "carried_accessories"}
-            )
-            or "none"
-        )
-
-        action_events: dict[int, str] = {}
-        raw_actions = str((data.meta or {}).get("planned_life_actions") or "")
-        try:
-            planned_actions = json.loads(raw_actions) if raw_actions else []
-        except (TypeError, ValueError, json.JSONDecodeError):
-            planned_actions = []
-        for action in planned_actions if isinstance(planned_actions, list) else []:
-            if not isinstance(action, dict):
-                continue
-            action_type = str(action.get("action_type") or "").strip().lower()
-            if action_type not in {"change_outfit", "exercise", "groom"}:
-                continue
-            try:
-                timeline_index = int(action.get("timeline_index"))
-            except (TypeError, ValueError):
-                continue
-            if 0 <= timeline_index <= current_index:
-                action_events[timeline_index] = action_type
-
-        latest_event = "none"
-        for index, item in enumerate(data.timeline[: current_index + 1]):
-            if item_field(item, "execution_state").lower() in {
-                "expired",
-                "skipped",
-                "cancelled",
-            }:
-                continue
-            event_kind = action_events.get(index, "")
-            if event_kind:
-                latest_event = f"{index}:{event_kind}"
-
-        try:
-            temperature_bucket = (
-                round(float(weather.temp) / 5) if weather.temp is not None else ""
-            )
-        except (TypeError, ValueError):
-            temperature_bucket = ""
-        if bool(getattr(weather, "is_rainy", False)):
-            weather_kind = "rain"
-        else:
-            weather_kind = "dry"
-        pending_outfit, _ = self.context._pending_commitment_outfit(data, now)
-        from ..life.outfitrequest import active_outfit_request
-        pending_request = active_outfit_request(data, now)
-        values = (
-            # 普通活动、时段和实时数值都会频繁变化。只有实体生活场景、
-            # 最近一次穿衣相关事件、穿衣相关天气或明确要求才触发重审。
-            # 执行契约升级后重审一次，避免沿用旧流程未执行的选装结果。
-            "event_driven_v5",
-            data.date,
-            scene,
-            latest_event,
-            weather_kind,
-            str(temperature_bucket),
-            pending_outfit,
-            str(pending_request.get("id") or ""),
-            component_signature,
-            str((data.meta or {}).get("wardrobe_selection_key") or ""),
-        )
-        return "|".join(values)
+        pending, _ = self.context._pending_commitment_outfit(data, now)
+        return review_signature(data, now, commitment=pending)
 
     @staticmethod
     def _schedule_outfit_scene(data: DayRecord, now: datetime.datetime) -> str:
@@ -738,8 +632,6 @@ class RefreshComponent:
             log_trigger="后台巡检",
         )
 
-    async def check_period_transition(self) -> None:
-        await self.context.check_autonomous_life_update()
 
     def _schedule_context_state_refresh(
         self,

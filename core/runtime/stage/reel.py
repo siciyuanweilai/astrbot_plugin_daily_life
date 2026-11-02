@@ -320,13 +320,6 @@ JSON 字段：
             return ""
         return clean_director_text(raw, 600)
 
-    async def _direct_life_image_prompt(
-        self, event: Any, original_prompt: str, *, reference: bool = False
-    ) -> str:
-        result = await self.context._direct_life_image_payload(
-            event, original_prompt, reference=reference
-        )
-        return result.prompt
 
     async def _direct_life_image_payload(
         self,

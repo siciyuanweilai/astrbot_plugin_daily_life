@@ -89,7 +89,6 @@ JSON 输出要求：
 {{
   "needs_revision": true/false,
   "reason": "如果需要修正，简短说明冲突点；不需要则写空字符串",
-  "subjective_name": "修正后的主观称呼；不需要改可沿用原值或空字符串",
   "subjective_tags": ["修正后的主观标签，可为空"],
   "relationship_story": "修正后的一句关系叙事；必须保留原本关系事实，只修正和人设冲突的称谓或身份理解",
   "note": "可选，修正后的最近印象；没有必要则空字符串",
@@ -106,7 +105,7 @@ JSON 输出要求：
 对方在人设中的线索：{normalized_persona_hint or "无"}
 称谓依据：{persona_evidence}
 已保存人设线索：{self.context._str_payload(getattr(relationship, "persona_hint", "")) or "无"}
-主观称呼：{self.context._str_payload(getattr(relationship, "subjective_name", "")) or "无"}
+习惯称呼：{self.context._str_payload(getattr(relationship, "subjective_name", "")) or "无"}
 主观标签：{"、".join(tags) if tags else "无"}
 关系叙事：{self.context._str_payload(getattr(relationship, "relationship_story", "")) or "无"}
 最近印象：{"；".join(notes) if notes else "无"}
@@ -162,7 +161,6 @@ JSON 输出要求：
                 profile_id,
                 date_str=date_str,
                 source="语义校准",
-                subjective_name=self.context._str_payload(payload.get("subjective_name")),
                 subjective_tags=[
                     self.context._str_payload(item)
                     for item in self.context._list_payload(

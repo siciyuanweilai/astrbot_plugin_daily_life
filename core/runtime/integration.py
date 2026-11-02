@@ -175,6 +175,7 @@ class ShareExpressionService:
         chat_share = scene in {"share_private", "share_group"}
         fallback = {
             "text": original,
+            "review_status": "unavailable",
             "emotion": "",
             "emotion_category": "neutral",
             "voice_style": "neutral",
@@ -183,7 +184,7 @@ class ShareExpressionService:
             return fallback
         style = self._share_style(scene=scene)
         if scene != "share_voice" and not style.get("enabled"):
-            return fallback
+            return {**fallback, "review_status": "disabled"}
         settings = self._chat_style_config()
         voice_settings = self._voice_config() if scene == "share_voice" else None
         provider_id = str(
@@ -192,6 +193,7 @@ class ShareExpressionService:
             else getattr(settings, "semantic_provider", "") or ""
         ).strip()
         constraints = requirements if isinstance(requirements, dict) else {}
+        reflow = chat_share and constraints.get("layout") == "reflow"
         output_format = str(constraints.get("output_format") or "")[:1600]
         terms = constraints.get("required_terms")
         required_terms = (
@@ -222,8 +224,12 @@ class ShareExpressionService:
                     f"这是{audience}。检查语气是否自然，不套用QQ空间或评论字数上限。"
                     "问候心情围绕当下一点；新闻知识推荐保留各个已选主题、事实、数据、条件和限定，不硬压成一句。"
                     "已自然则保留，只改冗长或模板化表达，不新增事实、关系、经历、承诺或安排。"
-                    "保留称呼、资料中的名称、标题标记和指定排版，包括原有段落与列表结构，不机械截断。"
-                    "不得把原文否定改成肯定、把计划或暂停改成完成，也不能改变引用来源。"
+                    "保留称呼、资料中的名称、标题标记，不机械截断。"
+                    + (
+                        "这是尚未发送的改写稿；按指定排版和语义重新组织自然段，不沿用草稿的行数。"
+                        if reflow else "保留指定排版，包括原有段落与列表结构。"
+                    )
+                    + "不得把原文否定改成肯定、把计划或暂停改成完成，也不能改变引用来源。"
                     "不读取任何其他会话。无法同时满足事实和格式时保持原文。"
                     "返回前对照原文确认内容与格式；额外返回 facts_preserved 和 format_preserved 两个布尔值。"
                 )
@@ -281,8 +287,8 @@ class ShareExpressionService:
                 )
             payload = self._parse_payload(raw)
             if not isinstance(payload, dict):
-                return fallback
-            result = dict(fallback)
+                return {**fallback, "review_status": "rejected"}
+            result = {**fallback, "review_status": "rejected"}
             rewritten = payload.get("text")
             rewritten = rewritten.strip() if isinstance(rewritten, str) else ""
             max_chars = (
@@ -296,6 +302,7 @@ class ShareExpressionService:
                 and all(term in rewritten for term in required_terms)
                 and (
                     not output_format
+                    or reflow
                     or len(rewritten.splitlines()) == len(original.splitlines())
                 )
             )
@@ -306,6 +313,9 @@ class ShareExpressionService:
                 and preserves_requirements
             ):
                 result["text"] = rewritten
+                result["review_status"] = "accepted"
+            elif scene == "share_voice":
+                result["review_status"] = "accepted"
             result["emotion"] = str(payload.get("emotion") or "")[:80]
             category = payload.get("emotion_category")
             voice_style = payload.get("voice_style")

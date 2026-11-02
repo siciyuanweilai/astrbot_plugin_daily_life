@@ -599,10 +599,7 @@ class LifecycleComponent:
     "assertion": {{"subject": "可选主体", "predicate": "可选关系", "object": "可选结构化值"}}
   }},
   "affect_updates": [
-    {{"layer": "transient|daily|relationship", "label": "自然情绪标签", "valence": -1.0-1.0, "arousal": 0.0-1.0, "intensity": 0.0-1.0, "evidence_ids": ["完整证据编号"], "source": "daily_review"}}
-  ],
-  "relationship_updates": [
-    {{"profile_id": "已有关系档案编号", "familiarity_delta": -0.08-0.08, "trust_delta": -0.08-0.08, "affinity_delta": -0.08-0.08, "evidence_ids": ["完整证据编号"], "reason": "有证据的缓慢变化"}}
+    {{"layer": "transient|daily", "label": "自然情绪标签", "valence": -1.0-1.0, "arousal": 0.0-1.0, "intensity": 0.0-1.0, "evidence_ids": ["完整证据编号"], "source": "daily_review"}}
   ],
   "grounded_diary": {{"title": "简短标题", "summary": "用第一人称‘我’记录真实发生的内容", "evidence_ids": ["完整证据编号"], "mood_label": "当日心境"}}
 }}
@@ -616,7 +613,7 @@ class LifecycleComponent:
 - timeline_updates 只在有具体依据时把活动标成 completed/skipped/cancelled；正常随时间推进的活动已经由系统标为 elapsed，不要因为时间经过把它标成 completed。
 - 根据 state.sleep、sleep_debt 和时间轴判断睡眠债增减；不要用固定文本匹配活动文字。
 - reflection_score 必须按四个数值维度独立评分；低价值日常允许 reflection 留空，系统会在阈值以下跳过模型反思沉淀。
-- affect_updates 和 relationship_updates 只能引用“可引用证据编号”，没有证据就返回空数组；关系数值只能小步变化。
+- affect_updates 只能引用“可引用证据编号”，没有证据就返回空数组；长期关系已根据真实互动独立结算，复盘不重复评分。
 - grounded_diary 由角色决定是否有想留下的片段；不想写或证据不足可返回空对象。写时用第一人称，事实须有可引用证据，感受属于自己的回想。
 - 不得从活动文案的词语、标点或固定句式猜测情绪、关系和执行结果。
 """

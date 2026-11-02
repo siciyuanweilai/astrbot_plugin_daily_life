@@ -5,6 +5,7 @@ import base64
 import copy
 import json
 import tempfile
+import threading
 import time
 import types
 import unittest
@@ -150,6 +151,7 @@ class NativeVideoHttpTest(unittest.IsolatedAsyncioTestCase):
         self.requests = []
         self.status = 200
         self.response = envelope()
+        self.response_error = None
         self.waiter = None
         self.entered = asyncio.Event()
         self.active = 0
@@ -169,6 +171,8 @@ class NativeVideoHttpTest(unittest.IsolatedAsyncioTestCase):
                 outer.active -= 1
 
             async def iter_chunked(self, size):
+                if outer.response_error is not None:
+                    raise outer.response_error
                 if outer.waiter:
                     await asyncio.wait_for(outer.waiter.wait(), self.timeout)
                 raw = (
@@ -291,16 +295,34 @@ class NativeVideoHttpTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.peak, 1)
 
     async def test_timeout_and_close_release_session_without_retry(self):
-        self.waiter = asyncio.Event()
+        self.response_error = asyncio.TimeoutError()
         with self.assertRaisesRegex(NativeVideoError, "超时"):
-            await self.call(timeout=0.03)
+            await self.call()
         self.assertEqual(len(self.requests), 1)
+        self.assertEqual(self.active, 0)
+        self.response_error = None
+        self.waiter = asyncio.Event()
+        self.entered.clear()
         task = asyncio.create_task(self.call(key="pending"))
-        await asyncio.sleep(0.02)
+        await asyncio.wait_for(self.entered.wait(), 5)
         await self.client.close()
         with self.assertRaises(asyncio.CancelledError):
             await task
         self.assertTrue(self.client._session.closed)
+        self.assertEqual(self.active, 0)
+        self.assertEqual(len(self.requests), 2)
+
+    async def test_total_timeout_includes_queue_wait_and_allows_next_request(self):
+        await self.client._gate.acquire()
+        try:
+            with self.assertRaisesRegex(NativeVideoError, "含排队与准备"):
+                await self.call(timeout=0.03)
+            self.assertEqual(self.requests, [])
+        finally:
+            self.client._gate.release()
+        result, _ = await self.call()
+        self.assertEqual(result, analysis())
+        self.assertEqual(len(self.requests), 1)
 
 
 class NativeVideoRuntimeTest(unittest.IsolatedAsyncioTestCase):
@@ -447,8 +469,10 @@ class NativeVideoRuntimeTest(unittest.IsolatedAsyncioTestCase):
         from core.sight.sharemedia import describe_share_video
 
         release = asyncio.Event()
+        entered = asyncio.Event()
 
         async def delayed(*args, **kwargs):
+            entered.set()
             await release.wait()
             return analysis(), {}
 
@@ -469,6 +493,8 @@ class NativeVideoRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 second = await describe_share_video(self.runtime, source)
             self.assertEqual(first["status"], "pending")
             self.assertEqual(second["status"], "pending")
+            # 前台等待结束不保证线程中的文件准备已完成；同步实际开始事件。
+            await asyncio.wait_for(entered.wait(), 5)
             self.runtime._native_video_client.analyze.assert_awaited_once()
             release.set()
             ready = await describe_share_video(self.runtime, source)
@@ -534,6 +560,43 @@ class NativeVideoRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.path.write_bytes(VIDEO + b"other-content")
         await self.runtime._understand_sight_clip(self.event, changed)
         self.assertEqual(self.runtime._native_video_client.analyze.await_count, 6)
+
+    async def test_file_uri_replacement_invalidates_completed_cache_then_reuses_new_result(self):
+        for index, source in enumerate((self.path.as_uri(), self.path.as_uri().replace("file://", "file://localhost", 1))):
+            with self.subTest(source=source):
+                clip = copy.deepcopy(self.clip)
+                clip.source = source
+                first = await self.runtime._understand_sight_clip(self.event, clip)
+                self.assertEqual(first.status, "ready")
+                before = self.runtime._native_video_client.analyze.await_count
+                self.path.write_bytes(VIDEO + f"replacement-{index}".encode())
+                changed = await self.runtime._understand_sight_clip(self.event, clip)
+                again = await self.runtime._understand_sight_clip(self.event, clip)
+                self.assertEqual(changed.status, "ready")
+                self.assertEqual(self.runtime._native_video_client.analyze.await_count, before + 1)
+                self.assertFalse(changed.metadata["sight_metrics"].get("cache_hit", False))
+                self.assertTrue(again.metadata["sight_metrics"]["cache_hit"])
+
+    async def test_deleted_local_video_does_not_reuse_completed_result(self):
+        await self.runtime._understand_sight_clip(self.event, self.clip)
+        self.path.unlink()
+        result = await self.runtime._understand_sight_clip(self.event, self.clip)
+        self.assertEqual(result.status, "failed")
+        self.runtime._native_video_client.analyze.assert_awaited_once()
+
+    async def test_native_file_version_is_read_outside_event_loop(self):
+        from core.sight.cinematics import NativeSightComponent
+
+        original = Path.stat
+        threads = []
+        def observed(path, *args, **kwargs):
+            threads.append(threading.get_ident())
+            return original(path, *args, **kwargs)
+        with patch.object(Path, "stat", new=observed):
+            key = await NativeSightComponent._native_completed_key(self.clip, "fixture-signature")
+        self.assertTrue(key.startswith("native:"))
+        self.assertTrue(threads)
+        self.assertNotIn(threading.get_ident(), threads)
 
     async def test_same_event_failure_is_not_repeatedly_submitted(self):
         self.runtime._native_video_client.analyze.side_effect = NativeVideoError(

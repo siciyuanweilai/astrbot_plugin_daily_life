@@ -140,29 +140,6 @@ def reference_outfit(day: Any) -> tuple[str, str]:
     return str(getattr(day, "outfit", "") or "").strip(), "current"
 
 
-def format_reference_appearance_context(day: Any, *, label: str = "历史参考") -> str:
-    """展示指定日期的穿搭，不将该日最终状态当作目标时段的当前状态。"""
-
-    outfit, period = reference_outfit(day)
-    if not outfit:
-        return ""
-    meta = getattr(day, "meta", {}) or {}
-    if not isinstance(meta, dict):
-        meta = {}
-    lines = [
-        f"{label}穿搭（按{period or '白天'}生活记录）：{outfit}",
-    ]
-    # 早期时段记录仅包含服装，当天最终发型不能证明更早时段的发型。
-    same_snapshot = outfit == str(getattr(day, "outfit", "") or "").strip()
-    hair_style = (
-        normalize_appearance_fact(meta.get("hair_style"), 80) if same_snapshot else ""
-    )
-    hair = normalize_appearance_fact(meta.get("hair"), 180) if same_snapshot else ""
-    if hair_style:
-        lines.append(f"{label}发型名称：{hair_style}")
-    if hair:
-        lines.append(f"{label}发型细节：{hair}")
-    return "\n".join(lines)
 
 
 class AppearanceAuditComponentContext(Protocol):

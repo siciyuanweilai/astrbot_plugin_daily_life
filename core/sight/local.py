@@ -259,10 +259,6 @@ def _ensure_models(models_dir: Path, timeout_seconds: int) -> None:
         _download_model(repo, target, models_dir / "download", timeout_seconds)
 
 
-def _models_ready(models_dir: Path) -> bool:
-    return all(
-        _looks_like_model(models_dir / alias) for alias in MODEL_ALIASES.values()
-    )
 
 
 def _download_model(

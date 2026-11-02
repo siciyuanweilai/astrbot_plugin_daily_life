@@ -138,6 +138,7 @@ const TIMELINE_EXECUTION_LABELS = {
   completed: "已完成",
   skipped: "已跳过",
   cancelled: "已取消",
+  expired: "已过期",
 };
 const COGNITION_STATUS_LABELS = {
   proposed: "已提出",
@@ -942,6 +943,10 @@ function renderMeters(day = {}) {
   );
 }
 
+function timelineExecutionState(item) {
+  return text(item?.execution_state).trim() || "planned";
+}
+
 function cloneTimeline(timeline = []) {
   return (Array.isArray(timeline) ? timeline : []).map((item) => {
     const source = item && typeof item === "object" ? item : {};
@@ -951,7 +956,7 @@ function cloneTimeline(timeline = []) {
       activity: clean(source.activity, ""),
       status: clean(source.status, ""),
       duration_minutes: Math.max(0, Number(source.duration_minutes || 0)),
-      execution_state: clean(source.execution_state, "planned"),
+      execution_state: timelineExecutionState(source),
       execution_reason: clean(source.execution_reason, ""),
       execution_evidence: clean(source.execution_evidence, ""),
       execution_updated_at: clean(source.execution_updated_at, ""),
@@ -971,27 +976,56 @@ function renderTimelineDisplay(timeline) {
     el.timelineList.replaceChildren(empty("暂无时间轴"));
     return;
   }
+  const dated = timeline.find((item) => item.scheduled_at) || timeline.find((item) => item.actual_started_at);
+  const baseDate = (dated?.scheduled_at || dated?.actual_started_at || "1970-01-01").slice(0, 10);
+  const orderTime = (item) => {
+    const explicit = item.actual_started_at || item.scheduled_at;
+    if (explicit) return Date.parse(explicit.replace(" ", "T"));
+    const [hours, minutes] = clean(item.time, "24:00").split(":").map(Number);
+    return Date.parse(`${baseDate}T00:00:00`) +
+      (Number(item.day_offset || 0) * 1440 + hours * 60 + minutes) * 60000;
+  };
+  const displayOrder = [...timeline].sort((a, b) => orderTime(a) - orderTime(b));
   el.timelineList.replaceChildren(
-    ...timeline.map((item, index) => {
+    ...displayOrder.map((item, index) => {
       const li = node("li", "timeline-item");
-      li.append(node("div", "time", clean(item.display_time || item.time, TIMELINE_TIME_EMPTY_TEXT)));
-      const body = node("div");
+      const time = node("div", "time", clean(item.actual_display_time || item.display_time || item.time, TIMELINE_TIME_EMPTY_TEXT));
+      time.append(node("div", "timeline-time-kind", item.actual_started_at ? "实际开始" : "计划时间"));
+      li.append(time);
+      const executionState = timelineExecutionState(item);
+      const executionLabel = TIMELINE_EXECUTION_LABELS[executionState] || "待确认";
+      const retired = !item.actual_started_at && ["skipped", "cancelled"].includes(executionState);
+      const body = node(retired ? "details" : "div", "timeline-body");
+      if (retired) {
+        body.append(node("summary", "timeline-retired-summary", `原计划 · ${executionLabel}（展开查看）`));
+      } else {
+        body.append(node("div", `status execution-status execution-${executionState}`, executionLabel));
+      }
       body.append(node("div", "timeline-activity", clean(item.activity)));
       if (Number(item.duration_minutes || 0) > 0) {
-        body.append(node("div", "timeline-duration", `约 ${Number(item.duration_minutes)} 分钟`));
+        body.append(node("div", "timeline-duration", `预计 ${Number(item.duration_minutes)} 分钟`));
       }
-      const travel = timelineTravelText(item, timeline[index - 1]);
+      if (item.actual_duration_minutes != null) {
+        body.append(node("div", "timeline-duration", `实际执行 ${Number(item.actual_duration_minutes)} 分钟`));
+      }
+      if (item.actual_completed_at) {
+        body.append(node("div", "timeline-duration", `完成于 ${clean(item.actual_completed_at)}`));
+      }
+      const previous = displayOrder.slice(0, index).reverse().find(
+        (entry) => !["skipped", "cancelled"].includes(timelineExecutionState(entry))
+      );
+      const travel = timelineTravelText(item, previous);
       if (travel) body.append(node("div", "timeline-travel", travel));
       if (item.status) body.append(node("div", "status", clean(item.status)));
-      const executionState = clean(item.execution_state, "planned");
-      const executionLabel = TIMELINE_EXECUTION_LABELS[executionState];
-      if (executionLabel) {
-        const execution = node(
-          "div",
-          `status execution-status execution-${executionState}`,
-          executionLabel
-        );
-        body.append(execution);
+      if (item.execution_reason) {
+        if (retired) {
+          body.append(node("div", "timeline-travel", clean(item.execution_reason)));
+        } else {
+          const details = node("details", "timeline-reason");
+          details.append(node("summary", "", "执行说明"));
+          details.append(node("div", "timeline-travel", clean(item.execution_reason)));
+          body.append(details);
+        }
       }
       li.append(body);
       return li;
@@ -1330,7 +1364,7 @@ function renderDomains(status = {}) {
     el.domainList?.replaceChildren(empty(domains.enabled === false ? "生活实况已关闭" : "暂无生活实况记录"));
     return;
   }
-  el.domainList?.replaceChildren(...records.slice(0, 20));
+  el.domainList?.replaceChildren(...records.slice(0, 10));
 }
 
 function memoDisplayText(status = {}) {
@@ -1490,15 +1524,15 @@ export function currentTimelinePair(day = {}, clock = currentClockDate(), option
     .filter((entry) => entry.minutes !== null)
     .sort((left, right) => left.minutes - right.minutes);
   const available = items.filter((entry) => {
-    const executionState = clean(entry.item?.execution_state, "planned");
+    const executionState = timelineExecutionState(entry.item);
     return !["cancelled", "skipped", "expired", "elapsed"].includes(executionState);
   });
   const activeIndex = available.findIndex(
-    (entry) => clean(entry.item?.execution_state, "planned") === "active"
+    (entry) => timelineExecutionState(entry.item) === "active"
   );
   if (activeIndex >= 0) {
     const nextEntry = available.slice(activeIndex + 1).find((entry) => {
-      const executionState = clean(entry.item?.execution_state, "planned");
+      const executionState = timelineExecutionState(entry.item);
       return executionState !== "completed";
     });
     return {
@@ -1509,7 +1543,7 @@ export function currentTimelinePair(day = {}, clock = currentClockDate(), option
   let current = null;
   let next = null;
   for (const entry of available) {
-    const executionState = clean(entry.item?.execution_state, "planned");
+    const executionState = timelineExecutionState(entry.item);
     if (entry.minutes <= nowMinutes) {
       if (executionState !== "completed") current = entry.item;
       continue;
@@ -1744,13 +1778,30 @@ function renderWorld(status) {
           ? `标签：${item.subjective_tags.join("、")}`
           : "";
         const story = relationshipText(item.relationship_story);
+        const relationState = item.relationship_state || {};
+        const knownDimensions = Array.isArray(relationState.observed_dimensions) ? relationState.observed_dimensions : [];
+        const dimensions = [["familiarity", "熟悉"], ["trust", "信任"], ["affinity", "好感"]]
+          .map(([key, label]) => `${label}：${knownDimensions.includes(key) && Number.isFinite(relationState[key])
+            ? Math.round(relationState[key] * 100) + "/100" : "尚未量化"}`).join(" · ");
         const body = [
-          subjective && subjective !== displayName ? `主观称呼：${subjective}` : "",
+          subjective && subjective !== displayName ? `习惯称呼：${subjective}` : "",
           tags,
           story,
           relationshipText(point?.content || latest?.content) || `最近：${clean(item.last_seen)}`,
         ].filter(Boolean).join(" · ");
         record.append(title, node("div", "record-body", body));
+        record.append(node("div", "record-body", dimensions));
+        const changes = Array.isArray(item.relationship_changes) ? item.relationship_changes : [];
+        if (changes.length) {
+          const details = node("details", "");
+          details.append(node("summary", "muted", "关系变化依据"));
+          for (const change of changes) {
+            const stateLabel = {applied: "已记录", uncertain: "尚不确定", superseded: "已纠正"}[change.status] || "";
+            details.append(node("div", "record-body", `${clean(change.occurred_at)} · ${stateLabel} · ${clean(change.reason)} · 来源 ${
+              (Array.isArray(change.source_message_ids) ? change.source_message_ids : []).join("、")}`));
+          }
+          record.append(details);
+        }
       } else if (activeTab === "summaries") {
         title.append(node("span", "", relationshipText(item.brief || item.long_summary)), node("span", "muted", clean(item.date)));
         record.append(title, node("div", "record-body", relationshipText(item.long_summary || item.brief)));
@@ -2016,7 +2067,6 @@ function experienceGroups(status) {
   const rhythmTrend = experience.physiological_rhythm_trend && typeof experience.physiological_rhythm_trend === "object"
     ? experience.physiological_rhythm_trend
     : {};
-  const focusTargets = diagnosticsEnabled ? objectItems(experience.focus_targets) : [];
   const terms = diagnosticsEnabled ? objectItems(experience.terms) : [];
   // 长期记忆与“世界·会话”可能来自同一份会话摘要。
   // 两处都保留，关系视图明确标出来源，方便追溯而不是把证据静默隐藏。
@@ -2160,16 +2210,6 @@ function experienceGroups(status) {
       ? ["人物", item.related_people.map((person) => relationshipScopeLabel(person, relationshipNames) || clean(person, "")).filter(Boolean).join("、")]
       : "";
     record.append(title, recordLines(relationshipRecordLines([...lifeEpisodeLines(item), people].filter(Boolean), relationshipText)));
-    groups.behavior.push(record);
-  });
-
-  focusTargets.slice(0, 3).forEach((item) => {
-    const record = node("div", "record");
-    const title = node("div", "record-title");
-    const focusLabel = relationshipScopeLabel(item.label || item.target_id, relationshipNames);
-    title.append(node("span", "", readableReferenceLabel(focusLabel, "关注目标")), node("span", "muted", `关注 ${Number(item.priority || 0)}`));
-    const scope = relationshipScopeLabel(item.scope, relationshipNames) || enumLabel(item.scope, SCOPE_LABELS) || enumLabel(item.target_type, TARGET_TYPE_LABELS);
-    record.append(title, recordLines([relationshipText(item.reason) || "近期自然多留意", scope ? ["范围", scope] : ""]));
     groups.behavior.push(record);
   });
 

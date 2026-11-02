@@ -16,7 +16,7 @@ function objectItems(items) {
 
 function relationshipDisplayName(item = {}) {
   return clean(
-    item.display_name || item.subjective_name || item.name || item.alias || "",
+    item.display_name || item.name || item.alias || item.id || "",
     "",
   );
 }

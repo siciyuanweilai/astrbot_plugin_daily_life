@@ -1,4 +1,5 @@
 import datetime
+import asyncio
 import json
 import tempfile
 import unittest
@@ -147,6 +148,26 @@ class SharedActivityTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             (await self.archive.get_commitment(self.commitment.id)).status, "scheduled"
         )
+
+    async def test_partial_or_unknown_contact_is_not_reported_as_sent(self):
+        for status in ("partial", "unknown"):
+            async def send(*args, **kwargs):
+                kwargs["send_payload"]["_delivery"] = {"status":status,"sent_text":"一段"}
+                return status == "partial"
+            self.runtime._send_proactive_message = send
+            self.assertEqual((await self.send_now())["outcome"],status)
+
+    async def test_cancel_after_uncertain_delivery_closes_task_without_completing_activity(self):
+        async def send(*args, **kwargs):
+            kwargs["send_payload"]["_delivery"] = {"status":"unknown"}
+            raise asyncio.CancelledError()
+        self.runtime._send_proactive_message = send
+        with self.assertRaises(asyncio.CancelledError):
+            await self.send_now()
+        task=await self.archive.get_durable_task(self.task.task_key)
+        self.assertEqual(task.status,"completed")
+        self.assertEqual(task.result["outcome"],"unknown")
+        self.assertEqual((await self.archive.get_commitment(self.commitment.id)).status,"scheduled")
 
     async def test_already_discussed_preparation_is_silent_without_settling_activity(
         self,

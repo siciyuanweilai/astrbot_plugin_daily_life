@@ -540,8 +540,8 @@ class SightFrameCompatibilityTest(unittest.IsolatedAsyncioTestCase):
         with (
             tempfile.TemporaryDirectory() as tmpdir,
             patch(
-                "core.sight.sample.download_remote_video",
-                lambda source, cache_dir, **kwargs: async_return(None),
+                "core.sight.sample._download_remote_video_with_reason",
+                lambda source, cache_dir, **kwargs: async_return((None, "offline fixture")),
             ),
             patch(
                 "core.sight.sample._download_bili_direct_video",

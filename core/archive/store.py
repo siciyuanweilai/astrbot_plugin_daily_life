@@ -11,6 +11,9 @@ from typing import Any, TypeVar
 from ..clock import local_timestamp
 from ..composition import ComponentCall
 from .acquaintances import AcquaintanceArchiveComponent
+from .appellation import RelationshipAddressArchive
+from .restoration import restore_observed_relationship_names
+from .relationshipstate import RelationshipStateArchive
 from .activity import DomainArchiveComponent
 from .categories import STORAGE_CATEGORIES
 from .common import CommonArchiveComponent
@@ -119,11 +122,15 @@ class LifeArchive:
             conn.execute("PRAGMA busy_timeout = 5000")
             conn.execute("PRAGMA synchronous = NORMAL")
             init_schema(conn)
+            restore_observed_relationship_names(conn)
         except Exception:
             conn.close()
             raise
         self._conn = conn
         self._initialized = True
+
+    async def apply_relationship_address(self, update: dict, *, session_id: str, rows: list[dict]) -> str:
+        return await RelationshipAddressArchive(self).apply_relationship_address(update, session_id=session_id, rows=rows)
 
     async def initialize(self) -> None:
         self._require_not_closed()
@@ -1036,7 +1043,6 @@ class LifeArchive:
 
     _compose_temporary_expression_state = ComponentCall("_part_expression_archive_component", ExpressionArchiveComponent, "_compose_temporary_expression_state")
 
-    upsert_temporary_expression_state = ComponentCall("_part_expression_archive_component", ExpressionArchiveComponent, "upsert_temporary_expression_state")
 
     get_temporary_expression_states = ComponentCall("_part_expression_archive_component", ExpressionArchiveComponent, "get_temporary_expression_states")
 
@@ -1082,7 +1088,6 @@ class LifeArchive:
 
     _compose_behavior_pattern = ComponentCall("_part_behavior_archive_component", BehaviorArchiveComponent, "_compose_behavior_pattern")
 
-    upsert_behavior_pattern = ComponentCall("_part_behavior_archive_component", BehaviorArchiveComponent, "upsert_behavior_pattern")
 
     get_behavior_patterns = ComponentCall("_part_behavior_archive_component", BehaviorArchiveComponent, "get_behavior_patterns")
 
@@ -1094,7 +1099,6 @@ class LifeArchive:
 
     _compose_session_mid_summary = ComponentCall("_part_behavior_archive_component", BehaviorArchiveComponent, "_compose_session_mid_summary")
 
-    upsert_session_mid_summary = ComponentCall("_part_behavior_archive_component", BehaviorArchiveComponent, "upsert_session_mid_summary")
 
     get_session_mid_summaries = ComponentCall("_part_behavior_archive_component", BehaviorArchiveComponent, "get_session_mid_summaries")
 
@@ -1102,19 +1106,15 @@ class LifeArchive:
 
     _compose_focus_slot = ComponentCall("_part_focus_archive_component", FocusArchiveComponent, "_compose_focus_slot")
 
-    upsert_focus_slot = ComponentCall("_part_focus_archive_component", FocusArchiveComponent, "upsert_focus_slot")
 
     get_focus_slots = ComponentCall("_part_focus_archive_component", FocusArchiveComponent, "get_focus_slots")
 
-    update_focus_slot_progress = ComponentCall("_part_focus_archive_component", FocusArchiveComponent, "update_focus_slot_progress")
 
     _compose_focus_target = ComponentCall("_part_focus_archive_component", FocusArchiveComponent, "_compose_focus_target")
 
-    upsert_focus_target = ComponentCall("_part_focus_archive_component", FocusArchiveComponent, "upsert_focus_target")
 
     get_focus_targets = ComponentCall("_part_focus_archive_component", FocusArchiveComponent, "get_focus_targets")
 
-    set_focus_target_enabled = ComponentCall("_part_focus_archive_component", FocusArchiveComponent, "set_focus_target_enabled")
 
     _compose_life_term = ComponentCall("_part_lexicon_archive_component", LexiconArchiveComponent, "_compose_life_term")
 
@@ -1295,6 +1295,14 @@ class LifeArchive:
     @cached_property
     def _part_place_archive_component(self):
         return PlaceArchiveComponent(self)
+
+    _relationship_state_unlocked = ComponentCall("_part_relationship_state", RelationshipStateArchive, "_relationship_state_unlocked")
+    get_relationship_changes = ComponentCall("_part_relationship_state", RelationshipStateArchive, "get_relationship_changes")
+    apply_relationship_assessment = ComponentCall("_part_relationship_state", RelationshipStateArchive, "apply_relationship_assessment")
+
+    @cached_property
+    def _part_relationship_state(self):
+        return RelationshipStateArchive(self)
 
     @cached_property
     def _part_acquaintance_archive_component(self):

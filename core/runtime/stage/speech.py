@@ -58,8 +58,6 @@ class StageVoiceComponent:
             video_prompt="。".join(parts) + "。",
         )
 
-    def _media_video_prompt_from_payload(self, payload: dict[str, Any]) -> str:
-        return self._media_video_plan_from_payload(payload).video_prompt
 
     async def _direct_life_video_plan(
         self, event: Any, original_prompt: str

@@ -68,8 +68,6 @@ class PortalReferenceComponent:
             target /= self.context._page_friend_reference_key(profile_id)
         return target
 
-    def _page_reference_dir(self) -> Path:
-        return self.context._page_gallery_dir("character_reference")
 
     def _page_safe_gallery_path(
         self, gallery: str, path_text: str, profile_id: str = ""
@@ -82,8 +80,6 @@ class PortalReferenceComponent:
             raise ValueError("只能操作插件管理的图片") from exc
         return path
 
-    def _page_safe_reference_path(self, path_text: str) -> Path:
-        return self.context._page_safe_gallery_path("character_reference", path_text)
 
     @staticmethod
     def _page_reference_mime(path: Path) -> str:

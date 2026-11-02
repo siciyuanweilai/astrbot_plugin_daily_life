@@ -9,6 +9,14 @@ from typing import Any
 from ..clock import now as life_now
 
 
+def memory_vector_text(item: Any) -> str:
+    """索引与召回使用同一份文本，避免标题差异导致缓存失效。"""
+    return " ".join(filter(None, (
+        str(getattr(item, "title", "") or ""),
+        str(getattr(item, "content", "") or ""),
+    )))
+
+
 def _retention_factor(item: Any) -> float:
     """普通经历随时间轻微淡出，重要事实和纠正不随访问次数变化。"""
     category = str(getattr(item, "category", ""))

@@ -620,23 +620,6 @@ JSON 字段：
             return {}
         return look if look["outfit"] or look["hair"] else {}
 
-    async def _resolve_friend_daily_look(
-        self,
-        event: Any,
-        profile_id: str,
-        *,
-        outfit: str = "",
-        hair: str = "",
-        scene: str = "",
-    ) -> dict[str, str]:
-        look, _, _ = await self.context._prepare_friend_daily_look(
-            event,
-            profile_id,
-            outfit=outfit,
-            hair=hair,
-            scene=scene,
-        )
-        return look
 
     async def _prepare_friend_daily_look(
         self,
@@ -1336,19 +1319,6 @@ JSON 字段：
                 return prompt, self.context._image_prompt_aspect_ratio(prompt)
         return self._resolve_last_reverse_image_prompt(event)
 
-    def _image_edit_available(self) -> bool:
-        image_service = getattr(getattr(self.context, "media", None), "image", None)
-        if image_service is None or not callable(
-            getattr(image_service, "edit_image", None)
-        ):
-            return False
-        checker = getattr(image_service, "can_edit_image", None)
-        if callable(checker):
-            try:
-                return bool(checker())
-            except Exception:
-                return False
-        return True
 
     def _life_character_reference_image(self) -> str:
         image_service = getattr(getattr(self.context, "media", None), "image", None)

@@ -15,7 +15,10 @@ from .textile import TEXTILE_SQL
 from .mnemonics import RECOLLECTION_SQL
 from .lifeschema import MEMORY_LIFE_V32_SQL
 
+from .rapport import RELATIONSHIP_V33_SQL
+
 SCHEMA_GROUPS = (
+    RELATIONSHIP_V33_SQL,
     CORE_SQL,
     DAILY_SQL,
     WEEKLY_SQL,

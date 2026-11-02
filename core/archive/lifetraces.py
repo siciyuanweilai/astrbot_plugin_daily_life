@@ -62,7 +62,7 @@ class MemoryLifeArchive:
             self.conn.execute("BEGIN IMMEDIATE")
             return fn()
 
-    def _memories(self, scopes: list[str] | None = None) -> list[dict]:
+    def _memories(self, scopes: list[str] | None = None, *, memory_ids=None) -> list[dict]:
         args: list[Any] = []
         clause = ""
         if scopes is not None:
@@ -70,6 +70,11 @@ class MemoryLifeArchive:
                 return []
             clause = " AND m.scope IN (" + ",".join("?" for _ in scopes) + ")"
             args.extend(scopes)
+        if memory_ids is not None:
+            if not memory_ids:
+                return []
+            clause += " AND m.id IN (" + ",".join("?" for _ in memory_ids) + ")"
+            args.extend(memory_ids)
         return [
             dict(r)
             for r in self.conn.execute(
@@ -83,27 +88,45 @@ class MemoryLifeArchive:
         ]
 
     def _valid_sources(self, sources: dict, scope: str) -> bool:
-        live = {str(r["id"]): revision(r) for r in self._memories([scope])}
-        return bool(sources) and all(live.get(str(k)) == v for k, v in sources.items())
+        if not sources:
+            return False
+        # 只核验本次引用的来源；不能为每篇章节重复读取、哈希整个私聊历史。
+        keys = list(sources)
+        for offset in range(0, len(keys), 400):
+            batch = keys[offset:offset + 400]
+            live = {str(r["id"]): revision(r)
+                    for r in self._memories([scope], memory_ids=batch)}
+            if any(live.get(str(key)) != sources[key] for key in batch):
+                return False
+        return True
 
     async def pending(self, limit: int = 8) -> list[dict]:
         def read():
-            done = {
-                r["memory_id"]: r["source_revision"]
-                for r in self.conn.execute("SELECT * FROM memory_enrichments")
-            }
-            rows = [r for r in self._memories() if done.get(r["id"]) != revision(r)]
-            if not rows:
-                return []
-            scope, date = rows[0]["scope"], rows[0]["date"]
+            rows = self.conn.execute(
+                "SELECT m.*, e.source_revision AS enrichment_revision "
+                "FROM long_term_memories m LEFT JOIN memory_enrichments e ON e.memory_id=m.id "
+                "WHERE m.status='active' AND (m.expires_at='' OR m.expires_at>=?) "
+                + LongTermMemoryArchiveComponent._active_source_revision_clause()
+                + " ORDER BY m.date,m.id", (life_now().date().isoformat(),),
+            )
+            scope = date = None
             result, size = [], 0
             for row in rows:
+                row = dict(row)
+                if date is not None and row["date"] != date:
+                    break
+                done = row.pop("enrichment_revision")
+                current_revision = revision(row)
+                if done == current_revision:
+                    continue
+                if scope is None:
+                    scope, date = row["scope"], row["date"]
                 if row["scope"] != scope or row["date"] != date:
                     continue
                 amount = len(row["content"])
                 if result and size + amount > 10000:
                     break
-                result.append({**row, "revision": revision(row)})
+                result.append({**row, "revision": current_revision})
                 size += amount
                 if len(result) >= limit:
                     break
@@ -395,10 +418,16 @@ class MemoryLifeArchive:
         return await self.archive._run_db(self._transaction, write)
 
     async def chapters(self, scopes: list[str], limit: int = 20) -> list[dict]:
+        if not scopes:
+            return []
+
         def read():
             result = []
+            count = max(1, min(100, limit)) if limit else None
+            placeholders = ",".join("?" for _ in scopes)
             for r in self.conn.execute(
-                "SELECT * FROM memory_chapters ORDER BY period DESC,id DESC"
+                f"SELECT * FROM memory_chapters WHERE scope IN ({placeholders}) ORDER BY period DESC,id DESC",
+                scopes,
             ):
                 item = dict(r)
                 if item["scope"] in scopes and self._valid_sources(
@@ -408,7 +437,9 @@ class MemoryLifeArchive:
                         map(int, json.loads(item.pop("sources_json")))
                     )
                     result.append(item)
-            return result[: max(1, min(100, limit))] if limit else result
+                    if count is not None and len(result) >= count:
+                        break
+            return result
 
         return await self.archive._run_db(read)
 
@@ -749,14 +780,19 @@ class MemoryLifeArchive:
         )
 
     async def reading_notes(self, scopes: list[str], limit: int = 30) -> list[dict]:
+        if not scopes:
+            return []
+        placeholders = ",".join("?" for _ in scopes)
         return await self.archive._run_db(
             lambda: [
                 dict(r)
                 for r in self.conn.execute(
-                    "SELECT r.*,p.source_id,p.ordinal,s.title,s.scope,s.origin FROM knowledge_readings r JOIN knowledge_passages p ON p.id=r.passage_id JOIN knowledge_sources s ON s.id=p.source_id ORDER BY r.id DESC"
+                    "SELECT r.*,p.source_id,p.ordinal,s.title,s.scope,s.origin FROM knowledge_readings r "
+                    "JOIN knowledge_passages p ON p.id=r.passage_id "
+                    f"JOIN knowledge_sources s ON s.id=p.source_id WHERE s.scope IN ({placeholders}) "
+                    "ORDER BY r.id DESC LIMIT ?", (*scopes, max(1, min(100, limit))),
                 )
-                if r["scope"] in scopes
-            ][: max(1, min(100, limit))]
+            ]
         )
 
     async def set_source_status(self, source_id: int, status: str) -> bool:

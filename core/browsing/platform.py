@@ -183,8 +183,6 @@ class BiliPlatform:
         more = bool(items) and next_cursor.get("is_end") is False and positive(next_cursor.get("id"))
         return {"items": items, "cursor": {"id": str(next_cursor["id"]), "time": int(next_cursor.get("time") or 0)} if more else None}
 
-    async def dm_history(self, uid, *, before=""):
-        return (await self.dm_page(uid, before=before))["rows"]
 
     async def dm_page(self, uid, *, before=""):
         if not positive(uid):
@@ -263,8 +261,6 @@ class BiliPlatform:
             raise BiliWriteUncertain("动态发布未返回编号，结果留待回查")
         return {"accepted": True, "remote_id": identity}
 
-    async def dynamics(self):
-        return (await self.dynamic_page())["rows"]
 
     async def dynamic_page(self, *, offset=""):
         mid = await self.reader.require_login()

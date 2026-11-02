@@ -123,19 +123,19 @@ class LifeEvolutionServiceTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(result["affective_states"], 1)
-        self.assertEqual(result["relationship_updates"], 1)
+        self.assertEqual(result["relationship_updates"], 0)
         self.assertTrue(result["reflection_saved"])
         self.assertTrue(result["diary_saved"])
-        self.assertEqual(len(archive.states), 2)
+        self.assertEqual(len(archive.states), 1)
         self.assertEqual(len(archive.reflections), 1)
         self.assertEqual(len(archive.diaries), 1)
         self.assertEqual(archive.traces[-1]["stage"], "committed")
         causal = archive.continuous_world["kernel"]["causal_traces"]
         self.assertEqual(
-            {item["kind"] for item in causal}, {"affect_change", "relationship_change"}
+            {item["kind"] for item in causal}, {"affect_change"}
         )
         self.assertEqual(causal[0]["evidence_ids"], ["event:1"])
-        self.assertEqual(causal[1]["scope"], "relationship:u1")
+        self.assertEqual(archive.points, [])
         self.assertNotIn("虚构", str(causal))
 
     async def test_low_value_review_does_not_create_reflection_or_diary(self):

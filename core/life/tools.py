@@ -3,8 +3,6 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-import chinese_calendar
-
 from ..clock import TIMEZONE
 from ..clock import now as life_now
 from ..config.vocab import TIME_PERIOD_CN, WEEKDAY_NAMES
@@ -13,31 +11,6 @@ from ..models import (
     normalize_timeline_day_offsets,
     timeline_item_minutes,
 )
-
-
-# ==================== 节假日及调休感知 ====================
-def get_holiday_info(date: datetime.date) -> str:
-    """获取中国节假日及调休信息"""
-    if not chinese_calendar:
-        return ""
-
-    try:
-        on_holiday, holiday_name = chinese_calendar.get_holiday_detail(date)
-        is_workday = chinese_calendar.is_workday(date)
-
-        if on_holiday:
-            return (
-                f"今天是法定节假日 {holiday_name}"
-                if holiday_name
-                else "今天是周末休息日"
-            )
-        if is_workday:
-            if date.weekday() >= 5:
-                return "今天是调休工作日，原本是周末但需要苦逼上班！"
-            return "今天是普通工作日"
-    except Exception:
-        return ""
-    return ""
 
 
 def get_time_period_cn(period: str) -> str:
@@ -336,17 +309,6 @@ def extract_json_from_text(text):
     return None
 
 
-def extract_pure_json_object(text):
-    if not isinstance(text, str):
-        return None
-    raw = text.strip()
-    if not raw.startswith("{") or not raw.endswith("}"):
-        return None
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-    return payload if isinstance(payload, dict) else None
 
 
 def _first_integer(text: str) -> int | None:

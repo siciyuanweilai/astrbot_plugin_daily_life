@@ -27,7 +27,8 @@ from ..models import (
 from .lookback import record_appearance_snapshot
 from .stylememory import record_style_transition
 from .outfitstate import normalize_outfit_appearance
-from .actionchain import dependency_issue, timeline_complete
+from .actionchain import actions, committed_result, dependency_issue, timeline_complete
+from .outfitflow import appearance_action_issue, appearance_key
 from .body import ContinuousBody, project_body
 from .presence import record_action_outcome
 from .locationfacts import action_place, commit_place, place_issue
@@ -331,6 +332,9 @@ class LifeActionComponent:
         state: LifeState | None,
         action: LifeActionIntent,
     ) -> str:
+        issue = appearance_action_issue(day, action)
+        if issue:
+            return issue
         issue = place_issue(day, action)
         if issue:
             return issue
@@ -535,6 +539,11 @@ class LifeActionComponent:
                     day, datetime.datetime.fromisoformat(committed_at)
                 )
         commit_place(day, action, committed_at)
+        if action.action_type == "change_outfit" and not preserve_outfit_fact:
+            day.meta["outfit_evaluation"] = appearance_key(
+                day, datetime.datetime.fromisoformat(committed_at)
+            )
+            day.meta.pop("outfit_selection_pending", None)
         if action.timeline_index is not None:
             item = day.timeline[action.timeline_index]
             item.execution_state = (
@@ -597,7 +606,7 @@ class LifeActionComponent:
             replayed.replayed = True
             return replayed
 
-        waiting = dependency_issue(day, action)
+        waiting = dependency_issue(day, action) or appearance_action_issue(day, action)
         if waiting:
             # 前序尚未完成只是等待条件，不固化成该动作永久的幂等拒绝结果。
             return LifeActionOutcome(
@@ -787,6 +796,22 @@ class LifeActionComponent:
         status = str(receipt.get("status") or "confirmed").strip().lower()
         if status not in {"confirmed", "simulated", "failed", "cancelled"}:
             return None
+
+        async def replay_committed():
+            getter = getattr(self.context.archive, "get_day", None)
+            latest = await getter(day.date) if callable(getter) else None
+            if latest is not None and committed_result(latest, action.action_id):
+                day.apply_persisted(latest)
+            if committed_result(day, action.action_id) is None:
+                return None
+            return await self.context.settle_and_persist_life_action(
+                day, action, now=current_time, fact_source="life_action_replay",
+                receipt_status="simulated" if action.action_type in INTERNAL_SIMULATED_ACTION_TYPES else "confirmed",
+            )
+
+        replayed = await replay_committed()
+        if replayed is not None:
+            return replayed
         domain_service = getattr(self.context, "domains", None)
         validator = getattr(domain_service, "validate_action", None)
         if status in {"confirmed", "simulated"} and callable(validator):
@@ -805,7 +830,6 @@ class LifeActionComponent:
             "occurred_at": str(receipt.get("occurred_at") or "").strip()
             or current_time.strftime("%Y-%m-%d %H:%M:%S"),
         }
-        await self.context._save_action_receipt(day, action, receipt, now=current_time)
         if status in {"failed", "cancelled"}:
             outcome = LifeActionOutcome(
                 action_id=action.action_id,
@@ -816,30 +840,45 @@ class LifeActionComponent:
                 timeline_index=action.timeline_index,
                 evidence=evidence,
             )
-            if action.timeline_index is not None and 0 <= action.timeline_index < len(
-                day.timeline
-            ):
-                item = day.timeline[action.timeline_index]
-                # 时间轴不存储 failed；失败的动作视为已跳过，其结果仍完整保留在回执与动作结果中。
-                item.execution_state = (
-                    "cancelled" if status == "cancelled" else "skipped"
+            def record_failure(latest):
+                nonlocal outcome
+                previous = committed_result(latest, action.action_id)
+                if previous is not None:
+                    outcome = previous
+                    return False
+                current = next((item for item in actions(latest) if item.action_id == action.action_id), None)
+                index = current.timeline_index if current else None
+                if index is not None and 0 <= index < len(latest.timeline):
+                    item = latest.timeline[index]
+                    item.execution_state = "cancelled" if status == "cancelled" else "skipped"
+                    item.execution_reason = outcome.reason
+                    item.execution_evidence = evidence
+                    item.execution_updated_at = outcome.committed_at
+                latest.meta[SCHEDULE_REPLAN_META_KEY] = json.dumps(
+                    {"action_id": action.action_id, "action_type": action.action_type,
+                     "status": status, "reason": outcome.reason, "evidence": evidence,
+                     "occurred_at": outcome.committed_at}, ensure_ascii=False,
                 )
-                item.execution_reason = outcome.reason
-                item.execution_evidence = evidence
-                item.execution_updated_at = outcome.committed_at
-            day.meta[SCHEDULE_REPLAN_META_KEY] = json.dumps(
-                {
-                    "action_id": action.action_id,
-                    "action_type": action.action_type,
-                    "status": status,
-                    "reason": outcome.reason,
-                    "evidence": evidence,
-                    "occurred_at": outcome.committed_at,
-                },
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
-            await self.context.archive.save_day(day)
+
+            mutator = getattr(self.context.archive, "mutate_day", None)
+            if callable(mutator):
+                latest = await mutator(day.date, record_failure)
+                if latest is not None:
+                    day.apply_persisted(latest)
+                elif not day.revision:
+                    record_failure(day)
+                    await self.context.archive.save_day(day)
+                else:
+                    outcome.status = "rejected"
+                    outcome.reason = "原生活日记录已清理"
+                    return outcome
+            else:
+                record_failure(day)
+                if not outcome.replayed:
+                    await self.context.archive.save_day(day)
+            if outcome.replayed:
+                return await replay_committed()
+            await self.context._save_action_receipt(day, action, receipt, now=current_time)
             saver = getattr(self.context.archive, "save_life_action_outcome", None)
             if callable(saver):
                 await saver(
@@ -876,6 +915,10 @@ class LifeActionComponent:
                 )
             return outcome
 
+        replayed = await replay_committed()
+        if replayed is not None:
+            return replayed
+        await self.context._save_action_receipt(day, action, receipt, now=current_time)
         # 结算成功后才将动作标记为完成；可行性和前置条件检查可能拒绝回执，
         # 因此不能在检查前提前标记完成。
         action.source = "daily_plan"
@@ -1041,7 +1084,7 @@ class LifeActionComponent:
                 )
                 prepared = action
                 wardrobe_issue = ""
-                if not preserve_outfit_fact:
+                if not preserve_outfit_fact and committed_result(latest, action.action_id) is None:
                     prepared, wardrobe_issue = (
                         self.context.archive._prepare_outfit_action_unlocked(
                             latest, action
@@ -1090,7 +1133,8 @@ class LifeActionComponent:
             prepared = action
             issue = ""
             prepare = getattr(self.context.archive, "prepare_outfit_action", None)
-            if not preserve_outfit_fact and callable(prepare):
+            if (not preserve_outfit_fact and callable(prepare)
+                    and committed_result(pending, action.action_id) is None):
                 prepared, issue = await prepare(pending, action)
             if issue:
                 outcome = LifeActionOutcome(
@@ -1199,13 +1243,24 @@ class LifeActionComponent:
                         f"后续巡检会自动补写：{action.action_type}；{exc}"
                     )
             if not preserve_outfit_fact:
-                await self.context.sync_day_world_facts(
-                    day,
-                    observed_at=outcome.committed_at,
-                    source=fact_source,
-                    source_id=action.action_id,
-                    evidence=fact_evidence or outcome.evidence,
-                )
+                facts_day = day
+                if outcome.replayed:
+                    # 原子提交后的首次补写仍需落事实；历史重放只补写仍属于
+                    # 本动作的值，不能给后来换装/移动的状态套上旧时间。
+                    facts_day = copy.copy(day)
+                    facts_day.meta = dict(day.meta)
+                    if day.meta.get("outfit_fact_evidence") != action.action_id:
+                        facts_day.outfit = ""
+                    if day.meta.get("place_fact_action_id") != action.action_id:
+                        facts_day.meta.pop("current_place", None)
+                if facts_day.outfit or facts_day.meta.get("current_place"):
+                    await self.context.sync_day_world_facts(
+                        facts_day,
+                        observed_at=outcome.committed_at,
+                        source=fact_source,
+                        source_id=action.action_id,
+                        evidence=fact_evidence or outcome.evidence,
+                    )
         return outcome
 
     async def settle_completed_planned_actions(

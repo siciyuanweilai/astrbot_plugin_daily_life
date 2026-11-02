@@ -8,9 +8,20 @@ from ..clock import local_datetime
 from ..models import DayRecord, LifeActionIntent, PlaceRecord
 
 _PHYSICAL_PLACE_ACTIONS = frozenset({
-    "rest", "meal", "cook", "order_food", "purchase", "move", "travel",
+    "rest", "drink", "meal", "cook", "order_food", "purchase", "move", "travel",
     "work", "study", "chore", "exercise", "groom", "change_outfit",
 })
+
+
+def completed_action_description(action) -> str:
+    """移动回执只证明已到达的终点，目标文案中后续的意向不升级为经历。"""
+    raw = action.as_dict() if isinstance(action, LifeActionIntent) else action
+    if not isinstance(raw, dict):
+        return ""
+    payload = raw.get("payload") if isinstance(raw.get("payload"), dict) else {}
+    if raw.get("action_type") in {"move", "travel"} and payload.get("origin") and payload.get("destination"):
+        return f"从{payload['origin']}到达{payload['destination']}"
+    return str(raw.get("target") or raw.get("action_type") or "")
 
 
 def action_place(day: DayRecord, action: LifeActionIntent) -> str:
@@ -34,6 +45,22 @@ def place_issue(day: DayRecord, action: LifeActionIntent) -> str:
         expected = action_place(day, action)
     if current and expected and current != expected:
         return f"行动地点尚未衔接：当前在{current}，此动作需要在{expected}；先确认地点或安排移动"
+    return ""
+
+
+def action_chain_place_issue(day: DayRecord, steps: list[LifeActionIntent]) -> str:
+    """每步明确执行地点；移动结果决定下一步起点，不从自然语言猜返程。"""
+    current = str(day.meta.get("current_place") or "").strip()
+    for action in steps:
+        if action.action_type not in _PHYSICAL_PLACE_ACTIONS:
+            continue
+        moving = action.action_type in {"move", "travel"}
+        expected = str(action.payload.get("origin") or "").strip() if moving else action_place(day, action)
+        if current and not expected:
+            return f"动作 {action.action_type} 缺少结构化执行地点 place"
+        if current and expected and current != expected:
+            return f"行动链地点不连续：前一步在{current}，下一步需要在{expected}；须先安排移动"
+        current = action_place(day, action) if moving else (expected or current)
     return ""
 
 
