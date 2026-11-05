@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from support import Event
+from support import Event, LifeSettings
 
 # isort: split
 
@@ -17,6 +17,7 @@ from core.runtime.tooling import (
     TOOL_PREFACE_REQUIRED_NAMES,
     TOOL_RESULT_ONLY_NAMES,
     ArgumentCheckedTool,
+    add_configured_image_channel_choices,
     guard_tool_arguments,
     install_tool_argument_checks,
     prepare_tool_argument_checks,
@@ -50,6 +51,100 @@ class ImageTool(FunctionTool):
 
 
 class ToolContractTest(unittest.IsolatedAsyncioTestCase):
+    def test_image_channel_choices_are_added_from_configuration(self):
+        settings = LifeSettings.from_dict({
+            "image_generation_config": {
+                "text_channels": [
+                    {"__template_key": "gemini", "group_name": "主线 A",
+                     "api_url": "https://one.example", "api_key": "secret-one"},
+                    {"__template_key": "gemini", "group_name": "重名",
+                     "api_url": "https://two.example", "api_key": "secret-two"},
+                    {"__template_key": "gemini", "group_name": "重名",
+                     "api_url": "https://three.example", "api_key": "secret-three"},
+                ],
+                "edit_channels": [
+                    {"__template_key": "openai", "group_name": "图生图专线",
+                     "api_url": "https://edit.example", "api_key": "secret-edit"},
+                ],
+            }
+        }).image_generation
+        tools = [
+            types.SimpleNamespace(
+                name=name,
+                parameters={"type": "object", "properties": {
+                    "image_channel": {"type": "string", "description": "配置名称"},
+                }},
+            )
+            for name in ("life_image_generate", "life_photo_suite_generate", "edit_life_image")
+        ]
+        self.assertEqual(add_configured_image_channel_choices(types.SimpleNamespace(tools=tools), settings), 3)
+        self.assertEqual(tools[0].parameters["properties"]["image_channel"]["enum"],
+                         ["", "主线 A", "图生图专线"])
+        self.assertEqual(tools[2].parameters["properties"]["image_channel"]["enum"],
+                         ["", "图生图专线"])
+        self.assertNotIn("secret-one", tools[0].parameters["properties"]["image_channel"]["description"])
+
+    def test_gif_output_choice_only_appears_when_gpt_image_26_is_configured(self):
+        settings = LifeSettings.from_dict(
+            {
+                "image_generation_config": {
+                    "text_channels": [
+                        {
+                            "__template_key": "openai",
+                            "group_name": "GPT Image 2.6（低价）",
+                            "api_url": "https://api.scywl.cc",
+                            "api_key": "private-test-key",
+                            "model": "gpt-image-2.6",
+                        }
+                    ],
+                    "edit_channels": [
+                        {
+                            "__template_key": "openai",
+                            "group_name": "普通改图",
+                            "api_url": "https://api.scywl.cc",
+                            "api_key": "private-edit-key",
+                            "model": "gpt-image-2.5",
+                        }
+                    ],
+                }
+            }
+        ).image_generation
+        tools = [
+            types.SimpleNamespace(
+                name=name,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "image_channel": {"type": "string"},
+                        "output_format": {"type": "string"},
+                        "frame_count": {"type": "integer", "maximum": 20},
+                        "frame_duration_ms": {"type": "integer"},
+                    },
+                },
+            )
+            for name in (
+                "life_image_generate",
+                "life_photo_suite_generate",
+                "edit_life_image",
+            )
+        ]
+        add_configured_image_channel_choices(types.SimpleNamespace(tools=tools), settings)
+        self.assertEqual(
+            tools[0].parameters["properties"]["output_format"]["enum"],
+            ["static", "gif"],
+        )
+        self.assertEqual(
+            tools[2].parameters["properties"]["output_format"]["enum"],
+            ["static"],
+        )
+        self.assertEqual(tools[0].parameters["properties"]["frame_count"]["minimum"], 2)
+        for tool in tools:
+            self.assertNotIn("maximum", tool.parameters["properties"]["frame_count"])
+        self.assertNotIn(
+            "private-test-key",
+            tools[0].parameters["properties"]["output_format"]["description"],
+        )
+
     def test_every_registered_tool_has_a_preface_policy(self):
         source = Path(__file__).resolve().parents[1] / "main.py"
         names = set()

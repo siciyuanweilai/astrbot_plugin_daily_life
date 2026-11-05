@@ -616,6 +616,19 @@ class PluginLifecycleTest(unittest.IsolatedAsyncioTestCase):
 
 
 class PluginToolContractTest(unittest.IsolatedAsyncioTestCase):
+    async def test_music_tool_forwards_structured_delivery_and_action(self):
+        plugin = DailyLifePlugin.__new__(DailyLifePlugin)
+        handler = AsyncMock(return_value="pending")
+        plugin.runtime = types.SimpleNamespace(life_music_generate=handler)
+        event = Event()
+        result = await plugin.tool_life_music_generate(
+            event, action="resend", delivery="file",
+        )
+        self.assertEqual(result, "pending")
+        handler.assert_awaited_once_with(
+            event, "", instrumental=False, action="resend", delivery="file",
+        )
+
     def test_runtime_contract_reports_missing_required_methods(self):
         plugin = DailyLifePlugin.__new__(DailyLifePlugin)
         plugin.runtime = types.SimpleNamespace()

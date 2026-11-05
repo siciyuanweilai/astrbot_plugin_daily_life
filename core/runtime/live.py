@@ -43,6 +43,7 @@ from .channel import suite as _part_runtime_photo_suite_media_component
 from .channel.audio import RuntimeVoiceMediaComponent
 from .channel.image import RuntimeImageMediaComponent
 from .channel.motion import RuntimeVideoMediaComponent
+from .channel.melody import RuntimeMusicMediaComponent
 from .channel.stylist import RuntimeStyleCatalogComponent
 from .channel.summary import RuntimeMediaCommonComponent
 from .choice.apply import ResponseGateApplyComponent
@@ -1201,6 +1202,7 @@ class DailyLifeRuntime:
         empty_retries: int = 1,
         primary_provider_id: str = "",
         propagate_non_retryable: bool = False,
+        propagate_failures: bool = False,
         timeout_seconds: float | None = None,
         system_prompt: str | None = None,
     ) -> str:
@@ -1213,6 +1215,7 @@ class DailyLifeRuntime:
                 empty_retries=empty_retries,
                 primary_provider_id=primary_provider_id,
                 propagate_non_retryable=propagate_non_retryable,
+                propagate_failures=propagate_failures,
                 timeout_seconds=timeout_seconds,
                 system_prompt=system_prompt,
             ),
@@ -5231,6 +5234,12 @@ class DailyLifeRuntime:
         "life_voice_generate",
     )
 
+    life_music_generate = ComponentCall(
+        "_part_runtime_music_media_component",
+        RuntimeMusicMediaComponent,
+        "life_music_generate",
+    )
+
     _media_keep_days = staticmethod(MediaFileCleanupComponent._media_keep_days)
 
     maintain_plugin_file_cache = ComponentCall(
@@ -6559,6 +6568,10 @@ class DailyLifeRuntime:
     @cached_property
     def _part_runtime_voice_media_component(self):
         return RuntimeVoiceMediaComponent(self)
+
+    @cached_property
+    def _part_runtime_music_media_component(self):
+        return RuntimeMusicMediaComponent(self)
 
     @cached_property
     def _part_media_file_cleanup_component(self):

@@ -10,6 +10,7 @@ from ...clock import now as life_now
 from ...config.options.cast import as_bool
 from ...life.tools import build_time_context, timeline_item_datetime
 from ...sources.events import is_chat_message_event
+from ...sources.botidentity import event_bot_id
 from .procontext import ProactiveSyntheticEvent
 
 
@@ -261,7 +262,7 @@ class ProactiveScopeComponent:
 
     def _proactive_is_self_message(self, event: Any) -> bool:
         sender_id = self.context._safe_event_call(event, "get_sender_id")
-        self_id = self.context._safe_event_call(event, "get_self_id")
+        self_id = event_bot_id(event, context=getattr(self.context, "context", None))
         if sender_id and self_id and sender_id == self_id:
             return True
         message_obj = getattr(event, "message_obj", None)

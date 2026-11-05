@@ -18,6 +18,7 @@ from ...life.surroundings import (
 from ..expression import remember_expression_context
 from ..expressionlearning import bounded_profiles, expose_profiles, general_profiles
 from ..markers import LOG_PREFIX
+from ..parallel import gather_owned
 
 
 class LayerChainComponentContext(Protocol):
@@ -401,7 +402,10 @@ class LayerChainComponent:
                 kind: [] if kind == "chat_details" else [item for _, _, item in values[: max(0, limits[kind])]]
                 for kind, values in groups.items()
             }
-            logger.debug("[上下文注入] 记忆语义排序超时，本轮使用已有记录顺序")
+            logger.debug(
+                f"[上下文注入] 记忆语义排序超时（本轮预算={self.context._CHAT_MEMORY_RANK_BUDGET_SECONDS:g}s），"
+                "本轮使用已有记录顺序；有界共享向量请求可继续补齐缓存"
+            )
         world_context = format_hidden_world_context(
             selected["relationships"],
             selected["places"],
@@ -592,29 +596,24 @@ class LayerChainComponent:
             if callable(domain_context_builder)
             else asyncio.sleep(0, result="")
         )
-        (
-            snapshot,
-            recent_video,
-            heuristic_memory,
-            memos_context,
-            domain_context,
-        ) = await asyncio.gather(
-            snapshot_task,
-            recent_video_task,
-            heuristic_task,
-            memos_task,
-            domain_task,
+        async def select_snapshot():
+            # 只等待实际依赖的生活快照；长期记忆、视频和备忘仍可并行读取。
+            snapshot, domain_context = await gather_owned(snapshot_task, domain_task)
+            snapshot["chat_domain_context"] = domain_context
+            person_facts, memory_contexts = await gather_owned(
+                self.context._build_person_fact_injection_context(
+                    event, relationships=list(snapshot.get("relationships") or []),
+                ),
+                self._select_life_memory_contexts(snapshot, data, event_message),
+            )
+            return snapshot, person_facts, memory_contexts
+
+        prepared, recent_video, heuristic_memory, memos_context = await gather_owned(
+            select_snapshot(), recent_video_task, heuristic_task, memos_task,
         )
+        snapshot, person_facts, memory_contexts = prepared
         environments, decisions, visibility = self._scope_snapshot_items(
             snapshot, event
-        )
-        snapshot["chat_domain_context"] = domain_context
-        person_facts, memory_contexts = await asyncio.gather(
-            self.context._build_person_fact_injection_context(
-                event,
-                relationships=list(snapshot.get("relationships") or []),
-            ),
-            self._select_life_memory_contexts(snapshot, data, event_message),
         )
         world_context, experience_context = memory_contexts
         cognition_context = self.context._format_cognition_context(snapshot)

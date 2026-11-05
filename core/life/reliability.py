@@ -5,6 +5,21 @@ TRANSIENT_PROVIDER_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
 NON_RETRYABLE_PROVIDER_STATUSES = frozenset({400, 402, 403, 404, 405, 409, 422})
 
 
+def request_failure_summary(
+    exc: BaseException,
+    *,
+    operation: str,
+    phase: str,
+    timeout_seconds: float,
+    elapsed_seconds: float,
+) -> str:
+    """记录可定位的请求信息，不输出可能含凭据或正文的异常字符串。"""
+    return (
+        f"{type(exc).__name__}; operation={operation}; phase={phase}; "
+        f"timeout={timeout_seconds:g}s; elapsed={elapsed_seconds:.2f}s"
+    )
+
+
 class NonRetryableProviderError(RuntimeError):
     """表示继续重试也不会恢复的 Provider 请求错误。"""
 

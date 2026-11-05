@@ -478,6 +478,7 @@ JSON 只能包含 reply_text。{CORE_MEDIA_REPLY_RULES}
             fixed += "\n" + MEDIA_REPLY_PERSPECTIVE_RULE
             dynamic = (
                 f"{media_reply_context_text(source_event, persona)}\n"
+                "交付角色：当前角色是发送方，当前聊天对象是接收方。\n"
                 f"送达内容：{str(media_name or '生活媒体').strip()}\n"
                 f"用户原本的要求：{str(request_text or '').strip()}\n"
                 f"实际送达结果：{str(delivery_text or '').strip()}\n"

@@ -15,6 +15,8 @@ from astrbot.core.agent.message import Message, TextPart
 from astrbot.core.agent.tool import FunctionTool
 
 from ..life.wardrobe import OUTFIT_SCENE_CATEGORY_ENUM
+from ..media.picture.openai import supports_animated_gif
+from ..media.picture.routes import channel_label
 
 # 本地更新和短账号操作只需在实际结果产生后回复一次。
 TOOL_RESULT_ONLY_NAMES = frozenset(
@@ -55,6 +57,7 @@ TOOL_PREFACE_REQUIRED_NAMES = frozenset(
         "life_style_generate",
         "life_style_feedback",
         "life_video_generate",
+        "life_music_generate",
         "life_video_understand",
         "life_video_note",
         "life_text_forward",
@@ -223,6 +226,14 @@ def tool_argument_parameters(
         if isinstance(scene, dict):
             scene["enum"] = OUTFIT_SCENE_CATEGORY_ENUM.split(" | ")
     local_handler = tool.handler is not None or bool(tool.handler_module_path)
+    if tool.name == "life_music_generate":
+        for name, choices in {
+            "action": ["generate", "resend"],
+            "delivery": ["voice", "file"],
+        }.items():
+            field = parameters.get("properties", {}).get(name)
+            if isinstance(field, dict):
+                field["enum"] = choices
     call_parameters = inspect.signature(tool.call).parameters.values()
     fixed_call = not any(
         param.kind is inspect.Parameter.VAR_KEYWORD for param in call_parameters
@@ -359,6 +370,85 @@ def install_tool_argument_checks(toolset: Any) -> int:
         adder(ArgumentCheckedTool(tool))
         installed += 1
     return installed
+
+
+def add_configured_image_channel_choices(toolset: Any, settings: Any) -> int:
+    """Expose configured display names as structured tool choices, not prompt rules."""
+    tools = list(getattr(toolset, "tools", []) or [])
+    if not tools:
+        return 0
+    updated = 0
+    modes_by_tool = {
+        "life_image_generate": ("text", "edit"),
+        "life_photo_suite_generate": ("text", "edit"),
+        "edit_life_image": ("edit",),
+    }
+    for tool in tools:
+        modes = modes_by_tool.get(str(getattr(tool, "name", "") or ""))
+        if not modes:
+            continue
+        parameters = getattr(tool, "parameters", None)
+        properties = parameters.get("properties") if isinstance(parameters, dict) else None
+        channel_property = properties.get("image_channel") if isinstance(properties, dict) else None
+        if not isinstance(channel_property, dict):
+            continue
+        choices: list[str] = []
+        ambiguous: set[str] = set()
+        for mode in modes:
+            channels = (
+                getattr(settings, "edit_channels", []) or []
+                if mode == "edit"
+                else getattr(settings, "text_channels", []) or []
+            )
+            counts: dict[str, int] = {}
+            for index, channel in enumerate(channels, start=1):
+                label = channel_label(channel, mode, index)
+                if (
+                    not str(getattr(channel, "api_url", "") or "").strip()
+                    or not str(getattr(channel, "api_key", "") or "").strip()
+                ):
+                    continue
+                counts[label] = counts.get(label, 0) + 1
+            ambiguous.update(label for label, count in counts.items() if count > 1)
+            choices.extend(label for label, count in counts.items() if count == 1)
+        choices = list(dict.fromkeys(label for label in choices if label not in ambiguous))
+        channel_property["enum"] = ["", *choices]
+        if choices:
+            channel_property["description"] = (
+                "仅当用户明确指定某个图片接口分组时，逐字填写一个配置名称；"
+                "留空使用自动选择。可选名称：" + "、".join(choices)
+            )
+        else:
+            channel_property["description"] = (
+                "仅当用户明确指定某个图片接口分组时填写配置名称；当前模式没有可唯一选择的命名通道，留空使用自动选择。"
+            )
+        output_property = properties.get("output_format")
+        if isinstance(output_property, dict):
+            gif_available = any(
+                supports_animated_gif(channel)
+                for mode in modes
+                for channel in (
+                    getattr(settings, "edit_channels", []) or []
+                    if mode == "edit"
+                    else getattr(settings, "text_channels", []) or []
+                )
+                if str(getattr(channel, "api_url", "") or "").strip()
+                and str(getattr(channel, "api_key", "") or "").strip()
+            )
+            output_property["enum"] = ["static", "gif"] if gif_available else ["static"]
+            output_property["description"] = (
+                "输出格式。选择 gif 会按所选或可用的 GPT Image 2.6 通道生成多帧 GIF；"
+                "否则输出静态图片。"
+            )
+        frame_count_property = properties.get("frame_count")
+        if isinstance(frame_count_property, dict):
+            frame_count_property["minimum"] = 2
+            frame_count_property.pop("maximum", None)
+        frame_duration_property = properties.get("frame_duration_ms")
+        if isinstance(frame_duration_property, dict):
+            frame_duration_property.update(minimum=20, maximum=2000)
+        updated += 1
+    return updated
 
 
 async def prepare_tool_argument_checks(toolset: Any) -> int:

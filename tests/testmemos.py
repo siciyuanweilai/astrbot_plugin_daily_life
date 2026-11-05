@@ -427,7 +427,7 @@ class MemOSTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["messages"][0]["role"], "user")
         self.assertIn("同步已确认的长期条目。", payload["messages"][1]["content"])
         self.assertIn("阿林周末想一起看展", payload["messages"][1]["content"])
-        self.assertFalse(payload["async_mode"])
+        self.assertTrue(payload["async_mode"])
         self.assertNotIn("asyncMode", payload)
         self.assertNotIn("tags", payload)
         self.assertNotIn("info", payload)
@@ -465,7 +465,7 @@ class MemOSTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn(
             "行为反馈：用户希望必要时改用文字", payload["messages"][1]["content"]
         )
-        self.assertFalse(payload["async_mode"])
+        self.assertTrue(payload["async_mode"])
         self.assertNotIn("source", payload)
 
     async def test_runtime_schedules_selected_items_in_background(self):
@@ -594,7 +594,7 @@ class MemOSTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(saved)
         payload = service.client.add_payloads[0]
         self.assertEqual(payload["user_id"], "aiocqhttp:FriendMessage:10001")
-        self.assertFalse(payload["async_mode"])
+        self.assertTrue(payload["async_mode"])
         self.assertIn(
             "明日备忘录：与【阿林】的约定：明天去吃火锅",
             payload["messages"][1]["content"],

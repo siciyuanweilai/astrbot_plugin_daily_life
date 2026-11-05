@@ -403,9 +403,13 @@ class MemosComponent:
         ]
         if not compact_items:
             return False
-        marker = marker or "|".join(compact_items[:3])
         key = HostedMemOSService.stable_hash(
-            f"{meta.get('session_id', '')}:{reason}:{marker}", prefix="memos_items"
+            json.dumps(
+                {"user": service.resolve_user_id(meta), "reason": reason,
+                 "marker": marker, "items": compact_items, "message": user_message},
+                ensure_ascii=False, sort_keys=True,
+            ),
+            prefix="memos_items",
         )
         scheduler = getattr(self.context, "_schedule_background_task", None)
         coro = self.context.sync_memos_selected_items(

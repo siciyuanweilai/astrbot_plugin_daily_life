@@ -22,6 +22,7 @@ from ...prompts import CORE_MEDIA_REPLY_RULES, cache_friendly_prompt
 from ..delivery import BackgroundTextMode
 from ..locks import operation_lock
 from ..markers import LOG_PREFIX
+from .animation import resolve_gif_request
 from .perspective import (
     MEDIA_REPLY_PERSPECTIVE_RULE,
     bind_media_reply_context,
@@ -408,6 +409,10 @@ class RuntimePhotoSuiteMediaComponent:
         retry_indexes: list[int] | None = None,
         resolution: str = "",
         provider: str = "",
+        channel_name: str = "",
+        output_format: str = "",
+        frame_count: int = 9,
+        frame_duration_ms: int = 200,
         historical_target: str = "",
         historical_period: str = "",
         historical_time: str = "",
@@ -494,6 +499,13 @@ class RuntimePhotoSuiteMediaComponent:
                     manifest.get("participants")
                 )
                 provider = requested_image_provider(manifest.get("protocol")) or provider
+                channel_name = str(manifest.get("channel_name") or channel_name).strip()
+                if "output_format" in manifest:
+                    output_format = str(manifest.get("output_format") or "").strip()
+                if "frame_count" in manifest:
+                    frame_count = int(manifest.get("frame_count") or 9)
+                if "frame_duration_ms" in manifest:
+                    frame_duration_ms = int(manifest.get("frame_duration_ms") or 200)
             else:
                 source_message_id = self.context._event_message_id(event)
                 if source_message_id:
@@ -524,6 +536,12 @@ class RuntimePhotoSuiteMediaComponent:
                 prompt, _, aspect_ratio = self.context._resolve_image_prompt(event, prompt)
                 if not prompt:
                     return "没有收到套图画面要求。"
+                if output_format == "gif":
+                    request = await resolve_gif_request(self.context, event, prompt)
+                    prompt = request.prompt
+                    aspect_ratio = request.aspect_ratio
+                    frame_count = request.frame_count
+                    frame_duration_ms = request.frame_duration_ms
                 if route == "group":
                     participant_ids = await resolve_group_participants(
                         self.context, event, participant_ids
@@ -599,6 +617,10 @@ class RuntimePhotoSuiteMediaComponent:
                     "resolution": resolution,
                     "subject_route": route,
                     "protocol": provider,
+                    "channel_name": str(channel_name or "").strip(),
+                    "output_format": str(output_format or "").strip().lower(),
+                    "frame_count": int(frame_count or 9),
+                    "frame_duration_ms": int(frame_duration_ms or 200),
                     "participants": participant_ids,
                     "identity_profiles": await self.context._resolve_life_identity_profiles(
                         event, route
@@ -1177,6 +1199,10 @@ class RuntimePhotoSuiteMediaComponent:
         aspect_ratio = str(manifest.get("aspect_ratio") or "").strip()
         resolution = str(manifest.get("resolution") or "").strip().upper()
         protocol = requested_image_provider(manifest.get("protocol"))
+        channel_name = str(manifest.get("channel_name") or "").strip()
+        output_format = str(manifest.get("output_format") or "").strip().lower()
+        frame_count = int(manifest.get("frame_count") or 9)
+        frame_duration_ms = int(manifest.get("frame_duration_ms") or 200)
         reference = str(manifest.get("reference_path") or "").strip()
         identity_profiles = self.context._current_character_identity_profiles(
             manifest.get("identity_profiles")
@@ -1202,6 +1228,12 @@ class RuntimePhotoSuiteMediaComponent:
                 group_options["resolution"] = resolution
             if protocol:
                 group_options["protocol"] = protocol
+            if channel_name:
+                group_options["channel_name"] = channel_name
+            if output_format:
+                group_options["output_format"] = output_format
+                group_options["frame_count"] = frame_count
+                group_options["frame_duration_ms"] = frame_duration_ms
             if identity_profiles:
                 group_options["identity_profiles"] = identity_profiles
             return await generator(
@@ -1220,6 +1252,10 @@ class RuntimePhotoSuiteMediaComponent:
                 resolution,
                 preserve_reference_ratio=not bool(aspect_ratio),
                 protocol=protocol,
+                channel_name=channel_name,
+                output_format=output_format,
+                frame_count=frame_count,
+                frame_duration_ms=frame_duration_ms,
                 identity_profile=current_identity_profile or "",
             )
         return await self.context.generate_life_image_asset(
@@ -1230,6 +1266,10 @@ class RuntimePhotoSuiteMediaComponent:
             contains_character=route == "current_character",
             trusted_identity=route == "current_character",
             protocol=protocol,
+            channel_name=channel_name,
+            output_format=output_format,
+            frame_count=frame_count,
+            frame_duration_ms=frame_duration_ms,
             identity_profile=current_identity_profile,
         )
 

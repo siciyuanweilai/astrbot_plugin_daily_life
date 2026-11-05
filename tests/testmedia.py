@@ -557,6 +557,64 @@ class GeminiImageServiceTest(unittest.IsolatedAsyncioTestCase):
         ):
             await service.generate_image("雨夜生活照", model="missing-model")
 
+    async def test_generate_image_uses_only_the_exact_named_channel(self):
+        output_bytes = b"\x89PNG\r\n\x1a\noutput"
+        calls = []
+
+        class _ImageSession:
+            closed = False
+
+            def post(self, url, json=None, data=None, headers=None, timeout=None):
+                calls.append(url)
+                if url.startswith("https://selected.example/"):
+                    return _Response(500, text="selected channel failed")
+                return _Response(
+                    payload={"data": [{"b64_json": base64.b64encode(output_bytes).decode("ascii")}]}
+                )
+
+        settings = LifeSettings.from_dict({
+            "image_generation_config": {
+                "enabled": True,
+                "text_channels": [
+                    {"__template_key": "openai", "group_name": "默认通道",
+                     "api_url": "https://default.example/v1", "api_key": "default-key"},
+                    {"__template_key": "openai", "group_name": "指定通道",
+                     "api_url": "https://selected.example/v1", "api_key": "selected-key"},
+                ],
+            }
+        }).image_generation
+        service = GeminiImageService(settings, Path(tempfile.mkdtemp()))
+
+        async def get_session():
+            return _ImageSession()
+
+        service._get_session = get_session
+        with self.assertRaisesRegex(RuntimeError, "指定通道.*失败"):
+            await service.generate_image("雨夜生活照", channel_name="指定通道")
+        self.assertEqual(calls, ["https://selected.example/v1/images/generations"])
+
+    async def test_named_channel_requires_an_exact_unique_match_and_provider_match(self):
+        settings = LifeSettings.from_dict({
+            "image_generation_config": {
+                "enabled": True,
+                "text_channels": [
+                    {"__template_key": "gemini", "group_name": "重复名称",
+                     "api_url": "https://one.example", "api_key": "one"},
+                    {"__template_key": "gemini", "group_name": "重复名称",
+                     "api_url": "https://two.example", "api_key": "two"},
+                    {"__template_key": "openai", "group_name": "OpenAI 专线",
+                     "api_url": "https://three.example", "api_key": "three"},
+                ],
+            }
+        }).image_generation
+        service = GeminiImageService(settings, Path(tempfile.mkdtemp()))
+        with self.assertRaisesRegex(ValueError, "重复，无法唯一选择"):
+            await service._request_routes("text", channel_name="重复名称")
+        with self.assertRaisesRegex(ValueError, "接口类型不匹配"):
+            await service._request_routes("text", channel_name="OpenAI 专线", protocol="gemini")
+        with self.assertRaisesRegex(ValueError, "没有找到名称为"):
+            await service._request_routes("text", channel_name="openai 专线")
+
     async def test_generate_image_filters_channels_by_explicit_protocol(self):
         output_bytes = b"\x89PNG\r\n\x1a\noutput"
         calls = []

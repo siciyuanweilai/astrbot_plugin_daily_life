@@ -235,8 +235,8 @@
               <div class="emoji-tools">
                 <div class="emoji-action-tools">
                   <button id="emojiImportButton" type="button">导入</button>
-                  <button id="emojiBackupButton" type="button">备份</button>
-                  <button id="emojiRestoreButton" type="button">还原</button>
+                  <button id="emojiBackupButton" type="button" disabled data-lock-disabled="true" title="暂无表情素材，无法备份">备份</button>
+                  <button id="emojiRestoreButton" type="button">恢复</button>
                   <input id="emojiRestoreFile" type="file" accept=".zip,application/zip,application/x-zip-compressed" hidden>
                   <button id="emojiManageButton" class="emoji-manage-button" type="button">管理</button>
                   <span id="emojiSelectedSummary" class="emoji-selected-summary" hidden>已选 0 条</span>
@@ -263,6 +263,11 @@
                 </div>
               </div>
             </div>
+            <section id="emojiRestoreProgress" aria-label="表情恢复进度" hidden>
+              <p class="section-hint" data-restore-status role="status" aria-live="polite"></p>
+              <button type="button" data-restore-retry hidden>重试失败项</button>
+              <details hidden><summary>查看恢复失败的素材</summary><ul></ul></details>
+            </section>
             <div id="emojiStats" class="emoji-stats"></div>
             <div id="emojiList" class="emoji-list"></div>
           </article>
@@ -310,8 +315,8 @@
                 <div class="emoji-action-tools closet-action-tools">
                   <button id="closetGenerateButton" type="button">创意生成</button>
                   <button id="closetImportButton" type="button">导入</button>
-                  <button id="closetBackupButton" type="button">备份</button>
-                  <button id="closetRestoreButton" type="button">还原</button>
+                  <button id="closetBackupButton" type="button" disabled data-lock-disabled="true" title="暂无衣橱素材，无法备份">备份</button>
+                  <button id="closetRestoreButton" type="button">恢复</button>
                   <input id="closetImportFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp" multiple hidden>
                   <input id="closetRestoreFile" type="file" accept=".zip,application/zip,application/x-zip-compressed" hidden>
                   <button id="closetManageButton" class="emoji-manage-button closet-manage-button" type="button">管理</button>
@@ -347,6 +352,11 @@
                 </div>
               </div>
             </div>
+            <section id="closetRestoreProgress" aria-label="衣橱恢复进度" hidden>
+              <p class="section-hint" data-restore-status role="status" aria-live="polite"></p>
+              <button type="button" data-restore-retry hidden>重试失败项</button>
+              <details hidden><summary>查看恢复失败的素材</summary><ul></ul></details>
+            </section>
             <div id="closetStats" class="closet-stats"></div>
             <div id="closetList" class="closet-list"></div>
           </article>

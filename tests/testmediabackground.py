@@ -655,6 +655,22 @@ class MediaBackgroundTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCase)
         self.assertEqual(first.sent_messages[0].items, ["你今天穿什么呀？我还不知道呢。"])
         self.assertIn("friend_outfit", self.runtime.call_text_model.call_args.args[1])
 
+    async def test_image_failure_text_preserves_status_for_background_delivery(self):
+        from core.media.picture.results import ImageResultError
+
+        self.prepare_failure_reply("这次没拍成。")
+        first = self.event(text="生成动图")
+        component = self.runtime._part_runtime_image_media_component
+        result = component._image_tool_failure_text("图片生成", ImageResultError("图片生成接口请求失败（HTTP 400）。"))
+        self.assertEqual(result.status, "failed")
+        marker = {"status": "pending", "action": "generate"}
+        with patch.object(image_module.logger, "warning") as logs:
+            await component._background_image_delivery(first, AsyncMock(return_value=result), marker, "life_image_generate")
+        self.assertEqual(marker["status"], "failed")
+        self.assertIn("返回状态=failed", str(logs.call_args_list))
+        self.assertNotIn("未提供", str(logs.call_args_list))
+        self.assertIn("HTTP 400", self.runtime.call_text_model.call_args.args[1])
+
     async def test_failure_reply_does_not_block_new_chat_or_send_after_new_message(self):
         self.prepare_failure_reply()
 

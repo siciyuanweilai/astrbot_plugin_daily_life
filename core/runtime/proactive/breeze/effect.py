@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import datetime
 import json
+import math
+import time
 import uuid
 from typing import Any
 
@@ -10,6 +12,7 @@ from astrbot.api import logger
 
 from ....clock import now as life_now
 from ....life.tools import extract_json_from_text
+from ....life.reliability import ProviderCircuit, request_failure_summary
 from ....models import BehaviorFeedbackRecord, BehaviorSceneRecord, ReplyEffectRecord
 from ....prompts import CORE_JSON_OUTPUT_RULES, cache_friendly_prompt
 from ...markers import LOG_PREFIX
@@ -50,8 +53,14 @@ class AirEffectComponentContext(Protocol):
 
 
 class AirEffectComponent:
+    # 效果观察由后台调度；不占本轮聊天前台等待预算。
+    _EFFECT_TIMEOUT_SECONDS = 15.0
+    _EFFECT_CLEANUP_SECONDS = 1.0
+
     def __init__(self, context: AirEffectComponentContext) -> None:
         self.context = context
+        self._effect_circuit = ProviderCircuit(threshold=2, cooldown_seconds=60.0)
+        self._effect_observations: set[int] = set()
 
     _AIR_FEEDBACK_WINDOW_SECONDS = 30 * 60
 
@@ -247,27 +256,17 @@ class AirEffectComponent:
     async def _classify_reply_effect(
         self, watch: dict[str, Any], event: Any
     ) -> dict[str, Any]:
+        neutral = {
+            "outcome": "neutral", "confidence": 0.0, "warmth": 50,
+            "continuity": 50, "friction": 0,
+            "observed": False,
+            "reason": "语义证据不足，按自然接续处理",
+        }
         source = str(watch.get("source") or "proactive_reply").strip()
         provider_getter = getattr(self.context, "_get_proactive_provider", None)
         if not callable(provider_getter):
-            return {
-                "outcome": "neutral",
-                "confidence": 0.0,
-                "warmth": 50,
-                "continuity": 50,
-                "friction": 0,
-                "reason": "没有可用的语义评估模型",
-            }
-        provider = await provider_getter()
-        if not provider:
-            return {
-                "outcome": "neutral",
-                "confidence": 0.0,
-                "warmth": 50,
-                "continuity": 50,
-                "friction": 0,
-                "reason": "没有可用的语义评估模型",
-            }
+            return {**neutral, "reason": "没有可用的语义评估模型"}
+        provider_id = str(getattr(self.context.config.proactive, "provider", "") or "")
         fixed = f"""评估一条回复之后，用户的新消息体现出的真实互动效果。
 
 JSON 输出要求：
@@ -291,26 +290,44 @@ Bot 上一条回复：{str(watch.get('reply_text') or '').strip()}
 用户后续消息：{str(getattr(event, 'message_str', '') or '').strip() or '仅包含媒体'}"""
         dynamic += "\n本轮可评价的表达经验：" + json.dumps(watch.get("expression_profiles", []), ensure_ascii=False)
         session_id = f"daily_life_reply_effect_{uuid.uuid4().hex[:8]}"
-        provider_id = str(getattr(self.context.config.proactive, "provider", "") or "")
+        started = time.monotonic()
+        phase = "provider_lookup"
+        circuit_key = provider_id or "default_lookup"
         try:
-            raw = await asyncio.wait_for(
-                self.context.call_text_model(
+            async with asyncio.timeout(self._EFFECT_TIMEOUT_SECONDS):
+                provider = await provider_getter()
+                if not provider:
+                    return {**neutral, "reason": "没有可用的语义评估模型"}
+                # 留空时也按实际实例和模型隔离，换模型后可以立即恢复评估。
+                try:
+                    meta = provider.meta()
+                    identity = f"{meta.id}:{getattr(meta, 'model', '')}"
+                except Exception:
+                    identity = str(id(provider))
+                circuit_key = f"{provider_id}:{identity}"
+                if self._effect_circuit.is_open(circuit_key):
+                    return {**neutral, "reason": "语义评估暂时退避，未取得互动效果证据"}
+                phase = "model_response"
+                raw = await self.context.call_text_model(
                     provider,
                     cache_friendly_prompt(fixed, dynamic),
                     session_id,
                     empty_retries=0,
                     primary_provider_id=provider_id,
-                ),
-                timeout=5.0,
-            )
+                    timeout_seconds=self._EFFECT_TIMEOUT_SECONDS,
+                    propagate_failures=True,
+                )
+            phase = "response_validation"
             payload = extract_json_from_text(raw)
-            if not isinstance(payload, dict):
+            if not isinstance(payload, dict) or payload.get("outcome") not in ("positive", "neutral", "negative"):
                 raise ValueError("模型未返回有效对象")
             outcome = str(payload.get("outcome") or "neutral").strip().lower()
             if outcome not in {"positive", "neutral", "negative"}:
                 outcome = "neutral"
             try:
-                confidence = max(0.0, min(float(payload.get("confidence") or 0), 1.0))
+                raw_confidence = payload.get("confidence")
+                confidence = float(raw_confidence or 0) if not isinstance(raw_confidence, bool) else 0.0
+                confidence = max(0.0, min(confidence, 1.0)) if math.isfinite(confidence) else 0.0
             except (TypeError, ValueError):
                 confidence = 0.0
             if confidence < 0.72:
@@ -319,9 +336,10 @@ Bot 上一条回复：{str(watch.get('reply_text') or '').strip()}
             def level(name: str, default: int) -> int:
                 try:
                     return max(0, min(int(payload.get(name)), 100))
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     return default
 
+            self._effect_circuit.record_success(circuit_key)
             return {
                 "outcome": outcome,
                 "confidence": confidence,
@@ -331,19 +349,24 @@ Bot 上一条回复：{str(watch.get('reply_text') or '').strip()}
                 "reason": str(payload.get("reason") or "").strip()
                 or "后续互动语义评估完成",
                 "expression_effects": payload.get("expression_effects", []),
+                "observed": True,
             }
         except Exception as exc:
-            logger.debug(f"{LOG_PREFIX} 回复效果语义评估跳过：{type(exc).__name__}: {exc}")
-            return {
-                "outcome": "neutral",
-                "confidence": 0.0,
-                "warmth": 50,
-                "continuity": 50,
-                "friction": 0,
-                "reason": "语义证据不足，按自然接续处理",
-            }
+            opened = self._effect_circuit.record_failure(circuit_key)
+            detail = request_failure_summary(
+                exc, operation="reply_effect", phase=phase,
+                timeout_seconds=self._EFFECT_TIMEOUT_SECONDS, elapsed_seconds=time.monotonic() - started,
+            )
+            logger.debug(
+                f"{LOG_PREFIX} 回复效果语义评估跳过：{detail}; "
+                f"provider={provider_id or 'default'}; cooldown={60 if opened else 0}s"
+            )
+            return neutral
         finally:
-            await self.context.close_text_session(session_id)
+            try:
+                await asyncio.wait_for(self.context.close_text_session(session_id), self._EFFECT_CLEANUP_SECONDS)
+            except Exception as exc:
+                logger.debug(f"{LOG_PREFIX} 回复效果会话清理未完成：{type(exc).__name__}")
 
     async def _learn_repeated_reply_effect(
         self,
@@ -502,82 +525,92 @@ Bot 上一条回复：{str(watch.get('reply_text') or '').strip()}
         # 群聊中别人的接话不能验证面向某位对象的表达偏好。
         watch["expression_profiles"] = [raw for raw in watch.get("expression_profiles", [])
                                         if not raw.get("profile_id") or raw.get("profile_id") == sender]
-        assessment = await self._classify_reply_effect(watch, event)
-        watch["feedback_text"] = str(getattr(event, "message_str", "") or "")
-        await settle_expression_feedback(self.context.archive, watch, assessment, self.context._event_message_id(event))
-        outcome = str(assessment["outcome"])
-        confidence = float(assessment["confidence"])
-        turns, seconds, reason = self._proactive_continuation_window(event, now, key)
-        if self.context._proactive_feedback_watches().get(key) is watch:
-            self.context._proactive_feedback_watches().pop(key, None)
-        marker = getattr(self.context, "_response_gate_mark_continuation", None)
-        if (
-            is_proactive
-            and outcome == "positive"
-            and callable(marker)
-            and turns > 0
-        ):
-            marker(
-                self.context._response_gate_scope_key(event),
-                now,
-                reason=reason,
-                turns=turns,
-                seconds=seconds,
+        identity = id(watch)
+        if identity in self._effect_observations:
+            return
+        self._effect_observations.add(identity)
+        try:
+            assessment = await self._classify_reply_effect(watch, event)
+            if not assessment.get("observed", True):
+                # 未取得证据时不把基础设施故障记成中性学习，原观察窗口自然过期。
+                return
+            watch["feedback_text"] = str(getattr(event, "message_str", "") or "")
+            await settle_expression_feedback(self.context.archive, watch, assessment, self.context._event_message_id(event))
+            outcome = str(assessment["outcome"])
+            confidence = float(assessment["confidence"])
+            turns, seconds, reason = self._proactive_continuation_window(event, now, key)
+            if self.context._proactive_feedback_watches().get(key) is watch:
+                self.context._proactive_feedback_watches().pop(key, None)
+            marker = getattr(self.context, "_response_gate_mark_continuation", None)
+            if (
+                is_proactive
+                and outcome == "positive"
+                and callable(marker)
+                and turns > 0
+            ):
+                marker(
+                    self.context._response_gate_scope_key(event),
+                    now,
+                    reason=reason,
+                    turns=turns,
+                    seconds=seconds,
+                )
+            state = self.context._get_proactive_air_state(key)
+            if is_proactive and outcome == "positive":
+                state["last_effect"] = "positive"
+                state["quiet_count"] = 0
+                state["silence_inertia"] = 0
+                state["silence_reason"] = ""
+                state["backoff_until"] = None
+                state["wait_until"] = None
+            elif is_proactive and outcome == "negative":
+                state["last_effect"] = "negative"
+                state["quiet_count"] = int(state.get("quiet_count") or 0) + 1
+                state["silence_inertia"] = min(
+                    100, int(state.get("silence_inertia") or 0) + 24
+                )
+                state["silence_reason"] = str(assessment["reason"])
+                state["wait_until"] = None
+                backoff_seconds = self.context._air_backoff_seconds(
+                    max(state["quiet_count"], self.context._AIR_BACKOFF_START_COUNT)
+                )
+                state["backoff_until"] = (
+                    now + datetime.timedelta(seconds=backoff_seconds)
+                    if backoff_seconds > 0
+                    else None
+                )
+            action, scene = self.context._reply_effect_source_labels(source)
+            feedback = str(assessment["reason"])
+            if outcome in {"positive", "negative"}:
+                await self._save_proactive_behavior_feedback(
+                    key,
+                    date=now.strftime("%Y-%m-%d"),
+                    target_id=key,
+                    action=action,
+                    result=outcome,
+                    feedback=feedback,
+                    reason="语义评估置信度达到学习阈值",
+                    score=1.0 if outcome == "positive" else -1.0,
+                    scene=scene,
+                    source=source,
+                )
+            await self._update_reply_effect_watch(
+                watch,
+                outcome=outcome,
+                evidence=feedback,
+                warmth=int(assessment["warmth"]),
+                continuity=int(assessment["continuity"]),
+                friction=int(assessment["friction"]),
             )
-        state = self.context._get_proactive_air_state(key)
-        if is_proactive and outcome == "positive":
-            state["last_effect"] = "positive"
-            state["quiet_count"] = 0
-            state["silence_inertia"] = 0
-            state["silence_reason"] = ""
-            state["backoff_until"] = None
-            state["wait_until"] = None
-        elif is_proactive and outcome == "negative":
-            state["last_effect"] = "negative"
-            state["quiet_count"] = int(state.get("quiet_count") or 0) + 1
-            state["silence_inertia"] = min(
-                100, int(state.get("silence_inertia") or 0) + 24
-            )
-            state["silence_reason"] = str(assessment["reason"])
-            state["wait_until"] = None
-            backoff_seconds = self.context._air_backoff_seconds(
-                max(state["quiet_count"], self.context._AIR_BACKOFF_START_COUNT)
-            )
-            state["backoff_until"] = (
-                now + datetime.timedelta(seconds=backoff_seconds)
-                if backoff_seconds > 0
-                else None
-            )
-        action, scene = self.context._reply_effect_source_labels(source)
-        feedback = str(assessment["reason"])
-        if outcome in {"positive", "negative"}:
-            await self._save_proactive_behavior_feedback(
+            pacing = getattr(self.context, "_note_chat_pacing_effect", None)
+            if callable(pacing):
+                pacing(key, outcome)
+            await self._learn_repeated_reply_effect(
                 key,
-                date=now.strftime("%Y-%m-%d"),
-                target_id=key,
-                action=action,
-                result=outcome,
-                feedback=feedback,
-                reason="语义评估置信度达到学习阈值",
-                score=1.0 if outcome == "positive" else -1.0,
-                scene=scene,
                 source=source,
+                outcome=outcome,
+                confidence=confidence,
+                now=now,
             )
-        await self._update_reply_effect_watch(
-            watch,
-            outcome=outcome,
-            evidence=feedback,
-            warmth=int(assessment["warmth"]),
-            continuity=int(assessment["continuity"]),
-            friction=int(assessment["friction"]),
-        )
-        pacing = getattr(self.context, "_note_chat_pacing_effect", None)
-        if callable(pacing):
-            pacing(key, outcome)
-        await self._learn_repeated_reply_effect(
-            key,
-            source=source,
-            outcome=outcome,
-            confidence=confidence,
-            now=now,
-        )
+        finally:
+            self._effect_observations.discard(identity)

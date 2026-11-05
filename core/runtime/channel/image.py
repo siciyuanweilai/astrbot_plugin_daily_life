@@ -28,15 +28,19 @@ from ...life.wardrobe import (
     style_pool_for_scene_category,
 )
 from ...media.base import GROUP_IDENTITY_CONTINUITY_RULE
+from ...media.picture.results import ImageResultError
 from ...media.picture.routes import (
     image_provider_label,
     requested_image_provider,
 )
+from ...outcome import ToolResultText
 from ...paths import runtime_data_root
 from ...prompts import CORE_JSON_OUTPUT_RULES, cache_friendly_prompt
 from ..locks import operation_lock
 from ..markers import LOG_PREFIX
 from ..stage.error import MediaPromptExtractionError
+from .animation import resolve_gif_request
+from .artifact import image_delivery_context
 from .perspective import (
     bind_media_reply_context,
     group_participants_required,
@@ -61,6 +65,10 @@ class ImageGenerationPlan:
     participant_ids: list[str]
     resolution: str
     provider: str
+    channel_name: str
+    output_format: str
+    frame_count: int
+    frame_duration_ms: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -836,12 +844,13 @@ JSON 字段：
         return f"{text}\n{rule}" if text else rule
 
     @staticmethod
-    def _image_delivery_result(action: str) -> str:
+    def _image_delivery_result(action: str, delivery: dict[str, str] | None = None) -> str:
         return json.dumps(
             {
                 "status": "sent",
                 "media": "image",
                 "action": action,
+                "delivery": delivery or {},
                 "response_stance": "图片已经真实发送；按当前关系和聊天语境自然递给对方看，也可以不补文字",
             },
             ensure_ascii=False,
@@ -894,18 +903,26 @@ JSON 字段：
             )
         return False
 
-    def _image_tool_failure_text(self, action: str, error: str) -> str:
+    def _image_tool_failure_text(self, action: str, error: str | Exception) -> str:
         media_name = str(action or "图片").removesuffix("生成") or "图片"
-        detail = str(error or "").strip()
+        if isinstance(error, ImageResultError):
+            return ToolResultText(f"{media_name}生成失败：{error}", status="failed", media="image")
+        detail = (
+            self.context._media_error_summary(error)
+            if isinstance(error, Exception)
+            else str(error or "").strip()
+        )
         if detail.startswith("图片轻量润色后重试仍失败"):
-            return f"{media_name}生成失败：图片轻量润色后重试仍失败。"
-        if detail in {
+            text = f"{media_name}生成失败：图片轻量润色后重试仍失败。"
+        elif detail in {
             "超时",
             "图片触发安全拒绝，轻量润色失败。",
             "图片触发安全拒绝，轻量润色没有返回可用的新提示词。",
         }:
-            return f"{media_name}生成失败：{detail}"
-        return self.context._media_tool_failure_text(media_name, error)
+            text = f"{media_name}生成失败：{detail}"
+        else:
+            text = self.context._media_tool_failure_text(media_name, detail)
+        return ToolResultText(text, status="failed", media="image")
 
     def _image_policy_rewrite_reason(self, exc: Exception) -> str:
         reason = self.context._image_policy_rejection_detail(exc)
@@ -944,6 +961,11 @@ JSON 字段：
         prompt = str(prompt or "").strip()
         try:
             return await operation(prompt)
+        except ImageResultError:
+            # Result failures already describe a submitted request. Never rewrite
+            # the prompt and charge for another generation, even if a nested
+            # transport exception happens to mention a policy error.
+            raise
         except Exception as exc:
             if not self.context._image_generation_error_needs_rewrite(exc):
                 raise
@@ -982,6 +1004,10 @@ JSON 字段：
         protocol: str = "",
         *,
         model: str = "",
+        channel_name: str = "",
+        output_format: str = "",
+        frame_count: int = 9,
+        frame_duration_ms: int = 200,
         identity_profile: str = "",
         include_character_reference: bool | None = None,
     ) -> Any:
@@ -999,6 +1025,12 @@ JSON 字段：
                 options["protocol"] = protocol
             if model:
                 options["model"] = model
+            if channel_name:
+                options["channel_name"] = channel_name
+            if output_format:
+                options["output_format"] = output_format
+                options["frame_count"] = frame_count
+                options["frame_duration_ms"] = frame_duration_ms
             if identity_profile:
                 options["identity_profile"] = identity_profile
             if include_character_reference is not None:
@@ -1025,6 +1057,10 @@ JSON 字段：
         preserve_reference_ratio: bool = True,
         protocol: str = "",
         model: str = "",
+        channel_name: str = "",
+        output_format: str = "",
+        frame_count: int = 9,
+        frame_duration_ms: int = 200,
         identity_profile: str = "",
         include_character_reference: bool | None = None,
     ) -> Any:
@@ -1042,6 +1078,12 @@ JSON 字段：
                 options["protocol"] = protocol
             if model:
                 options["model"] = model
+            if channel_name:
+                options["channel_name"] = channel_name
+            if output_format:
+                options["output_format"] = output_format
+                options["frame_count"] = frame_count
+                options["frame_duration_ms"] = frame_duration_ms
             if identity_profile:
                 options["identity_profile"] = identity_profile
             if include_character_reference is not None:
@@ -1350,6 +1392,10 @@ JSON 字段：
         preserve_reference_ratio: bool = False,
         trusted_identity: bool = False,
         protocol: str = "",
+        channel_name: str = "",
+        output_format: str = "",
+        frame_count: int = 9,
+        frame_duration_ms: int = 200,
         model: str = "",
         text_model: str = "",
         edit_model: str = "",
@@ -1426,6 +1472,10 @@ JSON 字段：
                 resolution,
                 preserve_reference_ratio=preserve_reference_ratio,
                 protocol=protocol,
+                channel_name=channel_name,
+                output_format=output_format,
+                frame_count=frame_count,
+                frame_duration_ms=frame_duration_ms,
                 model=edit_model,
                 identity_profile=identity_profile,
             )
@@ -1436,6 +1486,10 @@ JSON 字段：
             resolution,
             protocol,
             model=text_model,
+            channel_name=channel_name,
+            output_format=output_format,
+            frame_count=frame_count,
+            frame_duration_ms=frame_duration_ms,
             identity_profile=identity_profile,
         )
 
@@ -1449,6 +1503,10 @@ JSON 字段：
         participants: list[str] | None,
         resolution: str,
         provider: str,
+        channel_name: str = "",
+        output_format: str = "",
+        frame_count: int = 9,
+        frame_duration_ms: int = 200,
         current_appearance: str = "",
         final_appearance_snapshot: bool = False,
     ) -> ImageGenerationPlan:
@@ -1483,6 +1541,10 @@ JSON 字段：
                 participant_ids=participant_ids,
                 resolution=resolution,
                 provider=provider,
+                channel_name=channel_name,
+                output_format=output_format,
+                frame_count=frame_count,
+                frame_duration_ms=frame_duration_ms,
             )
 
         route = self.context._normalize_image_subject_route(subject_route)
@@ -1522,6 +1584,10 @@ JSON 字段：
             participant_ids=participant_ids,
             resolution=resolution,
             provider=provider,
+            channel_name=channel_name,
+            output_format=output_format,
+            frame_count=frame_count,
+            frame_duration_ms=frame_duration_ms,
         )
 
     async def _execute_image_generation_plan(
@@ -1546,6 +1612,12 @@ JSON 字段：
                 group_options["resolution"] = plan.resolution
             if plan.provider:
                 group_options["protocol"] = plan.provider
+            if plan.channel_name:
+                group_options["channel_name"] = plan.channel_name
+            if plan.output_format:
+                group_options["output_format"] = plan.output_format
+                group_options["frame_count"] = plan.frame_count
+                group_options["frame_duration_ms"] = plan.frame_duration_ms
             identity_profiles = await self.context._resolve_life_identity_profiles(
                 event, "group"
             )
@@ -1568,6 +1640,10 @@ JSON 字段：
                 contains_character=plan.current_character,
                 trusted_identity=plan.current_character,
                 protocol=plan.provider,
+                channel_name=plan.channel_name,
+                output_format=plan.output_format,
+                frame_count=plan.frame_count,
+                frame_duration_ms=plan.frame_duration_ms,
             )
             return ImageGenerationExecution(generated, plan.prompt)
 
@@ -1603,6 +1679,10 @@ JSON 字段：
                 plan.resolution,
                 preserve_reference_ratio=False,
                 protocol=plan.provider,
+                channel_name=plan.channel_name,
+                output_format=plan.output_format,
+                frame_count=plan.frame_count,
+                frame_duration_ms=plan.frame_duration_ms,
                 identity_profile=identity_profile,
             )
         else:
@@ -1612,6 +1692,10 @@ JSON 字段：
                 plan.aspect_ratio,
                 plan.resolution,
                 plan.provider,
+                channel_name=plan.channel_name,
+                output_format=plan.output_format,
+                frame_count=plan.frame_count,
+                frame_duration_ms=plan.frame_duration_ms,
                 identity_profile=identity_profile,
             )
         return ImageGenerationExecution(generated, directed_prompt)
@@ -1793,21 +1877,24 @@ JSON 字段：
                 marker["status"] = "sent"
                 await self.context.finish_tool_reaction(event, tool_name, success=True)
                 if not getattr(event, "_daily_life_media_reply_sent", False):
+                    reply_context = getattr(event, "_daily_life_image_delivery_context", None) or {
+                        "media_name": "生活图片",
+                        "request_text": self.context._event_current_image_request_text(event),
+                        "delivery_text": "角色已向当前聊天对象发送图片，文件格式与画面内容未确认。",
+                    }
                     await self.context._send_delivered_media_followup(
                         self.context._event_session_id(event),
-                        media_name="生活照片",
-                        request_text=self.context._event_current_image_request_text(event),
-                        delivery_text="图片已成功送达",
+                        **reply_context,
                         source_event=event,
                         source="image_followup",
                     )
             else:
                 marker["status"] = "failed"
                 result_status = (
-                    payload.get("status", "未提供")
+                    payload.get("status")
                     if isinstance(payload, dict)
-                    else "未提供"
-                )
+                    else None
+                ) or getattr(result, "status", "") or "未提供"
                 logger.warning(
                     f"{LOG_PREFIX} 图片后台任务未完成：返回状态={result_status}"
                 )
@@ -1880,6 +1967,10 @@ JSON 字段：
         current_outfit_instruction: str = "",
         resolution: str = "",
         provider: str = "",
+        channel_name: str = "",
+        output_format: str = "",
+        frame_count: int = 9,
+        frame_duration_ms: int = 200,
         historical_target: str = "",
         historical_period: str = "",
         historical_time: str = "",
@@ -2029,11 +2120,22 @@ JSON 字段：
             participants=participants,
             resolution=resolution,
             provider=provider,
+            channel_name=channel_name,
+            output_format=output_format,
+            frame_count=frame_count,
+            frame_duration_ms=frame_duration_ms,
             current_appearance=current_appearance,
             final_appearance_snapshot=bool(current_outfit_change),
         )
         if not plan.prompt:
             return "没有收到图片提示词。"
+        if output_format == "gif":
+            request = await resolve_gif_request(self.context, event, plan.prompt)
+            plan.prompt = request.prompt
+            plan.aspect_ratio = request.aspect_ratio
+            plan.frame_count = request.frame_count
+            plan.frame_duration_ms = request.frame_duration_ms
+            plan.direct_prompt = True
         scope = self.context._event_session_id(event)
         if not scope:
             return "当前会话不可发送图片。"
@@ -2091,6 +2193,13 @@ JSON 字段：
             logger.debug(
                 f"{LOG_PREFIX} 图片生成模式：{plan.generation_mode}；长度：{len(directed_prompt)}"
             )
+            reply_context = await image_delivery_context(
+                generated.path,
+                request_text=reply_request,
+                media_name=media_name,
+                guidance="自然回应这次拍照或图片请求。",
+            )
+            setattr(event, "_daily_life_image_delivery_context", reply_context)
             delivery_task = await self.context.stage_durable_media_delivery(
                 scope,
                 "image",
@@ -2100,12 +2209,7 @@ JSON 字段：
                 source_event=event,
                 commitment_id=commitment_id,
                 source_message_id=self.context._event_message_id(event),
-                reply_context={
-                    "media_name": media_name,
-                    "request_text": reply_request,
-                    "delivery_text": "图片已成功送达",
-                    "guidance": "自然回应这次拍照或图片请求。",
-                },
+                reply_context=reply_context,
             )
             if not await self.context.send_message_if_not_recalled(
                 scope,
@@ -2155,23 +2259,20 @@ JSON 字段：
             if commitment_id > 0:
                 reply_sent = await self.context._send_delivered_media_followup(
                     scope,
-                    media_name=media_name,
-                    request_text=reply_request,
-                    delivery_text="图片已成功送达",
-                    guidance="这是角色先前答应发送、现在已经履行的照片。",
+                    **reply_context,
                     source_event=event,
                     source="commitment_photo_followup",
                 )
                 setattr(event, "_daily_life_media_reply_sent", reply_sent)
             logger.info(f"{LOG_PREFIX} 图片已发送：{summary}")
-            return self.context._image_delivery_result("generate")
+            return self.context._image_delivery_result("generate", reply_context)
         except Exception as exc:
             pending = await self.context.pending_image_generation_result(event, exc)
             if pending:
                 return pending
             error = self.context._media_error_summary(exc)
             logger.warning(f"{LOG_PREFIX} 图片生成或发送失败：{error}")
-            return self._image_tool_failure_text("图片生成", error)
+            return self._image_tool_failure_text("图片生成", exc)
 
     async def _execute_image_edit(
         self,
@@ -2182,6 +2283,10 @@ JSON 字段：
         aspect_ratio: str,
         resolution: str,
         provider: str,
+        channel_name: str = "",
+        output_format: str = "",
+        frame_count: int = 9,
+        frame_duration_ms: int = 200,
         *,
         direct_prompt: bool,
     ) -> ImageGenerationExecution:
@@ -2203,6 +2308,12 @@ JSON 字段：
                 group_options["resolution"] = resolution
             if provider:
                 group_options["protocol"] = provider
+            if channel_name:
+                group_options["channel_name"] = channel_name
+            if output_format:
+                group_options["output_format"] = output_format
+                group_options["frame_count"] = frame_count
+                group_options["frame_duration_ms"] = frame_duration_ms
             identity_profiles = await self.context._resolve_life_identity_profiles(
                 event, "group"
             )
@@ -2252,6 +2363,10 @@ JSON 字段：
             resolution,
             preserve_reference_ratio=not bool(aspect_ratio),
             protocol=provider,
+            channel_name=channel_name,
+            output_format=output_format,
+            frame_count=frame_count,
+            frame_duration_ms=frame_duration_ms,
             identity_profile=identity_profile,
             include_character_reference=needs_character_reference,
         )
@@ -2269,6 +2384,13 @@ JSON 字段：
         generated: Any,
         started_at: float,
     ) -> str:
+        reply_context = await image_delivery_context(
+            generated.path,
+            request_text=prompt,
+            media_name="编辑后的生活图片",
+            guidance="自然回应这次图片修改请求。",
+        )
+        setattr(event, "_daily_life_image_delivery_context", reply_context)
         delivery_task = await self.context.stage_durable_media_delivery(
             scope,
             "image",
@@ -2277,12 +2399,7 @@ JSON 字段：
             evidence="参考图图片已生成，等待投递确认",
             source_event=event,
             source_message_id=self.context._event_message_id(event),
-            reply_context={
-                "media_name": "编辑后的生活照片",
-                "request_text": prompt,
-                "delivery_text": "编辑后的图片已成功送达",
-                "guidance": "自然回应这次图片修改请求。",
-            },
+            reply_context=reply_context,
         )
         if not await self.context.send_message_if_not_recalled(
             scope,
@@ -2321,7 +2438,7 @@ JSON 字段：
             )
         summary = await self.context._media_result_summary(generated.path, started_at)
         logger.info(f"{LOG_PREFIX} 参考图生成结果已发送：{summary}")
-        return self.context._image_delivery_result("edit")
+        return self.context._image_delivery_result("edit", reply_context)
 
     async def edit_life_image(
         self, event: Any, prompt: str, reference_image: str = "", **options: Any
@@ -2381,6 +2498,10 @@ JSON 字段：
         participants: list[str] | None = None,
         resolution: str = "",
         provider: str = "",
+        channel_name: str = "",
+        output_format: str = "",
+        frame_count: int = 9,
+        frame_duration_ms: int = 200,
     ) -> str | None:
         if self.context._direct_image_tool_already_sent(event):
             logger.debug(
@@ -2439,10 +2560,21 @@ JSON 字段：
                     participants=participant_ids,
                     resolution=resolution,
                     provider=provider,
+                    channel_name=channel_name,
+                    output_format=output_format,
+                    frame_count=frame_count,
+                    frame_duration_ms=frame_duration_ms,
                 )
             if continue_last_result or str(reference_image or "").strip():
                 return "当前会话没有可继续修改的图片，请重新发送或引用原图。"
             return "请先发送或引用一张要参考的图片。"
+        if output_format == "gif":
+            request = await resolve_gif_request(self.context, event, prompt)
+            prompt = request.prompt
+            aspect_ratio = request.aspect_ratio
+            frame_count = request.frame_count
+            frame_duration_ms = request.frame_duration_ms
+            direct_prompt = True
         work = self._edit_and_deliver_life_image(
             event,
             prompt,
@@ -2451,6 +2583,10 @@ JSON 字段：
             aspect_ratio,
             resolution,
             provider,
+            channel_name,
+            output_format,
+            frame_count,
+            frame_duration_ms,
             direct_prompt=direct_prompt,
         )
         return await work
@@ -2464,6 +2600,10 @@ JSON 字段：
         aspect_ratio: str,
         resolution: str,
         provider: str,
+        channel_name: str = "",
+        output_format: str = "",
+        frame_count: int = 9,
+        frame_duration_ms: int = 200,
         *,
         direct_prompt: bool,
     ) -> str:
@@ -2477,6 +2617,10 @@ JSON 字段：
                 aspect_ratio,
                 resolution,
                 provider,
+                channel_name,
+                output_format,
+                frame_count,
+                frame_duration_ms,
                 direct_prompt=direct_prompt,
             ),
         )
@@ -2490,6 +2634,10 @@ JSON 字段：
         aspect_ratio: str,
         resolution: str,
         provider: str,
+        channel_name: str,
+        output_format: str,
+        frame_count: int,
+        frame_duration_ms: int,
         *,
         direct_prompt: bool,
     ) -> str:
@@ -2504,6 +2652,10 @@ JSON 字段：
                 aspect_ratio,
                 resolution,
                 provider,
+                channel_name,
+                output_format,
+                frame_count,
+                frame_duration_ms,
                 direct_prompt=direct_prompt,
             )
             if execution.error:
@@ -2525,4 +2677,4 @@ JSON 字段：
                 return pending
             error = self.context._media_error_summary(exc)
             logger.warning(f"{LOG_PREFIX} 参考图生成或发送失败：{error}")
-            return self._image_tool_failure_text("参考图生成", error)
+            return self._image_tool_failure_text("参考图生成", exc)

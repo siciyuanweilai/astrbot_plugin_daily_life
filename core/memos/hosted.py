@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import json
 import time
 from dataclasses import dataclass
 from typing import Any
 
 from astrbot.api import logger
 
-from .connector import HostedMemOSClient
+from .connector import HostedMemOSClient, MemOSClientResult
 
 LOG_PREFIX = "[日常生活]"
 
@@ -57,10 +59,78 @@ class HostedMemOSService:
             api_key=getattr(settings, "api_key", ""),
             timeout_seconds=getattr(settings, "timeout_seconds", 15.0),
         )
+        self._pending_writes: dict[str, asyncio.Task[MemOSClientResult]] = {}
+        self._recent_writes: dict[str, tuple[float, MemOSClientResult, int]] = {}
+        self._closed = False
+
+    async def close(self) -> None:
+        self._closed = True
+        tasks = list(self._pending_writes.values())
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._pending_writes.clear()
+        self._recent_writes.clear()
+        close = getattr(self.client, "close", None)
+        if callable(close):
+            await close()
+
+    async def _submit_write(
+        self, endpoint: str, payload: dict[str, Any], label: str
+    ) -> bool:
+        if self._closed:
+            return False
+        # 完整请求（含人物、会话、所有条目）相同才合并，避免串用记忆。
+        key = self.stable_hash(endpoint + json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ))
+        now = time.monotonic()
+        cached = self._recent_writes.get(key)
+        if cached and cached[0] > now:
+            return cached[1].success
+        pending = self._pending_writes.get(key)
+        if pending is None:
+            if len(self._pending_writes) >= 32:
+                logger.debug(f"{LOG_PREFIX} MemOS 提交等待队列已满，本地记忆保留")
+                return False
+            pending = asyncio.create_task(self._perform_write(key, endpoint, payload, label))
+            self._pending_writes[key] = pending
+            pending.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+        # 一个等待方取消不取消其他等待方共用的提交；卸载由 close 统一取消。
+        return (await asyncio.shield(pending)).success
+
+    async def _perform_write(
+        self, key: str, endpoint: str, payload: dict[str, Any], label: str
+    ) -> MemOSClientResult:
+        try:
+            try:
+                result = await (
+                    self.client.add_message(payload) if endpoint == "/add/message"
+                    else self.client.add_feedback(payload)
+                )
+            except Exception as exc:
+                result = MemOSClientResult(False, error=f"{type(exc).__name__}; operation={endpoint}")
+            previous = self._recent_writes.pop(key, None)
+            failures = 0 if result.success else min((previous[2] if previous else 0) + 1, 5)
+            ttl = 300.0 if result.success else min(30.0 * 2 ** (failures - 1), 300.0)
+            self._recent_writes[key] = (time.monotonic() + ttl, result, failures)
+            while len(self._recent_writes) > 256:
+                self._recent_writes.pop(next(iter(self._recent_writes)))
+            if not result.success:
+                logger.debug(
+                    f"{LOG_PREFIX} MemOS 外部记忆{label}同步未确认：{result.error or 'UnknownError'}；"
+                    f"相同请求退避={ttl:g}秒；本地记忆保留"
+                )
+            elif isinstance(result.data, dict) and result.data.get("status") == "running":
+                logger.debug(f"{LOG_PREFIX} MemOS 外部记忆{label}已受理，服务端继续整理")
+            return result
+        finally:
+            self._pending_writes.pop(key, None)
 
     @property
     def enabled(self) -> bool:
-        return bool(getattr(self.settings, "enabled", False) and self.client.available)
+        return bool(not self._closed and getattr(self.settings, "enabled", False) and self.client.available)
 
     @staticmethod
     def stable_hash(value: str, *, prefix: str = "dl") -> str:
@@ -219,12 +289,9 @@ class HostedMemOSService:
         payload = {
             **self._base_payload(meta),
             "messages": messages,
-            "async_mode": False,
+            "async_mode": True,
         }
-        result = await self.client.add_message(payload)
-        if not result.success:
-            logger.debug(f"{LOG_PREFIX} MemOS 外部记忆条目同步失败：{result.error}")
-        return result.success
+        return await self._submit_write("/add/message", payload, "条目")
 
     async def sync_memo(self, *, meta: dict[str, str], memo: str) -> bool:
         if not self.enabled:
@@ -238,12 +305,9 @@ class HostedMemOSService:
                 {"role": "user", "content": "记录一条已确认的明日备忘录。"},
                 {"role": "assistant", "content": f"明日备忘录：{memo}"},
             ],
-            "async_mode": False,
+            "async_mode": True,
         }
-        result = await self.client.add_message(payload)
-        if not result.success:
-            logger.debug(f"{LOG_PREFIX} MemOS 外部记忆备忘录同步失败：{result.error}")
-        return result.success
+        return await self._submit_write("/add/message", payload, "备忘录")
 
     async def sync_feedback(self, *, meta: dict[str, str], feedback: str) -> bool:
         if not self.enabled or not bool(
@@ -257,7 +321,4 @@ class HostedMemOSService:
             **self._base_payload(meta),
             "feedback_content": feedback,
         }
-        result = await self.client.add_feedback(payload)
-        if not result.success:
-            logger.debug(f"{LOG_PREFIX} MemOS 外部记忆纠错同步失败：{result.error}")
-        return result.success
+        return await self._submit_write("/add/feedback", payload, "纠错")

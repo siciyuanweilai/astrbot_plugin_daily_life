@@ -47,6 +47,7 @@ class PortalClosetComponentContext(Protocol):
     _page_json_body: Any
     _page_read_closet_backup: Any
     _page_receive_upload: Any
+    _page_response: Any
     _page_safe_closet_path: Any
     _page_schedule_closet_cleanup: Any
     _page_send_download: Any
@@ -242,6 +243,11 @@ class PortalClosetComponent:
         items = await self.context.runtime.archive.get_style_catalog_items(
             status="", limit=500
         )
+        if not items:
+            return await self.context._page_response(
+                {"ok": False, "error": {"message": "暂无衣橱素材，无法备份", "public": True}},
+                400,
+            )
         target = self.context._page_closet_transfer_path("backup", ".zip")
         meta = await asyncio.to_thread(self.context._page_write_closet_backup, items, target)
         self.context._page_schedule_closet_cleanup(target)

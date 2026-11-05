@@ -276,6 +276,36 @@ class VideoGenerationSettings:
 
 
 @dataclass(slots=True)
+class MusicGenerationSettings:
+    enabled: bool = False
+    base_url: str = ""
+    api_key: str = ""
+    model: str = "suno-v6"
+    timeout_seconds: int = 600
+    request_timeout_seconds: int = 60
+    poll_interval_seconds: float = 5.0
+
+    @staticmethod
+    def from_dict(data: Any) -> MusicGenerationSettings:
+        if not isinstance(data, dict):
+            return MusicGenerationSettings()
+        model = as_str(data.get("model", "suno-v6"), "suno-v6").strip()
+        return MusicGenerationSettings(
+            enabled=as_bool(data.get("enabled", False), False),
+            base_url=as_str(data.get("base_url", ""), "").strip(),
+            api_key=as_str(data.get("api_key", "")).strip(),
+            model=model or "suno-v6",
+            timeout_seconds=as_int(data.get("timeout_seconds", 600), 600, 30, 1800),
+            request_timeout_seconds=as_int(
+                data.get("request_timeout_seconds", 60), 60, 10, 300
+            ),
+            poll_interval_seconds=as_float(
+                data.get("poll_interval_seconds", 5.0), 5.0, 1.0, 120.0
+            ),
+        )
+
+
+@dataclass(slots=True)
 class VoiceGenerationSettings:
     enabled: bool = False
     smart_switch_enabled: bool = True

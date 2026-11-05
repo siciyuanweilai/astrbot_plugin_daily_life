@@ -36,6 +36,7 @@ from ..base import (
 from . import gemini, imagine, openai, polling, routes
 from .pipe import ImageRoute
 from .recovery import ImageRecovery
+from .results import ImageDiagnostics, ImageResultError, select_animated_gif
 
 _SUPPORTED_ASPECT_RATIO_VALUES = {
     ratio: int(ratio.split(":", 1)[0]) / int(ratio.split(":", 1)[1])
@@ -232,7 +233,9 @@ class GeminiImageService:
         self.data_dir = data_dir
         self.output_dir = data_dir / "generated" / "images"
         self._session: aiohttp.ClientSession | None = None
-        self._recovery_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+        self._recovery_locks: WeakValueDictionary[str, asyncio.Lock] = (
+            WeakValueDictionary()
+        )
         self._task_listener = ContextVar(
             f"image_task_listener_{id(self)}", default=None
         )
@@ -272,7 +275,9 @@ class GeminiImageService:
             if state["status"] == "exhausted":
                 raise polling.ImageTaskFailed(state["error"])
             if state["status"] == "submitting":
-                raise polling.ImageTaskError("图片请求已提交但尚无任务编号，停止重复提交")
+                raise polling.ImageTaskError(
+                    "图片请求已提交但尚无任务编号，停止重复提交"
+                )
             if state["status"] == "processing":
                 entry = state["entries"][state["index"]]
                 try:
@@ -311,7 +316,8 @@ class GeminiImageService:
         credential_id = reference.get("credential_id")
         if credential_id:
             matches = [
-                item for item in matches
+                item
+                for item in matches
                 if routes.task_reference(item)["credential_id"] == credential_id
             ]
         # 已受理记录缺少指纹时，仅在查询凭据唯一的情况下恢复。
@@ -442,6 +448,10 @@ class GeminiImageService:
         *,
         protocol: str = "",
         model: str = "",
+        channel_name: str = "",
+        output_format: str = "",
+        frame_count: int = 9,
+        frame_duration_ms: int = 200,
         identity_profile: str = "",
         include_character_reference: bool | None = None,
     ) -> GeneratedImage:
@@ -452,7 +462,13 @@ class GeminiImageService:
             raise ValueError("缺少图片提示词")
         protocol = routes.normalize_image_provider(protocol)
         model = str(model or "").strip()
-        if not routes.has_channel(self.settings, "text", protocol, model):
+        channel_name = routes.resolve_channel_name(
+            self.settings, "text", channel_name, protocol=protocol, model=model
+        )
+        if channel_name:
+            if not routes.has_channel(self.settings, "text", protocol, model):
+                raise RuntimeError(f"指定的文生图通道“{channel_name}”当前不可用")
+        elif not routes.has_channel(self.settings, "text", protocol, model):
             if model:
                 raise RuntimeError(f"指定的生图模型 {model} 没有可用的文生图接口通道")
             if protocol:
@@ -474,6 +490,10 @@ class GeminiImageService:
             mode="text",
             protocol=protocol,
             model=model,
+            channel_name=channel_name,
+            output_format=output_format,
+            frame_count=frame_count,
+            frame_duration_ms=frame_duration_ms,
         )
         logger.debug(f"{LOG_PREFIX} 图片生成文件已保存：{path.name}")
         return GeneratedImage(path)
@@ -488,6 +508,10 @@ class GeminiImageService:
         scene_reference: str = "",
         reference_context: str = "",
         protocol: str = "",
+        channel_name: str = "",
+        output_format: str = "",
+        frame_count: int = 9,
+        frame_duration_ms: int = 200,
         identity_profiles: dict[str, Any] | None = None,
     ) -> GeneratedImage:
         if not self.settings.enabled:
@@ -502,7 +526,13 @@ class GeminiImageService:
         if len(participant_ids) != 1:
             raise ValueError("当前合影仅支持选择一位好友")
         protocol = routes.normalize_image_provider(protocol)
-        if not routes.has_channel(self.settings, "edit", protocol):
+        channel_name = routes.resolve_channel_name(
+            self.settings, "edit", channel_name, protocol=protocol
+        )
+        if channel_name:
+            if not routes.has_channel(self.settings, "edit", protocol):
+                raise RuntimeError(f"指定的图生图通道“{channel_name}”当前不可用")
+        elif not routes.has_channel(self.settings, "edit", protocol):
             if protocol:
                 raise RuntimeError(
                     f"本轮指定使用{self._protocol_label(protocol)}，但没有可用的图生图接口通道"
@@ -518,11 +548,13 @@ class GeminiImageService:
         if not friend_sources:
             raise ValueError("这位好友尚未上传参考图片")
         scene_parts: list[dict[str, Any]] = []
-        effective_aspect_ratio = aspect_ratio
+        effective_aspect_ratio = aspect_ratio or (
+            "1:1" if str(output_format or "").strip().lower() == "gif" else ""
+        )
         scene_reference = str(scene_reference or "").strip()
         if scene_reference:
             scene_bytes, scene_mime = await self._load_reference_image(scene_reference)
-            effective_aspect_ratio = aspect_ratio or self._reference_image_aspect_ratio(
+            effective_aspect_ratio = effective_aspect_ratio or self._reference_image_aspect_ratio(
                 scene_bytes
             )
             scene_parts = [
@@ -555,6 +587,10 @@ class GeminiImageService:
             resolution=resolution,
             mode="edit",
             protocol=protocol,
+            channel_name=channel_name,
+            output_format=output_format,
+            frame_count=frame_count,
+            frame_duration_ms=frame_duration_ms,
         )
         context = str(reference_context or "").strip()
         if context:
@@ -579,6 +615,10 @@ class GeminiImageService:
         preserve_reference_ratio: bool = True,
         protocol: str = "",
         model: str = "",
+        channel_name: str = "",
+        output_format: str = "",
+        frame_count: int = 9,
+        frame_duration_ms: int = 200,
         identity_profile: str = "",
         include_character_reference: bool | None = None,
     ) -> GeneratedImage:
@@ -592,7 +632,13 @@ class GeminiImageService:
             raise ValueError("缺少参考图片")
         protocol = routes.normalize_image_provider(protocol)
         model = str(model or "").strip()
-        if not routes.has_channel(self.settings, "edit", protocol, model):
+        channel_name = routes.resolve_channel_name(
+            self.settings, "edit", channel_name, protocol=protocol, model=model
+        )
+        if channel_name:
+            if not routes.has_channel(self.settings, "edit", protocol, model):
+                raise RuntimeError(f"指定的图生图通道“{channel_name}”当前不可用")
+        elif not routes.has_channel(self.settings, "edit", protocol, model):
             if model:
                 raise RuntimeError(f"指定的生图模型 {model} 没有可用的图生图接口通道")
             if protocol:
@@ -602,12 +648,17 @@ class GeminiImageService:
             raise RuntimeError("图片生成缺少可用图生图接口通道")
 
         image_bytes, mime_type = await self._load_reference_image(reference_image)
+        animated_gif = str(output_format or "").strip().lower() == "gif"
         reference_aspect_ratio = (
             self._reference_image_aspect_ratio(image_bytes)
-            if preserve_reference_ratio
+            if preserve_reference_ratio and not animated_gif
             else ""
         )
-        effective_aspect_ratio = reference_aspect_ratio or aspect_ratio
+        effective_aspect_ratio = (
+            aspect_ratio or "1:1"
+            if animated_gif
+            else reference_aspect_ratio or aspect_ratio
+        )
         reference_is_character = self._is_character_reference_image(reference_image)
         reference_parts = (
             await self._character_reference_parts(exclude_paths={reference_image})
@@ -641,6 +692,10 @@ class GeminiImageService:
             mode="edit",
             protocol=protocol,
             model=model,
+            channel_name=channel_name,
+            output_format=output_format,
+            frame_count=frame_count,
+            frame_duration_ms=frame_duration_ms,
         )
         logger.debug(f"{LOG_PREFIX} 图片编辑文件已保存：{path.name}")
         return GeneratedImage(path)
@@ -959,8 +1014,15 @@ class GeminiImageService:
         mode: str = "text",
         protocol: str = "",
         model: str = "",
+        channel_name: str = "",
+        output_format: str = "",
+        frame_count: int = 9,
+        frame_duration_ms: int = 200,
         recovery: ImageRecovery | None = None,
     ) -> tuple[Path, ImageRoute]:
+        animated_gif = str(output_format or "").strip().lower() == "gif"
+        if animated_gif and not str(aspect_ratio or "").strip():
+            aspect_ratio = "1:1"
         requested_resolution = str(resolution or "").strip().upper()
         if requested_resolution and requested_resolution not in IMAGE_RESOLUTIONS:
             raise ValueError("图片输出分辨率只能是 1K、2K 或 4K")
@@ -968,7 +1030,11 @@ class GeminiImageService:
         last_error: Exception | None = None
         protocol = routes.normalize_image_provider(protocol)
         request_routes = await self._request_routes(
-            mode, protocol=protocol, model=model
+            mode,
+            protocol=protocol,
+            model=model,
+            channel_name=channel_name,
+            output_format=output_format,
         )
         resuming = recovery is not None
         if resuming:
@@ -979,7 +1045,11 @@ class GeminiImageService:
                     route = ImageRecovery.restore_route(entry["route"], candidates)
                 except ValueError:
                     route = ImageRoute(
-                        **{key: value for key, value in entry["route"].items() if key != "reference"},
+                        **{
+                            key: value
+                            for key, value in entry["route"].items()
+                            if key != "reference"
+                        },
                         api_key="",
                     )
                 request_routes.append(route)
@@ -987,15 +1057,32 @@ class GeminiImageService:
             entries = []
             for route in request_routes:
                 try:
-                    prepared_route = self._route_with_options(route, aspect_ratio, requested_resolution)
+                    prepared_route = self._route_with_options(
+                        route, aspect_ratio, requested_resolution
+                    )
                     parts = parts_for_route(prepared_route, str(prompt or "").strip())
                     if inspect.isawaitable(parts):
                         parts = await parts
-                    entries.append({"route": ImageRecovery.route_data(prepared_route), "parts": parts})
+                    entries.append(
+                        {
+                            "route": ImageRecovery.route_data(prepared_route),
+                            "parts": parts,
+                        }
+                    )
                 except Exception as exc:
-                    entries.append({"route": ImageRecovery.route_data(route), "preparation_error": str(exc)})
+                    entries.append(
+                        {
+                            "route": ImageRecovery.route_data(route),
+                            "preparation_error": str(exc),
+                        }
+                    )
             recovery = ImageRecovery.create(self.output_dir / "tasks", entries, mode)
         if not request_routes:
+            if animated_gif:
+                raise RuntimeError(
+                    f"没有可用的{self._mode_label(mode)} GIF 通道；"
+                    "请配置 GPT Image 2.6 图片通道"
+                )
             if protocol:
                 raise RuntimeError(
                     f"本轮指定使用{self._protocol_label(protocol)}，"
@@ -1023,9 +1110,26 @@ class GeminiImageService:
                 continue
             route = self._route_with_options(route, aspect_ratio, requested_resolution)
             session = await self._get_session()
-            route_label = f"{route.origin} / {route.label}"
+            route_label = (
+                str(route.label or "GPT Image 2.6 通道")
+                if animated_gif
+                else f"{route.origin} / {route.label}"
+            )
             timeout = aiohttp.ClientTimeout(total=route.timeout_seconds)
             requested_size = self._request_size_label(route)
+            diagnostic = (
+                ImageDiagnostics(
+                    model=route.model,
+                    size=requested_size,
+                    output_format="gif",
+                    frame_count=frame_count,
+                    frame_duration_ms=frame_duration_ms,
+                    mode=mode,
+                    secret=route.api_key,
+                )
+                if animated_gif
+                else None
+            )
             logger.debug(
                 f"{LOG_PREFIX} 图片请求：通道={route_label}；"
                 f"模式={self._mode_label(mode)}；"
@@ -1042,8 +1146,10 @@ class GeminiImageService:
                         raise ValueError(entry["preparation_error"])
                     if not route.api_key:
                         raise ValueError("原请求的通道已移除或凭据已更换，跳过该通道")
+
                     def request_parts(*_args):
                         return entry["parts"]
+
                     await recovery.start(index)
                 data = await self._request_image_data(
                     session,
@@ -1053,8 +1159,34 @@ class GeminiImageService:
                     prompt,
                     require_reference=str(mode or "").strip().lower() == "edit",
                     recovery=recovery,
+                    output_format=output_format,
+                    frame_count=frame_count,
+                    frame_duration_ms=frame_duration_ms,
+                    diagnostic=diagnostic,
                 )
             except Exception as exc:
+                if diagnostic is not None:
+                    diagnostic.emit(
+                        "failed",
+                        outcome="request_failed",
+                        error_type=type(exc).__name__,
+                    )
+                    if not diagnostic.submitted:
+                        raise
+                    if (
+                        diagnostic.http_status is not None
+                        and diagnostic.http_status != 200
+                    ):
+                        reason = diagnostic.http_error_text()
+                    elif isinstance(
+                        exc, (TimeoutError, aiohttp.ClientError, polling.ImageTaskError)
+                    ):
+                        reason = "图片请求连接中断或等待超时，上游可能仍在生成"
+                    else:
+                        reason = "图片生成接口的响应无法读取或解析"
+                    raise ImageResultError(
+                        reason + "。已停止发送，未自动重新生图。"
+                    ) from None
                 last_error = exc
                 message = (
                     f"{route_label}：{self._error_text(exc, route.timeout_seconds)}"
@@ -1073,28 +1205,53 @@ class GeminiImageService:
                     raise
                 if recovery is not None:
                     await recovery.failed(index, message)
+                action = "结束指定通道请求" if channel_name else "尝试下一条"
                 logger.debug(
-                    f"{LOG_PREFIX} {self._mode_label(mode)}接口通道失败，尝试下一条：{message}"
+                    f"{LOG_PREFIX} {self._mode_label(mode)}接口通道失败，{action}：{message}"
                 )
                 continue
 
             if not isinstance(data, dict):
+                if diagnostic is not None:
+                    diagnostic.emit("failed", outcome="invalid_response")
+                    raise ImageResultError(
+                        "图片接口返回格式不是对象。已停止发送，未自动重新生图。"
+                    )
                 message = f"{route_label}：图片接口返回格式不是对象"
                 last_error = ValueError(message)
                 errors.append(message)
                 if recovery is not None:
                     await recovery.failed(index, message)
+                action = "结束指定通道请求" if channel_name else "尝试下一条"
                 logger.debug(
-                    f"{LOG_PREFIX} {self._mode_label(mode)}接口通道失败，尝试下一条：{message}"
+                    f"{LOG_PREFIX} {self._mode_label(mode)}接口通道失败，{action}：{message}"
                 )
                 continue
             try:
-                image_bytes = await self._extract_image_bytes(
-                    data,
-                    route,
-                    timeout=timeout,
-                )
+                if diagnostic is not None:
+
+                    async def download_candidate(url, note_download):
+                        return await self._download_generated_image(
+                            url, timeout=timeout, diagnostic=note_download
+                        )
+
+                    image_bytes = await select_animated_gif(
+                        data, route.api_url, download_candidate, diagnostic
+                    )
+                else:
+                    image_bytes = await self._extract_image_bytes(
+                        data, route, timeout=timeout
+                    )
             except Exception as exc:
+                if diagnostic is not None:
+                    diagnostic.emit(
+                        "failed", outcome="result_failed", error_type=type(exc).__name__
+                    )
+                    if isinstance(exc, ImageResultError):
+                        raise
+                    raise ImageResultError(
+                        "图片结果处理失败。已停止发送，未自动重新生图。"
+                    ) from None
                 last_error = exc
                 if isinstance(data, polling.ImageTaskResult):
                     pending = polling.ImageTaskError(
@@ -1168,11 +1325,18 @@ class GeminiImageService:
             errors.append(message)
             if self._is_policy_violation_text(message):
                 raise RuntimeError(f"图片生成触发安全拒绝：{message}")
+            action = "结束指定通道请求" if channel_name else "尝试下一条"
             logger.debug(
-                f"{LOG_PREFIX} {self._mode_label(mode)}接口通道失败，尝试下一条：{message}"
+                f"{LOG_PREFIX} {self._mode_label(mode)}接口通道失败，{action}：{message}"
             )
 
-        message = f"图片生成全部{self._mode_label(mode)}接口均失败：{'；'.join(errors[-8:])}"
+        if channel_name:
+            message = (
+                f"指定的{self._mode_label(mode)}通道“{channel_name}”失败："
+                f"{'；'.join(errors[-8:])}"
+            )
+        else:
+            message = f"图片生成全部{self._mode_label(mode)}接口均失败：{'；'.join(errors[-8:])}"
         if recovery is not None:
             await recovery.finish(error=message)
         if resuming:
@@ -1196,11 +1360,24 @@ class GeminiImageService:
         *,
         require_reference: bool = False,
         recovery: ImageRecovery | None = None,
+        output_format: str = "",
+        frame_count: int = 9,
+        frame_duration_ms: int = 200,
+        diagnostic: ImageDiagnostics | None = None,
     ) -> dict[str, Any] | Any:
         parts = parts_for_route(route, prompt)
         if inspect.isawaitable(parts):
             parts = await parts
-        request = self._build_request(route, parts)
+        if str(output_format or "").strip().lower() == "gif":
+            request = self._build_request(
+                route,
+                parts,
+                output_format=output_format,
+                frame_count=frame_count,
+                frame_duration_ms=frame_duration_ms,
+            )
+        else:
+            request = self._build_request(route, parts)
         if require_reference and request.reference_image_count <= 0:
             raise ValueError("图生图请求没有可上传的参考图，已终止请求")
         if openai.uses_async_tasks(
@@ -1208,6 +1385,7 @@ class GeminiImageService:
         ):
             listener = getattr(self, "_task_listener", None)
             failure_listener = getattr(self, "_task_failure_listener", None)
+
             async def accepted(task_id, accepted_route):
                 if recovery is not None:
                     await recovery.accepted(task_id, accepted_route)
@@ -1219,7 +1397,9 @@ class GeminiImageService:
                 route,
                 request,
                 on_accepted=accepted,
-                on_failed=failure_listener.get() if failure_listener is not None else None,
+                on_failed=failure_listener.get()
+                if failure_listener is not None
+                else None,
             )
             if result is not None:
                 return result
@@ -1232,9 +1412,20 @@ class GeminiImageService:
                 f"端点={request.url.rsplit('/', 1)[-1]}"
             )
         try:
+            if diagnostic is not None:
+                diagnostic.request_id = (
+                    request.headers.get("X-Client-Request-ID") or diagnostic.request_id
+                )
+                diagnostic.submitted = True
+                diagnostic.emit(
+                    "request", reference_images=request.reference_image_count
+                )
             post = (
                 session.post(
-                    request.url, data=request.form, headers=request.headers, timeout=timeout
+                    request.url,
+                    data=request.form,
+                    headers=request.headers,
+                    timeout=timeout,
                 )
                 if request.form is not None
                 else session.post(
@@ -1245,7 +1436,17 @@ class GeminiImageService:
                 )
             )
             async with post as response:
+                if diagnostic is not None:
+                    diagnostic.response(
+                        response.status, getattr(response, "headers", {}) or {}
+                    )
                 if response.status != 200:
+                    if diagnostic is not None:
+                        await diagnostic.read_error(
+                            response,
+                            private_text=str((request.payload or {}).get("prompt") or prompt),
+                        )
+                        raise ImageResultError(diagnostic.http_error_text())
                     detail = await response.text()
                     raise RuntimeError(f"HTTP {response.status}：{detail[:1000]}")
                 return await response.json()
@@ -1278,8 +1479,28 @@ class GeminiImageService:
         lowered = str(text or "").lower()
         return "content_policy_violation" in lowered or "policy_violation" in lowered
 
-    def _build_request(self, route: ImageRoute, parts: list[dict[str, Any]]):
-        kwargs = {"resolution": route.resolution, "aspect_ratio": route.aspect_ratio}
+    def _build_request(
+        self,
+        route: ImageRoute,
+        parts: list[dict[str, Any]],
+        *,
+        output_format: str = "",
+        frame_count: int = 9,
+        frame_duration_ms: int = 200,
+    ):
+        kwargs = {
+            "resolution": route.resolution,
+            "aspect_ratio": route.aspect_ratio,
+        }
+        if (
+            route.protocol == "openai"
+            and str(output_format or "").strip().lower() == "gif"
+        ):
+            kwargs.update(
+                output_format=output_format,
+                frame_count=frame_count,
+                frame_duration_ms=frame_duration_ms,
+            )
         builder = {
             "openai": openai.build_request,
             "grok": imagine.build_request,
@@ -1320,6 +1541,7 @@ class GeminiImageService:
         url: str,
         *,
         timeout: aiohttp.ClientTimeout,
+        diagnostic: Callable[..., None] | None = None,
     ) -> bytes:
         """下载接口返回的结果图片并校验内容。
 
@@ -1339,6 +1561,7 @@ class GeminiImageService:
             timeout=timeout,
             max_bytes=_GENERATED_IMAGE_MAX_BYTES,
             label="生成图片",
+            diagnostic=diagnostic,
         )
         return image_bytes
 
@@ -1350,6 +1573,7 @@ class GeminiImageService:
         max_bytes: int,
         label: str,
         headers: dict[str, str] | None = None,
+        diagnostic: Callable[..., None] | None = None,
     ) -> tuple[bytes, str]:
         """仅在远端响应正文通过完整性检查后保存下载的图片。"""
         if not await is_http_url_allowed_async(url):
@@ -1376,12 +1600,17 @@ class GeminiImageService:
                     request_kwargs["headers"] = request_headers
                 async with session.get(request_url, **request_kwargs) as response:
                     status = int(getattr(response, "status", 0) or 0)
+                    if diagnostic is not None:
+                        diagnostic(
+                            download_http_status=status, download_attempt=attempt + 1
+                        )
                     if status not in {200, 206}:
                         detail = ""
-                        try:
-                            detail = (await response.text())[:300].strip()
-                        except Exception:
-                            pass
+                        if diagnostic is None:
+                            try:
+                                detail = (await response.text())[:300].strip()
+                            except Exception:
+                                pass
                         message = f"{label}下载失败（HTTP {status}）"
                         if detail:
                             message += f"：{detail}"
@@ -1395,7 +1624,11 @@ class GeminiImageService:
                         .strip()
                         .lower()
                     )
-                    if content_type and not content_type.startswith("image/"):
+                    if (
+                        diagnostic is None
+                        and content_type
+                        and not content_type.startswith("image/")
+                    ):
                         raise ValueError(f"{label}链接返回的不是图片内容")
                     content_length = self._content_length(response_headers)
                     if content_length is not None and content_length > max_bytes:
@@ -1413,11 +1646,12 @@ class GeminiImageService:
                         )
                 if len(image_bytes) > max_bytes:
                     raise ValueError(f"{label}内容过大")
-                _validate_downloaded_image(
-                    image_bytes,
-                    content_type,
-                    label=label,
-                )
+                if diagnostic is None:
+                    _validate_downloaded_image(
+                        image_bytes,
+                        content_type,
+                        label=label,
+                    )
                 detected_mime, _ = image_mime_and_ext(image_bytes)
                 return image_bytes, content_type or detected_mime
             except _RetryableRemoteImageError as exc:
@@ -1433,7 +1667,7 @@ class GeminiImageService:
             ]
             logger.debug(
                 f"{LOG_PREFIX} {label}暂不可用，第 {attempt + 1} 次下载失败，"
-                f"将在 {delay:g} 秒后重试：{last_error}"
+                f"将在 {delay:g} 秒后重试：{type(last_error).__name__ if diagnostic else last_error}"
             )
             await asyncio.sleep(delay)
         raise RuntimeError(
@@ -1584,11 +1818,37 @@ class GeminiImageService:
         )
 
     async def _request_routes(
-        self, mode: str, *, protocol: str = "", model: str = ""
+        self,
+        mode: str,
+        *,
+        protocol: str = "",
+        model: str = "",
+        channel_name: str = "",
+        output_format: str = "",
     ) -> list[ImageRoute]:
         protocol = routes.normalize_image_provider(protocol)
         model = str(model or "").strip()
         mode_label = self._mode_label(mode)
+        channel_name = routes.resolve_channel_name(
+            self.settings, mode, channel_name, protocol=protocol, model=model
+        )
+        output_format = str(output_format or "").strip().lower()
+        if output_format not in {"", "png", "gif"}:
+            raise ValueError("图片输出格式仅支持默认静态图或 GIF 动图")
+        animated_gif = output_format == "gif"
+        if animated_gif and channel_name:
+            selected = next(
+                (
+                    channel
+                    for index, channel in enumerate(
+                        self._channels_for_mode(mode), start=1
+                    )
+                    if routes.channel_label(channel, mode, index) == channel_name
+                ),
+                None,
+            )
+            if selected is None or not openai.supports_animated_gif(selected):
+                raise ValueError("GIF 动图需选择 GPT Image 2.6 图片通道")
         return [
             routes.make_route(
                 channel.api_url,
@@ -1600,15 +1860,13 @@ class GeminiImageService:
                 channel.aspect_ratio,
                 channel.timeout_seconds,
             )
-            for index, channel in enumerate(
-                (
-                    channel
-                    for channel in self._channels_for_mode(mode)
-                    if not protocol
-                    or routes.channel_matches_provider(channel, protocol)
-                ),
-                start=1,
+            for index, channel in enumerate(self._channels_for_mode(mode), start=1)
+            if (not protocol or routes.channel_matches_provider(channel, protocol))
+            and (
+                not channel_name
+                or routes.channel_label(channel, mode, index) == channel_name
             )
+            and (not animated_gif or openai.supports_animated_gif(channel))
             if not model or str(getattr(channel, "model", "") or "").strip() == model
         ]
 

@@ -170,7 +170,8 @@ class LifeMemoryService:
                         )
                 except Exception as exc:
                     logger.debug(
-                        f"{LOG_PREFIX} 长期记忆语义召回降级：{type(exc).__name__}"
+                        f"{LOG_PREFIX} 长期记忆语义召回降级：{type(exc).__name__}；"
+                        f"本轮语义预算={semantic_timeout_seconds:g}s，继续使用已核对的本地记录"
                     )
             return await self._complete_recall(
                 lexical, scopes=scopes, categories=categories, limit=limit, include_related=True,

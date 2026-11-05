@@ -1416,6 +1416,28 @@ class RuntimeImageAsyncTest(RuntimeAsyncHelpers, unittest.IsolatedAsyncioTestCas
         self.assertEqual(prompts, ["雨夜生活照", "雨夜生活照，自然生活化表达"])
         self.assertEqual(rewrites, [("雨夜生活照", False)])
 
+    async def test_terminal_image_result_is_not_rewritten_and_reports_actual_reason(self):
+        from unittest.mock import AsyncMock
+
+        from core.media.picture.results import ImageResultError
+
+        runtime = DailyLifeRuntime.__new__(DailyLifeRuntime)
+        runtime.context = Context(Provider([]))
+        self._stub_media_director(runtime)
+        error = ImageResultError("上游返回 PNG 静态图，未得到要求的 GIF。已停止发送，未自动重新生图。")
+        error.__context__ = RuntimeError("content_policy_violation private upstream body")
+        generate = AsyncMock(side_effect=error)
+        runtime.media = types.SimpleNamespace(image=types.SimpleNamespace(generate_image=generate))
+        runtime._rewrite_life_image_prompt_for_policy_retry = AsyncMock(return_value="new prompt")
+        event = Event(unified_msg_origin="aiocqhttp:FriendMessage:10001")
+        result = await runtime._part_runtime_image_media_component._life_image_generate_inline(event, "雨夜生活照")
+        self.assertIn("上游返回 PNG 静态图", result)
+        self.assertIn("未自动重新生图", result)
+        self.assertNotIn("private", result)
+        self.assertEqual(generate.await_count, 1)
+        runtime._rewrite_life_image_prompt_for_policy_retry.assert_not_awaited()
+        self.assertEqual(runtime.context.sent_messages, [])
+
     async def test_life_image_generate_returns_short_failure_after_policy_retry_failure(
         self,
     ):

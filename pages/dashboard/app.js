@@ -97,6 +97,7 @@ import {
 } from "./api/transport.js";
 
 import { createConfigPanel } from "./ui/settings.js";
+import { createBackupRestore } from "./ui/backup-restore.mjs";
 import {
   focusDialog,
   restoreDialogFocus,
@@ -112,15 +113,11 @@ const MEMO_CAROUSEL_MS = 6500;
 const EMOJI_AUTO_REFRESH_MS = 10000;
 const EMOJI_IMPORT_MAX_MB = 20;
 const EMOJI_IMPORT_MAX_BYTES = EMOJI_IMPORT_MAX_MB * 1024 * 1024;
-const EMOJI_BACKUP_MAX_MB = 200;
-const EMOJI_BACKUP_MAX_BYTES = EMOJI_BACKUP_MAX_MB * 1024 * 1024;
 const EMOJI_ANIMATED_PREVIEW_STAGGER_MS = 80;
 const EMOJI_PAGE_SIZE = 30;
 const CLOSET_PAGE_SIZE = 24;
 const CLOSET_IMPORT_MAX_MB = 20;
 const CLOSET_IMPORT_MAX_BYTES = CLOSET_IMPORT_MAX_MB * 1024 * 1024;
-const CLOSET_BACKUP_MAX_MB = 500;
-const CLOSET_BACKUP_MAX_BYTES = CLOSET_BACKUP_MAX_MB * 1024 * 1024;
 const MEMO_EMPTY_TEXT = "暂无备忘录";
 const CURRENT_ACTIVITY_EMPTY_TEXT = "暂无当前活动";
 const METER_EMPTY_TEXT = "暂无数据";
@@ -474,6 +471,8 @@ const dashboardEffects = createDashboardEffects({
   cursorTrailLayer: el.cursorTrailLayer,
 });
 const lifeSelectControls = createLifeSelectControls();
+let emojiBackupRestore = null;
+let closetBackupRestore = null;
 
 function syncClock(status = {}) {
   const sourceNow = text(status.now).trim();
@@ -727,6 +726,13 @@ function setBusy(value) {
     item.disabled = state.busy || item.dataset.lockDisabled === "true";
   });
   lifeSelectControls.syncSelects(currentViewElement());
+}
+
+function updateBackupAvailability(button, count, label) {
+  if (!button) return;
+  button.dataset.lockDisabled = String(count === 0);
+  button.disabled = state.busy || count === 0;
+  button.title = count ? `备份全部${label}素材` : `暂无${label}素材，无法备份`;
 }
 
 function node(tag, className, content) {
@@ -2763,6 +2769,7 @@ function closeEmojiImport() {
 
 function renderEmojiManagement() {
   if (!el.emojiList) return;
+  updateBackupAvailability(el.emojiBackupButton, state.emojiItems.length, "表情");
   pruneEmojiSelection();
   renderEmojiStats();
   renderEmojiSelectionTools();
@@ -2835,12 +2842,6 @@ function isEmojiImportFile(file) {
   return ["png", "jpg", "jpeg", "webp", "gif", "bmp"].includes(suffix);
 }
 
-function isEmojiBackupFile(file) {
-  if (!file) return false;
-  if (["application/zip", "application/x-zip-compressed"].includes(String(file.type || "").toLowerCase())) return true;
-  return String(file.name || "").toLowerCase().endsWith(".zip");
-}
-
 async function uploadEmojiFiles(files, successLabel) {
   const items = Array.isArray(files) ? files.filter(Boolean) : [];
   if (!items.length) {
@@ -2900,6 +2901,10 @@ async function importEmojiFiles(files) {
 }
 
 async function backupEmojiAssets() {
+  if (!state.emojiItems.length) {
+    setNotice("暂无表情素材，无法备份", "error");
+    return;
+  }
   setBusy(true);
   stopEmojiAutoRefresh();
   try {
@@ -2917,37 +2922,16 @@ async function backupEmojiAssets() {
 }
 
 async function restoreEmojiBackupFile(file) {
-  if (!file) return;
-  if (!isEmojiBackupFile(file)) {
-    setNotice("请选择 ZIP 表情备份文件", "error");
-    return;
-  }
-  if (Number(file.size || 0) > EMOJI_BACKUP_MAX_BYTES) {
-    setNotice(`表情备份文件不能超过 ${EMOJI_BACKUP_MAX_MB} MB`, "error");
-    return;
-  }
-  setBusy(true);
-  stopEmojiAutoRefresh();
-  try {
-    const result = await apiUpload("page/emoji/restore", file, {
-      timeoutMs: 120000,
-      timeoutMessage: "表情还原耗时较久，请稍后查看",
-    });
-    state.emojiPreviewCache.clear();
-    applyEmojiPayload(result);
-    const skipped = Number(result.skipped_records || 0);
-    setNotice(
-      skipped
-        ? `已还原 ${Number(result.restored || 0)} 个表情素材，跳过 ${skipped} 个`
-        : `已还原 ${Number(result.restored || 0)} 个表情素材`,
-      "success"
-    );
-  } catch (error) {
-    setNotice(userErrorMessage(error, "表情还原失败"), "error");
-  } finally {
-    setBusy(false);
-    scheduleEmojiAutoRefresh();
-  }
+  emojiBackupRestore ||= createBackupRestore({
+    kind: "emoji", root: byId("emojiRestoreProgress"), upload: apiUpload,
+    setBusy, isBusy: () => state.busy, notice: setNotice,
+    beforeRun: stopEmojiAutoRefresh, afterRun: scheduleEmojiAutoRefresh,
+    applyPayload: (payload) => {
+      state.emojiPreviewCache.clear();
+      applyEmojiPayload(payload);
+    },
+  });
+  await emojiBackupRestore.start(file);
 }
 
 function emojiTargetIds(ids) {
@@ -3423,6 +3407,7 @@ function renderClosetPager(pageInfo) {
 
 function renderClosetManagement() {
   if (!el.closetList) return;
+  updateBackupAvailability(el.closetBackupButton, state.closetItems.length, "衣橱");
   pruneClosetSelection();
   renderClosetStats();
   renderClosetSelectionTools();
@@ -3881,6 +3866,10 @@ async function deleteClosetItems(ids) {
 }
 
 async function backupCloset() {
+  if (!state.closetItems.length) {
+    setNotice("暂无衣橱素材，无法备份", "error");
+    return;
+  }
   setBusy(true);
   try {
     await apiDownload("page/closet/backup", {}, "", { timeoutMs: 180000, timeoutMessage: "衣橱备份耗时较久" });
@@ -3893,26 +3882,15 @@ async function backupCloset() {
 }
 
 async function restoreCloset(file) {
-  if (!file) return;
-  if (!String(file.name || "").toLowerCase().endsWith(".zip")) {
-    setNotice("请选择 ZIP 衣橱备份文件", "error");
-    return;
-  }
-  if (Number(file.size || 0) > CLOSET_BACKUP_MAX_BYTES) {
-    setNotice(`衣橱备份不能超过 ${CLOSET_BACKUP_MAX_MB} MB`, "error");
-    return;
-  }
-  setBusy(true);
-  try {
-    const result = await apiUpload("page/closet/restore", file, { timeoutMs: 180000, timeoutMessage: "衣橱还原耗时较久" });
-    state.closetPreviewCache.clear();
-    applyClosetPayload(result);
-    setNotice(`已还原 ${Number(result.restored || 0)} 条衣橱素材`, "success");
-  } catch (error) {
-    setNotice(userErrorMessage(error, "衣橱还原失败"), "error");
-  } finally {
-    setBusy(false);
-  }
+  closetBackupRestore ||= createBackupRestore({
+    kind: "closet", root: byId("closetRestoreProgress"), upload: apiUpload,
+    setBusy, isBusy: () => state.busy, notice: setNotice,
+    applyPayload: (payload) => {
+      state.closetPreviewCache.clear();
+      applyClosetPayload(payload);
+    },
+  });
+  await closetBackupRestore.start(file);
 }
 
 function renderDashboard() {

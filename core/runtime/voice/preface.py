@@ -44,6 +44,7 @@ TOOL_REPLY_POLICIES = {
     "life_photo_suite_generate": ToolReplyPolicy(),
     "edit_life_image": ToolReplyPolicy(),
     "life_video_generate": ToolReplyPolicy(post_send_comment=False),
+    "life_music_generate": ToolReplyPolicy(post_send_comment=False),
 }
 DEFAULT_TOOL_REPLY_POLICY = ToolReplyPolicy()
 SILENT_TOOL_PREFACE_NAMES = frozenset(

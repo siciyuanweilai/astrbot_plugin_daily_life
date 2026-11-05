@@ -5,6 +5,7 @@ from typing import Any
 
 from typing import Protocol
 
+from ...sources.botidentity import event_bot_id
 
 @dataclass
 class StructuredTarget:
@@ -154,19 +155,7 @@ class StructuredBaseComponent:
         return ""
 
     def _structured_self_id(self, event: Any) -> str:
-        self_id = self.context._safe_event_call(event, "get_self_id")
-        if self_id:
-            return self_id
-        for source in self.context._event_sources(event):
-            message_obj = getattr(source, "message_obj", None)
-            for current in (source, message_obj):
-                text = self.context._structured_first_text(
-                    getattr(current, "self_id", ""),
-                    getattr(current, "bot_id", ""),
-                )
-                if text:
-                    return text
-        return ""
+        return event_bot_id(event, context=getattr(self.context, "context", None))
 
     @staticmethod
     def _structured_media_outline(items: list[Any]) -> str:

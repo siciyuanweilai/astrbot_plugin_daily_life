@@ -279,6 +279,7 @@ class LifeBackgroundComposer:
         empty_retries: int = 1,
         primary_provider_id: str = "",
         propagate_non_retryable: bool = False,
+        propagate_failures: bool = False,
         timeout_seconds: float | None = None,
         system_prompt: str | None = None,
     ) -> str:
@@ -313,6 +314,8 @@ class LifeBackgroundComposer:
 
         if self._provider_circuit.is_open(current_provider_id):
             if not await switch_to_temporary_provider("连续失败熔断"):
+                if propagate_failures:
+                    raise ConnectionError("模型连续失败，当前处于退避期")
                 return ""
 
         attempt = 0
@@ -384,6 +387,8 @@ class LifeBackgroundComposer:
                             status=status,
                             provider_id=current_provider_id,
                         ) from exc
+                    if propagate_failures:
+                        raise exc
                     return ""
                 transient = is_transient_provider_error(exc)
                 if transient:
@@ -394,6 +399,8 @@ class LifeBackgroundComposer:
                     continue
                 if await switch_to_temporary_provider("调用异常"):
                     continue
+                if propagate_failures:
+                    raise exc
                 return ""
 
             text = self._extract_completion_text(resp)
@@ -417,6 +424,8 @@ class LifeBackgroundComposer:
                 continue
             if await switch_to_temporary_provider("返回空响应"):
                 continue
+            if propagate_failures:
+                raise RuntimeError("模型未返回有效正文")
             return ""
         return ""
 

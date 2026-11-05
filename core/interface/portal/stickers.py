@@ -57,6 +57,7 @@ class PortalEmojiComponentContext(Protocol):
     _page_read_emoji_backup_manifest: Any
     _page_receive_emoji: Any
     _page_receive_upload: Any
+    _page_response: Any
     _page_restore_emoji_backup_file: Any
     _page_restore_emoji_backup_records: Any
     _page_safe_backup_member: Any
@@ -194,6 +195,11 @@ class PortalEmojiComponent:
 
     async def page_emoji_backup(self):
         assets = await self.context.runtime.archive.get_emoji_assets(limit=0)
+        if not assets:
+            return await self.context._page_response(
+                {"ok": False, "error": {"message": "暂无表情素材，无法备份", "public": True}},
+                400,
+            )
         target = self.context._page_emoji_transfer_path("backup", ".zip")
         meta = await asyncio.to_thread(
             self.context._page_build_emoji_backup_file,

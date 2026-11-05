@@ -402,7 +402,7 @@
         "description": "同步精选记忆",
         "type": "bool",
         "default": false,
-        "hint": "开启后，本插件判断值得长期复用的聊天摘要、关系点和偏好会异步同步到 MemOS。不会同步每轮聊天。"
+        "hint": "开启后，本插件判断值得长期复用的聊天摘要、关系点和偏好在后台提交至 MemOS。异步受理后由服务端继续整理；未确认时保留本地记忆，相同请求短时退避，不会同步每轮聊天。"
       },
       "sync_corrections": {
         "description": "同步记忆纠错",
@@ -431,7 +431,7 @@
           "max": 60,
           "step": 0.5
         },
-        "hint": "MemOS 后台同步和普通请求的单次超时；聊天回复前的注入等待由下方单独控制，不会跟着变慢。"
+        "hint": "MemOS 普通请求的总超时，包含连接等待和读取响应；记忆条目与备忘录提交仅等待异步受理，最多取此值与 10 秒中的较小值。聊天回复前的注入等待由下方单独控制。"
       },
       "injection_timeout_seconds": {
         "description": "注入等待(秒)",
@@ -1871,7 +1871,7 @@
                 "description": "模型名称",
                 "type": "string",
                 "default": "gpt-image-2",
-                "hint": "手动填写接口支持的 GPT Image 模型名称，例如 gpt-image-2 或 gpt-image-2.5。"
+                "hint": "手动填写接口支持的 GPT Image 模型名称，例如 gpt-image-2、gpt-image-2.5 或 gpt-image-2.6。GIF 动图仅适用于 GPT Image 2.6 通道。"
               },
               "resolution": {
                 "description": "图片尺寸",
@@ -2093,7 +2093,7 @@
                 "description": "模型名称",
                 "type": "string",
                 "default": "gpt-image-2",
-                "hint": "手动填写接口支持的 GPT Image 模型名称，例如 gpt-image-2 或 gpt-image-2.5。"
+                "hint": "手动填写接口支持的 GPT Image 模型名称，例如 gpt-image-2、gpt-image-2.5 或 gpt-image-2.6。GIF 动图仅适用于 GPT Image 2.6 通道。"
               },
               "resolution": {
                 "description": "图片尺寸",
@@ -2303,6 +2303,70 @@
           "step": 1
         },
         "hint": "后台轮询视频任务状态的间隔。"
+      }
+    }
+  },
+  "music_generation_config": {
+    "description": "音乐",
+    "type": "object",
+    "hint": "独立管理音乐生成。生成任务会在后台完成并自动发送音频，默认关闭。",
+    "items": {
+      "enabled": {
+        "description": "启用音乐生成",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后，模型可以按用户请求创作并发送歌曲或纯音乐。"
+      },
+      "base_url": {
+        "description": "接口地址",
+        "type": "string",
+        "default": "",
+        "hint": "填写音乐中转站根地址即可，插件会自动补全 /v1/music/generations。"
+      },
+      "api_key": {
+        "description": "接口密钥",
+        "type": "string",
+        "default": "",
+        "hint": "填写音乐生成接口使用的 API Key。"
+      },
+      "model": {
+        "description": "模型名称",
+        "type": "string",
+        "default": "suno-v6",
+        "hint": "填写音乐接口支持的模型名称。"
+      },
+      "timeout_seconds": {
+        "description": "任务超时（秒）",
+        "type": "int",
+        "default": 600,
+        "slider": {
+          "min": 30,
+          "max": 1800,
+          "step": 30
+        },
+        "hint": "后台等待音乐任务完成的最长时间；超时不会重新提交任务。"
+      },
+      "request_timeout_seconds": {
+        "description": "单次请求超时（秒）",
+        "type": "int",
+        "default": 60,
+        "slider": {
+          "min": 10,
+          "max": 300,
+          "step": 10
+        },
+        "hint": "创建任务、查询状态或下载音频时单次请求的超时上限。"
+      },
+      "poll_interval_seconds": {
+        "description": "查询间隔（秒）",
+        "type": "float",
+        "default": 5,
+        "slider": {
+          "min": 1,
+          "max": 120,
+          "step": 1
+        },
+        "hint": "后台查询音乐任务状态的间隔。"
       }
     }
   },

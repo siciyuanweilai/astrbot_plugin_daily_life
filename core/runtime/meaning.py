@@ -16,6 +16,8 @@ from ..prompts import CORE_JSON_OUTPUT_RULES, cache_friendly_prompt
 from ..search.cache import SingleFlight, TimedCache
 from .markers import LOG_PREFIX
 from .recallrank import fuse_memory_routes, memory_identity, memory_vector_text
+from .vectorcache import CandidateVectorCache
+from .parallel import gather_owned
 
 
 class MeaningService:
@@ -55,6 +57,9 @@ class MeaningService:
             ttl_seconds=self._MEANING_QUERY_VECTOR_CACHE_TTL_SECONDS,
         )
         self._query_vector_flight = SingleFlight[list[float]]()
+        self._query_gate = asyncio.Semaphore(4)
+        self._candidate_vectors = CandidateVectorCache()
+        self._query_requests = 0
         self._closed = False
         self._index_task: asyncio.Task | None = None
         self._index_retry_handle: asyncio.TimerHandle | None = None
@@ -117,8 +122,17 @@ class MeaningService:
             recent = await cache.get(key)
             if recent is not None:
                 return list(recent)
-            async with asyncio.timeout(self._MEANING_QUERY_REQUEST_TIMEOUT_SECONDS):
-                raw = await provider.get_embedding(query)
+            started = asyncio.get_running_loop().time()
+            self._query_requests += 1
+            try:
+                async with asyncio.timeout(self._MEANING_QUERY_REQUEST_TIMEOUT_SECONDS):
+                    async with self._query_gate:
+                        raw = await provider.get_embedding(query)
+            finally:
+                self._query_requests -= 1
+                elapsed = asyncio.get_running_loop().time() - started
+                if elapsed >= 1.0:
+                    logger.debug(f"{LOG_PREFIX} 查询向量请求耗时 {elapsed:.2f}s（含排队）")
             vector = [float(value) for value in list(raw or [])]
             if not vector or not any(vector) or not all(math.isfinite(value) for value in vector):
                 raise ValueError("查询 Embedding 返回了无效向量")
@@ -126,6 +140,8 @@ class MeaningService:
                 await cache.set(key, vector)
             return vector
 
+        if key not in self._query_vector_flight._tasks and len(self._query_vector_flight._tasks) >= 32:
+            raise RuntimeError("查询向量等待队列已满")
         vector, shared = await self._query_vector_flight.run(key, load)
         if shared:
             logger.debug(f"{LOG_PREFIX} 查询向量合并了同键并发请求")
@@ -142,6 +158,7 @@ class MeaningService:
         self._index_failure_counts.clear()
         await self._query_vector_flight.close()
         await self._query_vector_cache.clear()
+        await self._candidate_vectors.close()
 
     @staticmethod
     def _meaning_provider_id(provider: Any) -> str:
@@ -216,6 +233,14 @@ class MeaningService:
             self._MEMORY_INDEX_RETRY_SECONDS, resume,
         )
 
+    async def _wait_memory_index_turn(self) -> None:
+        """优先让当前语义请求完成；持续聊天时仍为历史索引保留进展机会。"""
+        deadline = asyncio.get_running_loop().time() + 2.0
+        while not self._closed and (self._query_requests or self._candidate_vectors.busy):
+            if asyncio.get_running_loop().time() >= deadline:
+                break
+            await asyncio.sleep(0.05)
+
     async def _warm_memory_index(self, provider: Any, provider_id: str) -> None:
         if self._closed:
             return
@@ -255,6 +280,9 @@ class MeaningService:
                             return
                         # 与框架模型测试使用相同的单条接口；每条完成即落盘。
                         await asyncio.sleep(self._MEMORY_INDEX_REQUEST_INTERVAL_SECONDS)
+                        await self._wait_memory_index_turn()
+                        if self._closed:
+                            return
                         try:
                             async with asyncio.timeout(self._MEMORY_INDEX_TIMEOUT_SECONDS):
                                 raw = await provider.get_embedding(self._memory_vector_text(item))
@@ -317,6 +345,7 @@ class MeaningService:
             scored = [
                 (cls._meaning_cosine(query_vector, vectors.get((kind, target_id), [])), index, item)
                 for index, (target_id, _, item) in enumerate(values)
+                if (kind, target_id) in vectors and len(vectors[(kind, target_id)]) == len(query_vector)
             ]
             scored.sort(key=lambda row: (-row[0], row[1]))
             ranked[kind] = [
@@ -373,21 +402,18 @@ class MeaningService:
             missing = []
 
         async def embed_all() -> tuple[list[float], list[list[float]]]:
-            query_vector = await self._meaning_query_vector(
-                provider,
-                provider_id,
-                query,
-            )
-            missing_vectors = (
-                await provider.get_embeddings([text for _, _, text in missing])
-                if missing
-                else []
+            # 查询与候选互不依赖；取消本轮等待不会丢弃有界共享请求的迟到结果。
+            query_vector, missing_vectors = await gather_owned(
+                self._meaning_query_vector(provider, provider_id, query),
+                self._candidate_vectors.get_many(provider, provider_id, [text for _, _, text in missing]),
             )
             return query_vector, missing_vectors
 
         query_vector, missing_vectors = await asyncio.wait_for(
             embed_all(), timeout=self._SEMANTIC_RANK_TIMEOUT_SECONDS
         )
+        if any(len(vector) != len(query_vector) for vector in [*vectors.values(), *missing_vectors]):
+            raise ValueError("查询与候选 Embedding 维度不一致")
         save_rows = []
         for (kind, target_id, text), vector in zip(missing, missing_vectors):
             normalized = [float(value) for value in vector]

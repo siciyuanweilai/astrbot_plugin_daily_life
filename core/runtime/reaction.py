@@ -21,6 +21,7 @@ TOOL_REACTION_NAMES = frozenset(
         "edit_life_image",
         "life_image_reverse_prompt",
         "life_video_generate",
+        "life_music_generate",
         "life_video_understand",
         "life_video_note",
         "life_style_learn",
@@ -39,6 +40,7 @@ BACKGROUND_TOOL_REACTION_NAMES = frozenset(
         "edit_life_image",
         "life_photo_suite_generate",
         "life_video_generate",
+        "life_music_generate",
         "life_web_research",
         "life_video_note",
         "life_style_learn",
@@ -53,6 +55,7 @@ MEDIA_AGENT_ERROR_TOOL_NAMES = frozenset(
         "life_video_note",
         "life_style_learn",
         "life_video_generate",
+        "life_music_generate",
     }
 )
 

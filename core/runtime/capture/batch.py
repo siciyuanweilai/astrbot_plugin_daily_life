@@ -21,6 +21,7 @@ from ...clock import now as life_now
 from ...life.reliability import NonRetryableProviderError
 from ...models import ChatSummaryRecord, CommitmentRecord
 from ...models.coerce import compact_explanation_text
+from ...sources.botidentity import event_bot_id
 from ...sources.platforms import parse_unified_origin
 from ..context import INTERACTION_MODE_PREDICATE, interaction_fact_is_current
 from ..markers import LOG_PREFIX
@@ -257,16 +258,18 @@ class ChatMemoryBatchComponent:
             separators=(",", ":"),
         )
         event_key = "bot:" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
-        self_id = str(self.context._safe_event_call(event, "get_self_id") or "bot").strip()
+        self_id = event_bot_id(
+            event, context=getattr(self.context, "context", None), scope=session_id
+        ) or "bot"
         snapshot = {
             "event_key": event_key,
             "session_id": session_id,
             "role": "assistant",
             "message_id": "",
-            "sender_profile_id": self_id or "bot",
+            "sender_profile_id": self_id,
             "sender_name": "我",
             "platform": meta.get("platform", ""),
-            "user_id": self_id or "bot",
+            "user_id": self_id,
             "group_id": meta.get("group_id", ""),
             "group_name": meta.get("group_name", ""),
             "is_group": meta.get("is_group") == "true",

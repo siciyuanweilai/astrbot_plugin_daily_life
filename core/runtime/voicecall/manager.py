@@ -25,6 +25,7 @@ from ...life.calendar import format_calendar_context, format_season_context
 from ...life.tools import build_time_context
 from ...models import LifeEventRecord
 from ...sources.events import event_attr, event_call, iter_event_sources
+from ...sources.botidentity import event_bot_id, get_qq_official_client, qq_official_profile
 from ...sources.platforms import is_onebot_event
 from .calltranscript import VoiceCallTranscriptTurn, VoiceCallTranscriptView
 from .voicegateway import VoiceCallGateway, voice_gateway_start_error_detail
@@ -1019,20 +1020,15 @@ class VoiceCallManager:
 
     @classmethod
     def _event_self_id(cls, event: Any) -> str:
-        identity = cls._event_call(event, "get_self_id")
-        if identity:
-            return identity
-        for source in iter_event_sources(event):
-            for candidate in (source, getattr(source, "message_obj", None)):
-                value = str(getattr(candidate, "self_id", "") or "").strip()
-                if value:
-                    return value
-        return ""
+        return event_bot_id(event)
 
     async def _event_bot_profile(self, event: Any, scope: str) -> tuple[str, str]:
         """读取机器人展示名与头像；失败时不影响邀请创建。"""
 
-        name = self._event_call(event, "get_self_name")
+        official_name, _, official_avatar = qq_official_profile(get_qq_official_client(
+            getattr(self.runtime, "context", None), event=event, scope=scope,
+        ))
+        name = self._event_call(event, "get_self_name") or official_name
         resolver = getattr(self.runtime, "prepare_outbound_bot_name", None)
         if callable(resolver):
             try:
@@ -1040,7 +1036,7 @@ class VoiceCallManager:
                 if inspect.isawaitable(resolved):
                     resolved = await resolved
                 resolved_name = str(resolved or "").strip().split("/", 1)[0].strip()
-                if resolved_name:
+                if resolved_name and (resolved_name != "机器人" or not name):
                     name = resolved_name
             except Exception:
                 pass
@@ -1049,6 +1045,7 @@ class VoiceCallManager:
             event,
             ("self_avatar_url", "bot_avatar_url", "bot_avatar"),
         )
+        avatar_url = avatar_url or self._safe_avatar_url(official_avatar)
         if not avatar_url and self._event_uses_onebot(event):
             avatar_url = self._onebot_avatar_url(self._event_self_id(event))
         return name[:80], avatar_url

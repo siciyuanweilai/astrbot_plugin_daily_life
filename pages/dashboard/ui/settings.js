@@ -30,6 +30,7 @@ const CONFIG_SECTION_ORDER = [
   "voice_generation_config",
   "image_generation_config",
   "video_generation_config",
+  "music_generation_config",
   "sight_config",
   "bili_browse_config",
   "emoji_config",

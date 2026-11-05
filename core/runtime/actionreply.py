@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import copy
+import asyncio
+import time
 import uuid
 from typing import Any
 
@@ -13,6 +15,7 @@ from ..life.actionchain import actions, execution_evidence
 from ..life.tools import extract_json_from_text
 from ..prompts import cache_friendly_prompt
 from .locks import operation_lock
+from ..life.reliability import request_failure_summary
 
 
 RECEIPTS_ATTR = "_daily_life_action_receipts"
@@ -105,7 +108,18 @@ def sync_action_reply_history(event: Any, run_context: Any) -> None:
         last.content = result
 
 
+class ReviewValidationError(ValueError):
+    """结构协议错误码，不包含待核对的聊天正文。"""
+
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__(code)
+
+
 class ActionReplyService:
+    review_timeout = 20.0
+    cleanup_timeout = 1.0
+
     def __init__(self, runtime: Any):
         self.runtime = runtime
 
@@ -144,22 +158,32 @@ class ActionReplyService:
     async def _review(self, data: dict) -> dict:
         rt = self.runtime
         provider_id = str(rt.config.state.provider or "")
-        provider = await rt.get_text_provider(provider_id)
-        if provider is None:
-            raise RuntimeError("生活事实核对模型不可用")
         session = "daily_life_action_reply_" + uuid.uuid4().hex
         try:
-            raw = await rt.call_text_model(provider,
-                cache_friendly_prompt(RULES, json.dumps(data, ensure_ascii=False)), session,
-                primary_provider_id=provider_id, empty_retries=0, timeout_seconds=20)
+            # 同一时限覆盖模型查找和底层备用调用，不能逐个累加完整超时。
+            async with asyncio.timeout(self.review_timeout):
+                provider = await rt.get_text_provider(provider_id)
+                if provider is None:
+                    raise RuntimeError("生活事实核对模型不可用")
+                raw = await rt.call_text_model(provider,
+                    cache_friendly_prompt(RULES, json.dumps(data, ensure_ascii=False)), session,
+                    primary_provider_id=provider_id, empty_retries=0,
+                    timeout_seconds=self.review_timeout, propagate_failures=True)
+            if not isinstance(raw, str) or not raw.strip():
+                raise ReviewValidationError("empty_response")
             value = extract_json_from_text(raw)
-            if not isinstance(value, dict) or value.get("decision") not in {"keep", "revise", "act"}:
-                raise ValueError("生活事实核对结果无效")
-            if value["decision"] == "revise" and not str(value.get("text") or "").strip():
-                raise ValueError("生活事实核对缺少修正正文")
+            if not isinstance(value, dict):
+                raise ReviewValidationError("invalid_json_object")
+            if not isinstance(value.get("decision"), str) or value["decision"] not in {"keep", "revise", "act"}:
+                raise ReviewValidationError("invalid_decision")
+            if value["decision"] == "revise" and (not isinstance(value.get("text"), str) or not value["text"].strip()):
+                raise ReviewValidationError("missing_revision_text")
             return value
         finally:
-            await rt.close_text_session(session)
+            try:
+                await asyncio.wait_for(rt.close_text_session(session), self.cleanup_timeout)
+            except Exception as exc:
+                logger.debug(f"[日常生活] 事实核对会话清理未完成：{type(exc).__name__}")
 
     async def reconcile(self, event: Any, response: Any, execute: Any) -> None:
         draft = str(getattr(response, "completion_text", "") or "").strip()
@@ -181,9 +205,12 @@ class ActionReplyService:
             # 同一事件最多做一次衔接；异常和取消也不再次执行未知结果的动作。
             event._daily_life_action_reply_done = True
             known_action = bool(getattr(event, RECEIPTS_ATTR, []))
+            started = time.monotonic()
+            phase = "facts_before"
             try:
                 data = {"phase": "before", "user": str(getattr(event, "message_str", "") or ""),
                         "context": context, "draft": draft, "facts": await self._facts(event)}
+                phase = "review_before"
                 plan = await self._review(data)
                 if action_event_stale(self.runtime, event):
                     return
@@ -193,25 +220,34 @@ class ActionReplyService:
                     response.completion_text = plan["text"].strip()
                     return
                 action = plan.get("action")
-                detail = str(plan.get("detail") or "").strip()[:800]
-                if action not in {"update_outfit", "review_action", "respond_invite"} or not detail:
-                    raise ValueError("生活行动不在可执行范围")
+                detail = plan.get("detail")
+                if (not isinstance(action, str) or action not in {"update_outfit", "review_action", "respond_invite"}
+                        or not isinstance(detail, str) or not detail.strip()):
+                    raise ReviewValidationError("invalid_action_contract")
+                detail = detail.strip()[:800]
                 known_action = True
                 # 已有工具回执时不补做第二个动作；只把现状交回表达层。
                 if not getattr(event, RECEIPTS_ATTR, []):
+                    phase = "execute"
                     await execute(event, action=action, detail=detail)
                 if action_event_stale(self.runtime, event):
                     return
+                phase = "facts_after"
                 data.update(phase="after", facts=await self._facts(event))
+                phase = "review_after"
                 final = await self._review(data)
                 if action_event_stale(self.runtime, event):
                     return
                 if final["decision"] == "revise":
                     response.completion_text = final["text"].strip()
                 elif final["decision"] != "keep":
-                    raise ValueError("执行后仍要求再次行动")
+                    raise ReviewValidationError("action_after_execution")
             except Exception as exc:
-                logger.warning(f"[日常生活] 对话生活事实核对未完成：{type(exc).__name__}")
+                detail = request_failure_summary(exc, operation="action_reply", phase=phase,
+                    timeout_seconds=self.review_timeout, elapsed_seconds=time.monotonic() - started)
+                if isinstance(exc, ReviewValidationError):
+                    detail += f"; reason={exc.code}"
+                logger.warning(f"[日常生活] 对话生活事实核对未完成：{detail}")
                 if known_action:
                     # 已发现行动承诺时不能退回动作前可能声称完成的草稿。
                     response.completion_text = action_receipt_fallback(event)

@@ -46,6 +46,7 @@ from .core.runtime.replyhistory import capture_reply_history, suppress_reply_dra
 from .core.runtime.sender import install_expressive_send_message_tool
 from .core.runtime.tooling import (
     ArgumentCheckedTool,
+    add_configured_image_channel_choices,
     guard_tool_arguments,
     prepare_tool_argument_checks,
 )
@@ -1552,6 +1553,10 @@ class DailyLifePlugin(Star):
         use_last_reverse_prompt: bool = False,
         resolution: str = "",
         provider: str = "",
+        image_channel: str = "",
+        output_format: str = "static",
+        frame_count: int = 9,
+        frame_duration_ms: int = 200,
         historical_target: str = "",
         historical_period: str = "",
         historical_time: str = "",
@@ -1574,6 +1579,10 @@ class DailyLifePlugin(Star):
             use_last_reverse_prompt(bool): 是否读取本会话上次反推提示词原文；不自动沿用原图。
             resolution(string): 用户明确指定的输出分辨率 1K、2K、4K，否则留空。
             provider(string): 用户明确指定的图片接口 auto、gpt、gemini、grok，否则留空。
+            image_channel(string): 用户明确指定的图片接口配置名称；逐字使用工具描述中列出的名称，否则留空自动选择。指定后仅使用该通道，失败不切换。
+            output_format(string): 输出 static 静态图片，或 gif 动图；选择 gif 时应同时明确使用支持 GIF 的 GPT Image 2.6 通道。
+            frame_count(int): 用户明确要求的 GIF 帧数；未指定由程序使用 9，至少 2，插件不设上限；最终以用户原话的结构化解析为准。
+            frame_duration_ms(int): 用户明确要求的 GIF 单帧毫秒数；未指定由程序使用 200，仅 output_format=gif 时生效。
             historical_target(string): 历史日期 YYYY-MM-DD 或 last（上次不同造型）；当前创作留空。
             historical_period(string): 历史时段 dawn、morning、forenoon、noon、afternoon、evening、night、late_night、daytime、evening_to_night。
             historical_time(string): 明确历史钟点 HH:MM，否则留空。
@@ -1623,6 +1632,12 @@ class DailyLifePlugin(Star):
             options["resolution"] = requested_resolution
         if str(provider or "").strip():
             options["provider"] = str(provider).strip()
+        if str(image_channel or "").strip():
+            options["channel_name"] = str(image_channel).strip()
+        if str(output_format or "").strip().lower() == "gif":
+            options["output_format"] = "gif"
+            options["frame_count"] = self._tool_int(frame_count, 9)
+            options["frame_duration_ms"] = self._tool_int(frame_duration_ms, 200)
         options["historical_target"] = str(historical_target or "").strip()
         options["historical_period"] = str(historical_period or "").strip()
         options["historical_time"] = str(historical_time or "").strip()
@@ -1650,6 +1665,10 @@ class DailyLifePlugin(Star):
         retry_indexes: list[int] | None = None,
         resolution: str = "",
         provider: str = "",
+        image_channel: str = "",
+        output_format: str = "static",
+        frame_count: int = 9,
+        frame_duration_ms: int = 200,
         historical_target: str = "",
         historical_period: str = "",
         historical_time: str = "",
@@ -1673,6 +1692,10 @@ class DailyLifePlugin(Star):
             retry_indexes(list[int]): 重拍上一组的位置序号，从 1 开始；其他情况留空。
             resolution(string): 用户明确指定的输出分辨率 1K、2K、4K，否则留空。
             provider(string): 用户明确指定的图片接口 auto、gpt、gemini、grok，否则留空。
+            image_channel(string): 用户明确指定的图片接口配置名称；逐字使用工具描述中列出的名称，否则留空自动选择。指定后仅使用该通道，失败不切换。
+            output_format(string): 输出 static 静态图片，或 gif 动图；选择 gif 时应同时明确使用支持 GIF 的 GPT Image 2.6 通道。
+            frame_count(int): 用户明确要求的 GIF 帧数；未指定由程序使用 9，至少 2，插件不设上限；最终以用户原话的结构化解析为准。
+            frame_duration_ms(int): 用户明确要求的 GIF 单帧毫秒数；未指定由程序使用 200，仅 output_format=gif 时生效。
             historical_target(string): 历史日期 YYYY-MM-DD 或 last（上次不同造型）；当前创作留空。
             historical_period(string): 历史时段 dawn、morning、forenoon、noon、afternoon、evening、night、late_night、daytime、evening_to_night。
             historical_time(string): 明确历史钟点 HH:MM，否则留空。
@@ -1716,6 +1739,12 @@ class DailyLifePlugin(Star):
             options["resolution"] = requested_resolution
         if str(provider or "").strip():
             options["provider"] = str(provider).strip()
+        if str(image_channel or "").strip():
+            options["channel_name"] = str(image_channel).strip()
+        if str(output_format or "").strip().lower() == "gif":
+            options["output_format"] = "gif"
+            options["frame_count"] = self._tool_int(frame_count, 9)
+            options["frame_duration_ms"] = self._tool_int(frame_duration_ms, 200)
         options["historical_target"] = str(historical_target or "").strip()
         options["historical_period"] = str(historical_period or "").strip()
         options["historical_time"] = str(historical_time or "").strip()
@@ -1738,6 +1767,10 @@ class DailyLifePlugin(Star):
         participants: list[str] | None = None,
         resolution: str = "",
         provider: str = "",
+        image_channel: str = "",
+        output_format: str = "static",
+        frame_count: int = 9,
+        frame_duration_ms: int = 200,
     ):
         """依据真实参考图片改图、保持人物或构图，支持继续修改会话上一张成功结果。
         reference_image 留空时读取当前消息或引用图；无新图且明确继续上次修改时设置 continue_last_result，不复用历史临时路径。
@@ -1753,6 +1786,10 @@ class DailyLifePlugin(Star):
             participants(list[string]): 已提供的关系档案 ID；合影选择一位好友，无需新建好友首帧或普通创作时留空。
             resolution(string): 用户明确指定的输出分辨率 1K、2K、4K，否则留空。
             provider(string): 用户明确指定的图片接口 auto、gpt、gemini、grok，否则留空。
+            image_channel(string): 用户明确指定的图生图接口配置名称；逐字使用工具描述中列出的名称，否则留空自动选择。指定后仅使用该通道，失败不切换。
+            output_format(string): 输出 static 静态图片，或 gif 动图；选择 gif 时应同时明确使用支持 GIF 的 GPT Image 2.6 通道。
+            frame_count(int): 用户明确要求的 GIF 帧数；未指定由程序使用 9，至少 2，插件不设上限；最终以用户原话的结构化解析为准。
+            frame_duration_ms(int): 用户明确要求的 GIF 单帧毫秒数；未指定由程序使用 200，仅 output_format=gif 时生效。
         """
         if participants:
             denial = self._life_permission_denial(
@@ -1773,6 +1810,12 @@ class DailyLifePlugin(Star):
             options["resolution"] = requested_resolution
         if str(provider or "").strip():
             options["provider"] = str(provider).strip()
+        if str(image_channel or "").strip():
+            options["channel_name"] = str(image_channel).strip()
+        if str(output_format or "").strip().lower() == "gif":
+            options["output_format"] = "gif"
+            options["frame_count"] = self._tool_int(frame_count, 9)
+            options["frame_duration_ms"] = self._tool_int(frame_duration_ms, 200)
         return await self.runtime.edit_life_image(
             event,
             str(prompt or "").strip(),
@@ -2044,6 +2087,35 @@ class DailyLifePlugin(Star):
             event,
             str(prompt or "").strip(),
             **options,
+        )
+
+    @filter.llm_tool(name="life_music_generate")
+    @guard_tool_arguments
+    @_runtime_guard
+    async def tool_life_music_generate(
+        self,
+        event: AstrMessageEvent,
+        prompt: str = "",
+        instrumental: bool = False,
+        action: str = "generate",
+        delivery: str = "voice",
+    ):
+        """创作音乐，或查询原任务并补发当前会话的作品；支持语音和 MP3 文件。
+        补发复用本地结果；尚未下载时继续查询原任务，不重新生成。
+        返回 pending 表示后台处理中，完成后独立送达。
+
+        Args:
+            prompt(string): 创作描述；generate 时必填，resend 时留空。
+            instrumental(bool): 是否生成不含人声的纯音乐；仅 generate 使用。
+            action(string): generate 创作新作品；resend 查询原任务并补发本会话最近的作品。
+            delivery(string): voice 发送语音；file 发送可下载的 MP3 文件。
+        """
+        return await self.runtime.life_music_generate(
+            event,
+            str(prompt or "").strip(),
+            instrumental=self._tool_bool(instrumental),
+            action=str(action or "generate").strip(),
+            delivery=str(delivery or "voice").strip(),
         )
 
     @filter.llm_tool(name="life_bili_browse")
@@ -2322,6 +2394,7 @@ class DailyLifePlugin(Star):
         )
         toolset = getattr(req, "func_tool", None)
         life_config = getattr(self.runtime, "config", None)
+        image_enabled = False
         video_enabled = False
         if toolset is not None and life_config is not None:
             install_expressive_send_message_tool(toolset, self.runtime)
@@ -2382,6 +2455,10 @@ class DailyLifePlugin(Star):
                 for name in MAP_LLM_TOOL_NAMES:
                     toolset.remove_tool(name)
         await self.runtime.inject_life_context(req, event)
+        if toolset is not None and life_config is not None and image_enabled:
+            add_configured_image_channel_choices(
+                toolset, getattr(life_config, "image_generation", None)
+            )
         setattr(
             event,
             "_daily_life_prefix_version",

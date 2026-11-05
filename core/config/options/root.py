@@ -29,6 +29,7 @@ from .viewing import BiliBrowseSettings
 from .cast import as_int, as_str, as_str_list, dict_section, normalize_time
 from .generate import (
     ImageGenerationSettings,
+    MusicGenerationSettings,
     RealtimeVoiceCallSettings,
     VideoGenerationSettings,
     VoiceGenerationSettings,
@@ -71,6 +72,9 @@ class LifeSettings:
     video_generation: VideoGenerationSettings = field(
         default_factory=VideoGenerationSettings
     )
+    music_generation: MusicGenerationSettings = field(
+        default_factory=MusicGenerationSettings
+    )
     voice_generation: VoiceGenerationSettings = field(
         default_factory=VoiceGenerationSettings
     )
@@ -109,6 +113,7 @@ class LifeSettings:
         sight_conf = dict_section(data, "sight_config")
         image_generation_conf = dict_section(data, "image_generation_config")
         video_generation_conf = dict_section(data, "video_generation_config")
+        music_generation_conf = dict_section(data, "music_generation_config")
         voice_generation_conf = dict_section(data, "voice_generation_config")
         realtime_voice_call_conf = dict_section(data, "realtime_voice_call_config")
         search_conf = dict_section(data, "search_config")
@@ -158,6 +163,9 @@ class LifeSettings:
         )
         config.video_generation = VideoGenerationSettings.from_dict(
             video_generation_conf
+        )
+        config.music_generation = MusicGenerationSettings.from_dict(
+            music_generation_conf
         )
         config.video_generation.aspect_ratio = (
             config.image_generation.primary_aspect_ratio()

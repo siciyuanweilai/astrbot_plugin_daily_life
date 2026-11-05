@@ -1,14 +1,24 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Callable
 from typing import Any
 
 from astrbot.api import logger
 
+from ..sources.botidentity import (
+    bot_id_value,
+    event_bot_id,
+    get_qq_official_client,
+    get_weixin_oc_instance,
+    qq_official_profile,
+    qq_official_profile_value,
+)
 from ..sources.platforms import (
     call_bot_action,
     get_onebot_client,
+    get_platform_id,
     parse_unified_origin,
 )
 from .elapsed import ConversationTimingService
@@ -114,7 +124,7 @@ class OutboundLogService:
 
     @classmethod
     def _outbound_bot_identity_value(cls, value: Any) -> str:
-        """清洗身份串，同时保留昵称与 QQ 号之间的唯一分隔符。"""
+        """清洗身份串，同时保留展示名与账号 ID 之间的唯一分隔符。"""
         raw = str(value or "").strip().replace("\r", " ").replace("\n", " ")
         if "/" not in raw:
             return cls._outbound_bot_name_value(raw)
@@ -123,14 +133,12 @@ class OutboundLogService:
 
     @staticmethod
     def _outbound_bot_id_value(value: Any) -> str:
-        if callable(value):
-            return ""
-        return str(value or "").strip()
+        return bot_id_value(value)
 
     async def prepare_outbound_bot_name(
         self, *, scope: str = "", source_event: Any = None
     ) -> str:
-        """解析并缓存当前平台的机器人昵称/QQ号身份。"""
+        """解析并缓存当前平台的机器人昵称与账号 ID。"""
         scope = str(scope or getattr(source_event, "unified_msg_origin", "") or "")
         # 后台决策事件不是平台入站事件，其 platform_name 可能是实例名。
         # 身份应从实际投递的 UMO 定位，不能将这个字段当成协议类型。
@@ -138,18 +146,16 @@ class OutboundLogService:
             None if getattr(source_event, "is_proactive_synthetic", False)
             else source_event
         )
-        bot_id = ""
-        getter = getattr(identity_event, "get_self_id", None)
-        if callable(getter):
-            try:
-                bot_id = self._outbound_bot_id_value(getter())
-            except Exception:
-                bot_id = ""
-        bot_id = bot_id or self._outbound_bot_id_value(
-            getattr(getattr(identity_event, "message_obj", None), "self_id", "")
-        )
+        bot_id = event_bot_id(identity_event, context=self._context, scope=scope)
         platform_id, _ = parse_unified_origin(scope)
-        bot = get_onebot_client(self._context, target_umo=scope, event=identity_event)
+        official_bot = get_qq_official_client(self._context, event=identity_event, scope=scope)
+        weixin = get_weixin_oc_instance(self._context, event=identity_event, scope=scope)
+        if weixin is not None:
+            bot = weixin
+        elif official_bot is not None:
+            bot = official_bot
+        else:
+            bot = get_onebot_client(self._context, target_umo=scope, event=identity_event)
         # 客户端重建或换账号后重新查询，避免不同机器人串用昵称。
         client_key = id(bot) if bot is not None else 0
         cache_key = (platform_id, bot_id, client_key)
@@ -165,12 +171,31 @@ class OutboundLogService:
             except Exception:
                 name = ""
 
-        if not name and bot is not None:
+        if weixin is not None:
+            # Weixin OC exposes an account ID but no profile nickname. Use
+            # the configured connection label only as a display fallback.
+            name = name or self._outbound_bot_name_value(get_platform_id(weixin))
+        elif official_bot is not None:
+            official_name, official_id, _ = qq_official_profile(official_bot)
+            name = name or self._outbound_bot_name_value(official_name)
+            bot_id = bot_id or official_id
+            if not name or not bot_id:
+                me = getattr(getattr(official_bot, "api", None), "me", None)
+                if callable(me):
+                    try:
+                        result = await asyncio.wait_for(me(), timeout=3.0)
+                        official_name, official_id, _ = qq_official_profile_value(result)
+                        name = name or self._outbound_bot_name_value(official_name)
+                        bot_id = bot_id or official_id
+                    except Exception as exc:
+                        logger.debug(f"{LOG_PREFIX} 获取 QQ 官方机器人身份失败：{type(exc).__name__}")
+
+        if official_bot is None and weixin is None and not name and bot is not None:
             for attr in ("nickname", "nick", "name"):
                 name = self._outbound_bot_name_value(getattr(bot, attr, ""))
                 if name:
                     break
-        if bot is not None and (not name or not bot_id):
+        if official_bot is None and weixin is None and bot is not None and (not name or not bot_id):
             try:
                 result = await call_bot_action(bot, "get_login_info", raise_missing=True)
                 nested = result.get("data") if isinstance(result, dict) else None

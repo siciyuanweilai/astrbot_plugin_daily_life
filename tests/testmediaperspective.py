@@ -45,6 +45,41 @@ class MediaPerspectiveTest(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
+    async def test_photo_suite_reuses_the_selected_channel_from_its_manifest(self):
+        self.host._normalize_image_subject_route = lambda route: route or "free"
+        self.host._apply_current_appearance_snapshot = lambda prompt, *args, **kwargs: prompt
+        self.host._normalize_image_participants = lambda participants: list(participants or [])
+        self.host._current_character_identity_profiles = lambda profiles: {}
+        self.host.generate_life_image_asset = AsyncMock(return_value="generated")
+        suite = RuntimePhotoSuiteMediaComponent(self.host)
+
+        await suite._photo_suite_generate_asset(
+            self.event(),
+            {
+                "subject_route": "free",
+                "channel_name": "GPT Image 2.6（低价）",
+                "protocol": "openai",
+                "output_format": "gif",
+                "frame_count": 4,
+                "frame_duration_ms": 200,
+            },
+            "雨夜街景",
+        )
+
+        self.host.generate_life_image_asset.assert_awaited_once()
+        self.assertEqual(
+            self.host.generate_life_image_asset.await_args.kwargs["channel_name"],
+            "GPT Image 2.6（低价）",
+        )
+        self.assertEqual(
+            self.host.generate_life_image_asset.await_args.kwargs["output_format"],
+            "gif",
+        )
+        self.assertEqual(
+            self.host.generate_life_image_asset.await_args.kwargs["frame_count"],
+            4,
+        )
+
     @staticmethod
     def event(sender="10001", *, group=False):
         return SimpleNamespace(

@@ -3452,7 +3452,7 @@ if (groups.records.length !== 1 || groups.records[0].item.name !== "没有定义
         self.assertIn('apiUpload("page/emoji/import"', app)
         self.assertIn('apiPost("page/emoji/preview"', app)
         self.assertIn('apiDownload("page/emoji/backup"', app)
-        self.assertIn('apiUpload("page/emoji/restore"', app)
+        self.assertIn('emojiBackupRestore.start(file)', app)
         self.assertIn("loadEmojiPreview(preview, item.id, { still: true })", app)
         self.assertIn("loadEmojiPreview(preview, item.id, { still: false })", app)
         self.assertIn("function observeEmojiAnimatedPreview", app)
@@ -3483,7 +3483,7 @@ if (groups.records.length !== 1 || groups.records[0].item.name !== "没有定义
         self.assertIn(
             "const EMOJI_IMPORT_MAX_BYTES = EMOJI_IMPORT_MAX_MB * 1024 * 1024;", app
         )
-        self.assertIn("const EMOJI_BACKUP_MAX_MB = 200;", app)
+        self.assertIn('id="emojiRestoreProgress"', html)
         self.assertIn("function backupEmojiAssets", app)
         self.assertIn("function restoreEmojiBackupFile", app)
         self.assertIn("个超过 ${EMOJI_IMPORT_MAX_MB} MB", app)
@@ -3625,7 +3625,7 @@ if (groups.records.length !== 1 || groups.records[0].item.name !== "没有定义
         self.assertIn('apiPost("page/closet/review"', app)
         self.assertIn('apiPost("page/closet/delete"', app)
         self.assertIn('apiDownload("page/closet/backup"', app)
-        self.assertIn('apiUpload("page/closet/restore"', app)
+        self.assertIn('closetBackupRestore.start(file)', app)
         self.assertIn("function closetPageWindow", app)
         self.assertNotIn('node("strong", "", "视觉提示词")', app)
         self.assertIn("function closetDescription", app)

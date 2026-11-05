@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 import aiohttp
+
 from astrbot.api import logger
 
 from ..base import (
@@ -24,6 +25,7 @@ _SIZE_ALIGNMENT = 8
 _HOSTED_GPT_MODELS = {
     "gpt-image-2",
     "gpt-image-2.5",
+    "gpt-image-2.6",
     "gpt-image-2.5-flare",
     "gpt-image-2.5-sunburst",
 }
@@ -110,11 +112,26 @@ def build_request(
     *,
     resolution: str,
     aspect_ratio: str,
+    output_format: str = "",
+    frame_count: int = 9,
+    frame_duration_ms: int = 200,
 ) -> ImageRequest:
     base = normalize_openai_base_url(route.api_url)
     headers = {"Authorization": f"Bearer {route.api_key}"}
     siciyuanweilai = is_siciyuanweilai(route.api_url)
     scywl_image_api = uses_scywl_image_api(route.model, route.api_url)
+    output_format = str(output_format or "").strip().lower()
+    if output_format not in {"", "png", "gif"}:
+        raise ValueError("图片输出格式仅支持默认静态图或 GIF 动图")
+    if output_format == "png":
+        output_format = ""
+    if output_format == "gif":
+        if not supports_animated_gif(route):
+            raise ValueError("GIF 动图仅支持已配置的 GPT Image 2.6 通道")
+        if int(frame_count) < 2:
+            raise ValueError("GIF 帧数至少为 2")
+        if not 20 <= int(frame_duration_ms) <= 2000:
+            raise ValueError("GIF 单帧时长须在 20 到 2000 毫秒之间")
     if siciyuanweilai:
         # 确保请求在网关侧可追踪且具有幂等性。
         request_id = f"daily-life-{uuid4().hex}"
@@ -132,15 +149,21 @@ def build_request(
     ):
         raise ValueError("此图片接口的参考图须为 PNG、JPEG 或 WebP")
     # 同名 GPT Image 模型可能路由至不同上游；编辑统一使用共同支持的 multipart。
-    if siciyuanweilai and (not images or not scywl_image_api):
+    if (siciyuanweilai and (not images or not scywl_image_api)) or output_format == "gif":
         payload = {
             "model": route.model,
             "prompt": prompt_from_parts(parts),
             "size": size,
             "n": 1,
             # 直接接收图片，避免 URL 模式依赖服务端的图片链接存储。
-            "response_format": "b64_json",
+            "response_format": "url" if output_format == "gif" else "b64_json",
         }
+        if output_format == "gif":
+            payload.update(
+                output_format="gif",
+                frame_count=int(frame_count),
+                frame_duration_ms=int(frame_duration_ms),
+            )
         if images:
             payload["images"] = [
                 {"image_url": image_data_url(image, mime)} for image, mime in images
@@ -202,7 +225,16 @@ def is_siciyuanweilai(api_url: str) -> bool:
 
 def uses_scywl_image_api(model: str, api_url: str) -> bool:
     """识别采用本站 GPT Image 基础协议的通道。"""
-    return model in {"gpt-image-2", "gpt-image-2.5"} and is_siciyuanweilai(api_url)
+    return model in {"gpt-image-2", "gpt-image-2.5", "gpt-image-2.6"} and is_siciyuanweilai(api_url)
+
+
+def supports_animated_gif(route: object) -> bool:
+    """本站仅为低价 GPT Image 2.6 路线提供 GIF 请求参数。"""
+    return (
+        str(getattr(route, "protocol", "") or "").strip().lower() == "openai"
+        and str(getattr(route, "model", "") or "").strip().lower() == "gpt-image-2.6"
+        and is_siciyuanweilai(str(getattr(route, "api_url", "") or ""))
+    )
 
 
 def image_data_url(image_bytes: bytes, mime_type: str) -> str:

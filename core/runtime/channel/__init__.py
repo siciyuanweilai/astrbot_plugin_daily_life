@@ -3,6 +3,7 @@ from __future__ import annotations
 from .audio import RuntimeVoiceMediaComponent
 from .image import RuntimeImageMediaComponent
 from .motion import RuntimeVideoMediaComponent
+from .melody import RuntimeMusicMediaComponent
 from .reverse import RuntimeReverseMediaComponent
 from .stylist import RuntimeStyleCatalogComponent
 from .suite import RuntimePhotoSuiteMediaComponent
@@ -15,5 +16,6 @@ __all__ = [
     "RuntimeReverseMediaComponent",
     "RuntimeStyleCatalogComponent",
     "RuntimeVideoMediaComponent",
+    "RuntimeMusicMediaComponent",
     "RuntimeVoiceMediaComponent",
 ]

@@ -48,6 +48,54 @@ def image_provider_label(provider: str) -> str:
     }.get(normalized, "")
 
 
+def _mode_label(mode: str) -> str:
+    return "图生图" if str(mode or "").strip().lower() == "edit" else "文生图"
+
+
+def channel_label(channel: object, mode: str, index: int) -> str:
+    configured = " ".join(str(getattr(channel, "group_name", "") or "").split())
+    if configured:
+        return configured
+    return f"{_mode_label(mode)}接口通道 {index}"
+
+
+def resolve_channel_name(
+    settings: ImageGenerationSettings,
+    mode: str,
+    value: str,
+    *,
+    protocol: str = "",
+    model: str = "",
+) -> str:
+    """Resolve a caller-selected channel by its configured display name only."""
+    requested = " ".join(str(value or "").strip().split())
+    if not requested:
+        return ""
+    channels = (
+        getattr(settings, "edit_channels", []) or []
+        if str(mode or "").strip().lower() == "edit"
+        else getattr(settings, "text_channels", []) or []
+    )
+    matches = [
+        (channel, channel_label(channel, mode, index))
+        for index, channel in enumerate(channels, start=1)
+        if channel_label(channel, mode, index) == requested
+        and str(getattr(channel, "api_url", "") or "").strip()
+        and str(getattr(channel, "api_key", "") or "").strip()
+    ]
+    mode_label = _mode_label(mode)
+    if not matches:
+        raise ValueError(f"没有找到名称为“{requested}”的可用{mode_label}通道")
+    if len(matches) != 1:
+        raise ValueError(f"{mode_label}通道名称“{requested}”重复，无法唯一选择")
+    channel, label = matches[0]
+    if protocol and not channel_matches_provider(channel, protocol):
+        raise ValueError(f"{mode_label}通道“{label}”与指定的图片接口类型不匹配")
+    if model and str(getattr(channel, "model", "") or "").strip() != model:
+        raise ValueError(f"{mode_label}通道“{label}”与指定的生图模型不匹配")
+    return label
+
+
 def channel_matches_provider(channel: object, provider: str) -> bool:
     """判断配置通道是否属于指定图片提供商。"""
     normalized = normalize_image_provider(provider)

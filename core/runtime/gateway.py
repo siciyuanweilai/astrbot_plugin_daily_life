@@ -10,6 +10,7 @@ class ModelCallOptions:
     empty_retries: int = 1
     primary_provider_id: str = ""
     propagate_non_retryable: bool = False
+    propagate_failures: bool = False
     timeout_seconds: float | None = None
     system_prompt: str | None = None
 
@@ -68,6 +69,8 @@ class ModelGateway:
         }
         if options.propagate_non_retryable:
             kwargs["propagate_non_retryable"] = True
+        if options.propagate_failures:
+            kwargs["propagate_failures"] = True
         if options.timeout_seconds is not None:
             kwargs["timeout_seconds"] = options.timeout_seconds
         if options.system_prompt is not None:
